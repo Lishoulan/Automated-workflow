@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}归档批次 | AI 今日头条科技内容工厂{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <div class="panel-head">
+    <h2>归档批次</h2>
+    <p>按时间倒序展示账号 {{ account_label }} 的全部自动化运行结果</p>
+  </div>
+  {% if runs %}
+  <div class="run-table">
+    {% for run in runs %}
+    <a href="/runs/{{ run.name }}?account={{ account_key }}" class="run-row">
+      <div>
+        <strong>{{ run.selected_topic_title or run.name }}</strong>
+        <p>{{ run.created_at }} · {{ run.recommended_action }} · 发布包{% if run.has_publish %}已生成{% else %}未生成{% endif %}</p>
+      </div>
+      <div class="right-meta">
+        <span class="pill pill-{{ run.review_status }}">{{ run.review_status }}</span>
+        <span class="score">综合 {{ run.overall_score }}</span>
+        <span class="score">校验 {{ run.validation_score }}</span>
+        <span class="score">发布 {{ run.publish_readiness_score }}</span>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">当前账号还没有归档批次。</p>
+  {% endif %}
+</section>
+{% endblock %}

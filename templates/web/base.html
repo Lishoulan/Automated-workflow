@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}AI 今日头条科技内容工厂{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <p class="eyebrow">AI CONTENT FACTORY</p>
+        <h1>手蓝数据笔记</h1>
+        <p class="subtle">科技内容生产控制台</p>
+      </div>
+
+      <div class="sidebar-card">
+        <p class="card-label">当前账号</p>
+        <strong>{{ account_label }}</strong>
+        <p class="subtle account-key">{{ account_key }}</p>
+        <form method="get" action="/" class="stack-form compact-form">
+          <label>
+            <span>切换账号</span>
+            <select name="account" onchange="this.form.submit()">
+              {% for item in available_accounts %}
+              <option value="{{ item }}" {% if item == account_key %}selected{% endif %}>{{ item }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </form>
+      </div>
+
+      <nav class="nav">
+        <a href="/?{{ account_query }}" class="nav-link">控制台</a>
+        <a href="/topics?{{ account_query }}" class="nav-link">热点池</a>
+        <a href="/runs?{{ account_query }}" class="nav-link">归档批次</a>
+      </nav>
+
+      <div class="sidebar-card">
+        <p class="card-label">默认风格</p>
+        <strong>{{ default_style }}</strong>
+      </div>
+    </aside>
+
+    <main class="content">
+      {% if message %}
+      <div class="flash flash-{{ level }}">
+        {{ message }}
+      </div>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

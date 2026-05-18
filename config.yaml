@@ -1,0 +1,189 @@
+{
+  "model": {
+    "name": "gpt-4.1-mini",
+    "temperature": 0.7
+  },
+  "writing": {
+    "article_word_target": 1200,
+    "max_input_chars": 16000,
+    "default_style": "deep_industry_analysis",
+    "title_count": 20,
+    "recommended_title_count": 3,
+    "cache_similarity_threshold": 0.82
+  },
+  "industry": {
+    "brand_name": "手蓝数据笔记",
+    "focus": "新能源、机器人、智能装备、储能",
+    "platform": "今日头条",
+    "audience": "科技行业从业者与关注产业升级的读者"
+  },
+  "topic_collection": {
+    "lookback_days": 7,
+    "max_items_per_source": 12,
+    "max_export_topics": 20,
+    "request_timeout_seconds": 18,
+    "enabled_sources": [
+      "google_news",
+      "36kr",
+      "zhidx",
+      "ofweek",
+      "gg_robot"
+    ],
+    "focus_industries": [
+      "humanoid_robot",
+      "new_energy",
+      "energy_storage",
+      "ai_hardware",
+      "industrial_automation"
+    ],
+    "keyword_map": {
+      "humanoid_robot": [
+        "人形机器人",
+        "具身智能",
+        "灵巧手",
+        "减速器",
+        "执行器",
+        "无框力矩电机",
+        "丝杠"
+      ],
+      "new_energy": [
+        "新能源",
+        "光伏",
+        "风电",
+        "锂电",
+        "电池",
+        "充电",
+        "新能源汽车"
+      ],
+      "energy_storage": [
+        "储能",
+        "工商业储能",
+        "PCS",
+        "EMS",
+        "逆变器",
+        "电网侧储能"
+      ],
+      "ai_hardware": [
+        "AI硬件",
+        "算力",
+        "服务器",
+        "GPU",
+        "芯片",
+        "边缘计算",
+        "CPO"
+      ],
+      "industrial_automation": [
+        "工业自动化",
+        "工业机器人",
+        "机器视觉",
+        "PLC",
+        "伺服",
+        "传感器",
+        "工业母机"
+      ]
+    },
+    "sources": {
+      "google_news": {
+        "type": "google_rss",
+        "urls": [
+          "https://news.google.com/rss/search?q=%E4%BA%BA%E5%BD%A2%E6%9C%BA%E5%99%A8%E4%BA%BA&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+          "https://news.google.com/rss/search?q=%E6%96%B0%E8%83%BD%E6%BA%90&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+          "https://news.google.com/rss/search?q=%E5%82%A8%E8%83%BD&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+          "https://news.google.com/rss/search?q=AI%E7%A1%AC%E4%BB%B6&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+          "https://news.google.com/rss/search?q=%E5%B7%A5%E4%B8%9A%E8%87%AA%E5%8A%A8%E5%8C%96&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+        ]
+      },
+      "36kr": {
+        "type": "rss",
+        "urls": [
+          "https://36kr.com/feed-article",
+          "https://36kr.com/feed-newsflash"
+        ]
+      },
+      "zhidx": {
+        "type": "html",
+        "urls": [
+          "https://www.zhidx.com/",
+          "https://www.zhidx.com/p/category/%E6%9C%BA%E5%99%A8%E4%BA%BA%E6%97%A0%E4%BA%BA%E6%9C%BA",
+          "https://www.zhidx.com/p/category/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD"
+        ]
+      },
+      "ofweek": {
+        "type": "html",
+        "urls": [
+          "https://robot.ofweek.com/CATList-8321200-8100-robot.html",
+          "https://robot.ofweek.com/CAT-898890-humanoidRobot.html",
+          "https://chuneng.ofweek.com/",
+          "https://nev.ofweek.com/",
+          "https://www.ofweek.com/ai/"
+        ]
+      },
+      "gg_robot": {
+        "type": "html",
+        "urls": [
+          "https://www.gg-robot.com/",
+          "https://www.gg-robot.com/meeting.html",
+          "https://www.gg-robot.com/home/aggregator/?act=report"
+        ]
+      }
+    }
+  },
+  "automation": {
+    "default_topic_rank": 1,
+    "archive_outputs": true,
+    "archive_dirname": "runs",
+    "selected_topic_basename": "selected_topic"
+  },
+  "review": {
+    "auto_prepare": true,
+    "min_overall_score": 72,
+    "max_ai_risk": 45,
+    "min_auto_publish_overall_score": 80,
+    "max_auto_publish_ai_risk": 40,
+    "min_auto_publish_validation_score": 80,
+    "min_auto_publish_readiness_score": 70,
+    "publish_dirname": "publish"
+  },
+  "styles": {
+    "deep_industry_analysis": {
+      "label": "深度行业分析风",
+      "tone": "冷静、专业、强调产业链兑现和环节分化。",
+      "article_instruction": "突出产业链位置、订单验证、交付效率、盈利兑现。",
+      "title_instruction": "做出判断感和分化感，避免纯新闻播报标题。",
+      "image_instruction": "深色科技风，图表感强，突出产业链和数据节点。",
+      "opening_instruction": "开头先抛出一个反直觉判断，再给出数据证据。"
+    },
+    "tech_media": {
+      "label": "科技媒体风",
+      "tone": "节奏快、信息密度高、兼顾可读性。",
+      "article_instruction": "像科技媒体深稿，强调事件与趋势的连接。",
+      "title_instruction": "标题兼顾传播性和信息量，避免标题党。",
+      "image_instruction": "媒体封面感，主体明确，适合头条点击。",
+      "opening_instruction": "前三句快速交代变化、原因和最值得看的点。"
+    },
+    "finance_report": {
+      "label": "财经研报风",
+      "tone": "偏研报、偏结论先行、强调数据和盈利模型。",
+      "article_instruction": "结构接近券商行业点评，突出量化指标和风险提示。",
+      "title_instruction": "标题更像行业判断或投资框架总结。",
+      "image_instruction": "图表、数据卡片、深蓝配色，强调专业度。",
+      "opening_instruction": "第一句直接下结论，第二句给关键数据，第三句给配置视角。"
+    },
+    "viral_science": {
+      "label": "爆款科普风",
+      "tone": "易懂、反差强、适合非专业读者转发收藏。",
+      "article_instruction": "用通俗解释复杂技术，但保留关键数字和产业判断。",
+      "title_instruction": "标题可有反问、对比、悬念，但不能低质夸张。",
+      "image_instruction": "视觉冲击更强，主体更直观，适合移动端封面。",
+      "opening_instruction": "前三句要有悬念和反差，让读者愿意继续看。"
+    }
+  },
+  "accounts": {
+    "default": {
+      "label": "主账号"
+    },
+    "account_b": {
+      "label": "副账号B"
+    }
+  }
+}

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ title }}</title>
+  <style>
+    :root {
+      --bg: {{ background_color }};
+      --panel: {{ card_color }};
+      --panel-2: {{ secondary_color }};
+      --text: {{ text_color }};
+      --muted: {{ muted_text_color }};
+      --accent: {{ accent_color }};
+      --line: rgba(255,255,255,0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      background:
+        radial-gradient(circle at top right, rgba(38,217,255,0.18), transparent 32%),
+        radial-gradient(circle at bottom left, rgba(95,123,255,0.18), transparent 35%),
+        linear-gradient(160deg, {{ primary_color }} 0%, {{ background_color }} 68%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 32px;
+    }
+    .frame {
+      max-width: 1040px;
+      margin: 0 auto;
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      padding: 32px;
+      background: rgba(11, 18, 32, 0.86);
+      backdrop-filter: blur(12px);
+      box-shadow: 0 24px 90px rgba(0, 0, 0, 0.42);
+    }
+    .eyebrow {
+      color: var(--accent);
+      font-size: 14px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 14px 0 10px;
+      font-size: 48px;
+      line-height: 1.12;
+    }
+    .subtitle {
+      margin: 0 0 24px;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.65;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 22px;
+    }
+    .card h2 {
+      margin: 0 0 14px;
+      font-size: 20px;
+    }
+    .metric {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 12px 0;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .metric:first-child { border-top: 0; padding-top: 0; }
+    .metric-label {
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .metric-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .chip {
+      padding: 10px 12px;
+      border-radius: 999px;
+      font-size: 14px;
+      border: 1px solid rgba(255,255,255,0.09);
+      background: rgba(255,255,255,0.03);
+    }
+    .timeline {
+      display: grid;
+      gap: 12px;
+    }
+    .timeline-item {
+      position: relative;
+      padding-left: 22px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .timeline-item::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+      position: absolute;
+      left: 0;
+      top: 8px;
+      box-shadow: 0 0 0 8px rgba(38,217,255,0.14);
+    }
+    .footer {
+      margin-top: 22px;
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    @media (max-width: 768px) {
+      body { padding: 18px; }
+      .frame { padding: 22px; border-radius: 22px; }
+      h1 { font-size: 34px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="frame">
+    <div class="eyebrow">{{ eyebrow }}</div>
+    <h1>{{ title }}</h1>
+    <p class="subtitle">{{ subtitle }}</p>
+    <section class="grid">
+      {% for section in sections %}
+      <article class="card">
+        <h2>{{ section.heading }}</h2>
+        {% if section.type == "metrics" %}
+          {% for metric in section.entries %}
+          <div class="metric">
+            <div>
+              <div class="metric-label">{{ metric.label }}</div>
+              {% if metric.note %}<div class="metric-label">{{ metric.note }}</div>{% endif %}
+            </div>
+            <div class="metric-value">{{ metric.value }}{{ metric.unit }}</div>
+          </div>
+          {% endfor %}
+        {% elif section.type == "chips" %}
+          <div class="list">
+            {% for item in section.entries %}
+            <div class="chip">{{ item }}</div>
+            {% endfor %}
+          </div>
+        {% elif section.type == "timeline" %}
+          <div class="timeline">
+            {% for item in section.entries %}
+            <div class="timeline-item">{{ item }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </section>
+    <footer class="footer">
+      <span>{{ footer_left }}</span>
+      <span>{{ footer_right }}</span>
+    </footer>
+  </main>
+</body>
+</html>

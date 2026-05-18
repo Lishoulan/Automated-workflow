@@ -1,0 +1,408 @@
+{% extends "base.html" %}
+
+{% block title %}控制台 | AI 今日头条科技内容工厂{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <div>
+    <p class="eyebrow">CONTROL CENTER</p>
+    <h2>多账号内容工厂控制台</h2>
+    <p class="muted">当前账号为 {{ account_label }}。你可以在这里切换账号、查看各账号状态，并直接触发采集、生成、审核和发布。</p>
+  </div>
+  <div class="hero-stats">
+    <div class="metric-card">
+      <span>当前账号热点数</span>
+      <strong>{{ dashboard.daily_topics.total_selected_items if dashboard.daily_topics else 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>当前账号批次数</span>
+      <strong>{{ dashboard.runs|length }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>当前综合分</span>
+      <strong>{{ dashboard.latest_score.scores.overall_score if dashboard.latest_score and dashboard.latest_score.scores else 0 }}</strong>
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h3>账号总览</h3>
+    <p>在一个后台里查看全部账号的最近运行与发布状态</p>
+  </div>
+  <div class="account-grid">
+    {% for item in account_overviews %}
+    <article class="account-card{% if item.is_current %} account-card-current{% endif %}">
+      <div class="account-card-head">
+        <div>
+          <strong>{{ item.label }}</strong>
+          <p class="muted">{{ item.key }}</p>
+        </div>
+        {% if item.is_current %}
+        <span class="pill pill-approved">当前账号</span>
+        {% else %}
+        <a class="text-link" href="/?account={{ item.key }}">切换</a>
+        {% endif %}
+      </div>
+      <div class="meta-line">
+        <span>批次 {{ item.runs_count }}</span>
+        <span>自动化 {{ item.scheduled_status or "未运行" }}</span>
+      </div>
+      <p class="account-topic">{{ item.latest_topic_title or item.latest_publish_title or "暂无最近内容" }}</p>
+      <div class="meta-line">
+        <span>审核 {{ item.latest_review_status or "暂无" }}</span>
+        <span>发布 {{ item.latest_publish_status or "暂无" }}</span>
+      </div>
+      {% if item.latest_run_name %}
+      <a class="text-link" href="/runs/{{ item.latest_run_name }}?account={{ item.key }}">查看最近批次</a>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>定时任务</h3>
+      <p>当前账号的 09:00 / 12:00 / 18:00 自动执行状态</p>
+    </div>
+    {% if dashboard.scheduled_tasks %}
+    <div class="status-list">
+      {% for task in dashboard.scheduled_tasks %}
+      <div class="status-row">
+        <div>
+          <strong>{{ task.task_name }}</strong>
+          <p>状态 {{ task.state }} · 下次 {{ task.next_run_time or "未知" }} · 上次结果 {{ task.last_task_result }}</p>
+        </div>
+        <span class="pill pill-pending">{{ task.state }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">当前账号还没有检测到已注册的计划任务。</p>
+    {% endif %}
+
+    <div class="status-stack">
+      <strong>最近自动化状态</strong>
+      {% if dashboard.scheduled_status %}
+      <p>{{ dashboard.scheduled_status.status }} · {{ dashboard.scheduled_status.updated_at }}</p>
+      <p class="muted">{{ dashboard.scheduled_status.message }}</p>
+      {% else %}
+      <p class="empty">定时脚本还没有执行记录。</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>最近发布状态</h3>
+      <p>查看当前账号最近一次投递结果</p>
+    </div>
+    {% if dashboard.latest_publish.has_result %}
+    <div class="status-card">
+      <div class="status-card-head">
+        <strong>{{ dashboard.latest_publish.status }}</strong>
+        <span class="pill pill-pending">{{ dashboard.latest_publish.submitted_at or "未记录时间" }}</span>
+      </div>
+      <p>{{ dashboard.latest_publish.title or "暂无标题" }}</p>
+      <div class="meta-line">
+        <span>批次 {{ dashboard.latest_publish.run_name or "未记录" }}</span>
+        <span>PGC ID {{ dashboard.latest_publish.pgc_id or "未返回" }}</span>
+      </div>
+      {% if dashboard.latest_publish.message %}
+      <p class="muted">后台返回：{{ dashboard.latest_publish.message }}</p>
+      {% endif %}
+      {% if dashboard.latest_publish.run_name %}
+      <a class="text-link" href="/runs/{{ dashboard.latest_publish.run_name }}?account={{ account_key }}">查看该批次详情</a>
+      {% endif %}
+    </div>
+    {% else %}
+    <p class="empty">当前账号还没有发布记录。</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>今日自动执行</h3>
+      <p>按三个时间窗查看当前账号执行结果</p>
+    </div>
+    <div class="status-list">
+      {% for slot in dashboard.scheduled_windows %}
+      <div class="status-row">
+        <div>
+          <strong>
+            {% if slot.slot_label == "morning" %}早上档{% elif slot.slot_label == "noon" %}中午档{% else %}晚上档{% endif %}
+            · {{ slot.expected_time }}
+          </strong>
+          <p>{{ slot.updated_at or "暂无执行时间" }} · {{ slot.message }}</p>
+          {% if slot.run_name %}
+          <p class="muted">批次 {{ slot.run_name }}{% if slot.publish_status %} · 发布 {{ slot.publish_status }}{% endif %}{% if slot.publish_pgc_id %} · PGC {{ slot.publish_pgc_id }}{% endif %}</p>
+          {% endif %}
+        </div>
+        <div class="right-meta">
+          <span class="pill pill-pending">{{ slot.status }}</span>
+          {% if slot.run_name %}
+          <a class="text-link" href="/runs/{{ slot.run_name }}?account={{ account_key }}">查看批次</a>
+          {% endif %}
+          {% if slot.log_url %}
+          <a class="text-link" href="{{ slot.log_url }}" target="_blank">日志</a>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>质量评分</h3>
+      <p>当前账号最新内容的正文校验与发布就绪度</p>
+    </div>
+    {% set scores = dashboard.latest_score.scores if dashboard.latest_score and dashboard.latest_score.scores else {} %}
+    <div class="score-grid">
+      <div class="score-card">
+        <span>综合分</span>
+        <strong>{{ scores.overall_score or 0 }}</strong>
+      </div>
+      <div class="score-card">
+        <span>正文校验分</span>
+        <strong>{{ scores.validation_score or 0 }}</strong>
+      </div>
+      <div class="score-card">
+        <span>发布就绪分</span>
+        <strong>{{ scores.publish_readiness_score or 0 }}</strong>
+      </div>
+      <div class="score-card">
+        <span>AI 风险</span>
+        <strong>{{ scores.ai_generated_risk or 0 }}</strong>
+      </div>
+    </div>
+    {% if dashboard.latest_score.validation_notes %}
+    <div class="section-block">
+      <h4>正文校验备注</h4>
+      <ul class="bullet-list">
+        {% for note in dashboard.latest_score.validation_notes %}
+        <li>{{ note }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% if dashboard.latest_score.publish_risk_flags %}
+    <div class="section-block">
+      <h4>发布风险</h4>
+      <ul class="bullet-list">
+        {% for note in dashboard.latest_score.publish_risk_flags %}
+        <li>{{ note }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>快捷动作</h3>
+      <p>直接对当前账号触发核心流程</p>
+    </div>
+    <div class="button-grid">
+      <form method="post" action="/actions/collect-topics">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <button class="button button-outline" type="submit">采集热点</button>
+      </form>
+      <form method="post" action="/actions/daily-run">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <input type="hidden" name="style" value="{{ default_style }}">
+        <button class="button" type="submit">完整日更</button>
+      </form>
+      <form method="post" action="/actions/auto-run">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <input type="hidden" name="style" value="{{ default_style }}">
+        <button class="button button-secondary" type="submit">自动选题生成</button>
+      </form>
+      <form method="post" action="/actions/refresh-dashboard">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <button class="button button-outline" type="submit">刷新首页数据</button>
+      </form>
+      <form method="post" action="/actions/publish-preflight">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <button class="button button-secondary" type="submit">刷新发布预检</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>热点概览</h3>
+      <p>当前账号最新热点池结果</p>
+    </div>
+    {% if dashboard.daily_topics and dashboard.daily_topics.topics %}
+    <ol class="topic-list">
+      {% for topic in dashboard.daily_topics.topics[:5] %}
+      <li>
+        <div>
+          <strong>{{ topic.title }}</strong>
+          <p>{{ topic.source }} · 总分 {{ topic.total_score }} · 阅读 {{ topic.read_score }}</p>
+        </div>
+        <a class="text-link" href="{{ topic.url }}" target="_blank">原文</a>
+      </li>
+      {% endfor %}
+    </ol>
+    {% if dashboard.daily_topics.filtered_out %}
+    <div class="section-block">
+      <h4>过滤统计</h4>
+      <ul class="bullet-list">
+        {% for key, value in dashboard.daily_topics.filtered_out.items() %}
+        <li>{{ key }}: {{ value }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% else %}
+    <p class="empty">当前账号还没有 `daily_topics.json`，先执行一次热点采集。</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>手动生成</h3>
+      <p>适合临时粘贴新闻、研报或你自己的分析框架</p>
+    </div>
+    <form method="post" action="/actions/manual-run" class="stack-form">
+      <input type="hidden" name="account" value="{{ account_key }}">
+      <label>
+        <span>写作风格</span>
+        <select name="style">
+          {% for style in styles %}
+          <option value="{{ style.key }}" {% if style.key == default_style %}selected{% endif %}>{{ style.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>输入文本</span>
+        <textarea name="paste_text" rows="10" placeholder="直接粘贴新闻、研报摘要或你的分析框架"></textarea>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="include_input_dir" value="true">
+        <span>同时读取 input 目录</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="dry_run" value="true">
+        <span>仅本地草稿，不调用模型</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="refresh_cache" value="true">
+        <span>忽略缓存重新生成</span>
+      </label>
+      <button class="button" type="submit">开始生成</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>自动生成</h3>
+      <p>从当前账号热点池自动挑题并归档</p>
+    </div>
+    <form method="post" action="/actions/auto-run" class="stack-form">
+      <input type="hidden" name="account" value="{{ account_key }}">
+      <label>
+        <span>写作风格</span>
+        <select name="style">
+          {% for style in styles %}
+          <option value="{{ style.key }}" {% if style.key == default_style %}selected{% endif %}>{{ style.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>指定排名</span>
+        <input type="number" name="topic_rank" min="1" placeholder="默认使用第 1 条">
+      </label>
+      <label>
+        <span>或标题关键词</span>
+        <input type="text" name="topic_title" placeholder="例如：人形机器人">
+      </label>
+      <label class="check">
+        <input type="checkbox" name="collect_topics" value="true">
+        <span>运行前强制重新采集热点</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="dry_run" value="true">
+        <span>仅本地草稿，不调用模型</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="refresh_cache" value="true">
+        <span>忽略缓存重新生成</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="no_archive" value="true">
+        <span>本次结果不归档</span>
+      </label>
+      <button class="button button-secondary" type="submit">自动选题生成</button>
+    </form>
+  </div>
+</section>
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>发布前置检查</h3>
+      <p>检查当前账号浏览器发布会话与头条后台返回</p>
+    </div>
+    {% if dashboard.publish_preflight %}
+    <div class="status-card">
+      <div class="status-card-head">
+        <strong>{% if dashboard.publish_preflight.blocking_flags %}存在阻塞{% else %}可继续发布{% endif %}</strong>
+        <span class="pill pill-pending">{{ dashboard.publish_preflight.updated_at or "未刷新" }}</span>
+      </div>
+      {% if dashboard.publish_preflight.current_url %}
+      <p class="muted">当前页面：{{ dashboard.publish_preflight.current_url }}</p>
+      {% endif %}
+      {% if dashboard.publish_preflight.blocking_flags %}
+      <ul class="bullet-list risk-list">
+        {% for note in dashboard.publish_preflight.blocking_flags %}
+        <li>{{ note }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if dashboard.publish_preflight.warnings %}
+      <ul class="bullet-list">
+        {% for note in dashboard.publish_preflight.warnings %}
+        <li>{{ note }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% else %}
+    <p class="empty">当前账号还没有发布预检结果。</p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>最近批次</h3>
+      <p>点击进入当前账号审核与发布页</p>
+    </div>
+    {% if dashboard.runs %}
+    <div class="run-table">
+      {% for run in dashboard.runs %}
+      <a href="/runs/{{ run.name }}?account={{ account_key }}" class="run-row">
+        <div>
+          <strong>{{ run.selected_topic_title or run.name }}</strong>
+          <p>{{ run.created_at }} · {{ run.review_status }} · 综合 {{ run.overall_score }} · 校验 {{ run.validation_score }} · 发布 {{ run.publish_readiness_score }}</p>
+        </div>
+        <span class="pill pill-{{ run.review_status }}">{{ run.review_status }}</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">当前账号还没有归档批次。</p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

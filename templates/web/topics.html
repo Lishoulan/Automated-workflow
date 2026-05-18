@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}热点池 | AI 今日头条科技内容工厂{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <div class="panel-head">
+    <div>
+      <h2>热点池</h2>
+      <p>当前账号 {{ account_label }} 的最新 `daily_topics.json` 结果</p>
+    </div>
+    <form method="post" action="/actions/collect-topics">
+      <input type="hidden" name="account" value="{{ account_key }}">
+      <button class="button" type="submit">重新采集</button>
+    </form>
+  </div>
+  {% if topics and topics.topics %}
+  <div class="topic-cards">
+    {% for topic in topics.topics %}
+    <article class="topic-card">
+      <div class="topic-rank">#{{ topic.rank }}</div>
+      <h3>{{ topic.title }}</h3>
+      <p class="muted">{{ topic.summary }}</p>
+      <div class="meta-line">
+        <span>{{ topic.source }}</span>
+        <span>总分 {{ topic.total_score }}</span>
+        <span>阅读 {{ topic.read_score }}</span>
+        <span>收藏 {{ topic.save_score }}</span>
+      </div>
+      <div class="chips">
+        {% for keyword in topic.matched_keywords %}
+        <span class="chip">{{ keyword }}</span>
+        {% endfor %}
+      </div>
+      <a class="text-link" href="{{ topic.url }}" target="_blank">查看原文</a>
+    </article>
+    {% endfor %}
+  </div>
+  {% if topics.filtered_out %}
+  <div class="section-block">
+    <h3>过滤统计</h3>
+    <ul class="bullet-list">
+      {% for key, value in topics.filtered_out.items() %}
+      <li>{{ key }}: {{ value }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% else %}
+  <p class="empty">当前账号还没有热点数据。</p>
+  {% endif %}
+</section>
+{% endblock %}

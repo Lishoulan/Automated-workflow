@@ -180,10 +180,99 @@
   },
   "accounts": {
     "default": {
-      "label": "主账号"
+      "label": "手蓝数据笔记",
+      "industry": {
+        "brand_name": "手蓝数据笔记",
+        "focus": "新能源、机器人、储能、智能装备",
+        "audience": "关注科技制造、产业链变化和增长数据的行业读者"
+      },
+      "writing": {
+        "default_style": "deep_industry_analysis"
+      },
+      "topic_collection": {
+        "focus_industries": [
+          "humanoid_robot",
+          "new_energy",
+          "energy_storage",
+          "ai_hardware",
+          "industrial_automation"
+        ]
+      }
     },
-    "account_b": {
-      "label": "副账号B"
+    "robot_notes": {
+      "label": "手蓝机器人笔记",
+      "browser_profile_dir": ".runtime/accounts/robot_notes/toutiao_profile",
+      "industry": {
+        "brand_name": "手蓝机器人笔记",
+        "focus": "人形机器人、具身智能、灵巧手、执行器、减速器",
+        "audience": "关注具身智能量产节奏、供应链卡位和订单兑现的行业读者"
+      },
+      "writing": {
+        "default_style": "deep_industry_analysis"
+      },
+      "topic_collection": {
+        "focus_industries": [
+          "humanoid_robot",
+          "ai_hardware",
+          "industrial_automation"
+        ]
+      }
+    },
+    "energy_notes": {
+      "label": "手蓝储能笔记",
+      "browser_profile_dir": ".runtime/accounts/energy_notes/toutiao_profile",
+      "industry": {
+        "brand_name": "手蓝储能笔记",
+        "focus": "储能、电池、PCS、EMS、电网侧项目、新能源基础设施",
+        "audience": "关注储能项目落地、价格趋势和出货兑现的产业读者"
+      },
+      "writing": {
+        "default_style": "finance_report"
+      },
+      "topic_collection": {
+        "focus_industries": [
+          "energy_storage",
+          "new_energy"
+        ]
+      }
+    },
+    "hardware_notes": {
+      "label": "手蓝硬件笔记",
+      "browser_profile_dir": ".runtime/accounts/hardware_notes/toutiao_profile",
+      "industry": {
+        "brand_name": "手蓝硬件笔记",
+        "focus": "AI硬件、机器人芯片、边缘算力、传感器、CPO、工业计算",
+        "audience": "关注芯片渗透率、器件升级和算力成本迁移的专业读者"
+      },
+      "writing": {
+        "default_style": "deep_industry_analysis"
+      },
+      "topic_collection": {
+        "focus_industries": [
+          "ai_hardware",
+          "humanoid_robot",
+          "industrial_automation"
+        ]
+      }
+    },
+    "automation_notes": {
+      "label": "手蓝智造笔记",
+      "browser_profile_dir": ".runtime/accounts/automation_notes/toutiao_profile",
+      "industry": {
+        "brand_name": "手蓝智造笔记",
+        "focus": "工业自动化、智能装备、机器视觉、伺服、PLC、工厂数字化",
+        "audience": "关注制造业升级、设备替代和工业供应链演进的行业读者"
+      },
+      "writing": {
+        "default_style": "tech_media"
+      },
+      "topic_collection": {
+        "focus_industries": [
+          "industrial_automation",
+          "humanoid_robot",
+          "ai_hardware"
+        ]
+      }
     }
   }
 }

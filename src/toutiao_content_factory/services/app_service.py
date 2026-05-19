@@ -46,7 +46,10 @@ class ContentFactoryAppService:
             refresh_cache=refresh_cache,
             fast_mode=fast_mode,
         )
-        return pipeline.run(paste_text=paste_text, include_input_dir=include_input_dir)
+        try:
+            return pipeline.run(paste_text=paste_text, include_input_dir=include_input_dir)
+        finally:
+            pipeline.close()
 
     def auto_run(
         self,
@@ -66,10 +69,22 @@ class ContentFactoryAppService:
         if should_collect:
             exported_files.update(self.collect_topics())
 
-        selection = self.topic_automation.prepare_auto_run(
-            rank=topic_rank,
-            title_query=topic_title,
-        )
+        try:
+            selection = self.topic_automation.prepare_auto_run(
+                rank=topic_rank,
+                title_query=topic_title,
+                allow_generated_duplicates=refresh_cache or dry_run,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            if not self._should_retry_topic_collection(exc, already_collected=should_collect):
+                raise
+            self.logger.warning("Topic selection failed, recollecting topics once: %s", exc)
+            exported_files.update(self.collect_topics())
+            selection = self.topic_automation.prepare_auto_run(
+                rank=topic_rank,
+                title_query=topic_title,
+                allow_generated_duplicates=refresh_cache or dry_run,
+            )
         exported_files.update({name: str(path) for name, path in selection.exported_files.items()})
 
         content_exports = self.manual_run(
@@ -91,6 +106,17 @@ class ContentFactoryAppService:
                 exported_files.update({name: str(path) for name, path in review_exports.items()})
 
         return exported_files
+
+    def _should_retry_topic_collection(self, exc: Exception, already_collected: bool) -> bool:
+        if already_collected:
+            return False
+        message = str(exc)
+        retry_markers = (
+            "daily_topics.json not found",
+            "daily_topics.json contains no available topics",
+            "No unpublished topics are available for today",
+        )
+        return any(marker in message for marker in retry_markers)
 
     def daily_run(
         self,
@@ -189,39 +215,42 @@ class ContentFactoryAppService:
         workflow = self.review_service._load_workflow(resolved)
         prompt_repository = PromptRepository(self.settings.prompts_dir)
         openai_service = OpenAIContentService(self.settings, self.logger)
-        workflow_service = AgentWorkflowService(self.settings, prompt_repository, openai_service, self.logger)
-        preflight_summary = self.review_service.publish_service.collect_preflight_summary()
-        publish_review = workflow_service.publish_review_agent.run(
-            workflow.content,
-            workflow.data_report,
-            self.settings.get_style(workflow.style_key),
-            workflow.content_score,
-            preflight_summary=preflight_summary,
-        )
-        workflow.content_score.publish_readiness_score = int(publish_review.get("publish_readiness_score", 0))
-        workflow.content_score.publish_risk_flags = list(publish_review.get("publish_risk_flags", []))
-        workflow.content_score.publish_recommendation = str(
-            publish_review.get("publish_recommendation", "manual_review")
-        )
-        workflow.content_score.publish_notes = list(publish_review.get("publish_notes", []))
-        workflow_path = resolved / "workflow_result.json"
-        score_path = resolved / "content_score.json"
-        workflow_path.write_text(json.dumps(workflow.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-        score_payload = json.loads(score_path.read_text(encoding="utf-8")) if score_path.exists() else {}
-        score_payload["scores"] = {
-            **dict(score_payload.get("scores", {})),
-            "publish_readiness_score": workflow.content_score.publish_readiness_score,
-            "validation_score": workflow.content.validation_score,
-        }
-        score_payload["publish_risk_flags"] = workflow.content_score.publish_risk_flags
-        score_payload["publish_recommendation"] = workflow.content_score.publish_recommendation
-        score_payload["publish_notes"] = workflow.content_score.publish_notes
-        score_payload["preflight_summary"] = preflight_summary
-        score_path.write_text(json.dumps(score_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {
-            "workflow_result": str(workflow_path),
-            "content_score": str(score_path),
-        }
+        try:
+            workflow_service = AgentWorkflowService(self.settings, prompt_repository, openai_service, self.logger)
+            preflight_summary = self.review_service.publish_service.collect_preflight_summary()
+            publish_review = workflow_service.publish_review_agent.run(
+                workflow.content,
+                workflow.data_report,
+                self.settings.get_style(workflow.style_key),
+                workflow.content_score,
+                preflight_summary=preflight_summary,
+            )
+            workflow.content_score.publish_readiness_score = int(publish_review.get("publish_readiness_score", 0))
+            workflow.content_score.publish_risk_flags = list(publish_review.get("publish_risk_flags", []))
+            workflow.content_score.publish_recommendation = str(
+                publish_review.get("publish_recommendation", "manual_review")
+            )
+            workflow.content_score.publish_notes = list(publish_review.get("publish_notes", []))
+            workflow_path = resolved / "workflow_result.json"
+            score_path = resolved / "content_score.json"
+            workflow_path.write_text(json.dumps(workflow.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+            score_payload = json.loads(score_path.read_text(encoding="utf-8")) if score_path.exists() else {}
+            score_payload["scores"] = {
+                **dict(score_payload.get("scores", {})),
+                "publish_readiness_score": workflow.content_score.publish_readiness_score,
+                "validation_score": workflow.content.validation_score,
+            }
+            score_payload["publish_risk_flags"] = workflow.content_score.publish_risk_flags
+            score_payload["publish_recommendation"] = workflow.content_score.publish_recommendation
+            score_payload["publish_notes"] = workflow.content_score.publish_notes
+            score_payload["preflight_summary"] = preflight_summary
+            score_path.write_text(json.dumps(score_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return {
+                "workflow_result": str(workflow_path),
+                "content_score": str(score_path),
+            }
+        finally:
+            openai_service.close()
 
     def resolve_run_dir(self, run_dir: str | None = None) -> Path:
         return self.review_service.resolve_run_dir(run_dir)

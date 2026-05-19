@@ -100,3 +100,11 @@ class OpenAIContentService:
                 content = content[4:].strip()
 
         return content or "{}"
+
+    def close(self) -> None:
+        close_method = getattr(self.client, "close", None)
+        if callable(close_method):
+            try:
+                close_method()
+            except Exception as exc:  # pragma: no cover - defensive cleanup
+                self.logger.debug("Failed to close model client cleanly: %s", exc)

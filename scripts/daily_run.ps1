@@ -45,6 +45,7 @@ else {
 }
 $StatusFile = Join-Path $AutomationRoot "scheduled_status.json"
 $NotificationsFile = Join-Path $AutomationRoot "notifications.json"
+$RunResultFile = Join-Path $AutomationRoot "last_daily_run_result.json"
 
 New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $AutomationRoot -Force | Out-Null
@@ -157,6 +158,41 @@ function Write-JsonFile {
     }
 
     Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
+}
+
+function Convert-ToHashtable {
+    param($Value)
+
+    $result = @{}
+    if (-not $Value) {
+        return $result
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($item in $Value.GetEnumerator()) {
+            $result[[string]$item.Key] = $item.Value
+        }
+        return $result
+    }
+
+    foreach ($property in $Value.PSObject.Properties) {
+        $result[[string]$property.Name] = $property.Value
+    }
+    return $result
+}
+
+function Merge-Hashtables {
+    param(
+        $Base,
+        $Override
+    )
+
+    $merged = Convert-ToHashtable -Value $Base
+    $overrideTable = Convert-ToHashtable -Value $Override
+    foreach ($item in $overrideTable.GetEnumerator()) {
+        $merged[[string]$item.Key] = $item.Value
+    }
+    return $merged
 }
 
 function Add-Notification {
@@ -370,6 +406,7 @@ Write-Log "Retry policy: up to $maxAttempts attempt(s), delay $script:RetryDelay
 Push-Location $ProjectRoot
 try {
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        Remove-Item -LiteralPath $RunResultFile -Force -ErrorAction SilentlyContinue
         Update-Status -CurrentState "running" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 0 -Message "Scheduled pipeline is running."
         Write-Log "Attempt $attempt of $maxAttempts started."
 
@@ -399,6 +436,42 @@ try {
         }
 
         $lastRunSummary = Get-LatestRunSummary
+        $runResult = Read-JsonFile -Path $RunResultFile
+        $runResultSummary = Convert-ToHashtable -Value $runResult
+        if ($runResultSummary.ContainsKey("exported_files")) {
+            $runResultSummary.Remove("exported_files")
+        }
+        $lastRunSummary = Merge-Hashtables -Base $lastRunSummary -Override $runResultSummary
+        $runResultStatus = if ($runResult) { [string]$runResult.status } else { "" }
+        $runResultMessage = if ($runResult) { [string]$runResult.message } else { "" }
+
+        if ($runResultStatus -eq "no_topics") {
+            $message = if ($runResultMessage) {
+                $runResultMessage
+            }
+            else {
+                "Scheduled run skipped because no eligible topics were available."
+            }
+            Update-Status -CurrentState "no_topics" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 0 -Message $message -Extra $lastRunSummary
+            Add-Notification -Level "warn" -Title "No topics available" -Message $message -Data $lastRunSummary
+            Write-Log $message
+            $exitCode = 0
+            break
+        }
+
+        if ($runResultStatus -eq "publish_login_required") {
+            $message = if ($runResultMessage) {
+                $runResultMessage
+            }
+            else {
+                "Scheduled run generated content, but the Toutiao publish session requires manual login."
+            }
+            Update-Status -CurrentState "publish_login_required" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 0 -Message $message -Extra $lastRunSummary
+            Add-Notification -Level "warn" -Title "Publish login required" -Message $message -Data $lastRunSummary
+            Write-Log $message
+            $exitCode = 0
+            break
+        }
 
         if ($exitCode -eq 0) {
             $reviewStatus = [string]$lastRunSummary["review_status"]

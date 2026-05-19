@@ -36,8 +36,8 @@ class ModelImageGenerationService:
         max_assets = max(1, min(self.settings.max_generated_assets, 3))
 
         cover_prompt = self._build_cover_prompt(brief)
-        infographic_metrics_prompt = self._build_metrics_prompt(brief)
-        infographic_story_prompt = self._build_story_prompt(brief)
+        infographic_metrics_prompt = self._build_metrics_prompt(brief, hint_index=0)
+        infographic_story_prompt = self._build_story_prompt(brief, hint_index=1)
 
         self._generate_image(cover_prompt, self.settings.cover_size, cover_png)
         infographic_pngs: list[Path] = []
@@ -259,10 +259,18 @@ class ModelImageGenerationService:
         with urlopen(image_url, timeout=60) as response:
             return response.read()
 
+    def close(self) -> None:
+        close_method = getattr(self.client, "close", None)
+        if callable(close_method):
+            try:
+                close_method()
+            except Exception as exc:  # pragma: no cover - defensive cleanup
+                self.logger.debug("Failed to close image model client cleanly: %s", exc)
+
     def _build_cover_prompt(self, brief: VisualBrief) -> str:
         metrics = "；".join(f"{item.label}{item.value}{item.unit}" for item in brief.key_metrics[:3])
         tags = "、".join(brief.chain_nodes[:5])
-        return (
+        fallback = (
             "生成一张中文科技媒体封面图，适合今日头条文章首图。"
             f"主题：{brief.cover_title}。"
             f"副标题：{brief.cover_subtitle}。"
@@ -272,11 +280,19 @@ class ModelImageGenerationService:
             "画面要求：高级科技感、深色背景、冷蓝青配色、强对比、清晰中文排版、移动端易读、杂志封面级别。"
             "避免过度卡通，避免英文大标题，避免错字，避免信息拥挤，保留足够留白。"
         )
+        return self._apply_prompt_hint(
+            brief.cover_prompt_hint,
+            fallback,
+            extra_requirements=(
+                "如果渲染中文，请只保留极少量大字标题与短副标题；"
+                "如果无法保证文字清晰，就用数据卡片、图表和留白表达，不要生成密集小字。"
+            ),
+        )
 
-    def _build_metrics_prompt(self, brief: VisualBrief) -> str:
+    def _build_metrics_prompt(self, brief: VisualBrief, hint_index: int = 0) -> str:
         metrics = "；".join(f"{item.label}{item.value}{item.unit}" for item in brief.key_metrics[:4])
         trends = "；".join(brief.trend_labels[:4])
-        return (
+        fallback = (
             "生成一张竖版中文数据信息图，适合今日头条配图。"
             f"主标题：{brief.article_title}。"
             f"摘要：{brief.summary}。"
@@ -285,11 +301,19 @@ class ModelImageGenerationService:
             "设计要求：科技财经信息图风格、深色底、数据卡片、图表感、分区清晰、中文字体规整、信息层次强、适合手机阅读。"
             "不要生成真人，不要插画海报风，不要英文字母堆砌。"
         )
+        return self._apply_prompt_hint(
+            self._hint_at(brief.infographic_prompt_hints, hint_index),
+            fallback,
+            extra_requirements=(
+                "优先用图表、流程箭头、数据面板表达，不要堆长段正文；"
+                "如使用中文标签，请控制在 3 到 6 个短标签内，保证清晰可读。"
+            ),
+        )
 
-    def _build_story_prompt(self, brief: VisualBrief) -> str:
+    def _build_story_prompt(self, brief: VisualBrief, hint_index: int = 1) -> str:
         timeline = "；".join(brief.timeline_points[:5])
         highlights = "；".join(brief.topic_highlights[:4])
-        return (
+        fallback = (
             "生成一张竖版中文趋势解读信息图，适合今日头条科技行业分析文章。"
             f"主标题：{brief.cover_title}。"
             f"趋势时间线：{timeline}。"
@@ -297,3 +321,20 @@ class ModelImageGenerationService:
             "设计要求：高级深色科技风、时间线布局、模块化卡片、局部发光、图表与标签融合、中文排版自然、画面整洁。"
             "不要杂乱拼贴，不要低质AI海报感，不要把文字做成难以识别的小字。"
         )
+        return self._apply_prompt_hint(
+            self._hint_at(brief.infographic_prompt_hints, hint_index),
+            fallback,
+            extra_requirements=(
+                "强调结构图、时间线和判断框，不要画成宣传海报；"
+                "如果不能准确渲染中文，就减少文字，保留清晰的视觉层次和大块数据模块。"
+            ),
+        )
+
+    def _hint_at(self, hints: list[str], index: int) -> str:
+        if 0 <= index < len(hints):
+            return hints[index]
+        return ""
+
+    def _apply_prompt_hint(self, hint: str, fallback: str, *, extra_requirements: str) -> str:
+        base = hint.strip() or fallback
+        return f"{base} 补充执行要求：{extra_requirements} 统一要求：无水印、无平台 logo、构图干净、适合移动端阅读。"

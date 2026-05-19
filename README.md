@@ -1,4 +1,4 @@
-﻿# AI Toutiao Content Factory
+# AI Toutiao Content Factory
 
 An automated content workflow for Chinese tech-industry media accounts.
 
@@ -116,10 +116,23 @@ python .\webapp.py --port 8001
 python .\main.py
 ```
 
+Run for a specific account:
+
+```powershell
+python .\main.py --account robot_notes
+python .\main.py --account energy_notes
+```
+
 ### Collect Topics Only
 
 ```powershell
 python .\main.py --topics-only
+```
+
+Or for a specific account:
+
+```powershell
+python .\main.py --account robot_notes --topics-only
 ```
 
 ### Run The Full Daily Pipeline
@@ -128,10 +141,23 @@ python .\main.py --topics-only
 python .\main.py --daily-run --refresh-cache
 ```
 
+Or for a specific account:
+
+```powershell
+python .\main.py --account robot_notes --daily-run --refresh-cache
+```
+
 ### Publish The Latest Approved Run
 
 ```powershell
 python .\main.py --publish-latest-approved
+```
+
+Or for a specific account:
+
+```powershell
+python .\main.py --account robot_notes --publish-latest-approved
+python .\main.py --account energy_notes --publish-latest-approved
 ```
 
 ### Publish A Specific Run
@@ -155,6 +181,29 @@ powershell -ExecutionPolicy Bypass -File .\scripts\register_all_accounts.ps1 -En
 ```
 
 Unregister tasks manually in Windows Task Scheduler, or extend this repo with your own cleanup script.
+
+## Multi-Account Rules
+
+The project already uses one shared workflow for the default account and all sub-accounts. There is no separate publish implementation per account.
+
+- `default` uses root runtime directories such as `input/`, `output/`, `logs/`, `cache/`, and `.runtime/toutiao_profile/`
+- sub-accounts use isolated directories under `input/accounts/<slug>/`, `output/accounts/<slug>/`, `logs/accounts/<slug>/`, `cache/accounts/<slug>/`, and `.runtime/accounts/<account_key>/toutiao_profile/`
+- the same `main.py`, review flow, scheduler scripts, and Playwright publish service are reused for every account
+- each account must still complete its own Toutiao login initialization once, because browser sessions are isolated per account profile
+
+Currently configured first-wave accounts:
+
+- `default` -> `??????`
+- `robot_notes` -> `???????`
+- `energy_notes` -> `??????`
+
+Initialize login for each account:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\init_publish_login.ps1 -AccountKey default
+powershell -ExecutionPolicy Bypass -File .\scripts\init_publish_login.ps1 -AccountKey robot_notes
+powershell -ExecutionPolicy Bypass -File .\scripts\init_publish_login.ps1 -AccountKey energy_notes
+```
 
 ## Migration Notes
 
@@ -181,10 +230,20 @@ But the safer option is to re-run login initialization on the new machine.
 Current publish flow supports:
 
 - title + article body
-- single cover upload
-- one inline article image upload
+- first inline image as the lead cover image
+- second inline article image inserted later between paragraphs
 - first-release declaration
 - work declaration adjustments
+
+Shared publish strategy for all accounts:
+
+- `cover.png` is inserted at the beginning of the article body and is used by Toutiao as the lead cover image
+- `infographic_1.png` is inserted later at a paragraph boundary, not in the middle of a sentence
+- the publish flow does not depend on the unstable dedicated cover upload panel unless it must fall back
+- duplicate inline image assets are deduplicated before upload
+- title length is clipped before publish to fit Toutiao limits
+
+This means the default account and every configured sub-account now share the same stable image publishing path.
 
 Because Toutiao publish is implemented through browser automation rather than an official publish API, selector changes on Toutiao may require maintenance.
 

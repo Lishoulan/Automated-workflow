@@ -167,6 +167,16 @@ def create_app(project_root: Path, account_key: str | None = None) -> FastAPI:
         ctx = current_context(request, account)
         return render(request, "runs.html", ctx, runs=ctx.view_service.list_runs())
 
+    @app.get("/published", name="published_page")
+    def published_page(request: Request, account: str | None = Query(default=None)):
+        ctx = current_context(request, account)
+        return render(
+            request,
+            "published.html",
+            ctx,
+            published_articles=ctx.view_service.list_published_articles(limit=12),
+        )
+
     @app.get("/runs/{run_name}", name="run_detail")
     def run_detail(request: Request, run_name: str, account: str | None = Query(default=None)):
         ctx = current_context(request, account)

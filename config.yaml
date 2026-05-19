@@ -18,15 +18,19 @@
     "audience": "科技行业从业者与关注产业升级的读者"
   },
   "topic_collection": {
-    "lookback_days": 7,
+    "lookback_days": 2,
+    "max_topic_age_hours": 24,
+    "drop_topics_without_timestamp": true,
     "max_items_per_source": 12,
     "max_export_topics": 20,
-    "request_timeout_seconds": 18,
+    "request_timeout_seconds": 22,
     "enabled_sources": [
       "google_news",
       "36kr",
       "zhidx",
       "ofweek",
+      "chuneng_in_en",
+      "newenergy_in_en",
       "gg_robot"
     ],
     "focus_industries": [
@@ -53,7 +57,13 @@
         "锂电",
         "电池",
         "充电",
-        "新能源汽车"
+        "新能源汽车",
+        "动力电池",
+        "固态电池",
+        "钠电",
+        "充换电",
+        "光储",
+        "电池回收"
       ],
       "energy_storage": [
         "储能",
@@ -61,7 +71,15 @@
         "PCS",
         "EMS",
         "逆变器",
-        "电网侧储能"
+        "电网侧储能",
+        "储能电站",
+        "储能电池",
+        "大储",
+        "户储",
+        "抽水蓄能",
+        "液流电池",
+        "源网荷储",
+        "构网型储能"
       ],
       "ai_hardware": [
         "AI硬件",
@@ -124,6 +142,20 @@
           "https://www.gg-robot.com/",
           "https://www.gg-robot.com/meeting.html",
           "https://www.gg-robot.com/home/aggregator/?act=report"
+        ]
+      },
+      "chuneng_in_en": {
+        "type": "html",
+        "same_domain_only": true,
+        "urls": [
+          "https://chuneng.in-en.com/"
+        ]
+      },
+      "newenergy_in_en": {
+        "type": "html",
+        "same_domain_only": true,
+        "urls": [
+          "https://newenergy.in-en.com/"
         ]
       }
     }
@@ -230,10 +262,79 @@
         "default_style": "finance_report"
       },
       "topic_collection": {
+        "enabled_sources": [
+          "google_news",
+          "36kr",
+          "ofweek",
+          "chuneng_in_en",
+          "newenergy_in_en"
+        ],
         "focus_industries": [
           "energy_storage",
           "new_energy"
-        ]
+        ],
+        "keyword_map": {
+          "new_energy": [
+            "新能源",
+            "光伏",
+            "风电",
+            "锂电",
+            "电池",
+            "充电",
+            "固态电池",
+            "钠电",
+            "光储",
+            "电池回收",
+            "并网",
+            "逆变器",
+            "组件",
+            "风机",
+            "电网",
+            "分布式"
+          ],
+          "energy_storage": [
+            "储能",
+            "工商业储能",
+            "PCS",
+            "EMS",
+            "逆变器",
+            "电网侧储能",
+            "储能电站",
+            "储能电池",
+            "大储",
+            "户储",
+            "抽水蓄能",
+            "液流电池",
+            "源网荷储",
+            "构网型储能",
+            "压缩空气储能",
+            "超级电容",
+            "飞轮储能"
+          ]
+        },
+        "sources": {
+          "google_news": {
+            "type": "google_rss",
+            "urls": [
+              "https://news.google.com/rss/search?q=%E5%82%A8%E8%83%BD&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+              "https://news.google.com/rss/search?q=%E5%85%89%E4%BC%8F&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+              "https://news.google.com/rss/search?q=%E9%A3%8E%E7%94%B5&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+              "https://news.google.com/rss/search?q=%E6%8A%BD%E6%B0%B4%E8%93%84%E8%83%BD&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+              "https://news.google.com/rss/search?q=%E7%94%B5%E7%BD%91%E4%BE%A7%E5%82%A8%E8%83%BD&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+              "https://news.google.com/rss/search?q=%E7%94%B5%E6%B1%A0&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+            ]
+          },
+          "ofweek": {
+            "type": "html",
+            "urls": [
+              "https://chuneng.ofweek.com/",
+              "https://chuneng.ofweek.com/CATList-180200-8100-chuneng.html",
+              "https://chuneng.ofweek.com/CAT-180201-dianzhan.html",
+              "https://chuneng.ofweek.com/CAT-180202-fenbushinengyuan.html",
+              "https://nev.ofweek.com/CAT-77012-sandianxitong.html"
+            ]
+          }
+        }
       }
     },
     "hardware_notes": {

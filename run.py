@@ -2,8 +2,8 @@ import os
 import sys
 import openai
 
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-fa4915ef32b44ed295c9c2f5a06b1cba")
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-your-deepseek-key-here")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 SKILL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zettaranc-skill-main", "SKILL.md")
 
 client = openai.OpenAI(

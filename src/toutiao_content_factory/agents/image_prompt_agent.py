@@ -49,16 +49,21 @@ class ImagePromptAgent(BaseAgent):
         secondary = data_report.supply_chain_keywords[1] if len(data_report.supply_chain_keywords) > 1 else "产业链"
         numbers = "、".join(data_report.growth_numbers[:3]) or "关键增长数据"
         companies = "、".join(data_report.companies[:4]) or "头部企业"
+        summary = content.summary.strip() or content.article_angle.strip() or "围绕项目、订单、交付与利润兑现展开"
+        title = content.recommended_titles[0] if content.recommended_titles else f"{keyword}进入兑现阶段"
 
         cover_prompt = (
-            f"深色科技风头条封面，16:9，中文主标题“{keyword}进入兑现阶段”，"
-            f"副标题“重点看{secondary}”，蓝黑色背景，数据流、图表层、产业链节点高亮，"
-            f"风格要求：{style.image_instruction}"
+            f"今日头条科技分析封面图，16:9 横版，主标题“{title}”，副标题“重点看{secondary}”，"
+            f"深蓝黑背景，冷色科技光效，保留大面积留白，只放少量清晰中文大字，"
+            f"主体用数据面板、趋势折线、产业链节点高亮表达，不要人物，不要海报拼贴，不要密集小字。"
+            f"补充信息：{summary}。风格要求：{style.image_instruction}"
         )
         infographic_prompts = [
-            f"信息图：{keyword}产业链结构图，突出上游、中游、下游关键环节，深色科技风，中文标签。",
-            f"一图看懂：{keyword}关键公司与卡位位置，包含 {companies}，移动端友好，数据卡片布局。",
-            f"数据图：展示 {numbers} 的对比图表，蓝紫高亮，适合头条科技文章配图。",
+            f"正文配图 1：竖版数据卡信息图，主题是“{keyword}核心数据与项目进展”，突出 {numbers}，"
+            f"使用 2 到 4 个数据卡片、1 个简洁柱状图或折线图，深色科技风，少量中文短标签，移动端易读。",
+            f"正文配图 2：竖版产业链判断图，主题是“{keyword}产业链谁受益、谁承压”，包含 {companies}，"
+            f"用流程箭头、上下游模块和利润迁移示意表达，避免长段正文，避免人物海报。",
+            f"备用图：围绕“{summary}”制作一图看懂信息图，强调项目、订单、交付、毛利四个判断模块，深色科技媒体风。",
         ]
         return {
             "cover_prompt": cover_prompt,

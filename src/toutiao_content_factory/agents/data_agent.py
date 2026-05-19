@@ -9,6 +9,62 @@ from toutiao_content_factory.models import DataReport, ExtractionResult, TrendRe
 
 class DataAgent(BaseAgent):
     agent_name = "DataAgent"
+    TOPIC_TYPE_LABELS = {
+        "data_recap": "数据复盘",
+        "project_progress": "项目进展",
+        "financing_update": "融资动态",
+        "earnings_signal": "业绩信号",
+        "policy_market": "政策与市场",
+        "product_launch": "产品发布",
+        "industry_event": "行业事件",
+    }
+    CONTENT_FORMAT_LABELS = {
+        "deep_analysis": "深度分析",
+        "quick_commentary": "快讯点评",
+        "project_breakdown": "项目拆解",
+        "data_recap": "数据复盘",
+    }
+
+    COMPANY_SUFFIX_RE = re.compile(
+        r"[\u4e00-\u9fffA-Za-z0-9]{2,12}(?:科技|能源|汽车|股份|集团|电气|智能|机器人|半导体|电子|时代|精工|制造|材料|电池|重工|工业|光伏|储能|动力|机电|控股|装备|技术)"
+    )
+    INVALID_COMPANY_MARKERS = (
+        "这家公司",
+        "某公司",
+        "相关公司",
+        "龙头公司",
+        "头部企业",
+        "企业",
+        "公司",
+        "厂商",
+        "供应商",
+        "项目方",
+        "客户",
+        "车企",
+        "资本",
+        "行业",
+        "赛道",
+        "产业链",
+        "订单",
+        "交付",
+        "验证",
+    )
+    INVALID_COMPANY_FRAGMENTS = (
+        "更像",
+        "再落到",
+        "再拆",
+        "资本",
+        "开始",
+        "真正",
+        "故事",
+        "机会",
+        "验证",
+        "订单",
+        "交付",
+        "利润",
+        "估值",
+        "背后",
+    )
 
     def run(
         self,
@@ -28,101 +84,358 @@ class DataAgent(BaseAgent):
         )
         payload = self.request_json("你是 DataAgent，只输出 JSON。", prompt)
         if payload:
-            merged = dict(payload)
-            merged["topic_title"] = str(merged.get("topic_title") or extraction.topic_title)
-            merged["selection_reason"] = str(merged.get("selection_reason") or extraction.selection_reason)
-            merged["suggested_angle"] = str(merged.get("suggested_angle") or extraction.suggested_angle)
-            merged["follow_up_focus"] = str(merged.get("follow_up_focus") or extraction.follow_up_focus)
-            merged["writing_brief"] = str(merged.get("writing_brief") or extraction.writing_brief)
-            merged["focus_industry"] = self.clean_publish_text(
-                str(merged.get("focus_industry") or extraction.focus_industry)
-            )
-            merged["focus_keywords"] = self.clean_publish_list(
-                list(merged.get("focus_keywords") or extraction.focus_keywords),
-                limit=6,
-            )
-            merged["focus_companies"] = self.clean_publish_list(
-                list(merged.get("focus_companies") or extraction.focus_companies),
-                limit=4,
-            )
-            merged["companies"] = self.clean_publish_list(
-                list(merged.get("companies") or extraction.companies),
-                limit=8,
-            )
-            merged["supply_chain_keywords"] = self.clean_publish_list(
-                list(merged.get("supply_chain_keywords") or extraction.supply_chain_keywords),
-                limit=8,
-            )
-            merged["core_data"] = self.clean_publish_list(list(merged.get("core_data") or extraction.core_data), limit=6)
-            merged["industry_trends"] = self.clean_publish_list(
-                list(merged.get("industry_trends") or extraction.industry_trends),
-                limit=6,
-            )
-            merged["growth_numbers"] = self.clean_publish_list(
-                list(merged.get("growth_numbers") or extraction.growth_numbers),
-                limit=8,
-            )
-            merged["key_points"] = self.clean_publish_list(list(merged.get("key_points") or extraction.key_points), limit=6)
-            merged["watch_metrics"] = self.clean_publish_list(
-                list(merged.get("watch_metrics") or self._build_watch_metrics(
-                    merged["focus_industry"] or extraction.focus_industry,
-                    (merged["focus_keywords"][1] if len(merged["focus_keywords"]) > 1 else "关键环节"),
-                    merged["follow_up_focus"],
-                )),
-                limit=5,
-            )
-            merged["evidence_notes"] = self.clean_publish_list(
-                list(merged.get("evidence_notes") or self._build_evidence_notes(extraction)),
-                limit=5,
-            )
-            merged["risk_flags"] = self.clean_publish_list(
-                list(merged.get("risk_flags") or self._build_risk_flags(
-                    merged["focus_industry"] or extraction.focus_industry,
-                    (merged["focus_keywords"][1] if len(merged["focus_keywords"]) > 1 else "关键环节"),
-                    trend_report,
-                    merged["supply_chain_keywords"] or extraction.supply_chain_keywords,
-                )),
-                limit=4,
-            )
-            return DataReport.from_dict(merged)
+            return self._build_from_payload(payload, extraction, trend_report)
         return self._fallback(extraction, trend_report)
+
+    def _build_from_payload(
+        self,
+        payload: dict,
+        extraction: ExtractionResult,
+        trend_report: TrendReport,
+    ) -> DataReport:
+        merged = dict(payload)
+        merged["topic_title"] = str(merged.get("topic_title") or extraction.topic_title)
+        merged["selection_reason"] = str(merged.get("selection_reason") or extraction.selection_reason)
+        merged["suggested_angle"] = str(merged.get("suggested_angle") or extraction.suggested_angle)
+        merged["follow_up_focus"] = str(merged.get("follow_up_focus") or extraction.follow_up_focus)
+        merged["writing_brief"] = str(merged.get("writing_brief") or extraction.writing_brief)
+
+        focus_keywords = self.clean_publish_list(
+            list(merged.get("focus_keywords") or extraction.focus_keywords or extraction.supply_chain_keywords),
+            limit=6,
+        )
+        focus_industry = self.clean_publish_text(str(merged.get("focus_industry") or extraction.focus_industry or ""))
+        supply_chain_keywords = self.clean_publish_list(
+            list(merged.get("supply_chain_keywords") or extraction.supply_chain_keywords or focus_keywords),
+            limit=8,
+        )
+        companies = self._sanitize_companies(
+            list(merged.get("companies") or extraction.companies),
+            extraction,
+            limit=8,
+        )
+        focus_companies = self._sanitize_companies(
+            list(merged.get("focus_companies") or extraction.focus_companies or companies),
+            extraction,
+            limit=4,
+        )
+        secondary = focus_keywords[1] if len(focus_keywords) > 1 else "关键环节"
+        core_data = self.clean_publish_list(list(merged.get("core_data") or extraction.core_data), limit=6)
+        industry_trends = self.clean_publish_list(
+            list(merged.get("industry_trends") or extraction.industry_trends),
+            limit=6,
+        )
+        growth_numbers = self.clean_publish_list(
+            list(merged.get("growth_numbers") or extraction.growth_numbers),
+            limit=8,
+        )
+        key_points = self.clean_publish_list(list(merged.get("key_points") or extraction.key_points), limit=6)
+        watch_metrics = self.clean_publish_list(
+            list(
+                merged.get("watch_metrics")
+                or self._build_watch_metrics(
+                    focus_industry or extraction.focus_industry or "相关赛道",
+                    secondary,
+                    merged["follow_up_focus"],
+                )
+            ),
+            limit=5,
+        )
+        evidence_notes = self.clean_publish_list(
+            list(merged.get("evidence_notes") or self._build_evidence_notes(extraction)),
+            limit=5,
+        )
+        risk_flags = self.clean_publish_list(
+            list(
+                merged.get("risk_flags")
+                or self._build_risk_flags(
+                    focus_industry or extraction.focus_industry or "相关赛道",
+                    secondary,
+                    trend_report,
+                    supply_chain_keywords,
+                )
+            ),
+            limit=4,
+        )
+        route = self._resolve_content_route(
+            extraction=extraction,
+            focus_industry=focus_industry or extraction.focus_industry or "相关赛道",
+            companies=companies,
+            growth_numbers=growth_numbers,
+            core_data=core_data,
+            evidence_notes=evidence_notes,
+        )
+
+        return DataReport(
+            core_data=core_data,
+            industry_trends=industry_trends,
+            growth_numbers=growth_numbers,
+            companies=companies,
+            supply_chain_keywords=supply_chain_keywords,
+            key_points=key_points,
+            watch_metrics=watch_metrics,
+            evidence_notes=evidence_notes,
+            risk_flags=risk_flags,
+            focus_industry=focus_industry,
+            focus_keywords=focus_keywords,
+            focus_companies=focus_companies,
+            topic_title=merged["topic_title"],
+            selection_reason=merged["selection_reason"],
+            suggested_angle=merged["suggested_angle"],
+            follow_up_focus=merged["follow_up_focus"],
+            writing_brief=merged["writing_brief"],
+            topic_type=str(route["topic_type"]),
+            topic_type_label=str(route["topic_type_label"]),
+            content_format=str(route["content_format"]),
+            content_format_label=str(route["content_format_label"]),
+            format_brief=str(route["format_brief"]),
+            paragraph_instruction=str(route["paragraph_instruction"]),
+            evidence_strength=int(route["evidence_strength"]),
+            topic_quality_score=int(route["topic_quality_score"]),
+            topic_quality_flags=list(route["topic_quality_flags"]),
+            word_target=int(route["word_target"]),
+        )
 
     def _fallback(self, extraction: ExtractionResult, trend_report: TrendReport) -> DataReport:
         keywords = self.clean_publish_list(
             extraction.focus_keywords[:5] or extraction.supply_chain_keywords[:5] or ["科技制造", "产业链"],
             limit=5,
         )
-        primary = self.clean_publish_text(extraction.focus_industry.strip() or keywords[0])
+        primary = self.clean_publish_text(extraction.focus_industry.strip() or (keywords[0] if keywords else "相关赛道"))
         secondary = keywords[1] if len(keywords) > 1 else "关键环节"
-        watch_metrics = self._build_watch_metrics(primary, secondary, extraction.follow_up_focus)
+        companies = self._sanitize_companies(extraction.focus_companies + extraction.companies, extraction, limit=8)
         evidence_notes = self._build_evidence_notes(extraction)
-        risk_flags = self._build_risk_flags(primary, secondary, trend_report, keywords)
+        route = self._resolve_content_route(
+            extraction=extraction,
+            focus_industry=primary,
+            companies=companies,
+            growth_numbers=self.clean_publish_list(extraction.growth_numbers[:8], limit=8),
+            core_data=self.clean_publish_list(extraction.core_data[:6], limit=6),
+            evidence_notes=evidence_notes,
+        )
 
         return DataReport(
             core_data=self.clean_publish_list(extraction.core_data[:6], limit=6),
             industry_trends=self.clean_publish_list(extraction.industry_trends[:6], limit=6),
             growth_numbers=self.clean_publish_list(extraction.growth_numbers[:8], limit=8),
-            companies=self.clean_publish_list(extraction.companies[:8], limit=8),
-            supply_chain_keywords=keywords,
+            companies=companies,
+            supply_chain_keywords=self.clean_publish_list(extraction.supply_chain_keywords[:8] or keywords, limit=8),
             key_points=self.clean_publish_list(extraction.key_points[:6], limit=6),
-            watch_metrics=watch_metrics,
+            watch_metrics=self._build_watch_metrics(primary, secondary, extraction.follow_up_focus),
             evidence_notes=evidence_notes,
-            risk_flags=risk_flags,
+            risk_flags=self._build_risk_flags(primary, secondary, trend_report, keywords),
             focus_industry=primary,
-            focus_keywords=self.clean_publish_list(extraction.focus_keywords[:6], limit=6),
-            focus_companies=self.clean_publish_list(extraction.focus_companies[:4], limit=4),
+            focus_keywords=self.clean_publish_list(extraction.focus_keywords[:6] or keywords, limit=6),
+            focus_companies=companies[:4],
             topic_title=extraction.topic_title,
             selection_reason=extraction.selection_reason,
             suggested_angle=extraction.suggested_angle,
             follow_up_focus=extraction.follow_up_focus,
             writing_brief=extraction.writing_brief,
+            topic_type=str(route["topic_type"]),
+            topic_type_label=str(route["topic_type_label"]),
+            content_format=str(route["content_format"]),
+            content_format_label=str(route["content_format_label"]),
+            format_brief=str(route["format_brief"]),
+            paragraph_instruction=str(route["paragraph_instruction"]),
+            evidence_strength=int(route["evidence_strength"]),
+            topic_quality_score=int(route["topic_quality_score"]),
+            topic_quality_flags=list(route["topic_quality_flags"]),
+            word_target=int(route["word_target"]),
         )
+
+    def _resolve_content_route(
+        self,
+        extraction: ExtractionResult,
+        focus_industry: str,
+        companies: list[str],
+        growth_numbers: list[str],
+        core_data: list[str],
+        evidence_notes: list[str],
+    ) -> dict[str, object]:
+        topic_type = extraction.topic_type.strip() or self._infer_topic_type(extraction)
+        evidence_strength = extraction.evidence_strength or self._estimate_evidence_strength(
+            extraction,
+            companies,
+            growth_numbers,
+            core_data,
+            evidence_notes,
+        )
+        content_format = extraction.content_format.strip() or self._choose_content_format(
+            topic_type,
+            evidence_strength,
+            extraction.topic_quality_flags,
+            companies,
+            growth_numbers,
+            evidence_notes,
+        )
+        topic_quality_score = extraction.topic_quality_score or min(
+            96,
+            round(evidence_strength * 0.72 + len(evidence_notes) * 2 + len(growth_numbers) * 2),
+        )
+        topic_quality_flags = list(extraction.topic_quality_flags)
+        word_target = extraction.word_target or self._word_target_for_format(content_format)
+        paragraph_instruction = extraction.paragraph_instruction.strip() or self._paragraph_instruction_for_format(
+            content_format
+        )
+        format_brief = extraction.format_brief.strip() or self._format_brief_for_format(content_format, focus_industry)
+        return {
+            "topic_type": topic_type,
+            "topic_type_label": self.TOPIC_TYPE_LABELS.get(topic_type, topic_type or "行业事件"),
+            "content_format": content_format,
+            "content_format_label": self.CONTENT_FORMAT_LABELS.get(content_format, content_format or "深度分析"),
+            "format_brief": format_brief,
+            "paragraph_instruction": paragraph_instruction,
+            "evidence_strength": evidence_strength,
+            "topic_quality_score": topic_quality_score,
+            "topic_quality_flags": topic_quality_flags,
+            "word_target": word_target,
+        }
+
+    def _infer_topic_type(self, extraction: ExtractionResult) -> str:
+        text = f"{extraction.topic_title} {extraction.merged_text}".lower()
+        if any(token in text for token in ("统计数据表", "统计公报", "产量统计", "销量统计", "装机量", "出货量", "价格指数")):
+            return "data_recap"
+        if any(token in text for token in ("政策", "意见", "通知", "规划", "补贴", "新规", "纲要")):
+            return "policy_market"
+        if any(token in text for token in ("财报", "业绩", "营收", "净利", "一季报", "半年报", "年报", "毛利")):
+            return "earnings_signal"
+        if any(token in text for token in ("项目", "中标", "签约", "并网", "投产", "验收", "示范")):
+            return "project_progress"
+        if any(token in text for token in ("融资", "募资", "a轮", "b轮", "c轮", "天使轮", "种子轮", "投资")):
+            return "financing_update"
+        if any(token in text for token in ("发布", "推出", "首发", "新品", "方案", "平台")):
+            return "product_launch"
+        return "industry_event"
+
+    def _estimate_evidence_strength(
+        self,
+        extraction: ExtractionResult,
+        companies: list[str],
+        growth_numbers: list[str],
+        core_data: list[str],
+        evidence_notes: list[str],
+    ) -> int:
+        score = 28
+        score += min(24, len(growth_numbers) * 6)
+        score += min(16, len(companies[:4]) * 4)
+        score += min(14, len(core_data[:4]) * 3)
+        score += min(14, len(evidence_notes[:4]) * 3)
+        if extraction.topic_title and re.search(r"(订单|中标|签约|量产|并网|交付|财报|融资|项目)", extraction.topic_title):
+            score += 10
+        if extraction.follow_up_focus.strip():
+            score += 4
+        if "title_only" in extraction.topic_quality_flags:
+            score -= 10
+        if extraction.topic_type == "policy_market" and not companies:
+            score -= 8
+        return max(20, min(96, score))
+
+    def _choose_content_format(
+        self,
+        topic_type: str,
+        evidence_strength: int,
+        topic_quality_flags: list[str],
+        companies: list[str],
+        growth_numbers: list[str],
+        evidence_notes: list[str],
+    ) -> str:
+        flags = set(topic_quality_flags)
+        if topic_type == "data_recap":
+            return "data_recap"
+        if "title_only" in flags and topic_type in {"policy_market", "industry_event", "product_launch"}:
+            return "quick_commentary"
+        if topic_type == "policy_market":
+            if evidence_strength >= 78 and "title_only" not in flags and companies and len(growth_numbers) >= 2:
+                return "deep_analysis"
+            return "quick_commentary"
+        if topic_type in {"project_progress", "earnings_signal"} and evidence_strength >= 56:
+            return "project_breakdown"
+        if topic_type in {"financing_update", "policy_market", "product_launch"} and evidence_strength < 60:
+            return "quick_commentary"
+        if evidence_strength >= 68 and len(growth_numbers) >= 2 and (companies or evidence_notes):
+            return "deep_analysis"
+        if companies and evidence_strength >= 54:
+            return "project_breakdown"
+        return "quick_commentary"
+
+    def _word_target_for_format(self, content_format: str) -> int:
+        if content_format == "quick_commentary":
+            return 800
+        if content_format == "data_recap":
+            return 900
+        if content_format == "project_breakdown":
+            return 1100
+        return self.settings.article_word_target
+
+    def _paragraph_instruction_for_format(self, content_format: str) -> str:
+        if content_format == "quick_commentary":
+            return "4到5段，每段2句，首段直接判断，末段只留一个互动问题。"
+        if content_format == "data_recap":
+            return "4到5段，每段2句，重点解释数字含义、受益环节和后续验证点。"
+        if content_format == "project_breakdown":
+            return "5到6段，每段2到3句，围绕主体、环节位置、订单兑现和交付节奏展开。"
+        return "5到7段，每段2到3句，先判断、再数据、再产业链、再主体、再风险边界。"
+
+    def _format_brief_for_format(self, content_format: str, focus_industry: str) -> str:
+        if content_format == "quick_commentary":
+            return "写成短而硬的事件点评，不要强行拉成长篇深度稿。"
+        if content_format == "data_recap":
+            return "写成数据复盘稿，重点解释数字变化背后的产业链含义。"
+        if content_format == "project_breakdown":
+            return f"写成{focus_industry}项目拆解稿，重点写主体、环节位置、交付路径和利润兑现。"
+        return f"写成{focus_industry}深度分析稿，重点拆订单、交付、毛利和产业链分化。"
+
+    def _sanitize_companies(
+        self,
+        raw_items: list[str],
+        extraction: ExtractionResult,
+        limit: int,
+    ) -> list[str]:
+        cleaned = self.clean_publish_list(raw_items)
+        candidates = [item for item in cleaned if self._is_valid_company_name(item)]
+        for item in self._extract_company_like_names(extraction):
+            if item not in candidates:
+                candidates.append(item)
+        return self.unique(candidates)[:limit]
+
+    def _extract_company_like_names(self, extraction: ExtractionResult) -> list[str]:
+        text_parts = [extraction.merged_text]
+        text_parts.extend(str(item.get("fact", "")) for item in extraction.evidence_items[:6])
+        text_parts.extend(str(item.get("preview", "")) for item in extraction.source_summaries[:4])
+        text_parts.extend(str(item.get("title", "")) for item in extraction.source_summaries[:4])
+        combined = "\n".join(part for part in text_parts if part)
+
+        results: list[str] = []
+        for match in self.COMPANY_SUFFIX_RE.findall(combined):
+            candidate = self.clean_publish_text(match)
+            if self._is_valid_company_name(candidate):
+                results.append(candidate)
+        return self.unique(results)[:8]
+
+    def _is_valid_company_name(self, text: str) -> bool:
+        candidate = self.clean_publish_text(text)
+        if not candidate or len(candidate) < 2 or len(candidate) > 12:
+            return False
+        if any(marker == candidate for marker in self.INVALID_COMPANY_MARKERS):
+            return False
+        if any(marker in candidate for marker in ("：", "，", "。", "？", "！", "、", "数据", "趋势", "标题", "摘要")):
+            return False
+        if any(marker in candidate for marker in self.INVALID_COMPANY_FRAGMENTS):
+            return False
+        if candidate.startswith(("这家", "该", "某", "相关", "头部", "龙头", "重点", "当前", "后续", "行业", "赛道")):
+            return False
+        has_suffix = bool(self.COMPANY_SUFFIX_RE.fullmatch(candidate))
+        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", candidate))
+        return has_suffix or (has_cjk and len(candidate) <= 8 and candidate not in {"公司", "企业", "客户"})
 
     def _build_watch_metrics(self, primary: str, secondary: str, follow_up_focus: str) -> list[str]:
         if follow_up_focus.strip():
-            items = [self.clean_publish_text(item) for item in re.split(r"[、，,]", follow_up_focus) if item.strip()]
+            items = [self.clean_publish_text(item) for item in re.split(r"[、，,；;]", follow_up_focus) if item.strip()]
+            items = [item for item in items if item]
             if items:
                 return self.unique(items)[:5]
+
         delivery_metric = "样机转量产速度" if any(token in primary for token in ("机器人", "装备")) else "项目交付节奏"
         candidates = [
             "新增订单和中标数量",
@@ -149,7 +462,7 @@ class DataAgent(BaseAgent):
             notes.append(f"关键数据：{'、'.join(extraction.growth_numbers[:3])}")
 
         for summary in extraction.source_summaries[:2]:
-            title = summary.get("title", "").strip()
+            title = str(summary.get("title", "")).strip()
             if title:
                 notes.append(f"来源摘要：{title}")
         return self.clean_publish_list(notes, limit=5)
@@ -162,11 +475,11 @@ class DataAgent(BaseAgent):
         keywords: list[str],
     ) -> list[str]:
         risks = [
-            f"{primary}热度上升不等于所有环节都能同步兑现。",
+            f"{primary}热度上升，不等于所有环节都能同步兑现利润。",
             f"如果订单落地慢于扩产或渠道铺设节奏，{secondary}等环节的利润率可能先承压。",
         ]
         if any(token in trend_report.recommended_angle for token in ("海外", "本地化")):
-            risks.append("海外项目交付和本地化服务投入可能拉长回款与利润兑现周期。")
+            risks.append("海外项目交付和本地化服务投入，可能拉长回款与利润兑现周期。")
         else:
             risks.append("客户验证和项目交付如果延后，行业估值很容易先交易预期再回头修正。")
         if any(token in keywords for token in ("逆变器", "系统集成", "减速器", "电机", "热管理")):

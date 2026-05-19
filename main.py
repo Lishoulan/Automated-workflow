@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -163,6 +164,11 @@ def main() -> int:
             _print_export_summary("Topic collection completed.", exported_files)
             return 0
 
+        if args.collect_topics and not args.auto_run and not args.daily_run and args.paste is None:
+            exported_files = app_service.collect_topics()
+            _print_export_summary("Topic collection completed.", exported_files)
+            return 0
+
         if args.daily_run:
             exported_files = app_service.daily_run(
                 style_override=args.style,
@@ -211,15 +217,39 @@ def main() -> int:
 
     except Exception as exc:  # pragma: no cover - CLI safety net
         logger.exception("Content factory failed: %s", exc)
+        handled_result = _handle_daily_run_exception(args, settings, exported_files, exc)
+        if handled_result is not None:
+            if exported_files:
+                _print_export_summary(handled_result["message"], exported_files)
+            else:
+                print(handled_result["message"])
+            return int(handled_result["exit_code"])
         if exported_files:
+            _write_daily_run_result(
+                settings,
+                args,
+                exported_files,
+                status="failed",
+                message=str(exc),
+                error=str(exc),
+            )
             _print_export_summary(
                 f"Command failed after producing partial outputs: {exc}",
                 exported_files,
             )
             return 1
+        _write_daily_run_result(
+            settings,
+            args,
+            exported_files,
+            status="failed",
+            message=str(exc),
+            error=str(exc),
+        )
         print(f"Command failed: {exc}")
         return 1
 
+    _write_daily_run_success_result(settings, args, exported_files)
     _print_export_summary("Content generation completed.", exported_files)
     return 0
 
@@ -259,6 +289,8 @@ def _should_auto_approve_and_publish(
     settings,
     exported_files: dict[str, str],
 ) -> bool:
+    if not args.daily_run:
+        return False
     if not settings.publishing.enabled or not settings.publishing.auto_publish:
         return False
     if args.dry_run or args.no_archive:
@@ -281,6 +313,170 @@ def _should_auto_approve_and_publish(
         validation_score=validation_score,
         publish_readiness_score=publish_readiness,
     )
+
+
+def _handle_daily_run_exception(
+    args: argparse.Namespace,
+    settings,
+    exported_files: dict[str, str],
+    exc: Exception,
+) -> dict[str, Any] | None:
+    if not args.daily_run:
+        return None
+
+    error_message = str(exc)
+    status = ""
+    message = ""
+    if any(
+        marker in error_message
+        for marker in (
+            "daily_topics.json contains no available topics",
+            "No unpublished topics are available for today",
+        )
+    ):
+        status = "no_topics"
+        message = "Scheduled run skipped because no eligible topics were available after collection."
+    elif "Publish preflight blocked:" in error_message:
+        status = "publish_login_required"
+        message = "Scheduled run generated content, but the Toutiao publish session needs manual login or page initialization."
+
+    if not status:
+        return None
+
+    _write_daily_run_result(
+        settings,
+        args,
+        exported_files,
+        status=status,
+        message=message,
+        error=error_message,
+    )
+    return {
+        "exit_code": 0,
+        "message": message,
+    }
+
+
+def _write_daily_run_success_result(
+    settings,
+    args: argparse.Namespace,
+    exported_files: dict[str, str],
+) -> None:
+    if not args.daily_run:
+        return
+
+    run_summary = _build_daily_run_summary(settings, exported_files)
+    review_status = str(run_summary.get("review_status", "")).strip()
+    publish_status = str(run_summary.get("publish_status", "")).strip()
+
+    if publish_status:
+        status = "success"
+        message = f"Scheduled pipeline succeeded. Publish status: {publish_status}."
+    elif review_status and review_status != "approved":
+        status = "review_required"
+        message = "Scheduled pipeline succeeded, but this run still requires manual review."
+    else:
+        status = "success"
+        message = "Scheduled pipeline succeeded."
+
+    _write_daily_run_result(
+        settings,
+        args,
+        exported_files,
+        status=status,
+        message=message,
+    )
+
+
+def _write_daily_run_result(
+    settings,
+    args: argparse.Namespace,
+    exported_files: dict[str, str],
+    status: str,
+    message: str,
+    error: str = "",
+) -> None:
+    if not args.daily_run:
+        return
+
+    result_path = settings.automation_dir / "last_daily_run_result.json"
+    payload = _build_daily_run_summary(settings, exported_files)
+    payload.update(
+        {
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "account_key": settings.account_key,
+            "account_slug": settings.account_slug,
+            "status": status,
+            "message": message,
+            "error": error,
+            "exported_files": {name: str(path) for name, path in exported_files.items()},
+        }
+    )
+    result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _build_daily_run_summary(settings, exported_files: dict[str, str]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "run_dir": "",
+        "run_name": "",
+        "review_status": "",
+        "selected_title": "",
+        "publish_status": "",
+        "publish_url": "",
+        "publish_message": "",
+        "publish_pgc_id": "",
+    }
+    run_dir = _resolve_run_dir_from_exports(exported_files)
+    if run_dir is None:
+        return summary
+
+    summary["run_dir"] = str(run_dir)
+    summary["run_name"] = run_dir.name
+
+    review_status = _load_json_file(run_dir / "review_status.json") or {}
+    publish_result = _load_json_file(run_dir / settings.review.publish_dirname / "publish_result.json") or {}
+    backend = publish_result.get("backend_response_summary", {}) if isinstance(publish_result, dict) else {}
+
+    summary["review_status"] = str(review_status.get("status", "")).strip()
+    summary["selected_title"] = str(review_status.get("selected_title", "")).strip()
+    summary["publish_status"] = str(publish_result.get("status", "")).strip()
+    summary["publish_url"] = str(publish_result.get("external_url", "")).strip()
+    summary["publish_message"] = str(backend.get("message", "")).strip()
+    summary["publish_pgc_id"] = str(backend.get("pgc_id", "")).strip()
+    return summary
+
+
+def _resolve_run_dir_from_exports(exported_files: dict[str, str]) -> Path | None:
+    run_dir_candidates = [
+        exported_files.get("archive_root"),
+        exported_files.get("resolved_run_dir"),
+    ]
+    review_status_path = exported_files.get("review_status")
+    if review_status_path:
+        run_dir_candidates.append(str(Path(review_status_path).resolve().parent))
+
+    publish_result_path = exported_files.get("publish_result")
+    if publish_result_path:
+        publish_dir = Path(publish_result_path).resolve().parent
+        run_dir_candidates.append(str(publish_dir.parent))
+
+    for raw_path in run_dir_candidates:
+        if not raw_path:
+            continue
+        candidate = Path(raw_path).resolve()
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _load_json_file(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 if __name__ == "__main__":

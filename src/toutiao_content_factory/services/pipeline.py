@@ -82,3 +82,7 @@ class ContentFactoryPipeline:
             image_artifacts = self.image_service.generate(result)
         exported = self.exporter.export(result, image_artifacts=image_artifacts)
         return {name: str(path) for name, path in exported.items()}
+
+    def close(self) -> None:
+        self.openai_service.close()
+        self.image_service.close()

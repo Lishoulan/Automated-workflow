@@ -1,5 +1,6 @@
 param(
     [string]$TaskPrefix = "ToutiaoContentFactory",
+    [string[]]$AccountKeys = @(),
     [string]$PythonPath = "",
     [string]$Style = "",
     [switch]$DryRun,
@@ -74,6 +75,21 @@ print(json.dumps(keys, ensure_ascii=False))
 
 $accountsJson = $pythonCommand | & $PythonExe -
 $accounts = $accountsJson | ConvertFrom-Json
+
+if ($AccountKeys -and $AccountKeys.Count -gt 0) {
+    $requestedKeys = @($AccountKeys | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+    if ($requestedKeys.Count -eq 0) {
+        throw "AccountKeys was provided, but no valid account key was found."
+    }
+
+    $availableKeys = @($accounts | ForEach-Object { [string]$_ })
+    $missingKeys = @($requestedKeys | Where-Object { $_ -notin $availableKeys })
+    if ($missingKeys.Count -gt 0) {
+        throw "Unknown account key(s): $($missingKeys -join ', '). Available accounts: $($availableKeys -join ', ')"
+    }
+
+    $accounts = @($availableKeys | Where-Object { $_ -in $requestedKeys })
+}
 
 foreach ($accountKey in $accounts) {
     $arguments = @(

@@ -5,6 +5,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -260,7 +261,7 @@ class WebViewService:
         if not isinstance(payload, list):
             return []
         result: list[dict[str, Any]] = []
-        for item in payload[:limit]:
+        for item in islice(reversed(payload), limit):
             if not isinstance(item, dict):
                 continue
             run_name = Path(str(item.get("run_dir", ""))).name if item.get("run_dir") else ""
@@ -272,6 +273,66 @@ class WebViewService:
                     "status": str(item.get("status", "")),
                     "external_url": str(item.get("external_url", "")),
                     "run_name": run_name,
+                }
+            )
+        return result
+
+    def list_published_articles(self, limit: int = 10) -> list[dict[str, Any]]:
+        payload = self._load_json(self.output_dir / self.settings.publishing.history_filename)
+        if not isinstance(payload, list):
+            return []
+
+        result: list[dict[str, Any]] = []
+        for item in islice(reversed(payload), limit):
+            if not isinstance(item, dict):
+                continue
+            run_dir_value = str(item.get("run_dir", "")).strip()
+            run_name = Path(run_dir_value).name if run_dir_value else ""
+            if not run_name:
+                continue
+
+            run_dir = (self.runs_dir / run_name).resolve()
+            if not run_dir.exists() or run_dir.parent != self.runs_dir.resolve():
+                continue
+
+            publish_dir = run_dir / self.publish_dirname
+            title_path = publish_dir / "title.txt"
+            article_path = publish_dir / "article.md"
+            publish_result_path = publish_dir / "publish_result.json"
+
+            title = self._read_text(title_path).strip() or str(item.get("title", "")).strip()
+            article_body = self._read_text(article_path).strip() or self._read_text(run_dir / "article.md").strip()
+            article_paragraphs = self._split_article_paragraphs(article_body)
+            images = self._collect_run_images(run_dir, run_name, f"{self.publish_dirname}/images")
+
+            publish_result = self._load_json(publish_result_path) or {}
+            backend = publish_result.get("backend_response_summary", {}) if isinstance(publish_result, dict) else {}
+            notes = item.get("notes", []) if isinstance(item.get("notes"), list) else []
+
+            result.append(
+                {
+                    "title": title,
+                    "published_at": str(item.get("published_at", "")),
+                    "status": str(item.get("status", "")),
+                    "topic_title": str(item.get("topic_title", "")),
+                    "topic_url": str(item.get("topic_url", "")),
+                    "run_name": run_name,
+                    "external_url": str(item.get("external_url", "")),
+                    "pgc_id": str(backend.get("pgc_id", "")),
+                    "message": str(backend.get("message", publish_result.get("message", "")))
+                    if isinstance(publish_result, dict)
+                    else "",
+                    "article_body": article_body,
+                    "article_paragraphs": article_paragraphs,
+                    "excerpt": "\n\n".join(article_paragraphs[:3]),
+                    "notes": [str(note) for note in notes if str(note).strip()],
+                    "images": images,
+                    "artifacts": {
+                        "title": self._artifact_url(run_name, f"{self.publish_dirname}/title.txt"),
+                        "article": self._artifact_url(run_name, f"{self.publish_dirname}/article.md"),
+                        "publish_result": self._artifact_url(run_name, f"{self.publish_dirname}/publish_result.json"),
+                        "run_detail": f"/runs/{run_name}?account={self.account_key}",
+                    },
                 }
             )
         return result
@@ -523,3 +584,15 @@ class WebViewService:
             if slot and slot not in result:
                 result[slot] = self._account_log_artifact_url(f"scheduled/{path.name}")
         return result
+
+    def _split_article_paragraphs(self, article_body: str) -> list[str]:
+        if not article_body:
+            return []
+        normalized = article_body.replace("\r\n", "\n").replace("\r", "\n")
+        chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n+", normalized) if chunk.strip()]
+        paragraphs: list[str] = []
+        for chunk in chunks:
+            if chunk == "---":
+                continue
+            paragraphs.append(chunk)
+        return paragraphs

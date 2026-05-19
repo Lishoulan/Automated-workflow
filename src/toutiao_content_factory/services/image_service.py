@@ -82,6 +82,8 @@ class ImageGenerationService:
             article_title=recommended_title,
             summary=result.content.summary,
             style_name=result.style_label,
+            cover_prompt_hint=result.content.cover_prompt.strip(),
+            infographic_prompt_hints=[item.strip() for item in result.content.infographic_prompts if str(item).strip()],
             key_metrics=metrics,
             trend_labels=trend_labels,
             timeline_points=timeline_points,
@@ -237,3 +239,7 @@ class ImageGenerationService:
                 stale_path.unlink()
 
         artifacts.html_files = html_files
+
+    def close(self) -> None:
+        if self.model_generator is not None:
+            self.model_generator.close()

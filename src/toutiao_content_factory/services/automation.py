@@ -38,9 +38,15 @@ class TopicAutomationService:
         self,
         rank: int | None = None,
         title_query: str | None = None,
+        allow_generated_duplicates: bool = False,
     ) -> TopicSelectionResult:
         report = self._load_daily_topics()
-        topic = self._select_topic(report, rank=rank, title_query=title_query)
+        topic = self._select_topic(
+            report,
+            rank=rank,
+            title_query=title_query,
+            allow_generated_duplicates=allow_generated_duplicates,
+        )
         input_text = self._build_input_text(topic)
         exported_files = self._write_selection_snapshot(topic, report, input_text)
         self.logger.info("Auto topic selection complete: rank=%s title=%s", topic.rank, topic.title)
@@ -104,8 +110,12 @@ class TopicAutomationService:
         report: DailyTopicsReport,
         rank: int | None,
         title_query: str | None,
+        allow_generated_duplicates: bool = False,
     ) -> TopicCandidate:
-        available_topics = self._available_topics(report.topics)
+        available_topics = self._available_topics(
+            report.topics,
+            allow_generated_duplicates=allow_generated_duplicates,
+        )
         if not available_topics:
             raise ValueError("No unpublished topics are available for today.")
 
@@ -131,14 +141,19 @@ class TopicAutomationService:
         keywords = "、".join(topic.matched_keywords) if topic.matched_keywords else "关键词待补充"
         numbers = "、".join(topic.extracted_numbers) if topic.extracted_numbers else "暂无明确数字"
         summary = topic.summary or topic.title
-        snippet = topic.snippet or summary
+        snippet = self._clean_topic_snippet_for_prompt(topic.snippet or "", summary)
         published_at = topic.published_at or "时间未标注"
         primary_industry = humanized_industries[0] if humanized_industries else "相关赛道"
         primary_keywords = "、".join(topic.matched_keywords[:4]) if topic.matched_keywords else keywords
         selection_reason = self._build_selection_reason(topic, primary_industry, primary_keywords, numbers)
         suggested_angle = self._build_suggested_angle(topic, primary_industry, primary_keywords, numbers)
         follow_up_focus = self._build_follow_up_focus(topic, primary_industry, primary_keywords)
-        writing_brief = self._build_writing_brief(primary_industry)
+        writing_brief = self._build_writing_brief(topic, primary_industry)
+        content_format_label = topic.recommended_format_label or "深度分析"
+        format_brief = self._build_content_format_brief(topic, primary_industry)
+        paragraph_instruction = self._build_paragraph_instruction(topic)
+        quality_flags = "、".join(topic.quality_flags) if topic.quality_flags else "无"
+        word_target = self._build_word_target(topic)
 
         return (
             f"标题：{topic.title}\n"
@@ -150,17 +165,47 @@ class TopicAutomationService:
             f"匹配赛道：{industries}\n"
             f"匹配关键词：{keywords}\n"
             f"可确认数字：{numbers}\n\n"
-            "素材正文：\n"
-            f"{summary}\n"
-            f"{snippet}\n\n"
+            f"选题类型：{topic.topic_type}\n"
+            f"内容体裁：{topic.recommended_format}\n"
+            f"体裁要求：{format_brief}\n"
+            f"段落要求：{paragraph_instruction}\n"
+            f"证据强度：{topic.evidence_strength}\n"
+            f"选题质量分：{topic.quality_score}\n"
+            f"质量标记：{quality_flags}\n"
+            f"建议字数：{word_target}\n\n"
+            "素材摘要：\n"
+            f"- 摘要：{summary}\n"
+            f"- 补充片段：{snippet}\n"
+            f"- 热度判断：阅读分 {topic.read_score} / 收藏分 {topic.save_score} / 讨论分 {topic.discussion_score}\n\n"
             f"入选理由：{selection_reason}\n"
             f"推荐主结论：{suggested_angle}\n"
             f"跟踪变量：{follow_up_focus}\n"
             f"固定写法：{writing_brief}\n\n"
             "请围绕这条产业线索，重点分析："
-            "这家公司现在处于什么阶段、融资或订单意味着什么、它在产业链里卡住了哪一段、"
+            "这条线索目前处于什么阶段、涉及哪些公司/项目/订单主体、融资或订单意味着什么、它在产业链里卡住了哪一段、"
             "后续最值得跟踪的变量是什么，以及哪些风险会影响兑现节奏。"
         ).strip()
+
+    def _clean_topic_snippet_for_prompt(self, snippet: str, fallback: str) -> str:
+        candidate = str(snippet or "").strip()
+        if not candidate:
+            return fallback
+        if "<a " in candidate.lower():
+            return fallback
+        lowered = candidate.lower()
+        if "copyright" in lowered or "all rights reserved" in lowered or "in-en.com" in lowered:
+            return fallback
+        if "»" in candidate or "当前位置" in candidate or candidate.endswith("正文"):
+            return fallback
+        if len(re.findall(r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d+\s*(?:分钟前|小时前|天前))", candidate)) >= 2:
+            return fallback
+        if len(candidate) > 120 and candidate.count(" ") >= 6:
+            return fallback
+        if len(candidate) > 140 and sum(candidate.count(token) for token in ("，", "、", " | ", " / ")) >= 6:
+            return fallback
+        if sum(candidate.count(marker) for marker in ("鍥", "鏂", "鐢", "鑳", "缃", "鍌", "姹")) >= 6:
+            return fallback
+        return candidate[:160]
 
     def _write_selection_snapshot(
         self,
@@ -195,6 +240,9 @@ class TopicAutomationService:
             "、".join(topic.extracted_numbers) if topic.extracted_numbers else "暂无明确数字",
         )
         follow_up_focus = self._build_follow_up_focus(topic, primary_industry, primary_keywords)
+        content_format_label = topic.recommended_format_label or "深度分析"
+        format_brief = self._build_content_format_brief(topic, primary_industry)
+        paragraph_instruction = self._build_paragraph_instruction(topic)
 
         markdown = (
             "# 今日自动选题\n\n"
@@ -207,6 +255,14 @@ class TopicAutomationService:
             f"- 关键词：{'、'.join(topic.matched_keywords) or '无'}\n"
             f"- 关键数字：{'、'.join(topic.extracted_numbers) or '无'}\n"
             f"- 评分：总分 {topic.total_score} / 阅读 {topic.read_score} / 收藏 {topic.save_score} / 讨论 {topic.discussion_score}\n\n"
+            "## 质量判断\n\n"
+            f"- 选题类型：{topic.topic_type_label or topic.topic_type or '行业事件'}\n"
+            f"- 推荐体裁：{content_format_label}\n"
+            f"- 证据强度：{topic.evidence_strength}\n"
+            f"- 选题质量分：{topic.quality_score}\n"
+            f"- 质量标记：{'、'.join(topic.quality_flags) or '无'}\n"
+            f"- 体裁要求：{format_brief}\n"
+            f"- 段落要求：{paragraph_instruction}\n\n"
             "## 选题判断\n\n"
             f"- 入选理由：{selection_reason}\n"
             f"- 推荐主结论：{suggested_angle}\n"
@@ -300,11 +356,53 @@ class TopicAutomationService:
             return "融资之后的客户验证、产品落地、量产爬坡、后续订单"
         return "客户验证、订单落地、交付节奏、毛利率变化"
 
-    def _build_writing_brief(self, primary_industry: str) -> str:
+    def _build_writing_brief(self, topic: TopicCandidate, primary_industry: str) -> str:
+        if topic.recommended_format == "quick_commentary":
+            return (
+                "写成快讯点评稿：先下判断，再用一到两个关键事实解释为什么现在值得看，"
+                "最后只留最重要的跟踪变量和风险边界，不要硬拉成长篇深度稿。"
+            )
+        if topic.recommended_format == "project_breakdown":
+            return (
+                f"写成项目拆解稿：先交代项目或主体的重要性，再拆{primary_industry}产业链位置、订单兑现路径和交付节奏，"
+                "最后补一小段风险边界。"
+            )
+        if topic.recommended_format == "data_recap":
+            return (
+                "写成数据复盘稿：先说数据意味着什么，再解释哪些环节受益、哪些环节还没兑现，"
+                "避免把统计材料硬写成空泛行业长文。"
+            )
         return (
             f"写成产业分析稿：先下判断，再给数据，再拆{primary_industry}产业链位置，"
             "再落到公司主体和跟踪变量，最后只留一小段风险边界，不写新闻播报腔。"
         )
+
+    def _build_content_format_brief(self, topic: TopicCandidate, primary_industry: str) -> str:
+        if topic.recommended_format == "quick_commentary":
+            return "适合写成短而硬的事件点评，重点回答为什么值得看、谁会先受益、哪些变量还未验证。"
+        if topic.recommended_format == "project_breakdown":
+            return f"适合写成{primary_industry}项目或订单拆解稿，重点写主体、环节位置、交付路径和利润兑现。"
+        if topic.recommended_format == "data_recap":
+            return "适合写成数据复盘稿，重点解释数字变化背后的产业链含义，不要硬凑长篇评论。"
+        return f"适合写成{primary_industry}深度分析稿，重点拆产业链位置、订单兑现和利润分化。"
+
+    def _build_paragraph_instruction(self, topic: TopicCandidate) -> str:
+        if topic.recommended_format == "quick_commentary":
+            return "4到5段，每段2句，首段先下判断，结尾只留一个分歧问题。"
+        if topic.recommended_format == "project_breakdown":
+            return "5到6段，每段2到3句，围绕项目主体、环节位置、交付路径、兑现风险展开。"
+        if topic.recommended_format == "data_recap":
+            return "4到5段，每段2句，重点解释数字变化、受益环节和后续验证点。"
+        return "5到7段，每段2到3句，先判断、再数据、再产业链、再主体、再风险边界。"
+
+    def _build_word_target(self, topic: TopicCandidate) -> int:
+        if topic.recommended_format == "quick_commentary":
+            return 800
+        if topic.recommended_format == "data_recap":
+            return 900
+        if topic.recommended_format == "project_breakdown":
+            return 1100
+        return 1200
 
     def _build_archive_root(self, selected_topic: TopicCandidate | None) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -324,12 +422,20 @@ class TopicAutomationService:
     def _normalize_text(self, text: str) -> str:
         return self.NORMALIZE_PATTERN.sub("", text.lower())
 
-    def _available_topics(self, topics: list[TopicCandidate]) -> list[TopicCandidate]:
+    def _available_topics(
+        self,
+        topics: list[TopicCandidate],
+        allow_generated_duplicates: bool = False,
+    ) -> list[TopicCandidate]:
         if self.settings.publishing.allow_duplicate_topics:
             return list(topics)
 
         published_keys = self._load_published_keys_for_today()
-        generated_keys = self._load_generated_keys_for_today()
+        generated_keys = (
+            {"titles": set(), "urls": set()}
+            if allow_generated_duplicates
+            else self._load_generated_keys_for_today()
+        )
         available: list[TopicCandidate] = []
         for topic in topics:
             if topic.url and topic.url in published_keys["urls"]:

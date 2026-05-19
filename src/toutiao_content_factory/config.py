@@ -58,9 +58,9 @@ class TopicCollectionSettings:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "TopicCollectionSettings":
         return cls(
-            lookback_days=int(payload.get("lookback_days", 7)),
-            max_topic_age_hours=int(payload.get("max_topic_age_hours", 72)),
-            drop_topics_without_timestamp=bool(payload.get("drop_topics_without_timestamp", False)),
+            lookback_days=int(payload.get("lookback_days", 2)),
+            max_topic_age_hours=int(payload.get("max_topic_age_hours", 24)),
+            drop_topics_without_timestamp=bool(payload.get("drop_topics_without_timestamp", True)),
             max_ranked_items_per_source=int(payload.get("max_ranked_items_per_source", 4)),
             max_items_per_source=int(payload.get("max_items_per_source", 12)),
             max_export_topics=int(payload.get("max_export_topics", 20)),
@@ -689,18 +689,20 @@ def _default_config_payload() -> dict[str, Any]:
             "audience": "科技行业从业者与关注产业升级的读者",
         },
         "topic_collection": {
-            "lookback_days": 7,
-            "max_topic_age_hours": 72,
-            "drop_topics_without_timestamp": False,
+            "lookback_days": 2,
+            "max_topic_age_hours": 24,
+            "drop_topics_without_timestamp": True,
             "max_ranked_items_per_source": 4,
             "max_items_per_source": 12,
             "max_export_topics": 20,
-            "request_timeout_seconds": 18,
+            "request_timeout_seconds": 22,
             "enabled_sources": [
                 "google_news",
                 "36kr",
                 "zhidx",
                 "ofweek",
+                "chuneng_in_en",
+                "newenergy_in_en",
                 "gg_robot",
             ],
             "focus_industries": [
@@ -728,6 +730,12 @@ def _default_config_payload() -> dict[str, Any]:
                     "电池",
                     "充电",
                     "新能源汽车",
+                    "动力电池",
+                    "固态电池",
+                    "钠电",
+                    "充换电",
+                    "光储",
+                    "电池回收",
                 ],
                 "energy_storage": [
                     "储能",
@@ -736,6 +744,14 @@ def _default_config_payload() -> dict[str, Any]:
                     "EMS",
                     "逆变器",
                     "电网侧储能",
+                    "储能电站",
+                    "储能电池",
+                    "大储",
+                    "户储",
+                    "抽水蓄能",
+                    "液流电池",
+                    "源网荷储",
+                    "构网型储能",
                 ],
                 "ai_hardware": [
                     "AI硬件",
@@ -798,6 +814,20 @@ def _default_config_payload() -> dict[str, Any]:
                         "https://www.gg-robot.com/",
                         "https://www.gg-robot.com/meeting.html",
                         "https://www.gg-robot.com/home/aggregator/?act=report",
+                    ],
+                },
+                "chuneng_in_en": {
+                    "type": "html",
+                    "same_domain_only": True,
+                    "urls": [
+                        "https://chuneng.in-en.com/",
+                    ],
+                },
+                "newenergy_in_en": {
+                    "type": "html",
+                    "same_domain_only": True,
+                    "urls": [
+                        "https://newenergy.in-en.com/",
                     ],
                 },
             },

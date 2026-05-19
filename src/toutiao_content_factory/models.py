@@ -31,6 +31,16 @@ class ExtractionResult:
     suggested_angle: str = ""
     follow_up_focus: str = ""
     writing_brief: str = ""
+    topic_type: str = ""
+    topic_type_label: str = ""
+    content_format: str = ""
+    content_format_label: str = ""
+    format_brief: str = ""
+    paragraph_instruction: str = ""
+    evidence_strength: int = 0
+    topic_quality_score: int = 0
+    topic_quality_flags: list[str] = field(default_factory=list)
+    word_target: int = 0
     evidence_items: list[dict[str, str]] = field(default_factory=list)
     source_summaries: list[dict[str, str]] = field(default_factory=list)
 
@@ -52,6 +62,16 @@ class ExtractionResult:
             suggested_angle=str(payload.get("suggested_angle", "")),
             follow_up_focus=str(payload.get("follow_up_focus", "")),
             writing_brief=str(payload.get("writing_brief", "")),
+            topic_type=str(payload.get("topic_type", "")),
+            topic_type_label=str(payload.get("topic_type_label", "")),
+            content_format=str(payload.get("content_format", "")),
+            content_format_label=str(payload.get("content_format_label", "")),
+            format_brief=str(payload.get("format_brief", "")),
+            paragraph_instruction=str(payload.get("paragraph_instruction", "")),
+            evidence_strength=int(payload.get("evidence_strength", 0)),
+            topic_quality_score=int(payload.get("topic_quality_score", 0)),
+            topic_quality_flags=list(payload.get("topic_quality_flags", [])),
+            word_target=int(payload.get("word_target", 0)),
             evidence_items=list(payload.get("evidence_items", [])),
             source_summaries=list(payload.get("source_summaries", [])),
         )
@@ -97,6 +117,16 @@ class DataReport:
     suggested_angle: str = ""
     follow_up_focus: str = ""
     writing_brief: str = ""
+    topic_type: str = ""
+    topic_type_label: str = ""
+    content_format: str = ""
+    content_format_label: str = ""
+    format_brief: str = ""
+    paragraph_instruction: str = ""
+    evidence_strength: int = 0
+    topic_quality_score: int = 0
+    topic_quality_flags: list[str] = field(default_factory=list)
+    word_target: int = 0
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DataReport":
@@ -118,6 +148,16 @@ class DataReport:
             suggested_angle=str(payload.get("suggested_angle", "")),
             follow_up_focus=str(payload.get("follow_up_focus", "")),
             writing_brief=str(payload.get("writing_brief", "")),
+            topic_type=str(payload.get("topic_type", "")),
+            topic_type_label=str(payload.get("topic_type_label", "")),
+            content_format=str(payload.get("content_format", "")),
+            content_format_label=str(payload.get("content_format_label", "")),
+            format_brief=str(payload.get("format_brief", "")),
+            paragraph_instruction=str(payload.get("paragraph_instruction", "")),
+            evidence_strength=int(payload.get("evidence_strength", 0)),
+            topic_quality_score=int(payload.get("topic_quality_score", 0)),
+            topic_quality_flags=list(payload.get("topic_quality_flags", [])),
+            word_target=int(payload.get("word_target", 0)),
         )
 
 
@@ -176,6 +216,8 @@ class GeneratedContent:
     cache_note: str = ""
     validation_notes: list[str] = field(default_factory=list)
     validation_score: int = 0
+    content_format: str = ""
+    content_format_label: str = ""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "GeneratedContent":
@@ -198,6 +240,8 @@ class GeneratedContent:
             cache_note=str(payload.get("cache_note", "")),
             validation_notes=list(payload.get("validation_notes", [])),
             validation_score=int(payload.get("validation_score", 0)),
+            content_format=str(payload.get("content_format", "")),
+            content_format_label=str(payload.get("content_format_label", "")),
         )
 
 
@@ -302,6 +346,13 @@ class TopicCandidate:
     is_high_read: bool = False
     is_high_save: bool = False
     is_high_discussion: bool = False
+    topic_type: str = ""
+    topic_type_label: str = ""
+    evidence_strength: int = 0
+    quality_score: int = 0
+    quality_flags: list[str] = field(default_factory=list)
+    recommended_format: str = ""
+    recommended_format_label: str = ""
     rank: int = 0
 
     @classmethod
@@ -325,6 +376,13 @@ class TopicCandidate:
             is_high_read=bool(payload.get("is_high_read", False)),
             is_high_save=bool(payload.get("is_high_save", False)),
             is_high_discussion=bool(payload.get("is_high_discussion", False)),
+            topic_type=str(payload.get("topic_type", "")),
+            topic_type_label=str(payload.get("topic_type_label", "")),
+            evidence_strength=int(payload.get("evidence_strength", 0)),
+            quality_score=int(payload.get("quality_score", 0)),
+            quality_flags=list(payload.get("quality_flags", [])),
+            recommended_format=str(payload.get("recommended_format", "")),
+            recommended_format_label=str(payload.get("recommended_format_label", "")),
             rank=int(payload.get("rank", 0)),
         )
 
@@ -376,6 +434,8 @@ class VisualBrief:
     article_title: str
     summary: str
     style_name: str
+    cover_prompt_hint: str = ""
+    infographic_prompt_hints: list[str] = field(default_factory=list)
     key_metrics: list[VisualMetric] = field(default_factory=list)
     trend_labels: list[str] = field(default_factory=list)
     timeline_points: list[str] = field(default_factory=list)

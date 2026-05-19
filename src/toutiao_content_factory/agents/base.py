@@ -172,4 +172,4 @@ class BaseAgent:
 
     def is_internal_label(self, text: str) -> bool:
         normalized = self.clean_publish_text(text)
-        return normalized in self.INTERNAL_LABEL_MAP.keys()
+        return normalized in self.INTERNAL_LABEL_MAP.keys() or normalized in self.INTERNAL_LABEL_MAP.values()

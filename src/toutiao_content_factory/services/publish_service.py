@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -11,6 +12,7 @@ from urllib.parse import parse_qs
 
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import PublishRecord
+from toutiao_content_factory.services.article_sanitizer import clean_article_text
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -76,6 +78,17 @@ class PublishService:
         ".footer-tip-save",
     ]
     DEFAULT_ARTICLE_IMAGE_TRIGGER_SELECTORS = [
+        ".publish-editor .syl-editor-toolbar.visible.inline .syl-toolbar-tool.image button.syl-toolbar-button",
+        ".publish-editor .syl-editor-toolbar.visible.inline .syl-toolbar-tool.image button",
+        ".publish-editor .syl-editor-toolbar.visible.inline .syl-toolbar-tool.image",
+        ".syl-editor-toolbar.visible.inline .syl-toolbar-tool.image button.syl-toolbar-button",
+        ".syl-editor-toolbar.visible.inline .syl-toolbar-tool.image button",
+        ".syl-editor-toolbar.visible.inline .syl-toolbar-tool.image",
+        ".syl-editor-toolbar.visible .syl-toolbar-tool.image button.syl-toolbar-button",
+        ".syl-editor-toolbar.visible .syl-toolbar-tool.image button",
+        ".syl-toolbar-tool.image .syl-toolbar-button",
+        ".syl-toolbar-tool.image button",
+        ".syl-toolbar-tool.image",
         "[data-e2e='insertImage-btn']",
         "[data-e2e='editorInsertImage-btn']",
         ".syl-toolbar button[aria-label*='Image']",
@@ -89,6 +102,33 @@ class PublishService:
         "button[aria-label*='图片']",
         "button:has-text('图片')",
     ]
+    INLINE_IMAGE_DATA_TOKENS = (
+        "数据",
+        "装机",
+        "订单",
+        "出货",
+        "并网",
+        "项目",
+        "GWh",
+        "MWh",
+        "MW",
+        "亿元",
+        "同比",
+    )
+    INLINE_IMAGE_ANALYSIS_TOKENS = (
+        "产业链",
+        "交付",
+        "利润",
+        "毛利",
+        "验证",
+        "节奏",
+        "风险",
+        "客户",
+        "电站",
+        "储能",
+        "逆变器",
+        "电池",
+    )
     AI_DRAWER_MASK_SELECTORS = [
         "div.byte-drawer-mask",
         "div.byte-drawer-wrapper.ai-assistant-drawer div.byte-drawer-mask",
@@ -141,7 +181,20 @@ class PublishService:
         title = self._clip_title(str(publish_meta.get("selected_title", "")).strip())
         article = self._sanitize_article_for_publish(self._read_text(publish_dir / "article.md").strip())
         cover_path = publish_dir / "images" / "cover.png"
-        body_image_path = publish_dir / "images" / "infographic_1.png"
+        body_image_paths: list[Path] = []
+        # Shared image strategy for all accounts:
+        # 1. Insert cover.png first so it becomes the first inline article image.
+        # 2. Let Toutiao reuse that first inline image as the lead cover image.
+        # 3. Insert one later infographic image between paragraphs for body richness.
+        if cover_path.exists():
+            body_image_paths.append(cover_path)
+        for path in (
+            publish_dir / "images" / "infographic_1.png",
+            publish_dir / "images" / "infographic_2.png",
+        ):
+            if path.exists():
+                body_image_paths.append(path)
+                break
         preflight_summary = self.collect_preflight_summary()
         blocking_flags = list(preflight_summary.get("blocking_flags", []))
         should_bypass_preflight = self._should_bypass_preflight_blockers(preflight_summary)
@@ -158,7 +211,7 @@ class PublishService:
                 title=title,
                 article=article,
                 cover_path=cover_path,
-                body_image_path=body_image_path,
+                body_image_paths=body_image_paths,
             )
         except Exception as exc:
             self._write_failed_publish_result(
@@ -223,6 +276,8 @@ class PublishService:
             )
             try:
                 page = browser.new_page()
+                diagnostic_events: list[dict[str, Any]] = []
+                self._install_publish_diagnostic_capture(page, diagnostic_events)
                 page.goto(
                     target_url,
                     wait_until="domcontentloaded",
@@ -234,23 +289,49 @@ class PublishService:
                 print(f"Profile dir: {profile_dir}")
                 print("Log in to your Toutiao creator account in the opened browser window.")
                 print("Make sure the account can actually open the article publish page.")
-                print("After login succeeds, return here and press Enter to run a publish preflight check.")
-                input()
-                page.goto(
-                    target_url,
-                    wait_until="domcontentloaded",
-                    timeout=self.settings.publishing.wait_timeout_ms,
-                )
-                page.wait_for_timeout(2500)
-                diagnostic_events: list[dict[str, Any]] = []
-                self._install_publish_diagnostic_capture(page, diagnostic_events)
-                page.reload(
-                    wait_until="domcontentloaded",
-                    timeout=self.settings.publishing.wait_timeout_ms,
-                )
-                page.wait_for_timeout(2500)
-                diagnostics = self._build_publish_diagnostics(diagnostic_events)
-                preflight_summary = self._build_preflight_summary_from_diagnostics(page.url, diagnostics)
+                print("This window will keep polling automatically for up to 10 minutes.")
+                print("If login succeeds, navigate to the Toutiao article publish page and wait for the preflight summary.")
+
+                deadline = datetime.now().timestamp() + 600
+                next_status_print_at = 0.0
+                preflight_summary: dict[str, Any] | None = None
+
+                while datetime.now().timestamp() < deadline:
+                    if page.is_closed():
+                        raise RuntimeError("The browser window was closed before login initialization finished.")
+
+                    try:
+                        diagnostics = self._build_publish_diagnostics(diagnostic_events)
+                        preflight_summary = self._build_preflight_summary_from_diagnostics(page.url, diagnostics)
+                    except Exception:
+                        preflight_summary = None
+
+                    if preflight_summary and not preflight_summary.get("blocking_flags"):
+                        break
+
+                    now_ts = datetime.now().timestamp()
+                    if now_ts >= next_status_print_at:
+                        current_url = page.url if not page.is_closed() else ""
+                        blockers = []
+                        if preflight_summary:
+                            blockers = [str(item) for item in preflight_summary.get("blocking_flags", [])]
+                        status_line = "Waiting for a publish-capable Toutiao session"
+                        if current_url:
+                            status_line += f". Current URL: {current_url}"
+                        if blockers:
+                            status_line += f" | blockers: {'; '.join(blockers[:3])}"
+                        print(status_line)
+                        next_status_print_at = now_ts + 15
+
+                    page.wait_for_timeout(3000)
+
+                if not preflight_summary or preflight_summary.get("blocking_flags"):
+                    export_paths = self._write_preflight_summary(preflight_summary or {})
+                    raise RuntimeError(
+                        "Login session initialization timed out before the account reached a publish-capable state. "
+                        f"Current URL: {page.url}. Preflight summary saved to: {export_paths.get('publish_preflight')}"
+                    )
+
                 export_paths = self._write_preflight_summary(preflight_summary)
                 print("")
                 print("Publish preflight summary:")
@@ -307,7 +388,7 @@ class PublishService:
         summary = self.collect_preflight_summary()
         return self._write_preflight_summary(summary)
 
-    def _publish_to_toutiao(self, title: str, article: str, cover_path: Path, body_image_path: Path) -> dict[str, Any]:
+    def _publish_to_toutiao(self, title: str, article: str, cover_path: Path, body_image_paths: list[Path]) -> dict[str, Any]:
         if sync_playwright is None:
             raise RuntimeError(
                 "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`."
@@ -409,17 +490,31 @@ class PublishService:
                 self._set_title_content(page, title_locator, title, notes)
                 self._dismiss_ai_assistant_drawer(page, notes)
                 self._set_editor_content(page, editor_selector, article, notes)
-                self._try_apply_article_image(page, editor_selector, body_image_path, notes)
+                inserted_inline_images = self._try_apply_article_images(
+                    page,
+                    editor_selector,
+                    article,
+                    body_image_paths,
+                    notes,
+                    first_image_as_cover=cover_path.exists(),
+                )
                 self._apply_default_work_declarations(page, notes)
                 self._apply_safe_publish_options(page, notes)
                 self._finalize_editor_state(page, title_locator, editor_selector, title, notes)
                 self._dismiss_ai_assistant_drawer(page, notes)
 
-                cover_mode = self._resolve_cover_mode(cover_path)
+                if cover_path.exists():
+                    cover_mode = "first_inline_image"
+                    notes.append("Skipped dedicated cover upload and used the first inline image as the lead cover image.")
+                else:
+                    cover_mode = self._resolve_cover_mode(cover_path)
+
                 if cover_mode == "none":
                     self._ensure_no_cover_mode(page, notes)
                 elif cover_mode == "single":
                     self._apply_cover_image(page, cover_path, notes)
+                elif cover_mode == "first_inline_image":
+                    pass
                 else:
                     notes.append("Cover image not found. Falling back to no-cover publish mode.")
                     self._ensure_no_cover_mode(page, notes)
@@ -428,7 +523,7 @@ class PublishService:
                     page,
                     editor_selector,
                     cover_mode=cover_mode,
-                    expect_inline_image=body_image_path.exists(),
+                    expected_inline_images=inserted_inline_images,
                 )
                 self._stabilize_publish_form(page, notes)
 
@@ -513,10 +608,11 @@ class PublishService:
         return path
 
     def _clip_title(self, title: str) -> str:
-        title = self._sanitize_publish_text(title).strip()
-        if len(title) <= self.settings.publishing.title_max_length:
+        title = " ".join(self._sanitize_publish_text(title).split()).strip()
+        limit = max(1, int(self.settings.publishing.title_max_length))
+        if len(title) <= limit:
             return title
-        return title[: self.settings.publishing.title_max_length].rstrip()
+        return title[:limit].rstrip(" \t\r\n,，。！？、:：;；-")
 
     def _load_json(self, path: Path) -> dict[str, Any]:
         if not path.exists():
@@ -536,38 +632,16 @@ class PublishService:
         return path.read_text(encoding="utf-8")
 
     def _sanitize_article_for_publish(self, article: str) -> str:
-        lines: list[str] = []
-        for raw_line in article.splitlines():
-            line = raw_line.strip()
-            if not line:
-                lines.append("")
+        cleaned = clean_article_text(article)
+        sanitized_lines: list[str] = []
+        for raw_line in cleaned.splitlines():
+            line = self._sanitize_publish_text(raw_line.strip())
+            if not line and sanitized_lines and sanitized_lines[-1] != "":
+                sanitized_lines.append("")
                 continue
-
-            line = re.sub(r"^#{1,6}\s*", "", line)
-            line = re.sub(r"^\d+\.\s*", "", line)
-            line = re.sub(r"^[-*]\s+", "", line)
-            line = re.sub(r"^>\s*", "", line)
-            line = re.sub(r"!\[(.*?)\]\((.*?)\)", "", line)
-            line = re.sub(r"\[(.*?)\]\((.*?)\)", r"\1", line)
-            line = re.sub(r"`(.+?)`", r"\1", line)
-            line = line.replace("**", "")
-            line = line.replace("__", "")
-            line = line.replace("*", "")
-            line = line.replace("_", "")
-            line = line.replace("~", "")
-            if line in {"--", "---"}:
-                continue
-            if any(line.startswith(prefix) for prefix in self.META_NOISE_PREFIXES):
-                continue
-            line = self._sanitize_publish_text(line)
-            line = re.sub(r"\s{2,}", " ", line).strip()
-            if not line:
-                continue
-            lines.append(line)
-
-        cleaned = "\n".join(lines)
-        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-        return cleaned.strip()
+            if line:
+                sanitized_lines.append(line)
+        return "\n".join(sanitized_lines).strip()
 
     def _sanitize_publish_text(self, text: str) -> str:
         cleaned = str(text or "")
@@ -742,6 +816,23 @@ class PublishService:
         except Exception:
             pass
 
+        try:
+            locator.evaluate(
+                """(node) => {
+                    node.innerHTML = "";
+                    node.dispatchEvent(new InputEvent("input", {
+                        bubbles: true,
+                        cancelable: true,
+                        inputType: "deleteContentBackward",
+                        data: null,
+                    }));
+                    node.dispatchEvent(new Event("change", { bubbles: true }));
+                }"""
+            )
+            page.wait_for_timeout(120)
+        except Exception:
+            pass
+
     def _paste_editor_content(self, page, locator, paragraphs: list[str]) -> None:
         content = "\n\n".join(paragraphs)
         try:
@@ -799,24 +890,180 @@ class PublishService:
 
         return len(actual) >= min(len(expected), 80)
 
-    def _try_apply_article_image(self, page, editor_selector: str, image_path: Path, notes: list[str]) -> None:
+    def _try_apply_article_images(
+        self,
+        page,
+        editor_selector: str,
+        article: str,
+        image_paths: list[Path],
+        notes: list[str],
+        *,
+        first_image_as_cover: bool = False,
+    ) -> int:
+        available_images = self._dedupe_article_image_paths(image_paths, notes)
+        if not available_images:
+            notes.append("Article images not found. Skipping inline image upload.")
+            return 0
+
+        target_paragraphs = self._resolve_inline_image_targets(
+            article,
+            len(available_images),
+            first_image_as_cover=first_image_as_cover,
+        )
+        inserted = 0
+        for image_path, target_paragraph in zip(available_images, target_paragraphs):
+            if self._try_apply_article_image(page, editor_selector, image_path, notes, target_paragraph=target_paragraph):
+                inserted += 1
+        return inserted
+
+    def _dedupe_article_image_paths(self, image_paths: list[Path], notes: list[str]) -> list[Path]:
+        unique_paths: list[Path] = []
+        seen_keys: set[str] = set()
+        for path in image_paths:
+            if not path.exists():
+                continue
+            key = self._build_image_dedupe_key(path)
+            if key in seen_keys:
+                notes.append(f"Skipped duplicate article image asset: {path.name}")
+                continue
+            seen_keys.add(key)
+            unique_paths.append(path)
+        return unique_paths
+
+    def _build_image_dedupe_key(self, path: Path) -> str:
+        try:
+            return hashlib.sha1(path.read_bytes()).hexdigest()
+        except Exception:
+            return str(path.resolve())
+
+    def _resolve_inline_image_targets(
+        self,
+        article: str,
+        image_count: int,
+        *,
+        first_image_as_cover: bool = False,
+    ) -> list[int]:
+        paragraphs = [block.strip() for block in article.split("\n\n") if block.strip()]
+        paragraph_count = len(paragraphs)
+        if image_count <= 0:
+            return []
+        if first_image_as_cover:
+            if image_count == 1:
+                return [0]
+            analysis_target = self._best_inline_image_target(
+                paragraphs,
+                self.INLINE_IMAGE_ANALYSIS_TOKENS,
+                fallback=min(max(3, 2), max(paragraph_count, 1)),
+            )
+            return [0, analysis_target][:image_count]
+        if paragraph_count <= 2:
+            return [1] * image_count
+        if image_count == 1:
+            return [self._best_inline_image_target(paragraphs, self.INLINE_IMAGE_DATA_TOKENS, fallback=2)]
+
+        first_target = self._best_inline_image_target(paragraphs, self.INLINE_IMAGE_DATA_TOKENS, fallback=2)
+        second_target = self._best_inline_image_target(
+            paragraphs,
+            self.INLINE_IMAGE_ANALYSIS_TOKENS,
+            fallback=min(max(4, first_target + 2), paragraph_count),
+            exclude={first_target},
+        )
+        return [first_target, second_target][:image_count]
+
+    def _best_inline_image_target(
+        self,
+        paragraphs: list[str],
+        preferred_tokens: tuple[str, ...],
+        *,
+        fallback: int,
+        exclude: set[int] | None = None,
+    ) -> int:
+        if not paragraphs:
+            return 1
+
+        excluded = exclude or set()
+        best_index = min(max(fallback, 1), len(paragraphs))
+        best_score = float("-inf")
+
+        for index, paragraph in enumerate(paragraphs, start=1):
+            if index in excluded:
+                continue
+
+            score = 0
+            length = len(paragraph)
+            if 40 <= length <= 150:
+                score += 8
+            elif length < 28:
+                score -= 6
+            elif length > 190:
+                score -= 4
+
+            if re.search(r"\d", paragraph):
+                score += 10
+
+            score += sum(4 for token in preferred_tokens if token and token in paragraph)
+
+            if index == 1:
+                score -= 5
+            if paragraph.endswith(("？", "?")):
+                score -= 4
+
+            distance_penalty = abs(index - fallback)
+            score -= distance_penalty
+
+            if score > best_score:
+                best_score = score
+                best_index = index
+
+        return best_index
+
+    def _try_apply_article_image(
+        self,
+        page,
+        editor_selector: str,
+        image_path: Path,
+        notes: list[str],
+        *,
+        target_paragraph: int,
+    ) -> bool:
         if not image_path.exists():
             notes.append("Article image not found. Skipping inline image upload.")
-            return
+            return False
 
         try:
-            self._apply_article_image(page, editor_selector, image_path, notes)
+            self._apply_article_image(page, editor_selector, image_path, notes, target_paragraph=target_paragraph)
+            return True
         except Exception as exc:
+            debug_dir = self._capture_debug_artifacts(
+                page,
+                extra_payload={
+                    "inline_image_path": str(image_path),
+                    "target_paragraph": target_paragraph,
+                },
+            )
             notes.append(
                 "Inline article image upload failed and was skipped: "
-                f"{self._clean_visible_text(exc)}"
+                f"{self._clean_visible_text(exc)}. Debug files saved to: {debug_dir}"
             )
+            return False
 
-    def _apply_article_image(self, page, editor_selector: str, image_path: Path, notes: list[str]) -> None:
+    def _apply_article_image(
+        self,
+        page,
+        editor_selector: str,
+        image_path: Path,
+        notes: list[str],
+        *,
+        target_paragraph: int,
+    ) -> None:
         self._dismiss_ai_assistant_drawer(page, notes)
         editor_locator = page.locator(editor_selector).first
         editor_locator.wait_for(state="visible", timeout=self.settings.publishing.wait_timeout_ms)
-        previous_image_count = self._count_editor_images(editor_locator)
+        previous_image_count = self._count_editor_images(
+            page,
+            editor_selector=editor_selector,
+            editor_locator=editor_locator,
+        )
 
         try:
             editor_locator.click(force=True, timeout=1200)
@@ -828,24 +1075,43 @@ class PublishService:
         except Exception:
             pass
 
-        insertion_paragraph = self._position_editor_caret_for_inline_image(page, editor_locator)
+        insertion_paragraph = self._position_editor_caret_for_inline_image(
+            page,
+            editor_locator,
+            target_paragraph=target_paragraph,
+        )
+
+        self._prime_article_image_toolbar(page, editor_locator)
 
         trigger_locator = self._resolve_article_image_trigger(page)
         if trigger_locator is None:
             raise RuntimeError("Could not locate the article image upload trigger.")
 
         existing_input_count = page.locator("input[type='file']").count()
-        try:
-            trigger_locator.dispatch_event("click")
-        except Exception:
-            trigger_locator.click(force=True, timeout=1500)
+        file_chooser = self._open_article_image_file_chooser(page, trigger_locator)
+        if file_chooser is not None:
+            file_chooser.set_files(str(image_path))
+        else:
+            upload_input = self._wait_for_article_upload_input(page, existing_input_count)
+            if upload_input is None:
+                self._click_article_image_trigger(trigger_locator)
+                upload_input = self._wait_for_article_upload_input(page, existing_input_count)
+            if upload_input is None:
+                raise RuntimeError("Article image upload input did not appear.")
+            upload_input.set_input_files(str(image_path), timeout=max(self.settings.publishing.wait_timeout_ms, 60000))
 
-        upload_input = self._wait_for_article_upload_input(page, existing_input_count)
-        if upload_input is None:
-            raise RuntimeError("Article image upload input did not appear.")
-
-        upload_input.set_input_files(str(image_path), timeout=max(self.settings.publishing.wait_timeout_ms, 60000))
-        self._wait_for_article_image_inserted(page, editor_locator, previous_image_count)
+        self._confirm_article_image_selection(
+            page,
+            editor_selector,
+            editor_locator,
+            previous_image_count,
+        )
+        self._wait_for_article_image_inserted(
+            page,
+            editor_selector,
+            editor_locator,
+            previous_image_count,
+        )
 
         try:
             editor_locator.click(force=True, timeout=1200)
@@ -858,7 +1124,43 @@ class PublishService:
             f"Inserted inline article image after paragraph {insertion_paragraph}: {image_path.name}"
         )
 
-    def _position_editor_caret_for_inline_image(self, page, editor_locator) -> int:
+    def _prime_article_image_toolbar(self, page, editor_locator) -> None:
+        self._dismiss_ai_assistant_drawer(page, [])
+        try:
+            editor_locator.evaluate(
+                """(node) => {
+                    node.focus();
+                    const selection = window.getSelection();
+                    if (!selection || selection.rangeCount === 0) {
+                        return;
+                    }
+                    const anchor = selection.anchorNode;
+                    const element = anchor && anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
+                    if (element && element.scrollIntoView) {
+                        element.scrollIntoView({ block: 'center', inline: 'nearest' });
+                    } else if (node.scrollIntoView) {
+                        node.scrollIntoView({ block: 'center', inline: 'nearest' });
+                    }
+                }"""
+            )
+        except Exception:
+            pass
+
+        for _ in range(2):
+            try:
+                page.locator(".syl-editor-toolbar.visible.inline").first.wait_for(
+                    state="visible",
+                    timeout=800,
+                )
+                return
+            except Exception:
+                try:
+                    editor_locator.focus(timeout=800)
+                except Exception:
+                    pass
+                page.wait_for_timeout(180)
+
+    def _position_editor_caret_for_inline_image(self, page, editor_locator, *, target_paragraph: int) -> int:
         try:
             paragraph_count = int(
                 editor_locator.evaluate(
@@ -871,7 +1173,65 @@ class PublishService:
         except Exception:
             paragraph_count = 0
 
-        target_index = 2 if paragraph_count >= 2 else max(1, paragraph_count)
+        if target_paragraph <= 0:
+            if self._place_editor_caret_via_click(
+                page,
+                editor_locator,
+                target_index=1,
+                insert_before=True,
+            ):
+                return 1
+
+            try:
+                actual_index = int(
+                    editor_locator.evaluate(
+                        """(node) => {
+                            const blocks = Array.from(node.querySelectorAll('p, div[data-block-type], div.pgc-p'))
+                                .filter((item) => item.textContent && item.textContent.trim());
+                            const target = blocks[0];
+                            if (!target) {
+                                node.focus();
+                                return 0;
+                            }
+
+                            if (target.scrollIntoView) {
+                                target.scrollIntoView({ block: 'center', inline: 'nearest' });
+                            }
+
+                            const range = document.createRange();
+                            range.selectNodeContents(target);
+                            range.collapse(true);
+
+                            const selection = window.getSelection();
+                            if (selection) {
+                                selection.removeAllRanges();
+                                selection.addRange(range);
+                            }
+
+                            node.focus();
+                            return 1;
+                        }"""
+                    )
+                )
+            except Exception:
+                actual_index = 0
+
+            try:
+                page.keyboard.press("Enter")
+                page.wait_for_timeout(120)
+            except Exception:
+                pass
+            return actual_index or 1
+
+        target_index = min(max(target_paragraph, 1), max(paragraph_count, 1))
+        if self._place_editor_caret_via_click(
+            page,
+            editor_locator,
+            target_index=target_index,
+            insert_before=False,
+        ):
+            return target_index
+
         try:
             actual_index = int(
                 editor_locator.evaluate(
@@ -883,6 +1243,10 @@ class PublishService:
                         if (!target) {
                             node.focus();
                             return 0;
+                        }
+
+                        if (target.scrollIntoView) {
+                            target.scrollIntoView({ block: 'center', inline: 'nearest' });
                         }
 
                         const range = document.createRange();
@@ -926,7 +1290,92 @@ class PublishService:
             pass
         return actual_index
 
+    def _place_editor_caret_via_click(
+        self,
+        page,
+        editor_locator,
+        *,
+        target_index: int,
+        insert_before: bool,
+    ) -> bool:
+        try:
+            rect = editor_locator.evaluate(
+                """(node, payload) => {
+                    const desired = payload.targetIndex || 1;
+                    const blocks = Array.from(node.querySelectorAll('p, div[data-block-type], div.pgc-p'))
+                        .filter((item) => item.textContent && item.textContent.trim());
+                    const target = blocks[Math.max(0, Math.min(blocks.length - 1, desired - 1))];
+                    if (!target) {
+                        return null;
+                    }
+
+                    if (target.scrollIntoView) {
+                        target.scrollIntoView({ block: 'center', inline: 'nearest' });
+                    }
+
+                    const box = target.getBoundingClientRect();
+                    return {
+                        left: box.left,
+                        top: box.top,
+                        width: box.width,
+                        height: box.height,
+                    };
+                }""",
+                {"targetIndex": target_index},
+            )
+        except Exception:
+            return False
+
+        if not isinstance(rect, dict):
+            return False
+
+        try:
+            width = max(float(rect.get("width", 0.0)), 1.0)
+            height = max(float(rect.get("height", 0.0)), 1.0)
+            left = float(rect.get("left", 0.0))
+            top = float(rect.get("top", 0.0))
+        except Exception:
+            return False
+
+        click_x = left + min(28.0, width * 0.2) if insert_before else left + max(36.0, min(width - 20.0, width * 0.82))
+        click_y = top + min(max(height / 2.0, 8.0), max(height - 4.0, 8.0))
+
+        try:
+            page.mouse.click(click_x, click_y)
+            page.wait_for_timeout(120)
+            page.keyboard.press("Home" if insert_before else "End")
+            page.wait_for_timeout(80)
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(140)
+            return True
+        except Exception:
+            return False
+
     def _resolve_article_image_trigger(self, page):
+        for toolbar_selector in [
+            ".publish-editor .syl-editor-toolbar.visible.inline",
+            ".syl-editor-toolbar.visible.inline",
+            ".publish-editor .syl-editor-toolbar.visible",
+            ".syl-editor-toolbar.visible",
+        ]:
+            try:
+                toolbar = page.locator(toolbar_selector).first
+                toolbar.wait_for(state="visible", timeout=700)
+            except Exception:
+                continue
+
+            for button_selector in [
+                ".syl-toolbar-tool.image button.syl-toolbar-button",
+                ".syl-toolbar-tool.image button",
+                ".syl-toolbar-tool.image",
+            ]:
+                try:
+                    locator = toolbar.locator(button_selector).first
+                    locator.wait_for(state="visible", timeout=500)
+                    return locator
+                except Exception:
+                    continue
+
         for selector in self.DEFAULT_ARTICLE_IMAGE_TRIGGER_SELECTORS:
             locator = page.locator(selector).first
             try:
@@ -936,38 +1385,101 @@ class PublishService:
                 continue
         return None
 
+    def _open_article_image_file_chooser(self, page, trigger_locator):
+        try:
+            with page.expect_file_chooser(timeout=1800) as chooser_info:
+                self._click_article_image_trigger(trigger_locator)
+            return chooser_info.value
+        except PlaywrightTimeoutError:
+            return None
+        except Exception:
+            return None
+
+    def _click_article_image_trigger(self, trigger_locator) -> None:
+        click_errors: list[str] = []
+        for strategy in ("click", "dispatch", "dom"):
+            try:
+                if strategy == "click":
+                    trigger_locator.click(force=True, timeout=1500)
+                elif strategy == "dispatch":
+                    trigger_locator.dispatch_event("click")
+                else:
+                    trigger_locator.evaluate("(node) => node.click()")
+                return
+            except Exception as exc:
+                click_errors.append(str(exc))
+                continue
+        raise RuntimeError(
+            "Failed to activate the article image trigger. "
+            + " | ".join(item for item in click_errors if item)
+        )
+
     def _wait_for_article_upload_input(self, page, existing_count: int):
+        scoped_selectors = [
+            ".upload-image-panel .btn-upload-handle input[type='file']",
+            ".upload-image-panel .upload-handler input[type='file']",
+            ".upload-image-panel .image-item-upload input[type='file']",
+            ".upload-image-panel input#upload-drag-input",
+            ".upload-image-panel input[type='file']",
+            ".byte-modal-wrapper .upload-image-panel input[type='file']",
+        ]
+        fallback_selectors = [
+            ".btn-upload-handle input[type='file']",
+            "input#upload-drag-input",
+            "input[type='file']",
+        ]
         timeout_ms = max(self.settings.publishing.wait_timeout_ms, 15000)
         deadline = datetime.now().timestamp() + (timeout_ms / 1000)
         while datetime.now().timestamp() < deadline:
-            file_inputs = page.locator("input[type='file']")
+            panel_visible = False
             try:
-                count = file_inputs.count()
+                panel_visible = page.locator(".upload-image-panel").first.is_visible(timeout=300)
             except Exception:
-                page.wait_for_timeout(200)
-                continue
+                panel_visible = False
 
-            for index in range(count - 1, -1, -1):
-                if count <= existing_count and index < existing_count:
-                    continue
-                locator = file_inputs.nth(index)
+            selectors = scoped_selectors if panel_visible else fallback_selectors
+            for selector in selectors:
                 try:
-                    accept_value = (locator.get_attribute("accept") or "").lower()
+                    file_inputs = page.locator(selector)
+                    count = file_inputs.count()
                 except Exception:
-                    accept_value = ""
-                if accept_value and "image" not in accept_value and ".png" not in accept_value:
                     continue
-                return locator
+
+                for index in range(count - 1, -1, -1):
+                    if not panel_visible and selector == "input[type='file']" and count <= existing_count and index < existing_count:
+                        continue
+                    locator = file_inputs.nth(index)
+                    try:
+                        accept_value = (locator.get_attribute("accept") or "").lower()
+                    except Exception:
+                        accept_value = ""
+                    if accept_value and "image" not in accept_value and ".png" not in accept_value:
+                        continue
+                    try:
+                        locator.wait_for(state="attached", timeout=400)
+                        return locator
+                    except Exception:
+                        continue
 
             page.wait_for_timeout(200)
         return None
 
-    def _wait_for_article_image_inserted(self, page, editor_locator, previous_count: int) -> None:
+    def _wait_for_article_image_inserted(
+        self,
+        page,
+        editor_selector: str,
+        editor_locator,
+        previous_count: int,
+    ) -> None:
         timeout_ms = max(self.settings.publishing.wait_timeout_ms, 30000)
         deadline = datetime.now().timestamp() + (timeout_ms / 1000)
         last_count = previous_count
         while datetime.now().timestamp() < deadline:
-            current_count = self._count_editor_images(editor_locator)
+            current_count = self._count_editor_images(
+                page,
+                editor_selector=editor_selector,
+                editor_locator=editor_locator,
+            )
             if current_count > previous_count:
                 page.wait_for_timeout(500)
                 return
@@ -979,13 +1491,247 @@ class PublishService:
             f"Previous image count: {previous_count}, current image count: {last_count}."
         )
 
-    def _count_editor_images(self, editor_locator) -> int:
-        for selector in ("figure img", ".editor-image img", "img"):
+    def _confirm_article_image_selection(
+        self,
+        page,
+        editor_selector: str,
+        editor_locator,
+        previous_count: int,
+    ) -> None:
+        panel_visible = False
+        try:
+            page.locator(".upload-image-panel").first.wait_for(
+                state="visible",
+                timeout=max(4000, min(self.settings.publishing.wait_timeout_ms, 12000)),
+            )
+            panel_visible = True
+        except Exception:
+            panel_visible = False
+
+        if not panel_visible:
+            return
+
+        selection_visible = False
+        for selector in [
+            ".pic-select-image-item",
+            ".pic-select-image-item-wrap",
+            ".upload-image-wrapper img",
+            ".upload-image-wrapper li",
+            ".upload-image-panel li.image-item",
+            ".upload-image-panel .image-list li",
+        ]:
             try:
-                return editor_locator.locator(selector).count()
+                page.locator(selector).first.wait_for(
+                    state="visible",
+                    timeout=max(3000, min(self.settings.publishing.wait_timeout_ms, 15000)),
+                )
+                selection_visible = True
+                break
             except Exception:
                 continue
-        return 0
+
+        if selection_visible:
+            selected = False
+            for selector in [
+                ".pic-select-image-item",
+                ".pic-select-image-item-wrap",
+                ".upload-image-wrapper img",
+                ".upload-image-wrapper li",
+                ".upload-image-panel li.image-item",
+                ".upload-image-panel .image-list li",
+            ]:
+                try:
+                    candidates = page.locator(selector)
+                    count = candidates.count()
+                    for index in range(count - 1, -1, -1):
+                        candidate = candidates.nth(index)
+                        try:
+                            if not candidate.is_visible(timeout=300):
+                                continue
+                        except Exception:
+                            continue
+
+                        try:
+                            candidate_text = self._clean_visible_text(candidate.text_content(timeout=300) or "")
+                        except Exception:
+                            candidate_text = ""
+                        if "更多" in candidate_text:
+                            continue
+
+                        candidate.click(force=True, timeout=1500)
+                        selected = True
+                        page.wait_for_timeout(500)
+                        break
+                    if selected:
+                        break
+                except Exception:
+                    continue
+            if not selected:
+                raise RuntimeError("Article image upload panel opened, but no uploaded image could be selected.")
+
+        confirm_clicked = self._maybe_click(
+            page,
+            [
+                "[data-e2e='imageUploadConfirm-btn']",
+                ".upload-image-panel .footer .byte-btn-primary",
+                ".upload-image-panel button:has-text('确定')",
+            ],
+            required=False,
+        )
+
+        timeout_ms = max(self.settings.publishing.wait_timeout_ms, 15000)
+        deadline = datetime.now().timestamp() + (timeout_ms / 1000)
+        panel_closed = False
+        current_count = previous_count
+
+        while datetime.now().timestamp() < deadline:
+            current_count = self._count_editor_images(
+                page,
+                editor_selector=editor_selector,
+                editor_locator=editor_locator,
+            )
+            if current_count > previous_count:
+                return
+
+            try:
+                panel_closed = not page.locator(".upload-image-panel").first.is_visible(timeout=300)
+            except Exception:
+                panel_closed = True
+
+            if panel_closed and confirm_clicked:
+                break
+            page.wait_for_timeout(250)
+
+        if current_count > previous_count:
+            return
+
+        if panel_closed and confirm_clicked:
+            return
+
+    def _count_editor_images(self, page, *, editor_selector: str | None = None, editor_locator=None) -> int:
+        script = """(root) => {
+            const seen = new Set();
+            const register = (value) => {
+                if (!value) {
+                    return;
+                }
+                const normalized = String(value).trim();
+                if (!normalized) {
+                    return;
+                }
+                seen.add(normalized);
+            };
+            const imageSelector = [
+                "img[web_uri]",
+                "img[mime_type^='image/']",
+                "img[src*='image_upload']",
+                "img[src*='tplv-obj.image']",
+                "img[src*='image-tt-private']",
+            ].join(",");
+            const blockSelector = [
+                "div[__syl_tag='true'][contenteditable='false']",
+                "div[__syl_tag='true']",
+                ".pgc-image",
+                ".pgc-img",
+                ".editor-image",
+            ].join(",");
+
+            for (const block of root.querySelectorAll(blockSelector)) {
+                const img = block.querySelector(imageSelector);
+                register(
+                    (img && (img.getAttribute("web_uri") || img.getAttribute("src"))) ||
+                    block.getAttribute("data-node-key") ||
+                    block.outerHTML.slice(0, 200)
+                );
+            }
+
+            if (seen.size > 0) {
+                return seen.size;
+            }
+
+            for (const img of root.querySelectorAll(imageSelector)) {
+                register(
+                    img.getAttribute("web_uri") ||
+                    img.getAttribute("src") ||
+                    img.outerHTML.slice(0, 200)
+                );
+            }
+
+            return seen.size;
+        }"""
+
+        if editor_locator is not None:
+            try:
+                count = int(editor_locator.evaluate(script))
+                if count > 0:
+                    return count
+            except Exception:
+                pass
+
+        try:
+            return int(
+                page.evaluate(
+                    """(payload) => {
+                        const selector = payload.selector;
+                        const roots = selector
+                            ? Array.from(document.querySelectorAll(selector))
+                            : Array.from(document.querySelectorAll(".ProseMirror"));
+                        if (!roots.length) {
+                            return 0;
+                        }
+
+                        const seen = new Set();
+                        const register = (value) => {
+                            if (!value) {
+                                return;
+                            }
+                            const normalized = String(value).trim();
+                            if (!normalized) {
+                                return;
+                            }
+                            seen.add(normalized);
+                        };
+                        const imageSelector = [
+                            "img[web_uri]",
+                            "img[mime_type^='image/']",
+                            "img[src*='image_upload']",
+                            "img[src*='tplv-obj.image']",
+                            "img[src*='image-tt-private']",
+                        ].join(",");
+                        const blockSelector = [
+                            "div[__syl_tag='true'][contenteditable='false']",
+                            "div[__syl_tag='true']",
+                            ".pgc-image",
+                            ".pgc-img",
+                            ".editor-image",
+                        ].join(",");
+
+                        for (const root of roots) {
+                            for (const block of root.querySelectorAll(blockSelector)) {
+                                const img = block.querySelector(imageSelector);
+                                register(
+                                    (img && (img.getAttribute("web_uri") || img.getAttribute("src"))) ||
+                                    block.getAttribute("data-node-key") ||
+                                    block.outerHTML.slice(0, 200)
+                                );
+                            }
+
+                            for (const img of root.querySelectorAll(imageSelector)) {
+                                register(
+                                    img.getAttribute("web_uri") ||
+                                    img.getAttribute("src") ||
+                                    img.outerHTML.slice(0, 200)
+                                );
+                            }
+                        }
+
+                        return seen.size;
+                    }""",
+                    {"selector": editor_selector},
+                )
+            )
+        except Exception:
+            return 0
 
     def _verify_publish_media_state(
         self,
@@ -993,7 +1739,7 @@ class PublishService:
         editor_selector: str,
         *,
         cover_mode: str,
-        expect_inline_image: bool,
+        expected_inline_images: int,
     ) -> None:
         if cover_mode == "single":
             try:
@@ -1004,18 +1750,23 @@ class PublishService:
             except Exception as exc:
                 raise RuntimeError("Cover verification failed before publish.") from exc
 
-        if not expect_inline_image:
+        if expected_inline_images <= 0:
             return
 
         editor_locator = page.locator(editor_selector).first
         timeout_ms = max(self.settings.publishing.wait_timeout_ms, 20000)
         deadline = datetime.now().timestamp() + (timeout_ms / 1000)
         while datetime.now().timestamp() < deadline:
-            if self._count_editor_images(editor_locator) > 0:
+            if self._count_editor_images(
+                page,
+                editor_selector=editor_selector,
+                editor_locator=editor_locator,
+            ) >= expected_inline_images:
                 return
             page.wait_for_timeout(250)
-
-        raise RuntimeError("Inline article image verification failed before publish.")
+        self.logger.warning(
+            "Inline article image verification did not observe the expected count before publish. Continuing without blocking publish."
+        )
 
     def _set_title_content(self, page, locator, title: str, notes: list[str]) -> None:
         locator.wait_for(state="visible", timeout=self.settings.publishing.wait_timeout_ms)
@@ -1266,21 +2017,38 @@ class PublishService:
     def _apply_cover_image(self, page, cover_path: Path, notes: list[str]) -> None:
         self._dismiss_ai_assistant_drawer(page, notes)
         self._ensure_single_cover_mode(page)
+        self._clear_existing_cover(page, notes)
 
         trigger_locator = self._resolve_cover_trigger(page)
         if trigger_locator is None:
             raise RuntimeError("Could not locate the Toutiao cover upload trigger.")
 
         try:
-            trigger_locator.dispatch_event("click")
+            existing_input_count = page.locator("input[type='file']").count()
         except Exception:
-            trigger_locator.click(force=True, timeout=1500)
+            existing_input_count = 0
 
-        upload_input = self._wait_for_cover_upload_input(page)
-        if upload_input is None:
-            raise RuntimeError("Cover upload panel did not open or no file input was exposed.")
+        file_chooser = self._open_cover_file_chooser(page, trigger_locator)
+        if file_chooser is not None:
+            file_chooser.set_files(str(cover_path))
+        else:
+            self._click_cover_trigger(trigger_locator)
+            upload_input = self._wait_for_cover_upload_input(page, existing_input_count)
+            if upload_input is None:
+                page.wait_for_timeout(600)
+                self._click_cover_trigger(trigger_locator)
+                upload_input = self._wait_for_cover_upload_input(page, existing_input_count)
+            if upload_input is None:
+                debug_dir = self._capture_debug_artifacts(
+                    page,
+                    extra_payload={"cover_path": str(cover_path)},
+                )
+                raise RuntimeError(
+                    "Cover upload panel did not open or no file input was exposed. "
+                    f"Debug files saved to: {debug_dir}"
+                )
 
-        upload_input.set_input_files(str(cover_path), timeout=max(self.settings.publishing.wait_timeout_ms, 60000))
+            upload_input.set_input_files(str(cover_path), timeout=max(self.settings.publishing.wait_timeout_ms, 60000))
 
         wrapper = page.locator(".upload-image-wrapper").first
         wrapper.wait_for(state="visible", timeout=max(self.settings.publishing.wait_timeout_ms, 20000))
@@ -1307,6 +2075,7 @@ class PublishService:
                 candidate = page.locator(selector).first
                 candidate.click(force=True, timeout=1500)
                 selected = True
+                page.wait_for_timeout(600)
                 break
             except Exception:
                 continue
@@ -1322,31 +2091,162 @@ class PublishService:
         if not self._maybe_click(page, confirm_selectors, required=False):
             raise RuntimeError("Cover upload confirm button was not available.")
 
-        try:
-            page.locator(".upload-image-panel").first.wait_for(
-                state="hidden",
-                timeout=max(self.settings.publishing.wait_timeout_ms, 20000),
-            )
-        except Exception:
-            debug_dir = self._capture_debug_artifacts(page)
-            raise RuntimeError(
-                "Cover upload panel did not close after confirming the uploaded image. "
-                f"Debug files saved to: {debug_dir}"
-            )
+        timeout_ms = max(self.settings.publishing.wait_timeout_ms, 20000)
+        deadline = datetime.now().timestamp() + (timeout_ms / 1000)
+        panel_closed = False
+        cover_applied = False
 
-        try:
-            page.locator(".article-cover img").first.wait_for(
-                state="visible",
-                timeout=max(self.settings.publishing.wait_timeout_ms, 20000),
-            )
-        except Exception:
+        while datetime.now().timestamp() < deadline:
+            panel_closed = self._is_cover_upload_panel_hidden(page)
+            cover_applied = self._is_cover_applied(page)
+            if cover_applied:
+                break
+            if panel_closed:
+                page.wait_for_timeout(400)
+            else:
+                self._try_close_cover_upload_panel(page, notes)
+                page.wait_for_timeout(800)
+
+        if not cover_applied:
             debug_dir = self._capture_debug_artifacts(page)
             raise RuntimeError(
                 "Cover image was uploaded but never appeared in the article cover area. "
                 f"Debug files saved to: {debug_dir}"
             )
 
+        if not panel_closed:
+            self._try_close_cover_upload_panel(page, notes)
+            page.wait_for_timeout(500)
+
         notes.append(f"Applied cover image: {cover_path.name}")
+
+    def _clear_existing_cover(self, page, notes: list[str]) -> None:
+        if not self._is_cover_applied(page):
+            return
+
+        hovered = False
+        for selector in [
+            ".article-cover .article-cover-img-wrap",
+            ".article-cover .article-cover-images",
+            ".article-cover .article-cover-add",
+        ]:
+            try:
+                locator = page.locator(selector).first
+                if locator.is_visible(timeout=500):
+                    locator.hover(timeout=1000)
+                    page.wait_for_timeout(250)
+                    hovered = True
+                    break
+            except Exception:
+                continue
+
+        deleted = False
+        for selector in [
+            ".article-cover .article-cover-delete",
+            ".article-cover-delete",
+        ]:
+            try:
+                locator = page.locator(selector).first
+                if self._click_button_candidate(locator):
+                    deleted = True
+                    notes.append(f"Removed existing cover via `{selector}` before uploading a new one.")
+                    break
+            except Exception:
+                continue
+
+        if not deleted:
+            try:
+                deleted = bool(
+                    page.evaluate(
+                        """() => {
+                            const root = document.querySelector('.article-cover');
+                            if (!root) {
+                                return false;
+                            }
+                            const button = root.querySelector('.article-cover-delete');
+                            if (!button) {
+                                return false;
+                            }
+                            button.dispatchEvent(new MouseEvent('click', {
+                                bubbles: true,
+                                cancelable: true,
+                                view: window,
+                            }));
+                            return true;
+                        }"""
+                    )
+                )
+                if deleted:
+                    notes.append("Removed existing cover via DOM fallback before uploading a new one.")
+            except Exception:
+                deleted = False
+
+        if not deleted:
+            if hovered:
+                notes.append("Existing cover was detected, but the remove control was not clickable.")
+            return
+
+        deadline = datetime.now().timestamp() + 8
+        while datetime.now().timestamp() < deadline:
+            if not self._is_cover_applied(page):
+                return
+            page.wait_for_timeout(250)
+
+    def _is_cover_upload_panel_hidden(self, page) -> bool:
+        try:
+            panel = page.locator(".upload-image-panel").first
+            return not panel.is_visible(timeout=500)
+        except Exception:
+            return True
+
+    def _is_cover_applied(self, page) -> bool:
+        for selector in [
+            ".article-cover img",
+            ".article-cover-images img",
+            ".article-cover .byte-spin img",
+            ".article-cover .article-cover-img-wrap img",
+        ]:
+            try:
+                locator = page.locator(selector).first
+                if locator.is_visible(timeout=500):
+                    return True
+            except Exception:
+                continue
+
+        try:
+            add_button = page.locator(".article-cover-add").first
+            if add_button.count() and not add_button.is_visible(timeout=500):
+                return True
+        except Exception:
+            pass
+
+        try:
+            preview_button = page.locator(".article-cover-preview .show-dialog-btn").first
+            if preview_button.is_visible(timeout=500):
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    def _try_close_cover_upload_panel(self, page, notes: list[str]) -> None:
+        for selector in [
+            ".upload-image-panel .footer .byte-btn-primary",
+            "[data-e2e='imageUploadConfirm-btn']",
+            ".upload-image-panel button:has-text('确定')",
+            ".upload-image-panel button:has-text('取消')",
+            ".upload-image-panel .byte-modal-close-x",
+            ".upload-image-panel .byte-modal-close-icon",
+        ]:
+            try:
+                locator = page.locator(selector).first
+                if not locator.is_visible(timeout=400):
+                    continue
+                if self._click_button_candidate(locator):
+                    notes.append(f"Attempted to close cover upload panel via `{selector}`.")
+                    return
+            except Exception:
+                continue
 
     def _resolve_cover_mode(self, cover_path: Path) -> str:
         configured = (self.settings.publishing.cover_mode or "auto").strip().lower()
@@ -1383,8 +2283,13 @@ class PublishService:
     def _resolve_cover_trigger(self, page):
         selectors = [
             ".article-cover-add",
+            ".article-cover-add .article-cover-add-icon",
+            ".article-cover .article-cover-add",
+            ".article-cover .article-cover-img-wrap",
             ".article-cover-img-replace",
             ".article-cover-img-modify",
+            ".article-cover .article-cover-img-replace",
+            ".article-cover .article-cover-img-modify",
         ]
         for selector in selectors:
             try:
@@ -1395,21 +2300,91 @@ class PublishService:
                 continue
         return None
 
-    def _wait_for_cover_upload_input(self, page):
+    def _open_cover_file_chooser(self, page, trigger_locator):
+        try:
+            with page.expect_file_chooser(timeout=1800) as chooser_info:
+                self._click_cover_trigger(trigger_locator)
+            return chooser_info.value
+        except PlaywrightTimeoutError:
+            return None
+        except Exception:
+            return None
+
+    def _click_cover_trigger(self, trigger_locator) -> None:
+        try:
+            trigger_locator.scroll_into_view_if_needed(timeout=1000)
+        except Exception:
+            pass
+
+        if self._click_button_candidate(trigger_locator):
+            return
+
+        try:
+            trigger_locator.hover(timeout=800)
+        except Exception:
+            pass
+
+        if self._click_button_candidate(trigger_locator):
+            return
+
+        try:
+            trigger_locator.evaluate(
+                """(node) => {
+                    const target =
+                        node.querySelector('button') ||
+                        node.querySelector('.article-cover-add-icon') ||
+                        node.querySelector('.article-cover-img-replace') ||
+                        node.querySelector('.article-cover-img-modify') ||
+                        node;
+                    target.dispatchEvent(new MouseEvent('click', {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                    }));
+                }"""
+            )
+            return
+        except Exception as exc:
+            raise RuntimeError(f"Failed to activate the cover upload trigger: {exc}") from exc
+
+    def _wait_for_cover_upload_input(self, page, existing_count: int = 0):
         selectors = [
+            ".upload-image-panel .btn-upload-handle input[type='file']",
+            ".upload-image-panel .upload-handler input[type='file']",
+            ".upload-image-panel .image-item-upload input[type='file']",
+            ".upload-image-panel input#upload-drag-input",
+            ".upload-image-panel input[type='file']",
+            ".byte-modal-wrapper .upload-image-panel input[type='file']",
+            ".upload-handler input[type='file']",
+            ".image-item-upload input[type='file']",
             ".btn-upload-handle input[type='file']",
             "input#upload-drag-input",
+            "input[type='file']",
         ]
         deadline = datetime.now().timestamp() + (max(self.settings.publishing.wait_timeout_ms, 20000) / 1000)
         while datetime.now().timestamp() < deadline:
             for selector in selectors:
                 try:
-                    locator = page.locator(selector).first
-                    if locator.count():
-                        locator.wait_for(state="attached", timeout=500)
-                        return locator
+                    locator_group = page.locator(selector)
+                    count = locator_group.count()
                 except Exception:
                     continue
+
+                for index in range(count - 1, -1, -1):
+                    if selector == "input[type='file']" and count <= existing_count and index < existing_count:
+                        continue
+                    locator = locator_group.nth(index)
+                    try:
+                        accept_value = (locator.get_attribute("accept") or "").lower()
+                    except Exception:
+                        accept_value = ""
+                    if accept_value and "image" not in accept_value and ".png" not in accept_value and ".jpg" not in accept_value and ".jpeg" not in accept_value:
+                        continue
+                    try:
+                        locator.wait_for(state="attached", timeout=500)
+                        return locator
+                    except Exception:
+                        continue
             page.wait_for_timeout(250)
         return None
 
@@ -1842,9 +2817,13 @@ class PublishService:
 
         creator_user_info = raw.get("creator_user_info") if isinstance(raw.get("creator_user_info"), dict) else {}
         article_new = raw.get("article_new") if isinstance(raw.get("article_new"), dict) else {}
-        article_data = article_new.get("data") if isinstance(article_new, dict) else {}
-        article_media = article_data.get("media") if isinstance(article_data, dict) else {}
-        content_cache = article_media.get("content_cache") if isinstance(article_media, dict) else {}
+        article_data = article_new.get("data") if isinstance(article_new.get("data"), dict) else {}
+        article_media = article_data.get("media") if isinstance(article_data.get("media"), dict) else {}
+        content_cache = (
+            article_media.get("content_cache")
+            if isinstance(article_media.get("content_cache"), dict)
+            else {}
+        )
         check_user_auth = raw.get("check_user_auth") if isinstance(raw.get("check_user_auth"), dict) else {}
         user_base_info = raw.get("user_base_info") if isinstance(raw.get("user_base_info"), dict) else {}
 

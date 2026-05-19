@@ -10,6 +10,7 @@ from pathlib import Path
 
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import TopicCandidate, WorkflowResult
+from toutiao_content_factory.services.article_sanitizer import clean_article_text
 from toutiao_content_factory.services.publish_service import PublishService
 from toutiao_content_factory.agents.base import BaseAgent
 
@@ -167,8 +168,11 @@ class ReviewWorkflowService:
         images_dir = publish_dir / "images"
         images_dir.mkdir(parents=True, exist_ok=True)
 
-        clean_article = self._text_cleaner.strip_prompt_leakage(bundle.article).strip()
-        clean_title = self._text_cleaner.strip_prompt_leakage(chosen_title).strip()
+        clean_article = clean_article_text(
+            self._text_cleaner.strip_prompt_leakage(bundle.article).strip(),
+            title_candidates=[chosen_title, *bundle.recommended_titles, *bundle.titles],
+        )
+        clean_title = self.publish_service._clip_title(self._text_cleaner.strip_prompt_leakage(chosen_title).strip())
         clean_summary = self._text_cleaner.strip_prompt_leakage(bundle.summary).strip()
         clean_comment = self._text_cleaner.strip_prompt_leakage(bundle.comment_prompt).strip()
 
@@ -353,7 +357,10 @@ class ReviewWorkflowService:
             titles=list(workflow.content.titles),
             recommended_titles=list(workflow.content.recommended_titles),
             summary=workflow.content.summary,
-            article=(workflow.content.polished_article or workflow.content.article),
+            article=clean_article_text(
+                workflow.content.polished_article or workflow.content.article,
+                title_candidates=list(workflow.content.recommended_titles) + list(workflow.content.titles),
+            ),
             comment_prompt=workflow.content.comment_prompt,
             tags=list(workflow.content.tags),
             recommended_topics=list(workflow.content.recommended_topics),
@@ -395,7 +402,7 @@ class ReviewWorkflowService:
             titles=title_payload["all_titles"],
             recommended_titles=title_payload["recommended_titles"],
             summary=article_sections.get("摘要", "").strip(),
-            article=self._read_text(run_dir / "article.md").strip(),
+            article=clean_article_text(self._read_text(run_dir / "article.md").strip()),
             comment_prompt=article_sections.get("评论区互动", "").strip(),
             tags=tags,
             recommended_topics=recommended_topics,

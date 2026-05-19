@@ -61,8 +61,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\init_publish_login.ps1 -Accou
 ## 五、全部验证通过后再开启定时任务
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\register_all_accounts.ps1 -EnableAutoPublish
+powershell -ExecutionPolicy Bypass -File .\scripts\register_all_accounts.ps1 -AccountKeys default,robot_notes,energy_notes -EnableAutoPublish
 ```
+
+这样只会先为首批 3 个正式账号注册定时发布，不会把后续备用账号一起拉起来。
 
 ## 六、你辅助我的方式
 

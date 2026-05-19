@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from toutiao_content_factory.models import ImageArtifacts, WorkflowResult
+from toutiao_content_factory.services.article_sanitizer import clean_article_text
 
 
 class ExportService:
@@ -58,7 +59,9 @@ class ExportService:
 
     def _build_publish_article(self, result: WorkflowResult) -> str:
         article = result.content.polished_article.strip() or result.content.article.strip()
-        return article + "\n"
+        title_candidates = result.content.recommended_titles + result.content.titles
+        clean_article = clean_article_text(article, title_candidates=title_candidates)
+        return (clean_article or article) + "\n"
 
     def _build_editorial_packet(self, result: WorkflowResult) -> str:
         content = result.content
@@ -75,7 +78,10 @@ class ExportService:
         validation_notes = "\n".join(f"- {item}" for item in content.validation_notes) or "- 无"
         publish_risks = "\n".join(f"- {item}" for item in score.publish_risk_flags) or "- 无"
         publish_notes = "\n".join(f"- {item}" for item in score.publish_notes) or "- 无"
-        article = (content.polished_article or content.article).strip()
+        article = clean_article_text(
+            (content.polished_article or content.article).strip(),
+            title_candidates=content.recommended_titles + content.titles,
+        )
 
         return (
             "# 编辑包\n\n"

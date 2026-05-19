@@ -185,11 +185,13 @@ python .\webapp.py --port 8001
 powershell -ExecutionPolicy Bypass -File .\scripts\register_daily_task.ps1 -EnableAutoPublish
 ```
 
-注册所有账号：
+注册首批 3 个账号：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\register_all_accounts.ps1 -EnableAutoPublish
+powershell -ExecutionPolicy Bypass -File .\scripts\register_all_accounts.ps1 -AccountKeys default,robot_notes,energy_notes -EnableAutoPublish
 ```
+
+如果后续你要把 `hardware_notes` 和 `automation_notes` 也加入，再单独补注册即可。
 
 任务注册成功后，你会在 Windows 计划任务里看到类似名称：
 

@@ -68,11 +68,37 @@ class SignalExtractor:
         "写作要求：",
         "推荐标题",
     )
+    COMPANY_STOP_WORDS = {
+        "这家公司",
+        "这类公司",
+        "相关公司",
+        "头部企业",
+        "主流新能源",
+        "一众主流新能源",
+        "国内新能源",
+        "海外新能源",
+        "整车企业",
+        "车企",
+        "企业",
+        "公司",
+        "客户",
+        "项目方",
+        "供应商",
+        "品牌",
+        "产业链",
+        "行业",
+        "市场",
+        "赛道",
+        "新能源车",
+    }
+    COMPANY_PREFIX_NOISE = ("这家", "这类", "相关", "头部", "一众", "主流", "国内", "海外", "而", "某", "该", "再", "曾经")
     COMPANY_PATTERN = re.compile(
-        r"[A-Za-z0-9\u4e00-\u9fff]{2,24}(?:公司|集团|科技|能源|机器人|股份|电气|动力|智能|电源)"
+        r"[A-Za-z0-9\u4e00-\u9fff]{2,24}(?:公司|集团|科技|能源|机器人|股份|电气|动力|智能|电源|汽车|材料|电池|储能|装备)"
     )
     NUMBER_PATTERN = re.compile(
-        r"(?:同比|环比|增长|提升|下降)?\s*\d+(?:\.\d+)?(?:%|亿|亿元|万台|万美元|个月|季度|年|倍)"
+        r"(?:同比|环比|增长|提升|下降|下滑|减少|扩大|超|近|约|达)?\s*"
+        r"\d+(?:\.\d+)?(?:%|亿|亿元|亿美元|万元|万台|万辆|万套|万吨|万千瓦|万千瓦时|"
+        r"GWh|MWh|kWh|Wh|Ah|GW|MW|kW|W|V|A|个月|季度|年|倍|天|小时|分钟)"
     )
 
     def extract(self, documents: list[SourceDocument]) -> ExtractionResult:
@@ -88,16 +114,20 @@ class SignalExtractor:
         suggested_angle = self._first_metadata_value(documents, "suggested_angle")
         follow_up_focus = self._first_metadata_value(documents, "follow_up_focus")
         writing_brief = self._first_metadata_value(documents, "writing_brief")
+        topic_type = self._first_metadata_value(documents, "topic_type")
+        content_format = self._first_metadata_value(documents, "content_format")
+        format_brief = self._first_metadata_value(documents, "format_brief")
+        paragraph_instruction = self._first_metadata_value(documents, "paragraph_instruction")
+        evidence_strength = self._parse_metadata_int(self._first_metadata_value(documents, "evidence_strength"))
+        topic_quality_score = self._parse_metadata_int(self._first_metadata_value(documents, "topic_quality_score"))
+        topic_quality_flags = self._parse_metadata_list(self._first_metadata_value(documents, "topic_quality_flags"))
+        word_target = self._parse_metadata_int(self._first_metadata_value(documents, "word_target"))
 
         focus_keywords = self._resolve_focus_keywords(documents, analysis_text, focus_industry)
         filtered_sentences = self._filter_sentences_by_focus(analysis_sentences, focus_industry, focus_keywords)
 
-        growth_numbers = self._deduplicate(self.NUMBER_PATTERN.findall(analysis_text))[:12]
-        companies = [
-            item
-            for item in self._deduplicate(self.COMPANY_PATTERN.findall(analysis_text))
-            if item not in self.GENERIC_COMPANY_EXCLUSIONS
-        ][:12]
+        growth_numbers = self._extract_growth_numbers(analysis_text)
+        companies = self._extract_companies(analysis_text, topic_title)
         focus_companies = self._resolve_focus_companies(companies, filtered_sentences, focus_keywords)
         supply_chain_keywords = self._extract_keywords(analysis_text)
         core_data = self._pick_data_sentences(filtered_sentences or analysis_sentences or sentences)
@@ -129,6 +159,14 @@ class SignalExtractor:
             suggested_angle=suggested_angle,
             follow_up_focus=follow_up_focus,
             writing_brief=writing_brief,
+            topic_type=topic_type,
+            content_format=content_format,
+            format_brief=format_brief,
+            paragraph_instruction=paragraph_instruction,
+            evidence_strength=evidence_strength,
+            topic_quality_score=topic_quality_score,
+            topic_quality_flags=topic_quality_flags,
+            word_target=word_target,
             evidence_items=evidence_items,
             source_summaries=source_summaries,
         )
@@ -160,6 +198,16 @@ class SignalExtractor:
             if value:
                 return value
         return ""
+
+    def _parse_metadata_int(self, value: str) -> int:
+        match = re.search(r"\d+", str(value or ""))
+        return int(match.group(0)) if match else 0
+
+    def _parse_metadata_list(self, value: str) -> list[str]:
+        raw = str(value or "").strip()
+        if not raw:
+            return []
+        return self._deduplicate([item.strip() for item in re.split(r"[、，,；;|/]", raw) if item.strip()])[:8]
 
     def _split_sentences(self, text: str) -> list[str]:
         chunks = re.split(r"[。！？；\n]+", text)
@@ -212,7 +260,9 @@ class SignalExtractor:
             if any(anchor and anchor in sentence for anchor in anchors):
                 result.append(sentence)
                 continue
-            if self.NUMBER_PATTERN.search(sentence) and any(token in sentence for token in ("订单", "交付", "毛利", "验证", "量产")):
+            if self.NUMBER_PATTERN.search(sentence) and any(
+                token in sentence for token in ("订单", "交付", "毛利", "验证", "量产", "中标", "并网", "装机", "报价", "出货")
+            ):
                 result.append(sentence)
         return self._deduplicate(result)[:20]
 
@@ -243,7 +293,10 @@ class SignalExtractor:
         scored = [
             sentence
             for sentence in sentences
-            if (self.NUMBER_PATTERN.search(sentence) or "数据" in sentence or "装机" in sentence or "毛利" in sentence)
+            if (
+                self.NUMBER_PATTERN.search(sentence)
+                or any(token in sentence for token in ("数据", "装机", "毛利", "中标", "并网", "订单", "交付", "出货", "产能"))
+            )
             and not self._is_noise_sentence(sentence)
         ]
         return self._deduplicate(scored)[:6]
@@ -253,7 +306,7 @@ class SignalExtractor:
         for sentence in sentences:
             if self._is_noise_sentence(sentence):
                 continue
-            if any(word in sentence for word in ("趋势", "加快", "扩产", "验证", "海外", "需求", "订单", "交付", "回报周期")):
+            if any(word in sentence for word in ("趋势", "加快", "扩产", "验证", "海外", "需求", "订单", "交付", "回报周期", "并网", "招标", "出货")):
                 trend_candidates.append(sentence)
 
         if not trend_candidates and keywords:
@@ -335,6 +388,46 @@ class SignalExtractor:
         if any(marker in stripped for marker in self.NOISE_MARKERS):
             return True
         return stripped in {"关键结论", "数据观察", "产业链关键词", "行业判断"}
+
+    def _extract_growth_numbers(self, analysis_text: str) -> list[str]:
+        return self._deduplicate(self.NUMBER_PATTERN.findall(analysis_text))[:12]
+
+    def _extract_companies(self, analysis_text: str, topic_title: str) -> list[str]:
+        candidates = self._deduplicate(self.COMPANY_PATTERN.findall(analysis_text))
+        title_candidates = self._extract_title_company_candidates(topic_title)
+        merged = self._deduplicate(title_candidates + candidates)
+        return [item for item in merged if self._is_valid_company_name(item)][:12]
+
+    def _extract_title_company_candidates(self, topic_title: str) -> list[str]:
+        if not topic_title:
+            return []
+        candidates: list[str] = []
+        for part in re.split(r"[，,：:、（）()\-\s]", topic_title):
+            current = part.strip()
+            if 2 <= len(current) <= 8 and re.search(r"[\u4e00-\u9fff]", current):
+                candidates.append(current)
+        return candidates
+
+    def _is_valid_company_name(self, value: str) -> bool:
+        candidate = value.strip()
+        if not candidate or len(candidate) < 2 or len(candidate) > 18:
+            return False
+        if candidate in self.GENERIC_COMPANY_EXCLUSIONS or candidate in self.COMPANY_STOP_WORDS:
+            return False
+        if any(candidate.startswith(prefix) for prefix in self.COMPANY_PREFIX_NOISE):
+            return False
+        if any(token in candidate for token in ("数据", "趋势", "摘要", "原因", "结论", "价格战", "订单", "交付", "风险")):
+            return False
+        if re.search(r"[。！？；：:#]", candidate):
+            return False
+        has_suffix = bool(
+            re.search(
+                r"(公司|集团|科技|能源|机器人|股份|电气|动力|智能|电源|汽车|材料|电池|储能|装备)$",
+                candidate,
+            )
+        )
+        short_cjk_name = bool(re.fullmatch(r"[\u4e00-\u9fff]{2,6}", candidate))
+        return has_suffix or short_cjk_name
 
     def _deduplicate(self, items: list[str]) -> list[str]:
         seen: set[str] = set()

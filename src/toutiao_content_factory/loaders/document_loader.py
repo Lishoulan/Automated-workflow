@@ -104,6 +104,14 @@ class DocumentLoader:
             "writing_brief": r"固定写法：([^\n]+)",
             "primary_industry": r"主赛道：([^\n]+)",
             "primary_keywords": r"主关键词：([^\n]+)",
+            "topic_type": r"选题类型：([^\n]+)",
+            "content_format": r"内容体裁：([^\n]+)",
+            "format_brief": r"体裁要求：([^\n]+)",
+            "paragraph_instruction": r"段落要求：([^\n]+)",
+            "evidence_strength": r"证据强度：([^\n]+)",
+            "topic_quality_score": r"选题质量分：([^\n]+)",
+            "topic_quality_flags": r"质量标记：([^\n]+)",
+            "word_target": r"建议字数：([^\n]+)",
         }
         for key, pattern in patterns.items():
             match = re.search(pattern, text)

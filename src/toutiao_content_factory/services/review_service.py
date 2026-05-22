@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +10,7 @@ from pathlib import Path
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import TopicCandidate, WorkflowResult
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.publish_service import PublishService
 from toutiao_content_factory.agents.base import BaseAgent
 
@@ -27,8 +27,6 @@ class ReviewBundle:
     comment_prompt: str = ""
     tags: list[str] = field(default_factory=list)
     recommended_topics: list[str] = field(default_factory=list)
-    cover_prompt: str = ""
-    infographic_prompts: list[str] = field(default_factory=list)
     review_notes: list[str] = field(default_factory=list)
     validation_notes: list[str] = field(default_factory=list)
     revision_suggestions: list[str] = field(default_factory=list)
@@ -40,6 +38,7 @@ class ReviewWorkflowService:
         self.settings = settings
         self.logger = logger
         self.publish_service = PublishService(settings, logger)
+        self.growth_ops_service = GrowthOpsService(settings, logger)
         self._text_cleaner = BaseAgent.__new__(BaseAgent)
         self._text_cleaner.settings = settings
 
@@ -162,11 +161,7 @@ class ReviewWorkflowService:
         summary_path = publish_dir / "summary.txt"
         comment_path = publish_dir / "comment_prompt.txt"
         tags_path = publish_dir / "tags.txt"
-        cover_prompt_path = publish_dir / "cover_prompt.txt"
-        infographic_path = publish_dir / "infographic_prompts.txt"
         meta_path = publish_dir / "publish_meta.json"
-        images_dir = publish_dir / "images"
-        images_dir.mkdir(parents=True, exist_ok=True)
 
         clean_article = clean_article_text(
             self._text_cleaner.strip_prompt_leakage(bundle.article).strip(),
@@ -181,22 +176,7 @@ class ReviewWorkflowService:
         summary_path.write_text(clean_summary + "\n", encoding="utf-8")
         comment_path.write_text(clean_comment + "\n", encoding="utf-8")
         tags_path.write_text(" ".join(bundle.tags).strip() + "\n", encoding="utf-8")
-        cover_prompt_path.write_text(bundle.cover_prompt.strip() + "\n", encoding="utf-8")
-        infographic_path.write_text("\n".join(bundle.infographic_prompts).strip() + "\n", encoding="utf-8")
         package_path.write_text(self._build_publish_package(bundle, clean_title), encoding="utf-8")
-
-        copied_images: dict[str, str] = {}
-        for image_name in ("cover.png", "infographic_1.png", "infographic_2.png"):
-            source = run_dir / "images" / image_name
-            if not source.exists() and not (
-                self.settings.skip_image_generation or self.settings.fast_mode
-            ):
-                source = self.settings.project_root / "images" / image_name
-            if not source.exists():
-                continue
-            target = images_dir / source.name
-            shutil.copy2(source, target)
-            copied_images[source.name] = str(target)
 
         meta_payload = {
             "approved_at": datetime.now().isoformat(timespec="seconds"),
@@ -212,9 +192,20 @@ class ReviewWorkflowService:
             "publish_recommendation": bundle.score_snapshot.get("publish_recommendation", "manual_review"),
             "selected_topic": selected_topic.__dict__ if selected_topic is not None else None,
             "source_run_dir": str(run_dir),
-            "images": copied_images,
             "validation_notes": bundle.validation_notes,
         }
+        experiment_tags = self.growth_ops_service.build_experiment_tags(
+            title=clean_title,
+            article=clean_article,
+            summary=clean_summary,
+            topic_title=str((selected_topic.__dict__ if selected_topic is not None else {}).get("title", "")),
+            platform=self.settings.platform,
+            recommended_topics=bundle.recommended_topics,
+            raw_tags=bundle.tags,
+        )
+        experiment_tags_path = publish_dir / "experiment_tags.json"
+        experiment_tags_path.write_text(json.dumps(experiment_tags, ensure_ascii=False, indent=2), encoding="utf-8")
+        meta_payload["experiment_tags"] = experiment_tags
         meta_path.write_text(json.dumps(meta_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         status.update(
@@ -227,6 +218,7 @@ class ReviewWorkflowService:
                 "updated_at": datetime.now().isoformat(timespec="seconds"),
                 "publish_dir": str(publish_dir),
                 "publish_recommendation": bundle.score_snapshot.get("publish_recommendation", "manual_review"),
+                "experiment_tags_path": str(experiment_tags_path),
             }
         )
         status_path = run_dir / "review_status.json"
@@ -241,9 +233,8 @@ class ReviewWorkflowService:
             "publish_summary": summary_path,
             "publish_comment": comment_path,
             "publish_tags": tags_path,
-            "publish_cover_prompt": cover_prompt_path,
-            "publish_infographic_prompts": infographic_path,
             "publish_meta": meta_path,
+            "experiment_tags": experiment_tags_path,
         }
         if auto_publish:
             result.update(self.publish_service.publish_run(run_dir))
@@ -267,6 +258,26 @@ class ReviewWorkflowService:
         status_path = run_dir / "review_status.json"
         status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
         self.logger.info("Review rejected: %s", run_dir)
+        return {"review_status": status_path}
+
+    def mark_skipped_review(self, run_dir: Path, reviewer_notes: str | None = None) -> dict[str, Path]:
+        bundle, _selected_topic = self._load_bundle(run_dir)
+        status = self._load_status(run_dir)
+        if not status:
+            self.prepare_review(run_dir)
+            status = self._load_status(run_dir)
+
+        status.update(
+            {
+                "status": "skipped",
+                "recommended_action": self._recommended_action(bundle),
+                "reviewer_notes": reviewer_notes or "Skipped by the daily automation fallback logic.",
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        status_path = run_dir / "review_status.json"
+        status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.logger.info("Review skipped by automation: %s", run_dir)
         return {"review_status": status_path}
 
     def publish_run(self, run_dir: Path) -> dict[str, Path]:
@@ -364,8 +375,6 @@ class ReviewWorkflowService:
             comment_prompt=workflow.content.comment_prompt,
             tags=list(workflow.content.tags),
             recommended_topics=list(workflow.content.recommended_topics),
-            cover_prompt=workflow.content.cover_prompt,
-            infographic_prompts=list(workflow.content.infographic_prompts),
             review_notes=list(workflow.content.review_notes),
             validation_notes=list(workflow.content.validation_notes),
             revision_suggestions=list(workflow.content_score.revision_suggestions),
@@ -386,8 +395,6 @@ class ReviewWorkflowService:
         score_payload = self._load_score_payload(run_dir)
         article_sections = self._parse_article_sections(run_dir / "editorial_packet.md")
         title_payload = self._parse_titles_file(run_dir / "titles.txt")
-        cover_prompt = self._read_text(run_dir / "cover_prompt.txt")
-        infographic_prompts = self._parse_numbered_lines(self._read_text(run_dir / "infographic_prompts.txt"))
         tags = article_sections.get("头条标签", "").split()
         recommended_topics = self._parse_bullet_lines(article_sections.get("推荐话题", ""))
         review_notes = self._parse_bullet_lines(article_sections.get("发布前检查", ""))
@@ -406,8 +413,6 @@ class ReviewWorkflowService:
             comment_prompt=article_sections.get("评论区互动", "").strip(),
             tags=tags,
             recommended_topics=recommended_topics,
-            cover_prompt=cover_prompt.strip(),
-            infographic_prompts=infographic_prompts,
             review_notes=review_notes,
             validation_notes=validation_notes,
             revision_suggestions=revision_suggestions,
@@ -500,7 +505,10 @@ class ReviewWorkflowService:
                 f"- 来源：{selected_topic.source}\n"
                 f"- 发布时间：{selected_topic.published_at or '未知'}\n"
                 f"- 原文链接：{selected_topic.url}\n"
-                f"- 热度总分：{selected_topic.total_score}\n\n"
+                f"- 热度总分：{selected_topic.total_score}\n"
+                f"- 标题潜力分：{selected_topic.title_potential_score}\n"
+                f"- 标题打法赛道：{selected_topic.title_playbook_track or '未识别'}\n"
+                f"- 标题抓手：{'、'.join(selected_topic.title_potential_reasons) or '无'}\n\n"
             )
 
         recommended_titles = "\n".join(

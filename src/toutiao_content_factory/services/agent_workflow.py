@@ -1,11 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 import logging
 
 from toutiao_content_factory.agents import (
     DataAgent,
-    ImagePromptAgent,
     PolishAgent,
     PublishReviewAgent,
     ReviewAgent,
@@ -34,7 +33,6 @@ class AgentWorkflowService:
         self.writer_agent = WriterAgent(settings, prompt_repository, openai_service, logger)
         self.polish_agent = PolishAgent(settings, prompt_repository, openai_service, logger)
         self.title_agent = TitleAgent(settings, prompt_repository, openai_service, logger)
-        self.image_prompt_agent = ImagePromptAgent(settings, prompt_repository, openai_service, logger)
         self.review_agent = ReviewAgent(settings, prompt_repository, openai_service, logger)
         self.publish_review_agent = PublishReviewAgent(settings, prompt_repository, openai_service, logger)
         self.openai_service = openai_service
@@ -47,7 +45,6 @@ class AgentWorkflowService:
         fast_mode: bool = False,
         skip_review_agent: bool = False,
         skip_publish_review: bool = False,
-        skip_image_prompt_agent: bool = False,
     ) -> WorkflowResult:
         style = self.settings.get_style(style_key)
 
@@ -66,12 +63,8 @@ class AgentWorkflowService:
         content.titles = title_pack["titles"]
         content.recommended_titles = title_pack["recommended_titles"]
 
-        if skip_image_prompt_agent:
-            image_pack = self.image_prompt_agent._fallback(content, data_report, style)
-        else:
-            image_pack = self.image_prompt_agent.run(content, data_report, style)
-        content.cover_prompt = str(image_pack.get("cover_prompt", "")).strip()
-        content.infographic_prompts = list(image_pack.get("infographic_prompts", []))
+        content.cover_prompt = ""
+        content.infographic_prompts = []
 
         if skip_review_agent:
             review_pack = self.review_agent._fallback(content, data_report, cache_context)
@@ -179,3 +172,4 @@ class AgentWorkflowService:
     def _has_source_anchor(self, article: str) -> bool:
         markers = ("据", "数据显示", "公开材料", "财报", "公告", "机构统计", "报告")
         return any(marker in article for marker in markers)
+

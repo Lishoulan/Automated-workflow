@@ -9,6 +9,12 @@ from toutiao_content_factory.models import DataReport, ExtractionResult, TrendRe
 
 class DataAgent(BaseAgent):
     agent_name = "DataAgent"
+    MODE_NOISE_TOKENS = ("产业链", "订单", "交付", "毛利", "利润", "兑现", "融资", "客户验证", "科技制造", "项目落地")
+    SPORTS_TOKENS = ("体育", "足球", "篮球", "网球", "世界杯", "奥运", "英超", "西甲", "法网", "world cup", "football", "tennis", "french open", "grand slam")
+    INTERNATIONAL_TOKENS = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金", "仲裁", "白宫")
+    MODE_NOISE_TOKENS = ("产业链", "订单", "交付", "毛利", "利润", "兑现", "融资", "客户验证", "科技制造", "项目落地")
+    SPORTS_TOKENS = ("体育", "足球", "篮球", "网球", "世界杯", "奥运", "英超", "西甲", "法网", "world cup", "football", "tennis", "french open", "grand slam")
+    INTERNATIONAL_TOKENS = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金", "仲裁", "白宫")
     TOPIC_TYPE_LABELS = {
         "data_recap": "数据复盘",
         "project_progress": "项目进展",
@@ -72,12 +78,21 @@ class DataAgent(BaseAgent):
         trend_report: TrendReport,
         style: StyleProfile,
     ) -> DataReport:
+        benchmark_digest = self.benchmark_strategy_digest(
+            purpose="data",
+            track_hint=extraction.focus_industry or trend_report.recommended_angle,
+            title_hint=extraction.topic_title,
+            focus_industry=extraction.focus_industry,
+            keywords=extraction.focus_keywords + extraction.supply_chain_keywords,
+            angle_hint=trend_report.recommended_angle,
+            extra_text=extraction.writing_brief,
+        )
         prompt = self.render_prompt(
             "data_prompt_v2.md",
             brand_name=self.settings.brand_name,
             industry_focus=self.settings.industry_focus,
             style_digest=self.style_digest(style),
-            brand_digest=self.brand_digest(),
+            brand_digest=self.brand_digest(extra_sections=[benchmark_digest]),
             source_digest=self._format_source_digest(extraction),
             signals_json=self.json_text(self._extraction_payload(extraction)),
             trend_json=self.json_text(trend_report.__dict__),
@@ -157,6 +172,33 @@ class DataAgent(BaseAgent):
             ),
             limit=4,
         )
+        normalized_fields = self._normalize_mode_fields(
+            extraction=extraction,
+            focus_industry=focus_industry,
+            focus_keywords=focus_keywords,
+            supply_chain_keywords=supply_chain_keywords,
+            core_data=core_data,
+            industry_trends=industry_trends,
+            key_points=key_points,
+            watch_metrics=watch_metrics,
+            evidence_notes=evidence_notes,
+            risk_flags=risk_flags,
+            companies=companies,
+            focus_companies=focus_companies,
+        )
+        (
+            focus_industry,
+            focus_keywords,
+            supply_chain_keywords,
+            core_data,
+            industry_trends,
+            key_points,
+            watch_metrics,
+            evidence_notes,
+            risk_flags,
+            companies,
+            focus_companies,
+        ) = normalized_fields
         route = self._resolve_content_route(
             extraction=extraction,
             focus_industry=focus_industry or extraction.focus_industry or "相关赛道",
@@ -203,30 +245,65 @@ class DataAgent(BaseAgent):
         )
         primary = self.clean_publish_text(extraction.focus_industry.strip() or (keywords[0] if keywords else "相关赛道"))
         secondary = keywords[1] if len(keywords) > 1 else "关键环节"
+        content_mode = self._content_mode(extraction)
         companies = self._sanitize_companies(extraction.focus_companies + extraction.companies, extraction, limit=8)
         evidence_notes = self._build_evidence_notes(extraction)
+        supply_chain_keywords = self.clean_publish_list(extraction.supply_chain_keywords[:8] or keywords, limit=8)
+        watch_metrics = self._build_watch_metrics(primary, secondary, extraction.follow_up_focus)
+        risk_flags = self._build_risk_flags(primary, secondary, trend_report, keywords)
+        core_data = self.clean_publish_list(extraction.core_data[:6], limit=6)
+        industry_trends = self.clean_publish_list(extraction.industry_trends[:6], limit=6)
+        key_points = self.clean_publish_list(extraction.key_points[:6], limit=6)
+        focus_keywords = self.clean_publish_list(extraction.focus_keywords[:6] or keywords, limit=6)
+        normalized_fields = self._normalize_mode_fields(
+            extraction=extraction,
+            focus_industry=primary,
+            focus_keywords=focus_keywords,
+            supply_chain_keywords=supply_chain_keywords,
+            core_data=core_data,
+            industry_trends=industry_trends,
+            key_points=key_points,
+            watch_metrics=watch_metrics,
+            evidence_notes=evidence_notes,
+            risk_flags=risk_flags,
+            companies=companies,
+            focus_companies=companies[:4],
+        )
+        (
+            primary,
+            focus_keywords,
+            supply_chain_keywords,
+            core_data,
+            industry_trends,
+            key_points,
+            watch_metrics,
+            evidence_notes,
+            risk_flags,
+            companies,
+            focus_companies,
+        ) = normalized_fields
         route = self._resolve_content_route(
             extraction=extraction,
             focus_industry=primary,
             companies=companies,
             growth_numbers=self.clean_publish_list(extraction.growth_numbers[:8], limit=8),
-            core_data=self.clean_publish_list(extraction.core_data[:6], limit=6),
+            core_data=core_data,
             evidence_notes=evidence_notes,
         )
 
         return DataReport(
-            core_data=self.clean_publish_list(extraction.core_data[:6], limit=6),
-            industry_trends=self.clean_publish_list(extraction.industry_trends[:6], limit=6),
+            core_data=core_data,
+            industry_trends=industry_trends,
             growth_numbers=self.clean_publish_list(extraction.growth_numbers[:8], limit=8),
             companies=companies,
-            supply_chain_keywords=self.clean_publish_list(extraction.supply_chain_keywords[:8] or keywords, limit=8),
-            key_points=self.clean_publish_list(extraction.key_points[:6], limit=6),
-            watch_metrics=self._build_watch_metrics(primary, secondary, extraction.follow_up_focus),
+            supply_chain_keywords=supply_chain_keywords,
+            key_points=key_points,
+            watch_metrics=watch_metrics,
             evidence_notes=evidence_notes,
-            risk_flags=self._build_risk_flags(primary, secondary, trend_report, keywords),
+            risk_flags=risk_flags,
             focus_industry=primary,
-            focus_keywords=self.clean_publish_list(extraction.focus_keywords[:6] or keywords, limit=6),
-            focus_companies=companies[:4],
+            focus_keywords=focus_keywords,
+            focus_companies=focus_companies,
             topic_title=extraction.topic_title,
             selection_reason=extraction.selection_reason,
             suggested_angle=extraction.suggested_angle,
@@ -253,6 +330,7 @@ class DataAgent(BaseAgent):
         core_data: list[str],
         evidence_notes: list[str],
     ) -> dict[str, object]:
+        content_mode = self._content_mode(extraction)
         topic_type = extraction.topic_type.strip() or self._infer_topic_type(extraction)
         evidence_strength = extraction.evidence_strength or self._estimate_evidence_strength(
             extraction,
@@ -261,24 +339,34 @@ class DataAgent(BaseAgent):
             core_data,
             evidence_notes,
         )
-        content_format = extraction.content_format.strip() or self._choose_content_format(
-            topic_type,
-            evidence_strength,
-            extraction.topic_quality_flags,
-            companies,
-            growth_numbers,
-            evidence_notes,
-        )
+        if content_mode == "sports":
+            content_format = "quick_commentary"
+        elif content_mode == "international":
+            content_format = "quick_commentary"
+        else:
+            content_format = extraction.content_format.strip() or self._choose_content_format(
+                topic_type,
+                evidence_strength,
+                extraction.topic_quality_flags,
+                companies,
+                growth_numbers,
+                evidence_notes,
+            )
         topic_quality_score = extraction.topic_quality_score or min(
             96,
             round(evidence_strength * 0.72 + len(evidence_notes) * 2 + len(growth_numbers) * 2),
         )
         topic_quality_flags = list(extraction.topic_quality_flags)
-        word_target = extraction.word_target or self._word_target_for_format(content_format)
+        word_target = extraction.word_target or self._word_target_for_format(content_format, content_mode=content_mode)
         paragraph_instruction = extraction.paragraph_instruction.strip() or self._paragraph_instruction_for_format(
-            content_format
+            content_format,
+            content_mode=content_mode,
         )
-        format_brief = extraction.format_brief.strip() or self._format_brief_for_format(content_format, focus_industry)
+        format_brief = extraction.format_brief.strip() or self._format_brief_for_format(
+            content_format,
+            focus_industry,
+            content_mode=content_mode,
+        )
         return {
             "topic_type": topic_type,
             "topic_type_label": self.TOPIC_TYPE_LABELS.get(topic_type, topic_type or "行业事件"),
@@ -359,7 +447,11 @@ class DataAgent(BaseAgent):
             return "project_breakdown"
         return "quick_commentary"
 
-    def _word_target_for_format(self, content_format: str) -> int:
+    def _word_target_for_format(self, content_format: str, content_mode: str = "generic") -> int:
+        if content_mode == "sports":
+            return 900
+        if content_mode == "international":
+            return 1000
         if content_format == "quick_commentary":
             return 800
         if content_format == "data_recap":
@@ -368,7 +460,11 @@ class DataAgent(BaseAgent):
             return 1100
         return self.settings.article_word_target
 
-    def _paragraph_instruction_for_format(self, content_format: str) -> str:
+    def _paragraph_instruction_for_format(self, content_format: str, content_mode: str = "generic") -> str:
+        if content_mode == "sports":
+            return "4到6段，每段2到3句，先判断影响，再讲关键人物和后续走势，结尾只留一个互动问题。"
+        if content_mode == "international":
+            return "5到6段，每段2到3句，先事件、再博弈、再影响、再变量，结尾不要空喊口号。"
         if content_format == "quick_commentary":
             return "4到5段，每段2句，首段直接判断，末段只留一个互动问题。"
         if content_format == "data_recap":
@@ -377,7 +473,11 @@ class DataAgent(BaseAgent):
             return "5到6段，每段2到3句，围绕主体、环节位置、订单兑现和交付节奏展开。"
         return "5到7段，每段2到3句，先判断、再数据、再产业链、再主体、再风险边界。"
 
-    def _format_brief_for_format(self, content_format: str, focus_industry: str) -> str:
+    def _format_brief_for_format(self, content_format: str, focus_industry: str, content_mode: str = "generic") -> str:
+        if content_mode == "sports":
+            return "写成体育复盘或赛前判断稿，重点解释事件对阵容选择、比赛走势和舆论预期的影响。"
+        if content_mode == "international":
+            return "写成国际热点解读稿，重点解释各方博弈关系、后续变量和外溢影响。"
         if content_format == "quick_commentary":
             return "写成短而硬的事件点评，不要强行拉成长篇深度稿。"
         if content_format == "data_recap":
@@ -436,6 +536,11 @@ class DataAgent(BaseAgent):
             if items:
                 return self.unique(items)[:5]
 
+        if self._text_mode(f"{primary} {secondary}") == "sports":
+            return self.unique(["阵容变化", "赛程难度", "关键人物状态", "舆论争议是否继续发酵"])[:5]
+        if self._text_mode(f"{primary} {secondary}") == "international":
+            return self.unique(["政策表态", "谈判进展", "相关国家是否跟进动作", "市场反馈"])[:5]
+
         delivery_metric = "样机转量产速度" if any(token in primary for token in ("机器人", "装备")) else "项目交付节奏"
         candidates = [
             "新增订单和中标数量",
@@ -445,6 +550,238 @@ class DataAgent(BaseAgent):
             f"{secondary}环节毛利率变化",
         ]
         return self.unique(candidates)[:5]
+
+    def _normalize_mode_fields(
+        self,
+        *,
+        extraction: ExtractionResult,
+        focus_industry: str,
+        focus_keywords: list[str],
+        supply_chain_keywords: list[str],
+        core_data: list[str],
+        industry_trends: list[str],
+        key_points: list[str],
+        watch_metrics: list[str],
+        evidence_notes: list[str],
+        risk_flags: list[str],
+        companies: list[str],
+        focus_companies: list[str],
+    ) -> tuple[str, list[str], list[str], list[str], list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
+        mode = self._content_mode(extraction)
+        if mode == "sports":
+            normalized_focus = self.clean_publish_text(focus_industry).strip() or "体育赛事"
+            if any(token in normalized_focus for token in self.MODE_NOISE_TOKENS):
+                normalized_focus = "体育赛事"
+            focus_keywords = self._clean_mode_list(
+                focus_keywords,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=self._sports_keywords(extraction),
+                limit=6,
+            )
+            supply_chain_keywords = self._clean_mode_list(
+                supply_chain_keywords,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=["阵容", "赛程", "关键人物", "比赛走势"],
+                limit=6,
+            )
+            core_data = self._clean_mode_list(
+                core_data,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=self._sports_core_points(extraction),
+                limit=5,
+            )
+            industry_trends = self._clean_mode_list(
+                industry_trends,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=[
+                    "这类名单与赛前信息的热度，正在从新闻转向走势判断。",
+                    "读者更关心的是阵容变化会不会改变比赛预期。",
+                ],
+                limit=4,
+            )
+            key_points = self._clean_mode_list(
+                key_points,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=[
+                    "真正值得写的不是复述消息，而是解释它会如何影响后续比赛。",
+                    "关键人物、名单取舍和赛程变化，才是决定讨论度的核心。",
+                ],
+                limit=4,
+            )
+            watch_metrics = self._clean_mode_list(
+                watch_metrics,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=["阵容变化", "赛程难度", "关键人物状态", "舆论争议是否继续发酵"],
+                limit=5,
+            )
+            evidence_notes = self._clean_mode_list(
+                evidence_notes,
+                blocked=("manual_paste", *self.MODE_NOISE_TOKENS),
+                fallback=self._sports_evidence_notes(extraction),
+                limit=4,
+            )
+            risk_flags = self._clean_mode_list(
+                risk_flags,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=[
+                    "如果后续名单、状态或临场信息继续变化，当前判断可能很快改写。",
+                    "公开信息不足时，最需要避免的是把赛前消息写成确定结论。",
+                ],
+                limit=4,
+            )
+            return normalized_focus, focus_keywords, supply_chain_keywords, core_data, industry_trends, key_points, watch_metrics, evidence_notes, risk_flags, [], []
+
+        if mode == "international":
+            normalized_focus = self.clean_publish_text(focus_industry).strip() or "国际热点"
+            if any(token in normalized_focus for token in self.MODE_NOISE_TOKENS):
+                normalized_focus = "国际热点"
+            focus_keywords = self._clean_mode_list(
+                focus_keywords,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=self._international_keywords(extraction),
+                limit=6,
+            )
+            supply_chain_keywords = self._clean_mode_list(
+                supply_chain_keywords,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=["博弈方", "政策变量", "谈判窗口", "市场反馈"],
+                limit=6,
+            )
+            core_data = self._clean_mode_list(
+                core_data,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=self._international_core_points(extraction),
+                limit=5,
+            )
+            industry_trends = self._clean_mode_list(
+                industry_trends,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=[
+                    "这类国际事件的热度，通常会从单点消息转向持续博弈观察。",
+                    "真正值得跟的不是表态本身，而是后续动作与市场反应。",
+                ],
+                limit=4,
+            )
+            key_points = self._clean_mode_list(
+                key_points,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=[
+                    "真正值得写的是各方利益、压力和下一步动作。",
+                    "政策变化与市场反馈，决定事件会继续升级还是转入谈判。",
+                ],
+                limit=4,
+            )
+            watch_metrics = self._clean_mode_list(
+                watch_metrics,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=["政策表态", "谈判进展", "相关国家是否跟进动作", "市场反馈"],
+                limit=5,
+            )
+            evidence_notes = self._clean_mode_list(
+                evidence_notes,
+                blocked=("manual_paste", *self.MODE_NOISE_TOKENS),
+                fallback=self._international_evidence_notes(extraction),
+                limit=4,
+            )
+            risk_flags = self._clean_mode_list(
+                risk_flags,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=[
+                    "表态本身不一定等于最终动作，后续政策变化可能很快修正当前判断。",
+                    "公开信息不足时，最需要避免的是把短期消息写成长周期定局。",
+                ],
+                limit=4,
+            )
+            return normalized_focus, focus_keywords, supply_chain_keywords, core_data, industry_trends, key_points, watch_metrics, evidence_notes, risk_flags, [], []
+
+        return focus_industry, focus_keywords, supply_chain_keywords, core_data, industry_trends, key_points, watch_metrics, evidence_notes, risk_flags, companies, focus_companies
+
+    def _clean_mode_list(
+        self,
+        items: list[str],
+        *,
+        blocked: tuple[str, ...],
+        fallback: list[str],
+        limit: int,
+    ) -> list[str]:
+        result: list[str] = []
+        for item in self.clean_publish_list(items, limit=limit * 3):
+            text = self.clean_publish_text(item).strip()
+            if not text:
+                continue
+            lowered = text.lower()
+            if any(token.lower() in lowered for token in blocked):
+                continue
+            result.append(text)
+        if not result:
+            result = [self.clean_publish_text(item).strip() for item in fallback if self.clean_publish_text(item).strip()]
+        return self.unique(result)[:limit]
+
+    def _sports_keywords(self, extraction: ExtractionResult) -> list[str]:
+        text = f"{extraction.topic_title} {extraction.selection_reason} {extraction.suggested_angle}".lower()
+        if "world cup" in text or "世界杯" in text:
+            return ["世界杯", "名单", "阵容", "比赛走势"]
+        if "football" in text:
+            return ["足球", "名单", "关键人物", "比赛走势"]
+        if "tennis" in text or "法网" in text:
+            return ["网球", "签表", "关键人物", "比赛走势"]
+        return ["体育赛事", "名单", "关键人物", "比赛走势"]
+
+    def _international_keywords(self, extraction: ExtractionResult) -> list[str]:
+        text = f"{extraction.topic_title} {extraction.selection_reason} {extraction.suggested_angle}".lower()
+        if "tariff" in text or "关税" in text:
+            return ["关税", "谈判", "政策变量", "市场反馈"]
+        if "white house" in text or "美国" in text:
+            return ["美国", "政策表态", "谈判窗口", "市场反馈"]
+        return ["国际热点", "博弈方", "政策变量", "市场反馈"]
+
+    def _sports_core_points(self, extraction: ExtractionResult) -> list[str]:
+        title = self._sports_subject_label(extraction)
+        return [
+            f"{title}触发的讨论重点，不在消息本身，而在后续比赛判断。",
+            "名单取舍、关键人物状态和赛程难度，决定这条消息会不会继续发酵。",
+        ]
+
+    def _international_core_points(self, extraction: ExtractionResult) -> list[str]:
+        title = self.clean_publish_text(extraction.topic_title).strip() or "这条国际消息"
+        return [
+            f"{title}真正值得看的是各方动作，而不只是表态本身。",
+            "后续政策变化、谈判进展和市场反馈，会决定事件的下一阶段走向。",
+        ]
+
+    def _sports_evidence_notes(self, extraction: ExtractionResult) -> list[str]:
+        notes: list[str] = []
+        if extraction.source_summaries:
+            source = str(extraction.source_summaries[0].get("source_type", "")).strip().lower()
+            if source == "paste":
+                return notes
+            preview = self.clean_publish_text(str(extraction.source_summaries[0].get("preview", "")).strip())
+            title = self.clean_publish_text(extraction.topic_title).strip()
+            if preview and preview != title and "http" not in preview.lower():
+                notes.append(preview)
+        return notes
+
+    def _international_evidence_notes(self, extraction: ExtractionResult) -> list[str]:
+        notes: list[str] = []
+        if extraction.source_summaries:
+            source = str(extraction.source_summaries[0].get("source_type", "")).strip().lower()
+            if source == "paste":
+                return notes
+            preview = self.clean_publish_text(str(extraction.source_summaries[0].get("preview", "")).strip())
+            title = self.clean_publish_text(extraction.topic_title).strip()
+            if preview and preview != title and "http" not in preview.lower():
+                notes.append(preview)
+        return notes
+
+    def _sports_subject_label(self, extraction: ExtractionResult) -> str:
+        text = f"{extraction.topic_title} {extraction.selection_reason} {extraction.suggested_angle}".lower()
+        if "world cup" in text or "世界杯" in text:
+            return "世界杯名单"
+        if "football" in text or "足球" in text:
+            return "这份名单"
+        if "tennis" in text or "法网" in text:
+            return "这次签表"
+        return "这条体育消息"
 
     def _build_evidence_notes(self, extraction: ExtractionResult) -> list[str]:
         notes: list[str] = []
@@ -474,6 +811,22 @@ class DataAgent(BaseAgent):
         trend_report: TrendReport,
         keywords: list[str],
     ) -> list[str]:
+        mode = self._text_mode(" ".join([primary, secondary, trend_report.recommended_angle, *keywords]))
+        if mode == "sports":
+            risks = [
+                f"{primary}热度升高，不等于后续走势已经被提前锁定。",
+                "如果后续名单、状态或临场信息继续变化，当前判断很容易被快速改写。",
+                "公开素材有限时，最需要防止的是把赛前消息写成确定性结论。",
+            ]
+            return self.clean_publish_list(risks, limit=4)
+        if mode == "international":
+            risks = [
+                f"{primary}局势变化很快，表态本身不一定等于最终动作。",
+                "如果后续谈判、政策或市场反应出现反向变化，当前判断需要及时修正。",
+                "公开素材有限时，最需要防止的是把短期消息写成长期定局。",
+            ]
+            return self.clean_publish_list(risks, limit=4)
+
         risks = [
             f"{primary}热度上升，不等于所有环节都能同步兑现利润。",
             f"如果订单落地慢于扩产或渠道铺设节奏，{secondary}等环节的利润率可能先承压。",
@@ -485,6 +838,31 @@ class DataAgent(BaseAgent):
         if any(token in keywords for token in ("逆变器", "系统集成", "减速器", "电机", "热管理")):
             risks.append(f"{secondary}等关键环节一旦竞争加剧，价格战会先侵蚀毛利。")
         return self.clean_publish_list(risks, limit=4)
+
+    def _content_mode(self, extraction: ExtractionResult) -> str:
+        text = " ".join(
+            item
+            for item in (
+                extraction.focus_industry,
+                extraction.topic_title,
+                extraction.selection_reason,
+                extraction.suggested_angle,
+                extraction.writing_brief,
+                extraction.format_brief,
+                " ".join(extraction.focus_keywords[:6]),
+                " ".join(extraction.supply_chain_keywords[:6]),
+            )
+            if item
+        )
+        return self._text_mode(text)
+
+    def _text_mode(self, text: str) -> str:
+        lowered = str(text or "").lower()
+        if any(token in lowered for token in self.SPORTS_TOKENS):
+            return "sports"
+        if any(token in lowered for token in self.INTERNATIONAL_TOKENS):
+            return "international"
+        return "generic"
 
     def _format_source_digest(self, extraction: ExtractionResult) -> str:
         return "\n".join(

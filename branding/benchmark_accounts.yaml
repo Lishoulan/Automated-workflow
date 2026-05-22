@@ -1,0 +1,302 @@
+version: 1
+updated_at: "2026-05-21"
+accounts:
+  - key: 36kr
+    name: "36氪"
+    platform: wechat
+    track: "科技商业"
+    stage: head
+    followers_estimate: 0
+    positioning: "泛科技与商业资讯头部账号，擅长把公司新闻包装成行业趋势解读。"
+    content_pillars:
+      - "融资与公司动态"
+      - "产业趋势判断"
+      - "热点快评"
+      - "商业模式拆解"
+    notes: "适合学习高频热点筛选和标题压缩。公开可见的新榜样本页显示：周新榜指数 947.6，7日发文 69 篇，7日总阅读约 262.25w。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "又一家机器人公司拿下大单，真正受益的不是整机厂"
+        keywords: ["机器人", "订单", "产业链", "整机厂"]
+      - published_at: "样式样本"
+        title: "一笔融资背后，具身智能开始进入交付竞赛"
+        keywords: ["融资", "具身智能", "交付", "创业公司"]
+      - published_at: "样式样本"
+        title: "英伟达之外，AI硬件最先赚钱的环节正在浮出水面"
+        keywords: ["英伟达", "AI硬件", "盈利", "供应链"]
+  - key: huxiu_app
+    name: "虎嗅APP"
+    platform: wechat
+    track: "科技商业"
+    stage: head
+    followers_estimate: 0
+    positioning: "科技商业深度评论账号，强调观点密度和商业判断。"
+    content_pillars:
+      - "公司战略拆解"
+      - "行业变局判断"
+      - "科技产品评论"
+      - "人物与组织"
+    notes: "适合学习“事件背后是什么”这类深度观点文。公开可见的新榜样本页显示：周新榜指数 940.1，7日发文 62 篇，7日总阅读约 230.60w。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "人形机器人看上去很热，先兑现利润的为什么总是上游"
+        keywords: ["人形机器人", "利润", "上游", "产业链"]
+      - published_at: "样式样本"
+        title: "新能源不缺故事，缺的是能穿越价格战的公司"
+        keywords: ["新能源", "价格战", "公司", "盈利"]
+      - published_at: "样式样本"
+        title: "大模型进入下半场，真正重要的已经不是参数了"
+        keywords: ["大模型", "商业化", "参数", "下半场"]
+  - key: chaping_xpin
+    name: "差评X.PIN"
+    platform: wechat
+    track: "科技商业"
+    stage: head
+    followers_estimate: 0
+    positioning: "科技热点解释型账号，常用强情绪标题和通俗化叙事。"
+    content_pillars:
+      - "科技热点解读"
+      - "产品与体验"
+      - "互联网事件评论"
+      - "消费电子"
+    notes: "适合学习封面感、冲突感和强开头。公开可见的新榜样本页显示：周新榜指数 925.6，7日发文 43 篇，7日总阅读约 186.4w。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "机器人都开始进厂了，但离真赚钱还差哪一步？"
+        keywords: ["机器人", "进厂", "盈利", "落地"]
+      - published_at: "样式样本"
+        title: "又一个AI硬件火了，普通人为什么该关心它"
+        keywords: ["AI硬件", "消费科技", "热点", "解释"]
+      - published_at: "样式样本"
+        title: "储能项目越签越多，这行怎么反而更卷了"
+        keywords: ["储能", "项目", "价格战", "内卷"]
+  - key: wallstreetcn
+    name: "华尔街见闻"
+    platform: wechat
+    track: "科技商业"
+    stage: head
+    followers_estimate: 0
+    positioning: "偏财经和产业决策层阅读的综合资讯账号，重视时效和宏观视角。"
+    content_pillars:
+      - "宏观与产业"
+      - "公司财报"
+      - "资本市场"
+      - "全球科技事件"
+    notes: "适合学习高时效内容的结构化表达。公开可见的新榜样本页显示：周新榜指数 880.5，7日发文 28 篇，7日总阅读约 82.60w。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "两万亿赛道再升温，新能源产业链正在重新定价"
+        keywords: ["新能源", "产业链", "重估", "赛道"]
+      - published_at: "样式样本"
+        title: "一季报之后，市场开始重估机器人供应链"
+        keywords: ["季报", "机器人", "供应链", "市场"]
+      - published_at: "样式样本"
+        title: "AI资本开支还在涨，哪些公司真正吃到了订单"
+        keywords: ["AI", "资本开支", "订单", "公司"]
+  - key: qbitai
+    name: "量子位"
+    platform: wechat
+    track: "AI机器人"
+    stage: head
+    followers_estimate: 0
+    positioning: "AI与具身智能头部媒体账号，兼具科技新闻速度与产业观察。"
+    content_pillars:
+      - "大模型"
+      - "人形机器人"
+      - "AI创业公司"
+      - "前沿技术发布"
+    notes: "这是你机器人账号最值得长期盯盘的样本之一。公开可见的新榜样本页显示：周新榜指数 902.3，7日发文 60 篇，7日总阅读约 124.47w。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "人形机器人开始卷交付，2026年的分水岭到了"
+        keywords: ["人形机器人", "交付", "2026", "分水岭"]
+      - published_at: "样式样本"
+        title: "一夜之间都在聊具身智能，真正的卡点其实只有三个"
+        keywords: ["具身智能", "卡点", "技术", "落地"]
+      - published_at: "样式样本"
+        title: "大模型之后，机器人会成为AI下一个兑现入口吗"
+        keywords: ["大模型", "机器人", "AI", "商业化"]
+  - key: agi_intelligence
+    name: "新智元"
+    platform: wechat
+    track: "AI机器人"
+    stage: head
+    followers_estimate: 0
+    positioning: "AI前沿与产业化并重，文章常带强结论和强标题。"
+    content_pillars:
+      - "AI前沿突破"
+      - "机器人与自动驾驶"
+      - "产业机会判断"
+      - "大厂与创业公司"
+    notes: "适合学习标题钩子和“结论先行”的写法。公开可见的新榜样本页显示：周新榜指数 925.2，7日发文 58 篇，7日总阅读约 176.40w。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "机器人不再只是会走路，产业真正看的是闭环能力"
+        keywords: ["机器人", "闭环", "产业", "能力"]
+      - published_at: "样式样本"
+        title: "AI Agent很热，但下一波商业化可能在机器人端"
+        keywords: ["AI Agent", "商业化", "机器人", "应用"]
+      - published_at: "样式样本"
+        title: "又一家大厂下场具身智能，窗口期还剩多久"
+        keywords: ["大厂", "具身智能", "窗口期", "竞争"]
+  - key: synced
+    name: "机器之心"
+    platform: wechat
+    track: "AI机器人"
+    stage: head
+    followers_estimate: 0
+    positioning: "技术媒体属性更强，适合观察专业信息如何转译成大众可读文章。"
+    content_pillars:
+      - "AI论文与模型"
+      - "机器人进展"
+      - "学界产业连接"
+      - "技术趋势"
+    notes: "适合学习专业资料如何降维表达。公开可见的新榜样本页显示：周新榜指数 889.4，7日发文 64 篇，7日总阅读约 103.23w。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "具身智能从演示走向落地，哪些技术栈先成熟"
+        keywords: ["具身智能", "技术栈", "落地", "成熟度"]
+      - published_at: "样式样本"
+        title: "机器人抓取能力升级后，物流场景会最先爆发吗"
+        keywords: ["机器人", "抓取", "物流", "场景"]
+      - published_at: "样式样本"
+        title: "多模态模型之后，为什么大家又开始重新看机器人"
+        keywords: ["多模态", "模型", "机器人", "趋势"]
+  - key: robot_pro
+    name: "机器人前瞻"
+    platform: wechat
+    track: "AI机器人"
+    stage: niche
+    followers_estimate: 0
+    positioning: "更垂直的人形机器人与产业链观察账号，题材贴近你的目标内容。"
+    content_pillars:
+      - "人形机器人"
+      - "产业链公司"
+      - "零部件与方案"
+      - "行业融资动态"
+    notes: "适合直接参考赛道选题。公开可见的新榜样本页显示：周新榜指数 751.3，7日发文 10 篇，7日总阅读约 10.55w。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "人形机器人订单开始出现，先受益的是减速器还是电机"
+        keywords: ["人形机器人", "订单", "减速器", "电机"]
+      - published_at: "样式样本"
+        title: "从机场到工厂，具身智能最先落地的三个场景"
+        keywords: ["具身智能", "机场", "工厂", "场景"]
+      - published_at: "样式样本"
+        title: "日本机器人不再一家独大，中国供应链正在改写规则"
+        keywords: ["日本机器人", "中国供应链", "规则", "替代"]
+  - key: gaogong_robot
+    name: "高工机器人"
+    platform: wechat
+    track: "AI机器人"
+    stage: niche
+    followers_estimate: 0
+    positioning: "偏B2B与产业链的机器人媒体账号，关注订单、工厂、供应链。"
+    content_pillars:
+      - "工业机器人"
+      - "人形机器人供应链"
+      - "项目落地"
+      - "企业经营数据"
+    notes: "适合补你的产业链深度。公开可见的新榜样本页显示：周新榜指数 620.5，7日发文 9 篇，7日总阅读约 1.55w。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "订单、交付、回款，机器人行业开始进入硬仗阶段"
+        keywords: ["订单", "交付", "回款", "机器人行业"]
+      - published_at: "样式样本"
+        title: "一条产线背后，人形机器人供应链谁在真正出货"
+        keywords: ["产线", "人形机器人", "供应链", "出货"]
+      - published_at: "样式样本"
+        title: "谐波减速器之后，下一个紧缺环节会是谁"
+        keywords: ["谐波减速器", "紧缺", "零部件", "供应链"]
+  - key: bess_china
+    name: "储能网"
+    platform: wechat
+    track: "新能源储能"
+    stage: niche
+    followers_estimate: 0
+    positioning: "储能行业垂直媒体，覆盖项目、招投标、政策和企业动态。"
+    content_pillars:
+      - "储能项目"
+      - "招投标与订单"
+      - "政策解读"
+      - "企业新闻"
+    notes: "这是储能账号的核心对标样本之一。公开可见的新榜样本页显示：周新榜指数 608.3，7日发文 17 篇，7日总阅读约 1.38w。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "储能项目密集开工后，PCS环节会先涨价吗"
+        keywords: ["储能", "项目", "PCS", "涨价"]
+      - published_at: "样式样本"
+        title: "一纸招标背后，储能行业的价格战已经提前打响"
+        keywords: ["招标", "储能", "价格战", "行业"]
+      - published_at: "样式样本"
+        title: "海外大储持续放量，中国厂商真正拼的是什么"
+        keywords: ["海外大储", "放量", "中国厂商", "竞争"]
+  - key: beijixing_power
+    name: "北极星电力网"
+    platform: wechat
+    track: "新能源储能"
+    stage: core
+    followers_estimate: 0
+    positioning: "电力与新能源综合媒体，政策、项目、企业动态覆盖全面。"
+    content_pillars:
+      - "电力行业"
+      - "储能政策"
+      - "项目跟踪"
+      - "企业动态"
+    notes: "适合补政策时效和项目颗粒度。公开可见的新榜样本页显示：周新榜指数 732.2，7日发文 17 篇，7日总阅读约 8.64w。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "政策加码之后，储能项目为什么反而更看现金流"
+        keywords: ["政策", "储能项目", "现金流", "投资"]
+      - published_at: "样式样本"
+        title: "独立储能再提速，哪些省份会先跑出来"
+        keywords: ["独立储能", "省份", "提速", "项目"]
+      - published_at: "样式样本"
+        title: "从并网节奏看，今年储能装机的关键变量变了"
+        keywords: ["并网", "储能装机", "变量", "节奏"]
+  - key: smm_new_energy
+    name: "SMM新能源"
+    platform: wechat
+    track: "新能源储能"
+    stage: core
+    followers_estimate: 0
+    positioning: "更偏数据和供应链价格的信息型账号，适合做数字证据补强。"
+    content_pillars:
+      - "电池材料"
+      - "锂电与储能"
+      - "价格与供需"
+      - "产业链数据"
+    notes: "适合学习数据密度和证据写法。公开可见的新榜样本页显示：周新榜指数 629.8，7日发文 30 篇，7日总阅读约 2.22w。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "碳酸锂波动放缓后，储能电芯会怎么重新定价"
+        keywords: ["碳酸锂", "储能电芯", "定价", "波动"]
+      - published_at: "样式样本"
+        title: "电池材料回暖了，储能链条谁的利润弹性最大"
+        keywords: ["电池材料", "储能", "利润弹性", "回暖"]
+      - published_at: "样式样本"
+        title: "订单增长和价格下滑并存，锂电供应链怎么选"
+        keywords: ["订单增长", "价格下滑", "锂电", "供应链"]
+  - key: new_energy_forward
+    name: "新能源正前方"
+    platform: wechat
+    track: "新能源储能"
+    stage: niche
+    followers_estimate: 0
+    positioning: "偏观点和投资视角的新能源内容号，适合学习个人化观点表达。"
+    content_pillars:
+      - "储能商业化"
+      - "光储产业趋势"
+      - "公司判断"
+      - "投资逻辑"
+    notes: "适合你账号后续往“个人判断型”升级时参考。当前未补充稳定公开阅读样本，建议你后续手动观察最近10篇标题和开头。"
+    observation_articles:
+      - published_at: "样式样本"
+        title: "储能最热的时候，最该警惕的反而是盈利幻觉"
+        keywords: ["储能", "盈利", "幻觉", "风险"]
+      - published_at: "样式样本"
+        title: "光储一体化进入兑现期，哪些公司会先跑出来"
+        keywords: ["光储一体化", "兑现期", "公司", "机会"]
+      - published_at: "样式样本"
+        title: "行业越热闹，越要分清储能和新能源的两套逻辑"
+        keywords: ["储能", "新能源", "逻辑", "行业"]

@@ -343,6 +343,9 @@ class TopicCandidate:
     save_score: int = 0
     discussion_score: int = 0
     total_score: int = 0
+    title_potential_score: int = 0
+    title_playbook_track: str = ""
+    title_potential_reasons: list[str] = field(default_factory=list)
     is_high_read: bool = False
     is_high_save: bool = False
     is_high_discussion: bool = False
@@ -373,6 +376,9 @@ class TopicCandidate:
             save_score=int(payload.get("save_score", 0)),
             discussion_score=int(payload.get("discussion_score", 0)),
             total_score=int(payload.get("total_score", 0)),
+            title_potential_score=int(payload.get("title_potential_score", 0)),
+            title_playbook_track=str(payload.get("title_playbook_track", "")),
+            title_potential_reasons=list(payload.get("title_potential_reasons", [])),
             is_high_read=bool(payload.get("is_high_read", False)),
             is_high_save=bool(payload.get("is_high_save", False)),
             is_high_discussion=bool(payload.get("is_high_discussion", False)),

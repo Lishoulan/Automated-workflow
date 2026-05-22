@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}批次详情 | AI 今日头条科技内容工厂{% endblock %}
+{% block title %}???? | ?????????{% endblock %}
 
 {% block content %}
 <section class="hero">
@@ -234,32 +234,6 @@
     </div>
     {% endif %}
   </div>
-
-  <div class="panel">
-    <div class="panel-head">
-      <h3>图片预览</h3>
-      <p>归档素材与发布素材</p>
-    </div>
-    <div class="image-grid">
-      <figure>
-        <img src="{{ detail.images.cover }}" alt="归档封面">
-        <figcaption>归档封面</figcaption>
-      </figure>
-      <figure>
-        <img src="{{ detail.images.infographic_1 }}" alt="归档信息图 1">
-        <figcaption>归档信息图 1</figcaption>
-      </figure>
-      <figure>
-        <img src="{{ detail.images.infographic_2 }}" alt="归档信息图 2">
-        <figcaption>归档信息图 2</figcaption>
-      </figure>
-      {% if detail.publish_meta %}
-      <figure>
-        <img src="{{ detail.publish_images.cover }}" alt="发布封面">
-        <figcaption>发布封面</figcaption>
-      </figure>
-      {% endif %}
-    </div>
-  </div>
 </section>
 {% endblock %}
+

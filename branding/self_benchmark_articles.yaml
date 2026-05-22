@@ -1,0 +1,78 @@
+version: 1
+updated_at: '2026-05-21'
+articles:
+- key: japan_airport_robot
+  enabled: true
+  track: 科技商业
+  account_key: default
+  platform: toutiao
+  published_at: '2026-05-16'
+  title: 当日本机器人衰退，中国人形机器人却在东京机场撕开缺口
+  run_dir: output/runs/20260516-112815_曾经全球第一的日本机器人-迎来-黄昏时刻
+  observed_metrics:
+    impression_count: 100000
+    read_count: 2000
+  keywords:
+  - 日本机器人
+  - 人形机器人
+  - 东京机场
+  - 产业转移
+  notes:
+  - 开头先给结论，再给关键数据和场景验证。
+  - 用日本衰退对比中国交付能力，形成强冲突。
+  - 重点落在产业链利润迁移，而不是泛泛讲技术。
+  - 结尾抛出场景盈利判断，方便评论区互动。
+  inferred_patterns:
+  - 对比式开头
+  - 数据锚点
+  - 场景验证
+  - 利润链条分析
+  - 互动式收尾
+- key: world_template
+  enabled: true
+  status: template
+  track: 国际热点
+  account_key: robot_notes
+  platform: toutiao
+  published_at: ''
+  title: 美国关税加码后，真正被改写的是谁的利润分配
+  run_dir: ''
+  observed_metrics:
+    impression_count: 0
+    read_count: 0
+  keywords:
+  - 美国
+  - 关税
+  - 外交
+  - 全球市场
+  notes:
+  - 国际号优先写局势变化对资产价格、供应链和中国企业的传导。
+  - 避免纯事件播报，必须给出中国视角的判断和后续变量。
+  inferred_patterns:
+  - 局势切口
+  - 利益再分配
+  - 中国视角
+- key: sports_template
+  enabled: true
+  status: template
+  track: 体育赛事
+  account_key: energy_notes
+  platform: toutiao
+  published_at: ''
+  title: 比分背后真正决定比赛走向的，不只是那次绝杀
+  run_dir: ''
+  observed_metrics:
+    impression_count: 0
+    read_count: 0
+  keywords:
+  - 比赛
+  - 绝杀
+  - 复盘
+  - 关键人物
+  notes:
+  - 体育号优先写关键转折点、争议节点和赛后复盘。
+  - 避免壁纸、超话、图集类伪热点，聚焦比赛本身。
+  inferred_patterns:
+  - 转折点开头
+  - 关键人物
+  - 赛后复盘

@@ -8,7 +8,6 @@ from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
 from toutiao_content_factory.services.cache_service import CacheService
 from toutiao_content_factory.services.exporter import ExportService
 from toutiao_content_factory.services.extractor import SignalExtractor
-from toutiao_content_factory.services.image_service import ImageGenerationService
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 
@@ -34,8 +33,7 @@ class ContentFactoryPipeline:
         self.openai_service = OpenAIContentService(settings, logger, force_mock=force_mock)
         self.workflow = AgentWorkflowService(settings, self.prompt_repository, self.openai_service, logger)
         self.cache_service = CacheService(settings.cache_dir, settings.cache_similarity_threshold, logger)
-        self.image_service = ImageGenerationService(settings, logger)
-        self.exporter = ExportService(settings.output_dir, logger)
+        self.exporter = ExportService(settings, logger)
 
     def run(self, paste_text: str | None = None, include_input_dir: bool = True) -> dict[str, str]:
         if include_input_dir:
@@ -73,16 +71,11 @@ class ContentFactoryPipeline:
                 fast_mode=self.fast_mode or self.settings.fast_mode,
                 skip_review_agent=self.settings.skip_review_agent or self.fast_mode or self.settings.fast_mode,
                 skip_publish_review=self.settings.skip_publish_review or self.fast_mode or self.settings.fast_mode,
-                skip_image_prompt_agent=self.fast_mode or self.settings.fast_mode,
             )
             self.cache_service.save(result, extraction.merged_text)
 
-        image_artifacts = None
-        if not (self.settings.skip_image_generation or self.fast_mode or self.settings.fast_mode):
-            image_artifacts = self.image_service.generate(result)
-        exported = self.exporter.export(result, image_artifacts=image_artifacts)
+        exported = self.exporter.export(result)
         return {name: str(path) for name, path in exported.items()}
 
     def close(self) -> None:
         self.openai_service.close()
-        self.image_service.close()

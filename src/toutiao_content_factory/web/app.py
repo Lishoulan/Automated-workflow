@@ -26,14 +26,13 @@ def create_app(project_root: Path, account_key: str | None = None) -> FastAPI:
     bootstrap_settings = load_settings(project_root, account_key=account_key)
     bootstrap_settings.ensure_directories()
 
-    app = FastAPI(title="AI 今日头条科技内容工厂", version="1.3.0")
+    app = FastAPI(title="?????????", version="1.3.0")
     app.state.project_root = project_root
     app.state.default_account_key = bootstrap_settings.account_key
     app.state.available_account_keys = bootstrap_settings.available_account_keys
     app.state.account_contexts: dict[str, AccountContext] = {}
 
     app.mount("/static", StaticFiles(directory=str(project_root / "static")), name="static")
-    app.mount("/artifacts/images", StaticFiles(directory=str(project_root / "images")), name="images_artifacts")
 
     templates = Jinja2Templates(directory=str(project_root / "templates" / "web"))
 
@@ -84,31 +83,30 @@ def create_app(project_root: Path, account_key: str | None = None) -> FastAPI:
             )
         return result
 
-    def build_account_overviews(current_account_key: str) -> list[dict[str, object]]:
-        overviews: list[dict[str, object]] = []
+    def build_manager_payload(current_account_key: str) -> dict[str, object]:
+        task_catalog = WebViewService.load_scheduled_task_catalog()
+        accounts: list[dict[str, object]] = []
         for key in app.state.available_account_keys:
             ctx = get_account_context(key)
-            dashboard_payload = ctx.view_service.load_dashboard()
-            latest_runs = dashboard_payload.get("runs", [])
-            latest_run = latest_runs[0] if latest_runs else None
-            latest_publish = dashboard_payload.get("latest_publish")
-            scheduled_status = dashboard_payload.get("scheduled_status") or {}
-            overviews.append(
-                {
-                    "key": ctx.settings.account_key,
-                    "label": ctx.settings.account_label,
-                    "is_current": ctx.settings.account_key == current_account_key,
-                    "runs_count": len(latest_runs),
-                    "latest_run_name": getattr(latest_run, "name", ""),
-                    "latest_topic_title": getattr(latest_run, "selected_topic_title", ""),
-                    "latest_review_status": getattr(latest_run, "review_status", ""),
-                    "latest_publish_status": getattr(latest_publish, "status", ""),
-                    "latest_publish_title": getattr(latest_publish, "title", ""),
-                    "scheduled_status": str(scheduled_status.get("status", "")),
-                    "scheduled_updated_at": str(scheduled_status.get("updated_at", "")),
-                }
+            accounts.append(
+                ctx.view_service.build_account_snapshot(
+                    task_catalog=task_catalog,
+                    is_current=ctx.settings.account_key == current_account_key,
+                )
             )
-        return overviews
+
+        summary = {
+            "total_accounts": len(accounts),
+            "toutiao_ready_accounts": sum(
+                1 for item in accounts if bool(item.get("toutiao", {}).get("schedule", {}).get("ready"))
+            ),
+            "wechat_enabled_accounts": sum(1 for item in accounts if bool(item.get("wechat", {}).get("enabled"))),
+            "pending_review_accounts": sum(1 for item in accounts if bool(item.get("has_pending_review"))),
+            "attention_accounts": sum(
+                1 for item in accounts if str(item.get("overall_tone", "")) in {"warn", "error"}
+            ),
+        }
+        return {"summary": summary, "accounts": accounts}
 
     def render(
         request: Request,
@@ -141,11 +139,14 @@ def create_app(project_root: Path, account_key: str | None = None) -> FastAPI:
         ctx = current_context(request, account)
         return render(
             request,
-            "dashboard.html",
+            "accounts.html",
             ctx,
-            dashboard=ctx.view_service.load_dashboard(),
-            account_overviews=build_account_overviews(ctx.settings.account_key),
+            manager=build_manager_payload(ctx.settings.account_key),
         )
+
+    @app.get("/accounts", name="accounts_page")
+    def accounts_page(request: Request, account: str | None = Query(default=None)):
+        return dashboard(request, account)
 
     @app.post("/actions/refresh-dashboard")
     def refresh_dashboard(account: str = Form(default=DEFAULT_ACCOUNT_KEY)):

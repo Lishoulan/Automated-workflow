@@ -1,0 +1,221 @@
+version: 1
+updated_at: "2026-05-21"
+platform: wechat
+accounts:
+  - key: wechat_36kr
+    name: "36氪"
+    platform: wechat
+    track: "科技商业"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 10
+    positioning: "泛科技与商业资讯头部账号，适合参考热点压缩、标题节奏和商业判断。"
+    content_pillars:
+      - "公司动态"
+      - "行业趋势"
+      - "热点快评"
+      - "商业模式"
+    notes: "公众号对标更适合学其标题压缩、事件转趋势和高频更新节奏。"
+    source_feeds:
+      - label: "36kr RSS"
+        type: "rss"
+        urls:
+          - "https://36kr.com/feed-article"
+    observation_articles:
+      - published_at: "样本"
+        title: "又一家机器人公司拿下大单，真正受益的不是整机厂"
+        keywords: ["机器人", "订单", "产业链", "整机厂"]
+      - published_at: "样本"
+        title: "英伟达之外，AI硬件最先赚钱的环节正在浮出水面"
+        keywords: ["英伟达", "AI硬件", "盈利", "供应链"]
+
+  - key: wechat_huxiu
+    name: "虎嗅APP"
+    platform: wechat
+    track: "科技商业"
+    stage: head
+    monitor_enabled: false
+    monitor_priority: 9
+    positioning: "科技商业深度评论账号，适合学习观点密度和结论先行。"
+    content_pillars:
+      - "战略拆解"
+      - "行业判断"
+      - "产品评论"
+    notes: "用来学开头结论感和事件背后的商业逻辑。"
+    source_feeds:
+      - label: "虎嗅首页"
+        type: "html"
+        urls:
+          - "https://www.huxiu.com/"
+    observation_articles:
+      - published_at: "样本"
+        title: "人形机器人看上去很热，先兑现利润的为什么总是上游"
+        keywords: ["人形机器人", "利润", "上游"]
+      - published_at: "样本"
+        title: "新能源不缺故事，缺的是能穿越价格战的公司"
+        keywords: ["新能源", "价格战", "公司"]
+
+  - key: wechat_qbitai
+    name: "量子位"
+    platform: wechat
+    track: "AI机器人"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 10
+    positioning: "AI与具身智能头部媒体账号，兼具热点速度和产业观察。"
+    content_pillars:
+      - "人形机器人"
+      - "具身智能"
+      - "AI创业"
+    notes: "机器人赛道优先盯盘对象。"
+    source_feeds:
+      - label: "量子位 RSS"
+        type: "rss"
+        urls:
+          - "https://www.qbitai.com/feed"
+    observation_articles:
+      - published_at: "样本"
+        title: "人形机器人开始卷交付，2026年的分水岭到了"
+        keywords: ["人形机器人", "交付", "2026"]
+      - published_at: "样本"
+        title: "一夜之间都在聊具身智能，真正的卡点其实只有三个"
+        keywords: ["具身智能", "卡点", "商业化"]
+
+  - key: wechat_jiqizhixin
+    name: "机器之心"
+    platform: wechat
+    track: "AI机器人"
+    stage: head
+    monitor_enabled: false
+    monitor_priority: 8
+    positioning: "技术媒体属性更强，适合观察专业信息如何转成大众可读文章。"
+    content_pillars:
+      - "模型与论文"
+      - "机器人进展"
+      - "技术趋势"
+    notes: "适合补强专业度与技术转译。"
+    source_feeds:
+      - label: "机器之心官网"
+        type: "html"
+        urls:
+          - "https://www.jiqizhixin.com/"
+    observation_articles:
+      - published_at: "样本"
+        title: "具身智能从演示走向落地，哪些技术栈先成熟"
+        keywords: ["具身智能", "技术栈", "落地"]
+      - published_at: "样本"
+        title: "多模态模型之后，为什么大家又开始重新看机器人"
+        keywords: ["多模态", "机器人", "趋势"]
+
+  - key: wechat_gaogong_robot
+    name: "高工机器人"
+    platform: wechat
+    track: "AI机器人"
+    stage: niche
+    monitor_enabled: false
+    monitor_priority: 9
+    positioning: "偏B2B与产业链的机器人媒体账号，适合盯订单、工厂和出货。"
+    content_pillars:
+      - "工业机器人"
+      - "供应链"
+      - "项目落地"
+    notes: "更适合你拿来做产业链深度和订单兑现跟踪。"
+    source_feeds:
+      - label: "高工机器人官网"
+        type: "html"
+        collector_name: "gg_robot"
+        same_domain_only: true
+        urls:
+          - "https://www.gg-robot.com/"
+          - "https://www.gg-robot.com/home/aggregator/?act=report"
+    observation_articles:
+      - published_at: "样本"
+        title: "订单、交付、回款，机器人行业开始进入硬仗阶段"
+        keywords: ["订单", "交付", "回款"]
+      - published_at: "样本"
+        title: "一条产线背后，人形机器人供应链谁在真正出货"
+        keywords: ["产线", "人形机器人", "供应链", "出货"]
+
+  - key: wechat_bjx
+    name: "北极星电力网"
+    platform: wechat
+    track: "新能源储能"
+    stage: head
+    monitor_enabled: false
+    monitor_priority: 10
+    positioning: "电力与储能综合媒体，适合政策时效、项目进展和并网节奏监控。"
+    content_pillars:
+      - "储能政策"
+      - "项目并网"
+      - "电力行业"
+    notes: "储能赛道的高频政策与项目源。"
+    source_feeds:
+      - label: "北极星电力网"
+        type: "html"
+        urls:
+          - "https://news.bjx.com.cn/"
+          - "https://news.bjx.com.cn/topics/chuneng/"
+    observation_articles:
+      - published_at: "样本"
+        title: "政策加码之后，储能项目为什么反而更看现金流"
+        keywords: ["政策", "储能项目", "现金流"]
+      - published_at: "样本"
+        title: "从并网节奏看，今年储能装机的关键变量变了"
+        keywords: ["并网", "储能装机", "变量"]
+
+  - key: wechat_zhidx
+    name: "智东西"
+    platform: wechat
+    track: "AI机器人"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 9
+    positioning: "硬科技与机器人报道稳定，适合补足公众号赛道的产业型热点。"
+    content_pillars:
+      - "机器人"
+      - "AI硬件"
+      - "智能制造"
+    notes: "公众号侧用来补强硬科技和产业链判断密度。"
+    source_feeds:
+      - label: "智东西官网"
+        type: "html"
+        collector_name: "zhidx"
+        urls:
+          - "https://www.zhidx.com/"
+          - "https://www.zhidx.com/p/category/%E6%9C%BA%E5%99%A8%E4%BA%BA%E6%97%A0%E4%BA%BA%E6%9C%BA"
+          - "https://www.zhidx.com/p/category/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD"
+    observation_articles:
+      - published_at: "样本"
+        title: "机器人量产还没爆，先爆的是上游零部件卡位"
+        keywords: ["机器人", "量产", "零部件"]
+      - published_at: "样本"
+        title: "AI硬件下一轮利润，不一定在最显眼的公司手里"
+        keywords: ["AI硬件", "利润", "公司"]
+
+  - key: wechat_ofweek
+    name: "OFweek维科网"
+    platform: wechat
+    track: "新能源储能"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 8
+    positioning: "储能、新能源和机器人多赛道高频更新，适合补公众号能源号的时效热点。"
+    content_pillars:
+      - "储能"
+      - "新能源"
+      - "机器人"
+    notes: "公众号储能赛道的补充高频源。"
+    source_feeds:
+      - label: "OFweek储能"
+        type: "html"
+        collector_name: "ofweek"
+        urls:
+          - "https://chuneng.ofweek.com/"
+          - "https://nev.ofweek.com/"
+    observation_articles:
+      - published_at: "样本"
+        title: "储能项目越签越多，这行怎么反而更卷了"
+        keywords: ["储能", "项目", "内卷"]
+      - published_at: "样本"
+        title: "新能源价格战打到最后，谁还能守住利润"
+        keywords: ["新能源", "价格战", "利润"]

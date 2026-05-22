@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}AI 今日头条科技内容工厂{% endblock %}</title>
+  <title>{% block title %}?????????{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
   <div class="shell">
     <aside class="sidebar">
       <div class="brand">
-        <p class="eyebrow">AI CONTENT FACTORY</p>
-        <h1>手蓝数据笔记</h1>
-        <p class="subtle">科技内容生产控制台</p>
+        <p class="eyebrow">SHOULAN MATRIX</p>
+        <h1>???????</h1>
+        <p class="subtle">???????????</p>
       </div>
 
       <div class="sidebar-card">
@@ -23,8 +23,8 @@
           <label>
             <span>切换账号</span>
             <select name="account" onchange="this.form.submit()">
-              {% for item in available_accounts %}
-              <option value="{{ item }}" {% if item == account_key %}selected{% endif %}>{{ item }}</option>
+              {% for item in account_options %}
+              <option value="{{ item.key }}" {% if item.key == account_key %}selected{% endif %}>{{ item.label }} | {{ item.key }}</option>
               {% endfor %}
             </select>
           </label>
@@ -32,7 +32,7 @@
       </div>
 
       <nav class="nav">
-        <a href="/?{{ account_query }}" class="nav-link">控制台</a>
+        <a href="/?{{ account_query }}" class="nav-link">账号管理</a>
         <a href="/topics?{{ account_query }}" class="nav-link">热点池</a>
         <a href="/runs?{{ account_query }}" class="nav-link">归档批次</a>
         <a href="/published?{{ account_query }}" class="nav-link">已发布预览</a>

@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>??????? | ?????????</title>
+  <style>
+    :root {
+      --bg: #f4efe6;
+      --bg-2: #dfe8e3;
+      --panel: rgba(255, 255, 255, 0.9);
+      --panel-strong: #fffdf9;
+      --line: rgba(20, 33, 48, 0.08);
+      --text: #142130;
+      --muted: #5f6c79;
+      --accent: #b8612d;
+      --accent-soft: rgba(184, 97, 45, 0.14);
+      --teal: #1d6f78;
+      --teal-soft: rgba(29, 111, 120, 0.14);
+      --green: #1b6d4f;
+      --green-soft: rgba(27, 109, 79, 0.14);
+      --amber: #8b5d00;
+      --amber-soft: rgba(139, 93, 0, 0.14);
+      --red: #a43d3d;
+      --red-soft: rgba(164, 61, 61, 0.14);
+      --shadow: 0 24px 50px rgba(20, 33, 48, 0.08);
+      --radius-xl: 28px;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --radius-sm: 10px;
+      --font: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: var(--font);
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(184, 97, 45, 0.12), transparent 34%),
+        radial-gradient(circle at top right, rgba(29, 111, 120, 0.18), transparent 28%),
+        linear-gradient(160deg, var(--bg) 0%, #f8f4ec 40%, var(--bg-2) 100%);
+      min-height: 100vh;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .page {
+      max-width: 1480px;
+      margin: 0 auto;
+      padding: 28px 22px 56px;
+    }
+
+    .flash {
+      margin-bottom: 18px;
+      padding: 14px 16px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.86);
+      box-shadow: var(--shadow);
+    }
+
+    .flash-info {
+      border-color: rgba(29, 111, 120, 0.18);
+      background: rgba(255, 255, 255, 0.92);
+    }
+
+    .flash-warn {
+      border-color: rgba(139, 93, 0, 0.2);
+      background: rgba(255, 249, 236, 0.92);
+    }
+
+    .hero {
+      padding: 28px;
+      border-radius: var(--radius-xl);
+      background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(255, 251, 245, 0.94)),
+        linear-gradient(120deg, rgba(184, 97, 45, 0.12), rgba(29, 111, 120, 0.10));
+      border: 1px solid rgba(20, 33, 48, 0.08);
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -120px -100px auto;
+      width: 320px;
+      height: 320px;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(29, 111, 120, 0.14), transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 22px;
+      align-items: flex-start;
+      margin-bottom: 24px;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(30px, 4vw, 48px);
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+    }
+
+    .hero p {
+      margin: 14px 0 0;
+      max-width: 760px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .hero-tools {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid transparent;
+      background: rgba(255, 255, 255, 0.84);
+      color: var(--text);
+    }
+
+    .pill-success {
+      background: var(--green-soft);
+      color: var(--green);
+      border-color: rgba(27, 109, 79, 0.15);
+    }
+
+    .pill-warn {
+      background: var(--amber-soft);
+      color: var(--amber);
+      border-color: rgba(139, 93, 0, 0.15);
+    }
+
+    .pill-error {
+      background: var(--red-soft);
+      color: var(--red);
+      border-color: rgba(164, 61, 61, 0.15);
+    }
+
+    .pill-neutral {
+      background: rgba(20, 33, 48, 0.06);
+      color: var(--muted);
+      border-color: rgba(20, 33, 48, 0.08);
+    }
+
+    .nav {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+
+    .nav-link {
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(20, 33, 48, 0.08);
+      background: rgba(255, 255, 255, 0.76);
+      color: var(--muted);
+      font-weight: 600;
+      transition: 0.2s ease;
+    }
+
+    .nav-link:hover,
+    .nav-link.active {
+      background: rgba(20, 33, 48, 0.92);
+      color: #fff;
+      transform: translateY(-1px);
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .summary-card {
+      padding: 16px 18px;
+      border-radius: var(--radius-lg);
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid rgba(20, 33, 48, 0.08);
+    }
+
+    .summary-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+
+    .summary-card strong {
+      display: block;
+      font-size: 28px;
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin: 26px 0 18px;
+    }
+
+    .toolbar-left,
+    .toolbar-right {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .search {
+      min-width: min(360px, 100%);
+      padding: 12px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(20, 33, 48, 0.12);
+      background: rgba(255, 255, 255, 0.9);
+      font: inherit;
+      color: var(--text);
+      outline: none;
+    }
+
+    .filter-chip {
+      border: none;
+      cursor: pointer;
+    }
+
+    .filter-chip.active {
+      background: rgba(20, 33, 48, 0.92);
+      color: #fff;
+    }
+
+    .account-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .account-card {
+      border-radius: var(--radius-xl);
+      padding: 22px;
+      background: var(--panel);
+      border: 1px solid rgba(20, 33, 48, 0.08);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+
+    .account-card.current {
+      outline: 2px solid rgba(184, 97, 45, 0.25);
+      box-shadow: 0 22px 54px rgba(184, 97, 45, 0.18);
+    }
+
+    .account-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      margin-bottom: 16px;
+    }
+
+    .account-head h2 {
+      margin: 6px 0 8px;
+      font-size: 26px;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+    }
+
+    .account-head p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .account-meta {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 14px 0 18px;
+    }
+
+    .meta-chip {
+      padding: 8px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      background: rgba(20, 33, 48, 0.06);
+      color: var(--muted);
+    }
+
+    .attention-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0 0 18px;
+    }
+
+    .attention-item {
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--amber);
+      background: rgba(139, 93, 0, 0.1);
+    }
+
+    .platform-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .platform-card {
+      padding: 16px;
+      border-radius: var(--radius-lg);
+      border: 1px solid rgba(20, 33, 48, 0.08);
+      background: var(--panel-strong);
+    }
+
+    .platform-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .platform-head h3 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .platform-detail {
+      display: grid;
+      gap: 10px;
+    }
+
+    .detail-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      border-bottom: 1px dashed rgba(20, 33, 48, 0.08);
+      padding-bottom: 8px;
+    }
+
+    .detail-row:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+
+    .detail-label {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .detail-value {
+      text-align: right;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .title-block {
+      margin: 12px 0;
+      padding: 12px 14px;
+      border-radius: var(--radius-md);
+      background: rgba(20, 33, 48, 0.04);
+    }
+
+    .title-block strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 15px;
+    }
+
+    .title-block p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 14px;
+    }
+
+    .score-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .score-card {
+      padding: 10px 8px;
+      border-radius: var(--radius-sm);
+      background: rgba(29, 111, 120, 0.08);
+      text-align: center;
+    }
+
+    .score-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 6px;
+    }
+
+    .score-card strong {
+      font-size: 18px;
+      letter-spacing: -0.03em;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    .action-link {
+      padding: 10px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      background: rgba(20, 33, 48, 0.06);
+      color: var(--text);
+      transition: 0.2s ease;
+    }
+
+    .action-link:hover {
+      transform: translateY(-1px);
+      background: rgba(20, 33, 48, 0.92);
+      color: #fff;
+    }
+
+    .empty {
+      padding: 28px;
+      border-radius: var(--radius-lg);
+      background: rgba(255, 255, 255, 0.85);
+      border: 1px dashed rgba(20, 33, 48, 0.16);
+      color: var(--muted);
+      text-align: center;
+    }
+
+    @media (max-width: 1180px) {
+      .summary-grid,
+      .platform-grid,
+      .account-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .score-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 780px) {
+      .page {
+        padding: 18px 14px 36px;
+      }
+
+      .hero,
+      .account-card {
+        padding: 18px;
+      }
+
+      .hero-top,
+      .account-head,
+      .detail-row {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .detail-value {
+        text-align: left;
+      }
+
+      .summary-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    {% if message %}
+    <div class="flash flash-{{ level }}">
+      {{ message }}
+    </div>
+    {% endif %}
+
+    <div class="nav">
+      <a class="nav-link active" href="/?{{ account_query }}">账号管理</a>
+      <a class="nav-link" href="/topics?{{ account_query }}">热点池</a>
+      <a class="nav-link" href="/runs?{{ account_query }}">归档批次</a>
+      <a class="nav-link" href="/published?{{ account_query }}">已发布预览</a>
+    </div>
+
+    <section class="hero">
+      <div class="hero-top">
+        <div>
+          <p class="eyebrow">Account Matrix</p>
+          <h1>多账号运营总控台</h1>
+          <p>在一个页面里看清每个账号的定时任务、最新批次、发布状态、公众号草稿、登录预检和最新日志。重点账号会直接高亮，方便你每天先处理真正会影响发文的点。</p>
+        </div>
+        <div class="hero-tools">
+          <span class="pill pill-neutral">当前高亮：{{ account_label }}</span>
+          <form method="get" action="/">
+            <select class="pill" name="account" onchange="this.form.submit()">
+              {% for item in account_options %}
+              <option value="{{ item.key }}" {% if item.key == account_key %}selected{% endif %}>{{ item.label }}</option>
+              {% endfor %}
+            </select>
+          </form>
+          <a class="pill pill-success" href="/?{{ account_query }}">刷新视图</a>
+        </div>
+      </div>
+
+      <div class="summary-grid">
+        <article class="summary-card">
+          <span>账号总数</span>
+          <strong>{{ manager.summary.total_accounts }}</strong>
+        </article>
+        <article class="summary-card">
+          <span>头条定时正常</span>
+          <strong>{{ manager.summary.toutiao_ready_accounts }}</strong>
+        </article>
+        <article class="summary-card">
+          <span>已启用公众号</span>
+          <strong>{{ manager.summary.wechat_enabled_accounts }}</strong>
+        </article>
+        <article class="summary-card">
+          <span>待人工审核</span>
+          <strong>{{ manager.summary.pending_review_accounts }}</strong>
+        </article>
+        <article class="summary-card">
+          <span>需要关注</span>
+          <strong>{{ manager.summary.attention_accounts }}</strong>
+        </article>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <input id="searchInput" class="search" type="search" placeholder="搜索账号名、账号 key、赛道关键词">
+        <button class="pill filter-chip active" data-filter="all" type="button">全部账号</button>
+        <button class="pill filter-chip" data-filter="attention" type="button">只看待关注</button>
+        <button class="pill filter-chip" data-filter="pending" type="button">只看待审核</button>
+        <button class="pill filter-chip" data-filter="wechat" type="button">只看公众号</button>
+      </div>
+      <div class="toolbar-right">
+        <span class="pill pill-neutral">当前显示 <strong id="visibleCount">{{ manager.accounts|length }}</strong> 个账号</span>
+      </div>
+    </div>
+
+    {% if manager.accounts %}
+    <section class="account-grid" id="accountGrid">
+      {% for item in manager.accounts %}
+      <article
+        class="account-card {% if item.is_current %}current{% endif %}"
+        data-tone="{{ item.overall_tone }}"
+        data-pending="{{ 1 if item.has_pending_review else 0 }}"
+        data-wechat="{{ 1 if item.wechat.enabled else 0 }}"
+        data-query="{{ item.search_text }}"
+      >
+        <div class="account-head">
+          <div>
+            <p class="eyebrow">{{ item.key }}</p>
+            <h2>{{ item.label }}</h2>
+            <p>{{ item.focus }}</p>
+          </div>
+          <span class="pill pill-{{ item.overall_tone }}">{{ item.overall_label }}</span>
+        </div>
+
+        <div class="account-meta">
+          <span class="meta-chip">批次 {{ item.run_count }}</span>
+          <span class="meta-chip">头条发布 {{ item.toutiao_publish_count }}</span>
+          <span class="meta-chip">公众号草稿 {{ item.wechat_publish_count }}</span>
+          {% if item.is_current %}
+          <span class="meta-chip">当前高亮账号</span>
+          {% endif %}
+        </div>
+
+        {% if item.attention_items %}
+        <div class="attention-list">
+          {% for note in item.attention_items %}
+          <span class="attention-item">{{ note }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="platform-grid">
+          <section class="platform-card">
+            <div class="platform-head">
+              <h3>今日头条</h3>
+              <span class="pill pill-{{ item.toutiao.latest_status_tone }}">{{ item.toutiao.latest_status_label }}</span>
+            </div>
+
+            <div class="platform-detail">
+              <div class="detail-row">
+                <span class="detail-label">定时任务</span>
+                <span class="detail-value">{{ item.toutiao.schedule.label }}{% if item.toutiao.schedule.task_count %} · {{ item.toutiao.schedule.task_count }} 个{% endif %}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">下次执行</span>
+                <span class="detail-value">{{ item.toutiao.schedule.next_run_time or "未记录" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">上次执行</span>
+                <span class="detail-value">{{ item.toutiao.schedule.last_run_time or "未记录" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">自动发布</span>
+                <span class="detail-value">{{ "开启" if item.toutiao.auto_publish_enabled else "关闭" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">预检状态</span>
+                <span class="detail-value">
+                  <span class="pill pill-{{ item.toutiao.preflight_tone }}">{{ item.toutiao.preflight_label }}</span>
+                </span>
+              </div>
+            </div>
+
+            <div class="title-block">
+              <strong>{{ item.toutiao.latest_title or "还没有最新标题" }}</strong>
+              <p>{{ item.toutiao.preflight_message }}</p>
+            </div>
+
+            <div class="platform-detail">
+              <div class="detail-row">
+                <span class="detail-label">最新批次</span>
+                <span class="detail-value">{{ item.toutiao.latest_run_name or "未生成" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">审核状态</span>
+                <span class="detail-value">{{ item.toutiao.review_status or "未记录" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">发布时间点</span>
+                <span class="detail-value">{{ item.toutiao.latest_updated_at or "未记录" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">平台返回</span>
+                <span class="detail-value">{{ item.toutiao.publish_message or item.toutiao.publish_pgc_id or "暂无" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">最新日志</span>
+                <span class="detail-value">
+                  {% if item.toutiao.latest_log_url %}
+                  <a href="{{ item.toutiao.latest_log_url }}" target="_blank">{{ item.toutiao.latest_log_name or "打开日志" }}</a>
+                  {% else %}
+                  暂无
+                  {% endif %}
+                </span>
+              </div>
+            </div>
+
+            <div class="score-grid">
+              <div class="score-card">
+                <span>综合</span>
+                <strong>{{ item.toutiao.score_snapshot.overall_score }}</strong>
+              </div>
+              <div class="score-card">
+                <span>校验</span>
+                <strong>{{ item.toutiao.score_snapshot.validation_score }}</strong>
+              </div>
+              <div class="score-card">
+                <span>发布就绪</span>
+                <strong>{{ item.toutiao.score_snapshot.publish_readiness_score }}</strong>
+              </div>
+              <div class="score-card">
+                <span>AI 风险</span>
+                <strong>{{ item.toutiao.score_snapshot.ai_generated_risk }}</strong>
+              </div>
+            </div>
+
+            <div class="actions">
+              {% if item.toutiao.latest_detail_url %}
+              <a class="action-link" href="{{ item.toutiao.latest_detail_url }}">查看最新批次</a>
+              {% endif %}
+              <a class="action-link" href="{{ item.quick_links.runs }}">查看归档</a>
+              <a class="action-link" href="{{ item.toutiao.history_url }}">发布预览</a>
+              {% if item.toutiao.external_url %}
+              <a class="action-link" href="{{ item.toutiao.external_url }}" target="_blank">平台页面</a>
+              {% endif %}
+            </div>
+          </section>
+
+          <section class="platform-card">
+            <div class="platform-head">
+              <h3>公众号</h3>
+              <span class="pill pill-{{ item.wechat.latest_status_tone }}">{{ item.wechat.latest_status_label }}</span>
+            </div>
+
+            <div class="platform-detail">
+              <div class="detail-row">
+                <span class="detail-label">是否启用</span>
+                <span class="detail-value">{{ "已启用" if item.wechat.enabled else "未启用" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">定时任务</span>
+                <span class="detail-value">{{ item.wechat.schedule.label }}{% if item.wechat.schedule.task_count %} · {{ item.wechat.schedule.task_count }} 个{% endif %}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">下次执行</span>
+                <span class="detail-value">{{ item.wechat.schedule.next_run_time or "未记录" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">自动提交</span>
+                <span class="detail-value">{{ "开启" if item.wechat.auto_publish_enabled else "仅存草稿" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">登录态</span>
+                <span class="detail-value">
+                  <span class="pill pill-{{ item.wechat.preflight_tone }}">{{ item.wechat.preflight_label }}</span>
+                </span>
+              </div>
+            </div>
+
+            <div class="title-block">
+              <strong>{{ item.wechat.latest_title or "还没有公众号标题" }}</strong>
+              <p>{{ item.wechat.preflight_message }}</p>
+            </div>
+
+            <div class="platform-detail">
+              <div class="detail-row">
+                <span class="detail-label">最新批次</span>
+                <span class="detail-value">{{ item.wechat.latest_run_name or "未生成" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">草稿 ID</span>
+                <span class="detail-value">{{ item.wechat.draft_media_id or "暂无" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">提交结果</span>
+                <span class="detail-value">{{ item.wechat.submit_status or "未提交群发" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">正文图片</span>
+                <span class="detail-value">{{ item.wechat.inline_image_count }} 张</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">排版后端</span>
+                <span class="detail-value">{{ item.wechat.layout_backend or "未记录" }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">最新日志</span>
+                <span class="detail-value">
+                  {% if item.wechat.latest_log_url %}
+                  <a href="{{ item.wechat.latest_log_url }}" target="_blank">{{ item.wechat.latest_log_name or "打开日志" }}</a>
+                  {% else %}
+                  暂无
+                  {% endif %}
+                </span>
+              </div>
+            </div>
+
+            {% if item.wechat.benchmark_context.available %}
+            <div class="title-block">
+              <strong>??????</strong>
+              <p>
+                ???{{ item.wechat.benchmark_context.track or "??" }}
+                ? ?????{{ item.wechat.benchmark_context.account_names | join("?") or "???" }}
+                ? ?? {{ item.wechat.benchmark_context.benchmark_topic_count }} ?
+              </p>
+              {% if item.wechat.benchmark_context.headline_titles %}
+              <ul>
+                {% for topic in item.wechat.benchmark_context.headline_titles %}
+                <li>
+                  <strong>{{ topic.title }}</strong>
+                  <span>{{ topic.source or topic.track or "????" }}</span>
+                </li>
+                {% endfor %}
+              </ul>
+              {% endif %}
+              {% if item.wechat.benchmark_context.artifact_url %}
+              <p><a href="{{ item.wechat.benchmark_context.artifact_url }}" target="_blank">????????</a></p>
+              {% endif %}
+            </div>
+            {% endif %}
+
+            <div class="actions">
+              {% if item.wechat.latest_detail_url %}
+              <a class="action-link" href="{{ item.wechat.latest_detail_url }}">查看对应批次</a>
+              {% endif %}
+              {% if item.quick_links.latest_run %}
+              <a class="action-link" href="{{ item.quick_links.latest_run }}">打开当前账号最近稿</a>
+              {% endif %}
+              <a class="action-link" href="{{ item.quick_links.topics }}">查看选题池</a>
+            </div>
+          </section>
+        </div>
+      </article>
+      {% endfor %}
+    </section>
+    {% else %}
+    <section class="empty">
+      还没有可展示的账号数据。
+    </section>
+    {% endif %}
+  </div>
+
+  <script>
+    const grid = document.getElementById("accountGrid");
+    const cards = grid ? Array.from(grid.querySelectorAll(".account-card")) : [];
+    const searchInput = document.getElementById("searchInput");
+    const chips = Array.from(document.querySelectorAll(".filter-chip"));
+    const visibleCount = document.getElementById("visibleCount");
+
+    function applyFilters() {
+      const query = (searchInput?.value || "").trim().toLowerCase();
+      const activeChip = document.querySelector(".filter-chip.active");
+      const mode = activeChip ? activeChip.dataset.filter : "all";
+      let visible = 0;
+
+      cards.forEach((card) => {
+        const matchesQuery = !query || (card.dataset.query || "").includes(query);
+        let matchesMode = true;
+
+        if (mode === "attention") {
+          matchesMode = (card.dataset.tone || "") !== "success";
+        } else if (mode === "pending") {
+          matchesMode = card.dataset.pending === "1";
+        } else if (mode === "wechat") {
+          matchesMode = card.dataset.wechat === "1";
+        }
+
+        const show = matchesQuery && matchesMode;
+        card.style.display = show ? "" : "none";
+        if (show) {
+          visible += 1;
+        }
+      });
+
+      if (visibleCount) {
+        visibleCount.textContent = String(visible);
+      }
+    }
+
+    chips.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        chips.forEach((item) => item.classList.remove("active"));
+        chip.classList.add("active");
+        applyFilters();
+      });
+    });
+
+    if (searchInput) {
+      searchInput.addEventListener("input", applyFilters);
+    }
+  </script>
+</body>
+</html>

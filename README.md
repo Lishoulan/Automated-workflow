@@ -82,6 +82,10 @@ If you want auto-publish:
 - `TOUTIAO_PUBLISH_ENABLED=1`
 - `TOUTIAO_AUTO_PUBLISH=1`
 
+To let the daily workflow try multiple candidate topics before giving up:
+
+- `TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS=3`
+
 ### 5. Initialize Toutiao Login
 
 This opens a persistent browser profile and lets you log in to Toutiao Creator Center once.
@@ -147,11 +151,47 @@ Or for a specific account:
 python .\main.py --account robot_notes --daily-run --refresh-cache
 ```
 
+`--daily-run` now acts as an autopilot flow:
+
+- it collects fresh topics
+- it tries up to `TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS` candidates
+- it auto-approves high-quality runs
+- it auto-publishes Toutiao when `TOUTIAO_AUTO_PUBLISH=1`
+- it also creates WeChat drafts, and submits them when `WECHAT_AUTO_PUBLISH=1`
+
 ### Publish The Latest Approved Run
 
 ```powershell
 python .\main.py --publish-latest-approved
 ```
+
+WeChat draft / publish:
+
+```powershell
+python .\main.py --prepare-wechat-launch-day 2
+python .\main.py --prepare-wechat-launch-week
+python .\main.py --generate-images-run --run-dir "D:\path\to\output\runs\your_run_dir"
+python .\main.py --wechat-draft-latest-approved
+python .\main.py --wechat-publish-latest-approved
+python .\main.py --init-wechat-login
+```
+
+`--wechat-draft-latest-approved` uses the official WeChat API to create a draft. `--wechat-publish-latest-approved` now creates the draft and then uses the logged-in browser session to submit it from the 草稿箱.
+`--prepare-wechat-launch-day` and `--prepare-wechat-launch-week` build WeChat launch-week article packages and matching cover / infographic prompt files using the same visual strategy as the Toutiao workflow.
+`--generate-images-run` regenerates the real image assets for any existing run package.
+
+Optional `md2wechat` layout backend for WeChat:
+
+```powershell
+WECHAT_LAYOUT_BACKEND=md2wechat
+WECHAT_MD2WECHAT_ENABLED=1
+MD2WECHAT_THEME=default
+MD2WECHAT_CLI_PATH=
+```
+
+If you have the local `md2wechat` CLI installed, the WeChat flow can use it without any API key. `MD2WECHAT_CLI_PATH` is optional and only needed when the command is not already on `PATH`.
+
+If `MD2WECHAT_API_KEY` is present, the flow prefers the hosted API. If no key is provided, it tries the local CLI. If both are unavailable and `MD2WECHAT_FALLBACK_TO_BUILTIN=1`, it automatically falls back to the built-in HTML renderer.
 
 Or for a specific account:
 
@@ -159,6 +199,24 @@ Or for a specific account:
 python .\main.py --account robot_notes --publish-latest-approved
 python .\main.py --account energy_notes --publish-latest-approved
 ```
+
+Growth ops / benchmarking:
+
+```powershell
+python .\main.py --build-benchmark-report
+python .\main.py --backfill-performance-ledger
+python .\main.py --build-performance-report
+python .\main.py --record-performance --run-dir "D:\path\to\output\runs\your_run_dir" --performance-platform wechat --snapshot-date 2026-05-20 --impression-count 10000 --read-count 860 --recommendation-read-count 520 --like-count 22 --wow-count 11 --share-count 6 --comment-count 8 --follower-gain 17
+```
+
+- Benchmark source file: `branding/benchmark_accounts.yaml`
+- Self benchmark source file: `branding/self_benchmark_articles.yaml`
+- Generated benchmark report: `output/growth_ops/benchmark_report.md`
+- Generated self benchmark report: `output/growth_ops/self_benchmark_report.md`
+- Performance ledger: `output/growth_ops/performance/performance_ledger.json`
+- Performance review report: `output/growth_ops/performance/performance_report.md`
+- Each content run now exports `output/benchmark_strategy.json`, and the same benchmark strategy is injected into trend analysis, data extraction, article writing, and review scoring so the workflow follows the selected benchmark-account playbook instead of using benchmarks only for titles.
+- The benchmark layer now has two sources: external benchmark accounts and your own validated high-performing articles. Fill `branding/self_benchmark_articles.yaml`, then keep appending post-publish metrics with `--record-performance` so the workflow gradually learns from your own winners.
 
 ### Publish A Specific Run
 
@@ -180,6 +238,12 @@ Register all configured accounts:
 powershell -ExecutionPolicy Bypass -File .\scripts\register_all_accounts.ps1 -EnableAutoPublish
 ```
 
+Register the separate WeChat-only task at `07:00`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\register_wechat_daily_task.ps1 -AccountKey default -EnableAutoPublish
+```
+
 Unregister tasks manually in Windows Task Scheduler, or extend this repo with your own cleanup script.
 
 ## Multi-Account Rules
@@ -190,6 +254,7 @@ The project already uses one shared workflow for the default account and all sub
 - sub-accounts use isolated directories under `input/accounts/<slug>/`, `output/accounts/<slug>/`, `logs/accounts/<slug>/`, `cache/accounts/<slug>/`, and `.runtime/accounts/<account_key>/toutiao_profile/`
 - the same `main.py`, review flow, scheduler scripts, and Playwright publish service are reused for every account
 - each account must still complete its own Toutiao login initialization once, because browser sessions are isolated per account profile
+- WeChat also uses an isolated browser profile per account; run `python .\main.py --account <key> --init-wechat-login` once before browser submission
 
 Currently configured first-wave accounts:
 
@@ -246,6 +311,8 @@ Shared publish strategy for all accounts:
 This means the default account and every configured sub-account now share the same stable image publishing path.
 
 Because Toutiao publish is implemented through browser automation rather than an official publish API, selector changes on Toutiao may require maintenance.
+
+WeChat publishing uses the same approved run package and converts it into公众号草稿/发布 payloads.
 
 ## Security
 

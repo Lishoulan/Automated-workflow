@@ -105,6 +105,43 @@ TOUTIAO_BROWSER_EXECUTABLE=C:\Program Files (x86)\Microsoft\Edge\Application\mse
 TOUTIAO_BROWSER_PROFILE_DIR=.runtime/toutiao_profile
 ```
 
+如果你要接入公众号草稿/发布，还要配置：
+
+```env
+WECHAT_ENABLED=1
+WECHAT_APP_ID=
+WECHAT_APP_SECRET=
+WECHAT_ACCOUNT_NAME=
+WECHAT_AUTHOR_NAME=手蓝
+WECHAT_BASE_URL=https://mp.weixin.qq.com/
+WECHAT_API_BASE_URL=https://api.weixin.qq.com
+WECHAT_TITLE_MAX_LENGTH=64
+WECHAT_DIGEST_MAX_LENGTH=120
+WECHAT_LAYOUT_BACKEND=builtin
+WECHAT_MD2WECHAT_ENABLED=0
+MD2WECHAT_API_KEY=
+MD2WECHAT_BASE_URL=https://www.md2wechat.com/api/v1
+MD2WECHAT_THEME=default
+MD2WECHAT_FONT_SIZE=medium
+MD2WECHAT_CONVERT_VERSION=v1
+MD2WECHAT_CLI_PATH=
+MD2WECHAT_FALLBACK_TO_BUILTIN=1
+```
+
+如果你不想依赖 `MD2WECHAT_API_KEY`，可以只安装本地 `md2wechat` CLI，然后这样配置：
+
+```env
+WECHAT_LAYOUT_BACKEND=md2wechat
+WECHAT_MD2WECHAT_ENABLED=1
+MD2WECHAT_CLI_PATH=
+MD2WECHAT_FALLBACK_TO_BUILTIN=1
+```
+
+说明：
+- 有 `MD2WECHAT_API_KEY` 时，优先走官方托管 API。
+- 没有 Key 时，会尝试调用本地 `md2wechat` 命令。
+- 本地 CLI 也不可用时，会自动回退到项目内置公众号排版。
+
 ### 5. 初始化头条登录态
 
 首次部署到一台新电脑时，必须重新登录头条创作者后台：
@@ -216,11 +253,58 @@ python .\main.py --topics-only
 python .\main.py --daily-run --refresh-cache
 ```
 
+说明：
+- 这个命令现在会自动尝试多个候选热点
+- 只要有一篇通过阈值，就会自动进入审核和发布
+- `TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS` 可控制最多尝试几个候选题
+- 如果 `WECHAT_ENABLED=1`，这轮流程还会自动创建公众号草稿
+- 如果再开启 `WECHAT_AUTO_PUBLISH=1`，会继续自动提交公众号发布
+
 ### 3. 发布最新已审核通过的文章
 
 ```powershell
 python .\main.py --publish-latest-approved
 ```
+
+公众号草稿 / 发布：
+
+```powershell
+python .\main.py --prepare-wechat-launch-day 2
+python .\main.py --prepare-wechat-launch-week
+python .\main.py --generate-images-run --run-dir "D:\path\to\output\runs\your_run_dir"
+python .\main.py --wechat-draft-latest-approved
+python .\main.py --wechat-publish-latest-approved
+python .\main.py --init-wechat-login
+```
+
+说明：
+- `--prepare-wechat-launch-day` 按起号周 Day1-Day7 生成单天稿件包，并落封面图/正文图 prompt。
+- `--prepare-wechat-launch-week` 一次性准备整周起号稿件包。
+- `--generate-images-run` 可对已有 run 单独重跑真实图片生成。
+- `--wechat-draft-*` 通过公众号接口创建草稿。
+- `--wechat-publish-*` 先创建草稿，再通过已登录的公众号后台浏览器会话从草稿箱点击发布。
+- 第一次使用前，先执行一次 `--init-wechat-login` 完成扫码登录。
+
+公众号草稿 / 发布：
+
+```powershell
+python .\main.py --wechat-draft-latest-approved
+python .\main.py --wechat-publish-latest-approved
+```
+
+对标 / 数据复盘：
+
+```powershell
+python .\main.py --build-benchmark-report
+python .\main.py --backfill-performance-ledger
+python .\main.py --build-performance-report
+python .\main.py --record-performance --run-dir "D:\path\to\output\runs\your_run_dir" --performance-platform wechat --snapshot-date 2026-05-20 --impression-count 10000 --read-count 860 --recommendation-read-count 520 --like-count 22 --wow-count 11 --share-count 6 --comment-count 8 --follower-gain 17
+```
+
+说明：
+- 对标源文件在 `branding/benchmark_accounts.yaml`。
+- 增长台账会输出到 `output/growth_ops/performance/`。
+- 每次头条或公众号发布成功后，系统会自动把该文章登记进性能台账，后续只需要补录真实数据。
 
 ### 4. 发布指定批次
 

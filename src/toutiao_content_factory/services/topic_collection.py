@@ -17,6 +17,7 @@ from xml.etree import ElementTree
 
 from toutiao_content_factory.config import AppSettings, TopicCollectionSettings
 from toutiao_content_factory.models import DailyTopicsReport, TopicCandidate
+from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 
 
 @dataclass
@@ -47,6 +48,126 @@ class TopicCollectionService:
         "中国经济数据",
         "宏观",
     )
+    INTERNATIONAL_FALSE_POSITIVE_TOKENS = (
+        "?????",
+        "????",
+        "????",
+        "????",
+        "?????",
+        "??????",
+    )
+    SPORTS_LOW_SIGNAL_TOKENS = (
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "???",
+        "??",
+    )
+    INTERNATIONAL_SIGNAL_TOKENS = (
+        "??",
+        "??",
+        "??",
+        "??",
+        "???",
+        "???",
+        "??",
+        "???",
+        "??",
+        "???",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "???",
+        "??",
+        "??",
+        "????",
+    )
+    INTERNATIONAL_CONTEXT_FALSE_POSITIVE_TOKENS = (
+        "?????",
+        "????",
+        "????",
+        "????",
+        "??????????",
+        "??????",
+        "??",
+        "???",
+    )
+    SPORTS_EVENT_TOKENS = (
+        "??",
+        "??",
+        "???",
+        "???",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "??",
+        "NBA",
+        "CBA",
+        "???",
+        "??",
+        "??",
+        "??",
+        "??",
+        "transfer",
+        "Premier League",
+        "World Cup",
+        "Wimbledon",
+        "French Open",
+        "Grand Slam",
+        "squad",
+        "manager",
+        "champion",
+        "football",
+        "tennis",
+    )
+    SPORTS_CONTEXT_FALSE_POSITIVE_TOKENS = (
+        "????",
+        "???",
+        "????",
+        "????",
+        "???",
+        "???",
+        "????",
+        "????",
+        "??????",
+        "?????",
+        "??",
+        "???????",
+        "?????",
+    )
     TOPIC_TYPE_LABELS = {
         "deep_analysis": "深度分析",
         "quick_commentary": "快讯点评",
@@ -66,14 +187,113 @@ class TopicCollectionService:
     PRODUCT_TOKENS = ("发布", "推出", "首发", "问世", "新品", "新机", "方案", "平台")
     DATA_RECAP_TOKENS = ("统计数据表", "统计公报", "产量统计", "销量统计", "装机量", "出货量", "价格指数", "均价", "统计数据")
     EXECUTION_TOKENS = ("订单", "客户", "交付", "量产", "中标", "签约", "投产", "并网", "装机", "验收", "出货")
+    CONFLICT_TOKENS = (
+        "不是",
+        "而是",
+        "反攻",
+        "逆袭",
+        "替代",
+        "挤压",
+        "衰退",
+        "下滑",
+        "洗牌",
+        "分化",
+        "重估",
+        "突围",
+        "改写",
+        "转向",
+        "转移",
+        "迁移",
+        "抢单",
+        "价格战",
+        "撕开",
+    )
+    SCENE_TOKENS = (
+        "机场",
+        "电厂",
+        "电站",
+        "港口",
+        "车间",
+        "仓库",
+        "园区",
+        "工厂",
+        "基地",
+        "码头",
+        "矿区",
+        "变电站",
+        "物流中心",
+        "示范项目",
+        "生产线",
+        "机场",
+    )
+    CROSS_BORDER_TOKENS = (
+        "中国",
+        "日本",
+        "美国",
+        "欧洲",
+        "德国",
+        "东京",
+        "海外",
+        "出海",
+        "国际",
+        "日韩",
+        "东南亚",
+    )
+    BENEFIT_SHIFT_TOKENS = (
+        "利润",
+        "毛利",
+        "份额",
+        "议价",
+        "红利",
+        "系统集成",
+        "零部件",
+        "整机",
+        "运维",
+        "服务",
+        "回款",
+        "IRR",
+    )
+    WEAK_EVENT_TOKENS = ("大会", "论坛", "峰会", "收官", "回顾", "印发", "规划纲要", "发布会", "启动仪式")
+    NOTICE_STYLE_TOKENS = (
+        "中标",
+        "候选人公示",
+        "中标候选人",
+        "中标结果",
+        "招标公告",
+        "采购公告",
+        "询价公告",
+        "竞争性谈判",
+        "比选公告",
+        "开标",
+        "成交公告",
+        "结果公示",
+        "发布会",
+        "论坛",
+        "峰会",
+        "大会",
+        "回顾",
+        "成功举办",
+        "启幕",
+        "举行",
+    )
+    NOTICE_STYLE_RE = re.compile(
+        r"^(?:中标|招标|成交|开标|公示|公告|回顾|发布会|论坛|峰会|大会)[\\s|｜:：\\-]"
+    )
+    PRICE_HEADLINE_RE = re.compile(
+        r"\\d+(?:\\.\\d+)?\\s*(?:元/Wh|元/W|万元|亿元|MW|GW|GWh|MWh)"
+    )
     COMPANY_ORG_RE = re.compile(
         r"[\u4e00-\u9fffA-Za-z0-9]{2,18}(?:科技|能源|汽车|股份|集团|电气|智能|机器人|半导体|电子|时代|精工|制造|材料|电池|重工|工业|光伏|储能|动力|机电|控股|装备|技术)"
+    )
+    SCENE_ANCHOR_RE = re.compile(
+        r"[\u4e00-\u9fffA-Za-z0-9]{0,10}(?:机场|电厂|电站|港口|车间|仓库|园区|工厂|基地|码头|矿区|变电站|物流中心|示范项目|生产线)"
     )
     USER_AGENT = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
     )
     HTML_CHARSET_PATTERN = re.compile(br"charset\s*=\s*[\"']?([a-zA-Z0-9_\-]+)", re.I)
+    XML_ENCODING_PATTERN = re.compile(br"<\?xml[^>]+encoding=[\"']([a-zA-Z0-9_\-]+)[\"']", re.I)
     MOJIBAKE_MARKERS = ("å", "æ", "ç", "é", "ï", "¤", "�")
     MOJIBAKE_CJK_MARKERS = ("鍥", "鏂", "鐢", "鑳", "缃", "鍙", "璁", "闂", "绔", "鍌", "姹", "鍑", "閿", "浠", "璧")
     LOW_SIGNAL_TOPIC_TEXT_RE = re.compile(
@@ -98,6 +318,7 @@ class TopicCollectionService:
         self.logger = logger
         self.topic_settings: TopicCollectionSettings = settings.topic_collection
         self._ssl_context = ssl._create_unverified_context()
+        self.growth_ops_service = GrowthOpsService(settings, logger)
 
     def collect_sync(self) -> DailyTopicsReport:
         return asyncio.run(self.collect())
@@ -165,13 +386,14 @@ class TopicCollectionService:
                 continue
 
             source_type = str(source_config.get("type", "html"))
+            collector_name = str(source_config.get("collector_name", source_name)).strip() or source_name
             if source_type in {"rss", "google_rss"}:
                 collectors.append(_RssTopicCollector(source_name, source_config, self, google_mode=source_type == "google_rss"))
             else:
-                same_domain_only = bool(source_config.get("same_domain_only", source_name == "gg_robot"))
-                if source_name == "zhidx":
+                same_domain_only = bool(source_config.get("same_domain_only", collector_name == "gg_robot"))
+                if collector_name == "zhidx":
                     collectors.append(_ZhidxTopicCollector(source_name, source_config, self))
-                elif source_name == "ofweek":
+                elif collector_name == "ofweek":
                     collectors.append(_OfweekTopicCollector(source_name, source_config, self))
                 else:
                     collectors.append(
@@ -228,7 +450,15 @@ class TopicCollectionService:
 
     def _decode_html_payload(self, raw: bytes, preferred_charset: str | None = None) -> str:
         candidates: list[str] = []
+        xml_charset = self._extract_xml_encoding(raw)
         meta_charset = self._extract_meta_charset(raw)
+        if xml_charset:
+            try:
+                decoded = raw.decode(xml_charset, "ignore")
+            except LookupError:
+                decoded = ""
+            if decoded and not self._looks_like_mojibake(decoded):
+                return decoded
         for candidate in (preferred_charset, meta_charset, "utf-8", "utf-8-sig", "gb18030", "gbk", "big5"):
             normalized = str(candidate or "").strip().lower()
             if normalized and normalized not in candidates:
@@ -256,6 +486,15 @@ class TopicCollectionService:
         except Exception:
             return ""
 
+    def _extract_xml_encoding(self, raw: bytes) -> str:
+        match = self.XML_ENCODING_PATTERN.search(raw[:256])
+        if not match:
+            return ""
+        try:
+            return match.group(1).decode("ascii", "ignore").strip()
+        except Exception:
+            return ""
+
     def _decoded_text_score(self, text: str) -> float:
         if not text:
             return float("-inf")
@@ -273,6 +512,13 @@ class TopicCollectionService:
             - mojibake_cjk_count * 3
             - replacement_count * 6
         )
+
+    def _looks_like_mojibake(self, text: str) -> bool:
+        if not text:
+            return False
+        mojibake_count = sum(text.count(marker) for marker in self.MOJIBAKE_MARKERS)
+        mojibake_cjk_count = sum(text.count(marker) for marker in self.MOJIBAKE_CJK_MARKERS)
+        return (mojibake_count + mojibake_cjk_count) >= 3
 
     def _decoding_hint_keywords(self) -> list[str]:
         keywords = {
@@ -317,13 +563,31 @@ class TopicCollectionService:
             topic.evidence_strength,
         )
         topic.quality_score = self._score_topic_quality(topic, freshness_score)
+        title_potential = self.growth_ops_service.score_topic_title_potential(
+            title=topic.title,
+            summary=topic.summary,
+            snippet=topic.snippet,
+            matched_keywords=topic.matched_keywords,
+            extracted_numbers=topic.extracted_numbers,
+            matched_industries=topic.matched_industries,
+        )
+        topic.title_potential_score = int(title_potential.get("score", 0))
+        topic.title_playbook_track = str(title_potential.get("track", "")).strip()
+        topic.title_potential_reasons = [
+            str(item).strip() for item in title_potential.get("reasons", []) if str(item).strip()
+        ]
         base_total = round(
             topic.heat_score * 0.35
             + topic.read_score * 0.2
             + topic.save_score * 0.25
             + topic.discussion_score * 0.2
         )
-        topic.total_score = round(base_total * 0.75 + topic.quality_score * 0.25)
+        topic.total_score = round(
+            base_total * 0.55
+            + topic.quality_score * 0.25
+            + topic.title_potential_score * 0.20
+        )
+        topic.total_score = max(1, topic.total_score - self._selection_penalty(topic))
         topic.is_high_read = topic.read_score >= 72
         topic.is_high_save = topic.save_score >= 72
         topic.is_high_discussion = topic.discussion_score >= 72
@@ -560,6 +824,7 @@ class TopicCollectionService:
         return matched_topics
 
     def _score_heat(self, topic: TopicCandidate, freshness_score: int) -> int:
+        pattern_score = self._high_performance_pattern_score(topic)
         score = 42 + len(topic.matched_industries) * 12 + len(topic.matched_keywords[:4]) * 4 + freshness_score // 5
         if topic.source == "google_news":
             score += 6
@@ -568,10 +833,14 @@ class TopicCollectionService:
         if topic.extracted_numbers:
             score += 7
         score += self._focus_bonus(topic)
+        score += min(10, pattern_score // 2)
+        if self._is_weak_event_topic(topic):
+            score -= 10
         score -= self._macro_noise_penalty(topic)
         return min(98, score)
 
     def _score_read(self, topic: TopicCandidate, freshness_score: int) -> int:
+        pattern_score = self._high_performance_pattern_score(topic)
         score = 45 + freshness_score // 4
         if 12 <= len(topic.title) <= 28:
             score += 10
@@ -579,22 +848,38 @@ class TopicCollectionService:
             score += 10
         if topic.matched_keywords:
             score += 8
+        if self._has_scene_anchor(topic):
+            score += 8
+        if self._has_conflict_signal(topic):
+            score += 6
+        score += min(8, pattern_score // 3)
+        if self._is_weak_event_topic(topic):
+            score -= 12
         score += self._focus_bonus(topic)
         score -= self._macro_noise_penalty(topic)
         return min(96, score)
 
     def _score_save(self, topic: TopicCandidate, freshness_score: int) -> int:
+        pattern_score = self._high_performance_pattern_score(topic)
         score = 38 + freshness_score // 6 + len(topic.extracted_numbers) * 8
         if len(topic.matched_keywords) >= 3:
             score += 12
         if any(token in f"{topic.title} {topic.summary}" for token in self.SAVE_TOKENS):
             score += 10
+        if self._has_benefit_shift_signal(topic):
+            score += 10
+        if self._has_scene_anchor(topic):
+            score += 6
+        score += min(8, pattern_score // 4)
+        if self._is_weak_event_topic(topic):
+            score -= 8
         score += self._focus_bonus(topic) // 2
         score -= self._macro_noise_penalty(topic) // 2
         return min(96, score)
 
     def _score_discussion(self, topic: TopicCandidate, freshness_score: int) -> int:
         text = f"{topic.title} {topic.summary}"
+        pattern_score = self._high_performance_pattern_score(topic)
         score = 35 + freshness_score // 7
         if any(token in text for token in self.DISCUSSION_TOKENS):
             score += 16
@@ -602,6 +887,13 @@ class TopicCollectionService:
             score += 10
         if "?" in topic.title or "？" in topic.title:
             score += 8
+        if self._has_conflict_signal(topic):
+            score += 10
+        if self._has_cross_border_signal(topic):
+            score += 8
+        score += min(10, pattern_score // 3)
+        if self._is_weak_event_topic(topic):
+            score -= 10
         score += self._focus_bonus(topic) // 2
         score -= self._macro_noise_penalty(topic)
         return min(96, score)
@@ -624,6 +916,7 @@ class TopicCollectionService:
 
     def _score_evidence_strength(self, topic: TopicCandidate, freshness_score: int) -> int:
         text = f"{topic.title} {topic.summary} {topic.snippet}"
+        pattern_score = self._high_performance_pattern_score(topic)
         score = 22 + freshness_score // 8
         score += min(20, len(topic.extracted_numbers) * 6)
         score += min(14, len(topic.matched_keywords) * 3)
@@ -637,10 +930,17 @@ class TopicCollectionService:
             score += 8
         if topic.source in {"36kr", "zhidx", "ofweek"}:
             score += 4
+        if self._has_scene_anchor(topic):
+            score += 4
+        if self._has_benefit_shift_signal(topic):
+            score += 6
+        score += min(8, pattern_score // 4)
         if self._is_title_only_topic(topic):
             score -= 12
         if self._is_old_statistics_topic(topic):
             score -= 18
+        if self._is_weak_event_topic(topic):
+            score -= 10
         score -= self._macro_noise_penalty(topic) // 2
         return max(18, min(98, score))
 
@@ -663,6 +963,10 @@ class TopicCollectionService:
             flags.append("low_freshness")
         if self._is_old_statistics_topic(topic):
             flags.append("old_statistics")
+        if self._is_weak_event_topic(topic):
+            flags.append("weak_event")
+        if self._is_notice_style_title(topic):
+            flags.append("notice_style_title")
         if topic.topic_type == "data_recap" and len(topic.extracted_numbers) < 2:
             flags.append("weak_data_recap")
         return self._unique(flags)
@@ -675,6 +979,7 @@ class TopicCollectionService:
     ) -> tuple[str, str]:
         flags = set(topic.quality_flags)
         text = f"{topic.title} {topic.summary} {topic.snippet}"
+        pattern_score = self._high_performance_pattern_score(topic)
 
         if "title_only" in flags and topic_type in {"policy_market", "industry_event", "product_launch"}:
             return "quick_commentary", "快讯点评"
@@ -682,6 +987,10 @@ class TopicCollectionService:
             token in text for token in self.EXECUTION_TOKENS
         ):
             return "quick_commentary", "快讯点评"
+        if pattern_score >= 18 and evidence_strength >= 60 and self._has_specific_subject(topic):
+            if topic_type in {"project_progress", "earnings_signal"} or self._has_scene_anchor(topic):
+                return "project_breakdown", "项目拆解"
+            return "deep_analysis", "深度分析"
         if topic_type == "data_recap":
             return "data_recap", "数据复盘"
         if topic_type == "policy_market":
@@ -697,6 +1006,7 @@ class TopicCollectionService:
         return "quick_commentary", "快讯点评"
 
     def _score_topic_quality(self, topic: TopicCandidate, freshness_score: int) -> int:
+        pattern_score = self._high_performance_pattern_score(topic)
         penalty = 0
         if "old_statistics" in topic.quality_flags:
             penalty += 18
@@ -710,6 +1020,10 @@ class TopicCollectionService:
             penalty += 8
         if "weak_data_recap" in topic.quality_flags:
             penalty += 10
+        if "weak_event" in topic.quality_flags:
+            penalty += 14
+        if "notice_style_title" in topic.quality_flags:
+            penalty += 12
 
         score = round(
             topic.evidence_strength * 0.45
@@ -717,6 +1031,7 @@ class TopicCollectionService:
             + topic.read_score * 0.15
             + topic.save_score * 0.15
             + topic.discussion_score * 0.10
+            + pattern_score * 0.20
         )
         return max(18, min(98, score - penalty))
 
@@ -850,6 +1165,8 @@ class TopicCollectionService:
             key=lambda item: (
                 item.total_score,
                 item.quality_score,
+                item.title_potential_score,
+                self._high_performance_pattern_score(item),
                 item.evidence_strength,
                 self._freshness_score(item.published_at),
                 item.save_score,
@@ -926,16 +1243,70 @@ class TopicCollectionService:
         topic: TopicCandidate,
         filtered_out: dict[str, int],
     ) -> bool:
+        pattern_score = self._high_performance_pattern_score(topic)
+        title_text = str(topic.title or "")
+        body_text = f"{topic.title} {topic.summary} {topic.snippet}"
         if self._has_blocking_quality_issue(topic):
             filtered_out["low_quality"] += 1
             return False
+        if "international" in set(self.topic_settings.focus_industries):
+            if any(token in title_text for token in self.INTERNATIONAL_FALSE_POSITIVE_TOKENS):
+                filtered_out["weak_focus"] += 1
+                return False
+            if any(token in body_text for token in self.INTERNATIONAL_CONTEXT_FALSE_POSITIVE_TOKENS):
+                filtered_out["weak_focus"] += 1
+                return False
+            if "国际" in title_text and not any(
+                token in title_text
+                for token in (
+                    "美国",
+                    "欧洲",
+                    "俄罗斯",
+                    "乌克兰",
+                    "中东",
+                    "关税",
+                    "制裁",
+                    "外交",
+                    "局势",
+                    "停火",
+                    "谈判",
+                    "油价",
+                    "黄金",
+                    "白宫",
+                    "欧盟",
+                    "北约",
+                    "古巴",
+                    "上合组织",
+                )
+            ):
+                filtered_out["weak_focus"] += 1
+                return False
+            if not self._has_international_signal(topic):
+                filtered_out["weak_focus"] += 1
+                return False
+        if "sports" in set(self.topic_settings.focus_industries):
+            if any(token in title_text for token in self.SPORTS_LOW_SIGNAL_TOKENS):
+                filtered_out["weak_focus"] += 1
+                return False
+            if any(token in body_text for token in self.SPORTS_CONTEXT_FALSE_POSITIVE_TOKENS):
+                filtered_out["weak_focus"] += 1
+                return False
+            if not self._has_sports_event_signal(topic):
+                filtered_out["weak_focus"] += 1
+                return False
         title_hits = self._keyword_hits_in_title(topic)
         keyword_hits = len(topic.matched_keywords)
         macro_penalty = self._macro_noise_penalty(topic)
+        if self._is_weak_event_topic(topic) and pattern_score < 12 and topic.evidence_strength < 74:
+            filtered_out["weak_focus"] += 1
+            return False
         if macro_penalty >= 18 and self._contains_macro_title(topic):
             filtered_out["weak_focus"] += 1
             return False
         if macro_penalty >= 12 and title_hits < 2:
+            filtered_out["weak_focus"] += 1
+            return False
+        if "notice_style_title" in set(topic.quality_flags) and topic.title_potential_score < 52:
             filtered_out["weak_focus"] += 1
             return False
         if title_hits >= 1:
@@ -956,13 +1327,31 @@ class TopicCollectionService:
             return 4 + industry_bonus
         return industry_bonus
 
+    def _has_international_signal(self, topic: TopicCandidate) -> bool:
+        text = f"{topic.title} {topic.summary} {topic.snippet}"
+        signal_hits = sum(1 for token in self.INTERNATIONAL_SIGNAL_TOKENS if token in text)
+        if signal_hits >= 2:
+            return True
+        if signal_hits >= 1 and self._has_cross_border_signal(topic):
+            return True
+        return any(token in str(topic.title or "") for token in ("关税", "制裁", "外交", "停火", "油价", "黄金", "债券", "白宫"))
+
+    def _has_sports_event_signal(self, topic: TopicCandidate) -> bool:
+        text = f"{topic.title} {topic.summary} {topic.snippet}"
+        title = str(topic.title or "")
+        signal_hits = sum(1 for token in self.SPORTS_EVENT_TOKENS if token in text)
+        if signal_hits >= 2:
+            return True
+        if signal_hits >= 1 and any(token in title for token in ("比赛", "决赛", "转会", "绝杀", "点球", "红牌", "晋级", "淘汰", "赛季", "联赛")):
+            return True
+        return False
+
     def _focus_industry_bonus(self, topic: TopicCandidate) -> int:
         bonus = 0
         for index, industry in enumerate(self.topic_settings.focus_industries[:5]):
             if industry in topic.matched_industries:
                 bonus += max(6 - index * 2, 1)
         return bonus
-
     def _keyword_hits_in_title(self, topic: TopicCandidate) -> int:
         title = topic.title.lower()
         hits = 0
@@ -988,13 +1377,32 @@ class TopicCollectionService:
 
     def _has_blocking_quality_issue(self, topic: TopicCandidate) -> bool:
         flags = set(topic.quality_flags)
+        pattern_score = self._high_performance_pattern_score(topic)
+        title_text = str(topic.title or "")
         if "old_statistics" in flags:
             return True
-        if "title_only" in flags and topic.topic_type in {"policy_market", "industry_event"} and topic.evidence_strength < 78:
+        if any(token in title_text for token in self.INTERNATIONAL_FALSE_POSITIVE_TOKENS):
             return True
-        if "title_only" in flags and not self._has_specific_subject(topic) and topic.quality_score < 72:
+        if any(token in title_text for token in self.SPORTS_LOW_SIGNAL_TOKENS):
             return True
+        if any(token in f"{topic.title} {topic.summary} {topic.snippet}" for token in self.SPORTS_CONTEXT_FALSE_POSITIVE_TOKENS):
+            return True
+        if "sports" not in set(self.topic_settings.focus_industries):
+            if "title_only" in flags and topic.topic_type in {"policy_market", "industry_event"} and topic.evidence_strength < 78:
+                return True
+            if "title_only" in flags and not self._has_specific_subject(topic) and topic.quality_score < 72:
+                return True
+        else:
+            if topic.source in {"bbc_football", "bbc_tennis"}:
+                if "title_only" in flags and not self._has_sports_event_signal(topic) and topic.quality_score < 58:
+                    return True
+            elif "title_only" in flags and not self._has_sports_event_signal(topic) and topic.quality_score < 72:
+                return True
         if topic.topic_type == "data_recap" and topic.quality_score < 62:
+            return True
+        if "weak_event" in flags and pattern_score < 12 and topic.quality_score < 74:
+            return True
+        if "notice_style_title" in flags and topic.title_potential_score < 46 and topic.quality_score < 78:
             return True
         if topic.quality_score < 52:
             return True
@@ -1013,6 +1421,106 @@ class TopicCollectionService:
     def _is_title_only_topic(self, topic: TopicCandidate) -> bool:
         snippet = self._clean_text(topic.snippet)
         return not snippet or len(snippet) < 18 or self._is_unusable_topic_snippet(snippet)
+
+    def _high_performance_pattern_score(self, topic: TopicCandidate) -> int:
+        text = f"{topic.title} {topic.summary} {topic.snippet}"
+        score = 0
+        if self._has_scene_anchor(topic):
+            score += 12
+        if self._has_conflict_signal(topic):
+            score += 10
+        if self._has_benefit_shift_signal(topic):
+            score += 10
+        if self._has_cross_border_signal(topic):
+            score += 8
+        if self._has_specific_subject(topic):
+            score += 6
+        if any(token in text for token in self.EXECUTION_TOKENS):
+            score += 6
+        if len(topic.extracted_numbers) >= 2:
+            score += 4
+        if len(topic.matched_keywords) >= 3:
+            score += 4
+        if self._is_weak_event_topic(topic):
+            score -= 12
+        if "title_only" in set(topic.quality_flags):
+            score -= 8
+        return max(0, min(score, 40))
+
+    def _has_scene_anchor(self, topic: TopicCandidate) -> bool:
+        text = f"{topic.title} {topic.summary} {topic.snippet}"
+        if self.SCENE_ANCHOR_RE.search(text):
+            return True
+        return any(token in text for token in self.SCENE_TOKENS)
+
+    def _has_conflict_signal(self, topic: TopicCandidate) -> bool:
+        text = f"{topic.title} {topic.summary} {topic.snippet}"
+        if "不是" in text and "而是" in text:
+            return True
+        return any(token in text for token in self.CONFLICT_TOKENS)
+
+    def _has_cross_border_signal(self, topic: TopicCandidate) -> bool:
+        text = f"{topic.title} {topic.summary} {topic.snippet}"
+        hits = sum(1 for token in self.CROSS_BORDER_TOKENS if token in text)
+        return hits >= 2
+
+    def _has_benefit_shift_signal(self, topic: TopicCandidate) -> bool:
+        text = f"{topic.title} {topic.summary} {topic.snippet}"
+        return any(token in text for token in self.BENEFIT_SHIFT_TOKENS) and any(
+            token in text for token in (*self.EXECUTION_TOKENS, *self.CONFLICT_TOKENS)
+        )
+
+    def _is_weak_event_topic(self, topic: TopicCandidate) -> bool:
+        text = f"{topic.title} {topic.summary} {topic.snippet}"
+        if not any(token in text for token in self.WEAK_EVENT_TOKENS):
+            return False
+        if self._has_scene_anchor(topic) or self._has_conflict_signal(topic):
+            return False
+        if any(token in text for token in self.EXECUTION_TOKENS):
+            return False
+        if len(topic.extracted_numbers) >= 2:
+            return False
+        return True
+
+    def _is_notice_style_title(self, topic: TopicCandidate) -> bool:
+        title = str(topic.title or "").strip()
+        if not title:
+            return False
+        if self.NOTICE_STYLE_RE.search(title):
+            return True
+        if any(token in title for token in self.NOTICE_STYLE_TOKENS):
+            if self._title_has_subject_anchor(topic):
+                if any(token in title for token in self.CONFLICT_TOKENS):
+                    return False
+                if any(token in title for token in ("背后", "谁", "为什么", "真正", "先受益", "先赚钱")):
+                    return False
+            return True
+        if ("|" in title or "｜" in title) and self.PRICE_HEADLINE_RE.search(title):
+            return True
+        return False
+
+    def _title_has_subject_anchor(self, topic: TopicCandidate) -> bool:
+        title = str(topic.title or "")
+        if self.COMPANY_ORG_RE.search(title):
+            return True
+        if any(token in title for token in self.SCENE_TOKENS):
+            return True
+        hits = 0
+        for keyword in topic.matched_keywords[:4]:
+            token = str(keyword or "").strip()
+            if token and token in title:
+                hits += 1
+        return hits >= 2
+
+    def _selection_penalty(self, topic: TopicCandidate) -> int:
+        penalty = 0
+        if self._is_notice_style_title(topic):
+            penalty += 12
+        if topic.title_potential_score < 50:
+            penalty += 6
+        if self._is_weak_event_topic(topic) and topic.title_potential_score < 58:
+            penalty += 6
+        return penalty
 
     def _is_old_statistics_topic(self, topic: TopicCandidate) -> bool:
         text = f"{topic.title} {topic.summary}"

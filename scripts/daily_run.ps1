@@ -4,6 +4,7 @@ param(
     [string]$Style = "",
     [string]$TopicRank = "",
     [string]$TopicTitle = "",
+    [switch]$VisibleBrowser,
     [switch]$DryRun,
     [switch]$RefreshCache,
     [switch]$NoArchive,
@@ -82,6 +83,19 @@ function Import-DotEnv {
 }
 
 Import-DotEnv -Path (Join-Path $ProjectRoot ".env")
+
+if ([string]::IsNullOrWhiteSpace($env:SCHEDULE_WECHAT_ENABLED)) {
+    $env:WECHAT_ENABLED = "0"
+    $env:WECHAT_AUTO_PUBLISH = "0"
+}
+
+$scheduledVisibleBrowser = $VisibleBrowser.IsPresent -or ($env:TOUTIAO_SCHEDULE_VISIBLE_BROWSER -eq "1")
+if ($scheduledVisibleBrowser) {
+    $env:TOUTIAO_PUBLISH_HEADLESS = "0"
+}
+else {
+    $env:TOUTIAO_PUBLISH_HEADLESS = "1"
+}
 
 if ($PythonPath) {
     $env:TOUTIAO_PYTHON = $PythonPath
@@ -298,21 +312,53 @@ function Get-LatestRunSummary {
 
     $reviewStatus = Read-JsonFile -Path (Join-Path $latestRun.FullName "review_status.json")
     $publishResult = Read-JsonFile -Path (Join-Path $latestRun.FullName "publish\publish_result.json")
+    $wechatPublishResult = Read-JsonFile -Path (Join-Path $latestRun.FullName "publish\wechat\wechat_publish_result.json")
+    $workflowReport = Read-JsonFile -Path (Join-Path $AutomationRoot "last_daily_workflow_report.json")
 
     $backend = @{}
     if ($publishResult -and $publishResult.backend_response_summary) {
         $backend = $publishResult.backend_response_summary
     }
 
+    $wechatStatus = ""
+    $wechatSubmitStatus = ""
+    $wechatPublishUrl = ""
+    $wechatDraftMediaId = ""
+    if ($wechatPublishResult) {
+        $wechatStatus = [string]$wechatPublishResult.status
+        $wechatSubmitStatus = [string]$wechatPublishResult.submit_status
+        $wechatPublishUrl = [string]$wechatPublishResult.external_url
+        $wechatDraftMediaId = [string]$wechatPublishResult.draft_media_id
+        if (-not $wechatStatus) {
+            if ($wechatSubmitStatus -or $wechatPublishUrl) {
+                $wechatStatus = "submitted"
+            }
+            elseif ($wechatDraftMediaId) {
+                $wechatStatus = "draft_created"
+            }
+        }
+    }
+
+    $workflowErrors = @()
+    if ($workflowReport -and $workflowReport.final_attempt -and $workflowReport.final_attempt.platform_errors) {
+        $workflowErrors = @($workflowReport.final_attempt.platform_errors)
+    }
+
     return @{
         run_name = $latestRun.Name
         run_dir = $latestRun.FullName
+        workflow_status = if ($workflowReport) { [string]$workflowReport.status } else { "" }
+        workflow_errors = $workflowErrors
         review_status = if ($reviewStatus) { [string]$reviewStatus.status } else { "" }
         selected_title = if ($reviewStatus) { [string]$reviewStatus.selected_title } else { "" }
         publish_status = if ($publishResult) { [string]$publishResult.status } else { "" }
         publish_url = if ($publishResult) { [string]$publishResult.external_url } else { "" }
         publish_message = if ($backend.message) { [string]$backend.message } else { "" }
         publish_pgc_id = if ($backend.pgc_id) { [string]$backend.pgc_id } else { "" }
+        wechat_status = $wechatStatus
+        wechat_submit_status = $wechatSubmitStatus
+        wechat_publish_url = $wechatPublishUrl
+        wechat_draft_media_id = $wechatDraftMediaId
     }
 }
 
@@ -397,6 +443,9 @@ Write-Log "Account: $AccountKey"
 Write-Log "Running scheduled daily pipeline."
 Write-Log "Auto publish enabled: $($env:TOUTIAO_AUTO_PUBLISH -eq '1')"
 Write-Log "Publishing enabled: $($env:TOUTIAO_PUBLISH_ENABLED -eq '1')"
+Write-Log "Scheduled browser mode: $(if ($env:TOUTIAO_PUBLISH_HEADLESS -eq '1') { 'headless' } else { 'visible' })"
+Write-Log "WeChat enabled: $($env:WECHAT_ENABLED -eq '1')"
+Write-Log "WeChat auto publish: $($env:WECHAT_AUTO_PUBLISH -eq '1')"
 Write-Log "Image backend: $($env:IMAGE_BACKEND)"
 Write-Log "Image api mode: $($env:IMAGE_API_MODE)"
 Write-Log "Image max assets: $($env:IMAGE_MAX_ASSETS)"
@@ -474,11 +523,32 @@ try {
         }
 
         if ($exitCode -eq 0) {
+            $workflowStatus = [string]$lastRunSummary["workflow_status"]
             $reviewStatus = [string]$lastRunSummary["review_status"]
             $publishStatus = [string]$lastRunSummary["publish_status"]
+            $wechatStatus = [string]$lastRunSummary["wechat_status"]
 
-            if ($publishStatus) {
-                $message = "Scheduled pipeline succeeded. Publish status: $publishStatus."
+            if ($workflowStatus -eq "platform_publish_failed") {
+                $message = "Scheduled pipeline completed content generation, but one or more platform publish steps failed."
+                Update-Status -CurrentState "failed" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 2 -Message $message -Extra $lastRunSummary
+                Add-Notification -Level "error" -Title "Platform publish failed" -Message $message -Data $lastRunSummary
+                Write-Log $message
+                $exitCode = 2
+            }
+            elseif ($workflowStatus -eq "platform_partial_success") {
+                $message = "Scheduled pipeline partially succeeded. At least one platform completed, but another platform failed."
+                Update-Status -CurrentState "success" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode $exitCode -Message $message -Extra $lastRunSummary
+                Add-Notification -Level "warn" -Title "Platform partial success" -Message $message -Data $lastRunSummary
+            }
+            elseif ($publishStatus -or $wechatStatus) {
+                $parts = @()
+                if ($publishStatus) {
+                    $parts += "Toutiao=$publishStatus"
+                }
+                if ($wechatStatus) {
+                    $parts += "WeChat=$wechatStatus"
+                }
+                $message = "Scheduled pipeline succeeded. " + ($parts -join "; ") + "."
                 Update-Status -CurrentState "success" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode $exitCode -Message $message -Extra $lastRunSummary
                 Add-Notification -Level "info" -Title "Scheduled publish completed" -Message $message -Data $lastRunSummary
             }
@@ -488,9 +558,16 @@ try {
                 Add-Notification -Level "warn" -Title "Manual review required" -Message $message -Data $lastRunSummary
             }
             elseif (($env:TOUTIAO_AUTO_PUBLISH -eq "1") -and ($env:TOUTIAO_PUBLISH_ENABLED -eq "1")) {
-                $message = "Scheduled pipeline completed without a publish result even though auto-publish is enabled."
+                $message = "Scheduled pipeline completed without a Toutiao publish result even though Toutiao auto-publish is enabled."
                 Update-Status -CurrentState "failed" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 2 -Message $message -Extra $lastRunSummary
                 Add-Notification -Level "error" -Title "Scheduled publish missing" -Message $message -Data $lastRunSummary
+                Write-Log $message
+                $exitCode = 2
+            }
+            elseif (($env:WECHAT_ENABLED -eq "1") -and ($env:TOUTIAO_DRY_RUN -ne "1") -and (-not $wechatStatus)) {
+                $message = "Scheduled pipeline completed without a WeChat draft/publish result even though WeChat is enabled."
+                Update-Status -CurrentState "failed" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 2 -Message $message -Extra $lastRunSummary
+                Add-Notification -Level "error" -Title "WeChat result missing" -Message $message -Data $lastRunSummary
                 Write-Log $message
                 $exitCode = 2
             }

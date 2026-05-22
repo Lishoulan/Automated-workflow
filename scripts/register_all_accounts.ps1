@@ -66,9 +66,14 @@ payload = _load_config_payload(Path('config.yaml'))
 accounts = payload.get('accounts', {}) if isinstance(payload, dict) else {}
 keys = ['default']
 if isinstance(accounts, dict):
-    for key in accounts:
+    for key, meta in accounts.items():
         key = str(key).strip()
-        if key and key not in keys:
+        if not key or key in keys:
+            continue
+        enabled = True
+        if isinstance(meta, dict):
+            enabled = bool(meta.get('enabled', True))
+        if enabled:
             keys.append(key)
 print(json.dumps(keys, ensure_ascii=False))
 "@
@@ -101,8 +106,8 @@ foreach ($accountKey in $accounts) {
         "-RetryDelaySeconds", [string]$RetryDelaySeconds
     )
 
-    foreach ($time in $Times) {
-        $arguments += @("-Times", $time)
+    if ($Times -and $Times.Count -gt 0) {
+        $arguments += @("-Times", $Times)
     }
 
     if ($PythonPath) {

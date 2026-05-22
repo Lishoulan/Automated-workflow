@@ -3,6 +3,8 @@ param(
     [string]$AccountKey = "default",
     [string]$PythonPath = "",
     [string]$Style = "",
+    [string]$ScriptPath = "",
+    [switch]$VisibleBrowser,
     [switch]$DryRun,
     [switch]$EnableAutoPublish,
     [int]$RetryCount = 2,
@@ -16,7 +18,17 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 chcp 65001 > $null
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$ScriptPath = Join-Path $ProjectRoot "scripts\daily_run.ps1"
+$ResolvedScriptPath = if ($ScriptPath) {
+    if ([System.IO.Path]::IsPathRooted($ScriptPath)) {
+        $ScriptPath
+    }
+    else {
+        Join-Path $ProjectRoot $ScriptPath
+    }
+}
+else {
+    Join-Path $ProjectRoot "scripts\daily_run.ps1"
+}
 $WrapperPath = Join-Path $ProjectRoot "scripts\daily_run_wrapper.cmd"
 $AccountSlug = (($AccountKey -replace '[^a-zA-Z0-9]+', '-') -replace '(^-+|-+$)', '').ToLower()
 if ([string]::IsNullOrWhiteSpace($AccountSlug)) {
@@ -36,8 +48,8 @@ else {
     Join-Path $ProjectRoot "output\accounts\$AccountSlug\automation"
 }
 
-if (-not (Test-Path -LiteralPath $ScriptPath)) {
-    throw "Script not found: $ScriptPath"
+if (-not (Test-Path -LiteralPath $ResolvedScriptPath)) {
+    throw "Script not found: $ResolvedScriptPath"
 }
 if (-not (Test-Path -LiteralPath $WrapperPath)) {
     throw "Wrapper not found: $WrapperPath"
@@ -63,7 +75,7 @@ else {
 $actionArguments = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
-    "-File", "`"$ScriptPath`"",
+    "-File", "`"$ResolvedScriptPath`"",
     "-AccountKey", "`"$AccountKey`"",
     "-RetryCount", ([string][Math]::Max(0, $RetryCount)),
     "-RetryDelaySeconds", ([string][Math]::Max(5, $RetryDelaySeconds))
@@ -76,6 +88,9 @@ if ($resolvedStyle) {
 }
 if ($DryRun.IsPresent) {
     $actionArguments += "-DryRun"
+}
+if ($VisibleBrowser.IsPresent) {
+    $actionArguments += "-VisibleBrowser"
 }
 if ($EnableAutoPublish.IsPresent) {
     $actionArguments += "-EnableAutoPublish"
@@ -99,7 +114,8 @@ foreach ($time in $Times) {
     $index++
 }
 
-Write-Host "Script: $ScriptPath"
+Write-Host "Script: $ResolvedScriptPath"
 Write-Host "Account: $AccountKey"
 Write-Host "Retry policy: $RetryCount retry(s), delay $RetryDelaySeconds second(s)"
 Write-Host "Auto publish: $($EnableAutoPublish.IsPresent)"
+Write-Host "Scheduled browser mode: $(if ($VisibleBrowser.IsPresent) { 'visible' } else { 'headless (recommended)' })"

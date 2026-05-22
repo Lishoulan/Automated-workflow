@@ -1,9 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
 import logging
 import re
+import time
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,7 @@ from urllib.parse import parse_qs
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import PublishRecord
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -20,6 +23,11 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     PlaywrightTimeoutError = Exception
     sync_playwright = None
+
+try:
+    import msvcrt
+except ModuleNotFoundError:  # pragma: no cover - fallback for non-Windows environments
+    msvcrt = None
 
 
 class PublishService:
@@ -156,8 +164,48 @@ class PublishService:
         self.settings = settings
         self.logger = logger
         self.history_path = settings.output_dir / settings.publishing.history_filename
+        self.growth_ops_service = GrowthOpsService(settings, logger)
+
+    @contextmanager
+    def _publish_session_lock(self, purpose: str):
+        lock_path = self.settings.output_dir / ".publish_session.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as handle:
+            try:
+                if handle.tell() == 0:
+                    handle.write(b"0")
+                    handle.flush()
+                    handle.seek(0)
+            except Exception:
+                pass
+
+            if msvcrt is None:
+                yield
+                return
+
+            self.logger.info("Waiting for publish session lock (%s)...", purpose)
+            while True:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(1)
+
+            try:
+                yield
+            finally:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                except Exception:
+                    pass
 
     def publish_run(self, run_dir: Path) -> dict[str, Path]:
+        with self._publish_session_lock("publish run"):
+            return self._publish_run_locked(run_dir)
+
+    def _publish_run_locked(self, run_dir: Path) -> dict[str, Path]:
         if not self.settings.publishing.enabled:
             raise RuntimeError("Publishing is disabled. Set TOUTIAO_PUBLISH_ENABLED=1 first.")
 
@@ -180,22 +228,7 @@ class PublishService:
 
         title = self._clip_title(str(publish_meta.get("selected_title", "")).strip())
         article = self._sanitize_article_for_publish(self._read_text(publish_dir / "article.md").strip())
-        cover_path = publish_dir / "images" / "cover.png"
-        body_image_paths: list[Path] = []
-        # Shared image strategy for all accounts:
-        # 1. Insert cover.png first so it becomes the first inline article image.
-        # 2. Let Toutiao reuse that first inline image as the lead cover image.
-        # 3. Insert one later infographic image between paragraphs for body richness.
-        if cover_path.exists():
-            body_image_paths.append(cover_path)
-        for path in (
-            publish_dir / "images" / "infographic_1.png",
-            publish_dir / "images" / "infographic_2.png",
-        ):
-            if path.exists():
-                body_image_paths.append(path)
-                break
-        preflight_summary = self.collect_preflight_summary()
+        preflight_summary = self._collect_preflight_summary_locked()
         blocking_flags = list(preflight_summary.get("blocking_flags", []))
         should_bypass_preflight = self._should_bypass_preflight_blockers(preflight_summary)
         if blocking_flags and not should_bypass_preflight:
@@ -210,8 +243,6 @@ class PublishService:
             result_payload = self._publish_to_toutiao(
                 title=title,
                 article=article,
-                cover_path=cover_path,
-                body_image_paths=body_image_paths,
             )
         except Exception as exc:
             self._write_failed_publish_result(
@@ -254,10 +285,23 @@ class PublishService:
             ),
             encoding="utf-8",
         )
+        growth_exports = self.growth_ops_service.register_publish_event(
+            platform=self.settings.publishing.platform,
+            run_dir=run_dir,
+            result_path=publish_result_path,
+        )
         self.logger.info("Publish finished for run: %s", run_dir)
-        return {"publish_result": publish_result_path, "publish_history": self.history_path}
+        return {
+            "publish_result": publish_result_path,
+            "publish_history": self.history_path,
+            **growth_exports,
+        }
 
     def initialize_login_session(self) -> dict[str, str]:
+        with self._publish_session_lock("login initialization"):
+            return self._initialize_login_session_locked()
+
+    def _initialize_login_session_locked(self) -> dict[str, str]:
         if sync_playwright is None:
             raise RuntimeError(
                 "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`."
@@ -345,6 +389,10 @@ class PublishService:
                 browser.close()
 
     def collect_preflight_summary(self) -> dict[str, Any]:
+        with self._publish_session_lock("preflight collection"):
+            return self._collect_preflight_summary_locked()
+
+    def _collect_preflight_summary_locked(self) -> dict[str, Any]:
         if sync_playwright is None:
             return {
                 "blocking_flags": ["Playwright is not installed."],
@@ -388,7 +436,7 @@ class PublishService:
         summary = self.collect_preflight_summary()
         return self._write_preflight_summary(summary)
 
-    def _publish_to_toutiao(self, title: str, article: str, cover_path: Path, body_image_paths: list[Path]) -> dict[str, Any]:
+    def _publish_to_toutiao(self, title: str, article: str) -> dict[str, Any]:
         if sync_playwright is None:
             raise RuntimeError(
                 "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`."
@@ -490,41 +538,12 @@ class PublishService:
                 self._set_title_content(page, title_locator, title, notes)
                 self._dismiss_ai_assistant_drawer(page, notes)
                 self._set_editor_content(page, editor_selector, article, notes)
-                inserted_inline_images = self._try_apply_article_images(
-                    page,
-                    editor_selector,
-                    article,
-                    body_image_paths,
-                    notes,
-                    first_image_as_cover=cover_path.exists(),
-                )
                 self._apply_default_work_declarations(page, notes)
                 self._apply_safe_publish_options(page, notes)
                 self._finalize_editor_state(page, title_locator, editor_selector, title, notes)
                 self._dismiss_ai_assistant_drawer(page, notes)
-
-                if cover_path.exists():
-                    cover_mode = "first_inline_image"
-                    notes.append("Skipped dedicated cover upload and used the first inline image as the lead cover image.")
-                else:
-                    cover_mode = self._resolve_cover_mode(cover_path)
-
-                if cover_mode == "none":
-                    self._ensure_no_cover_mode(page, notes)
-                elif cover_mode == "single":
-                    self._apply_cover_image(page, cover_path, notes)
-                elif cover_mode == "first_inline_image":
-                    pass
-                else:
-                    notes.append("Cover image not found. Falling back to no-cover publish mode.")
-                    self._ensure_no_cover_mode(page, notes)
-
-                self._verify_publish_media_state(
-                    page,
-                    editor_selector,
-                    cover_mode=cover_mode,
-                    expected_inline_images=inserted_inline_images,
-                )
+                cover_mode = "none"
+                self._ensure_no_cover_mode(page, notes)
                 self._stabilize_publish_form(page, notes)
 
                 diagnostics = self._build_publish_diagnostics(diagnostic_events)
@@ -3596,3 +3615,4 @@ class PublishService:
                 "draft save failed",
             ]
         )
+

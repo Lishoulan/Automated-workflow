@@ -21,7 +21,7 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency fallback
 
 
 DEFAULT_ACCOUNT_KEY = "default"
-ACCOUNT_META_KEYS = {"label", "input_dir", "output_dir", "logs_dir", "cache_dir", "browser_profile_dir"}
+ACCOUNT_META_KEYS = {"label", "input_dir", "output_dir", "logs_dir", "cache_dir", "browser_profile_dir", "enabled"}
 ACCOUNT_SLUG_PATTERN = re.compile(r"[^a-zA-Z0-9]+")
 
 
@@ -39,6 +39,13 @@ def sanitize_account_slug(raw_value: str | None) -> str:
 def account_env_name(base_name: str, account_key: str | None) -> str:
     slug = sanitize_account_slug(account_key).replace("-", "_").upper()
     return f"{base_name}__{slug}"
+
+
+def _env_value_scoped(name: str, account_key: str | None, default: str) -> str:
+    scoped_value = os.getenv(account_env_name(name, account_key))
+    if scoped_value is not None:
+        return scoped_value
+    return default
 
 
 @dataclass(frozen=True)
@@ -148,6 +155,7 @@ class ImageGenerationSettings:
 @dataclass(frozen=True)
 class AutomationSettings:
     default_topic_rank: int
+    max_daily_topic_attempts: int
     archive_outputs: bool
     archive_dirname: str
     selected_topic_basename: str
@@ -156,6 +164,7 @@ class AutomationSettings:
     def from_dict(cls, payload: dict[str, Any]) -> "AutomationSettings":
         return cls(
             default_topic_rank=int(payload.get("default_topic_rank", 1)),
+            max_daily_topic_attempts=int(payload.get("max_daily_topic_attempts", 3)),
             archive_outputs=bool(payload.get("archive_outputs", True)),
             archive_dirname=str(payload.get("archive_dirname", "runs")),
             selected_topic_basename=str(payload.get("selected_topic_basename", "selected_topic")),
@@ -249,10 +258,62 @@ class PublishSettings:
 
 
 @dataclass(frozen=True)
+class WechatSettings:
+    enabled: bool
+    auto_publish: bool
+    app_id: str
+    app_secret: str
+    account_name: str
+    author_name: str
+    base_url: str
+    api_base_url: str
+    title_max_length: int
+    digest_max_length: int
+    history_filename: str
+    cover_strategy: str
+    layout_backend: str
+    md2wechat_enabled: bool
+    md2wechat_api_key: str
+    md2wechat_base_url: str
+    md2wechat_theme: str
+    md2wechat_font_size: str
+    md2wechat_convert_version: str
+    md2wechat_cli_path: str
+    md2wechat_fallback_to_builtin: bool
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "WechatSettings":
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            auto_publish=bool(payload.get("auto_publish", False)),
+            app_id=str(payload.get("app_id", "")).strip(),
+            app_secret=str(payload.get("app_secret", "")).strip(),
+            account_name=str(payload.get("account_name", "")).strip(),
+            author_name=str(payload.get("author_name", "")).strip(),
+            base_url=str(payload.get("base_url", "https://mp.weixin.qq.com/")).strip(),
+            api_base_url=str(payload.get("api_base_url", "https://api.weixin.qq.com")).strip(),
+            title_max_length=int(payload.get("title_max_length", 64)),
+            digest_max_length=int(payload.get("digest_max_length", 120)),
+            history_filename=str(payload.get("history_filename", "wechat_publish_history.json")),
+            cover_strategy=str(payload.get("cover_strategy", "first_inline")),
+            layout_backend=str(payload.get("layout_backend", "builtin")).strip() or "builtin",
+            md2wechat_enabled=bool(payload.get("md2wechat_enabled", False)),
+            md2wechat_api_key=str(payload.get("md2wechat_api_key", "")).strip(),
+            md2wechat_base_url=str(payload.get("md2wechat_base_url", "https://www.md2wechat.com/api/v1")).strip(),
+            md2wechat_theme=str(payload.get("md2wechat_theme", "default")).strip() or "default",
+            md2wechat_font_size=str(payload.get("md2wechat_font_size", "medium")).strip() or "medium",
+            md2wechat_convert_version=str(payload.get("md2wechat_convert_version", "v1")).strip() or "v1",
+            md2wechat_cli_path=str(payload.get("md2wechat_cli_path", "")).strip(),
+            md2wechat_fallback_to_builtin=bool(payload.get("md2wechat_fallback_to_builtin", True)),
+        )
+
+
+@dataclass(frozen=True)
 class AccountProfile:
     key: str
     slug: str
     label: str
+    enabled: bool
     input_dir: str
     output_dir: str
     logs_dir: str
@@ -267,6 +328,7 @@ class AccountProfile:
             key=normalize_account_key(key),
             slug=slug,
             label=str(payload.get("label", key)),
+            enabled=bool(payload.get("enabled", True)),
             input_dir=str(payload.get("input_dir", "")).strip(),
             output_dir=str(payload.get("output_dir", "")).strip(),
             logs_dir=str(payload.get("logs_dir", "")).strip(),
@@ -333,6 +395,7 @@ class AppSettings:
     automation: AutomationSettings
     review: ReviewSettings
     publishing: PublishSettings
+    wechat: WechatSettings
     account_profiles: dict[str, AccountProfile]
     raw_account_profiles: dict[str, dict[str, Any]]
     available_account_keys: list[str]
@@ -384,7 +447,10 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     config_path = project_root / "config.yaml"
     config_payload = _load_config_payload(config_path)
     styles = _load_style_profiles(config_payload.get("styles", {}))
-    raw_account_profiles = _load_account_profiles(config_payload.get("accounts", {}))
+    all_account_profiles = _load_account_profiles(config_payload.get("accounts", {}))
+    raw_account_profiles = {
+        key: profile for key, profile in all_account_profiles.items() if profile.enabled
+    }
     resolved_account_key = normalize_account_key(account_key or os.getenv("TOUTIAO_ACCOUNT"))
     account_profile = raw_account_profiles.get(resolved_account_key)
     if account_profile is None and resolved_account_key != DEFAULT_ACCOUNT_KEY:
@@ -404,8 +470,23 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     topic_config = TopicCollectionSettings.from_dict(merged_payload.get("topic_collection", {}))
     image_config = ImageGenerationSettings.from_dict(merged_payload.get("image_generation", {}))
     automation_config = AutomationSettings.from_dict(merged_payload.get("automation", {}))
+    automation_config = AutomationSettings(
+        default_topic_rank=int(
+            os.getenv("TOUTIAO_DEFAULT_TOPIC_RANK", str(automation_config.default_topic_rank))
+        ),
+        max_daily_topic_attempts=int(
+            os.getenv(
+                "TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS",
+                str(automation_config.max_daily_topic_attempts),
+            )
+        ),
+        archive_outputs=automation_config.archive_outputs,
+        archive_dirname=automation_config.archive_dirname,
+        selected_topic_basename=automation_config.selected_topic_basename,
+    )
     review_config = ReviewSettings.from_dict(merged_payload.get("review", {}))
     publishing_config = PublishSettings.from_dict(merged_payload.get("publishing", {}))
+    wechat_config = WechatSettings.from_dict(merged_payload.get("wechat", {}))
 
     default_style = os.getenv("DEFAULT_STYLE", str(writing_config.get("default_style", "deep_industry_analysis")))
     is_default_account = account_profile.key == DEFAULT_ACCOUNT_KEY
@@ -473,16 +554,26 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         article_word_target=int(
             os.getenv("ARTICLE_WORD_TARGET", str(writing_config.get("article_word_target", 1200)))
         ),
-        brand_name=os.getenv("BRAND_NAME", str(industry_config.get("brand_name", "手蓝数据笔记"))),
-        industry_focus=os.getenv(
+        brand_name=_env_value_scoped(
+            "BRAND_NAME",
+            account_profile.key,
+            str(industry_config.get("brand_name", "??????")),
+        ),
+        industry_focus=_env_value_scoped(
             "INDUSTRY_FOCUS",
-            str(industry_config.get("focus", "新能源、机器人、智能装备、储能")),
+            account_profile.key,
+            str(industry_config.get("focus", "???????????????")),
         ),
-        audience=os.getenv(
+        audience=_env_value_scoped(
             "TARGET_AUDIENCE",
-            str(industry_config.get("audience", "科技行业从业者与关注产业升级的读者")),
+            account_profile.key,
+            str(industry_config.get("audience", "?????????????????")),
         ),
-        platform=os.getenv("TARGET_PLATFORM", str(industry_config.get("platform", "今日头条"))),
+        platform=_env_value_scoped(
+            "TARGET_PLATFORM",
+            account_profile.key,
+            str(industry_config.get("platform", "????")),
+        ),
         logging_level=os.getenv("LOG_LEVEL", "INFO"),
         default_style=default_style if default_style in styles else "deep_industry_analysis",
         title_count=int(os.getenv("TITLE_COUNT", str(writing_config.get("title_count", 20)))),
@@ -586,6 +677,35 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
             ),
             cover_mode=os.getenv("TOUTIAO_PUBLISH_COVER_MODE", publishing_config.cover_mode),
             selectors=publishing_config.selectors,
+        ),
+        wechat=WechatSettings(
+            enabled=_env_flag_scoped("WECHAT_ENABLED", account_profile.key, wechat_config.enabled),
+            auto_publish=_env_flag_scoped("WECHAT_AUTO_PUBLISH", account_profile.key, wechat_config.auto_publish),
+            app_id=os.getenv("WECHAT_APP_ID", wechat_config.app_id),
+            app_secret=os.getenv("WECHAT_APP_SECRET", wechat_config.app_secret),
+            account_name=os.getenv("WECHAT_ACCOUNT_NAME", wechat_config.account_name),
+            author_name=os.getenv("WECHAT_AUTHOR_NAME", wechat_config.author_name),
+            base_url=os.getenv("WECHAT_BASE_URL", wechat_config.base_url),
+            api_base_url=os.getenv("WECHAT_API_BASE_URL", wechat_config.api_base_url),
+            title_max_length=int(os.getenv("WECHAT_TITLE_MAX_LENGTH", str(wechat_config.title_max_length))),
+            digest_max_length=int(os.getenv("WECHAT_DIGEST_MAX_LENGTH", str(wechat_config.digest_max_length))),
+            history_filename=os.getenv("WECHAT_HISTORY_FILENAME", wechat_config.history_filename),
+            cover_strategy=os.getenv("WECHAT_COVER_STRATEGY", wechat_config.cover_strategy),
+            layout_backend=os.getenv("WECHAT_LAYOUT_BACKEND", wechat_config.layout_backend),
+            md2wechat_enabled=_env_flag("WECHAT_MD2WECHAT_ENABLED", wechat_config.md2wechat_enabled),
+            md2wechat_api_key=os.getenv("MD2WECHAT_API_KEY", wechat_config.md2wechat_api_key),
+            md2wechat_base_url=os.getenv("MD2WECHAT_BASE_URL", wechat_config.md2wechat_base_url),
+            md2wechat_theme=os.getenv("MD2WECHAT_THEME", wechat_config.md2wechat_theme),
+            md2wechat_font_size=os.getenv("MD2WECHAT_FONT_SIZE", wechat_config.md2wechat_font_size),
+            md2wechat_convert_version=os.getenv(
+                "MD2WECHAT_CONVERT_VERSION",
+                wechat_config.md2wechat_convert_version,
+            ),
+            md2wechat_cli_path=os.getenv("MD2WECHAT_CLI_PATH", wechat_config.md2wechat_cli_path),
+            md2wechat_fallback_to_builtin=_env_flag(
+                "MD2WECHAT_FALLBACK_TO_BUILTIN",
+                wechat_config.md2wechat_fallback_to_builtin,
+            ),
         ),
         account_profiles=raw_account_profiles,
         raw_account_profiles={
@@ -865,6 +985,7 @@ def _default_config_payload() -> dict[str, Any]:
         },
         "automation": {
             "default_topic_rank": 1,
+            "max_daily_topic_attempts": 3,
             "archive_outputs": True,
             "archive_dirname": "runs",
             "selected_topic_basename": "selected_topic",
@@ -935,6 +1056,29 @@ def _default_config_payload() -> dict[str, Any]:
                 ],
             },
         },
+        "wechat": {
+            "enabled": False,
+            "auto_publish": False,
+            "app_id": "",
+            "app_secret": "",
+            "account_name": "公众号名称",
+            "author_name": "手蓝",
+            "base_url": "https://mp.weixin.qq.com/",
+            "api_base_url": "https://api.weixin.qq.com",
+            "title_max_length": 64,
+            "digest_max_length": 120,
+            "history_filename": "wechat_publish_history.json",
+            "cover_strategy": "first_inline",
+            "layout_backend": "builtin",
+            "md2wechat_enabled": False,
+            "md2wechat_api_key": "",
+            "md2wechat_base_url": "https://www.md2wechat.com/api/v1",
+            "md2wechat_theme": "default",
+            "md2wechat_font_size": "medium",
+            "md2wechat_convert_version": "v1",
+            "md2wechat_cli_path": "",
+            "md2wechat_fallback_to_builtin": True,
+        },
         "styles": _default_style_payloads(),
     }
 
@@ -990,3 +1134,10 @@ def _env_flag(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_flag_scoped(name: str, account_key: str | None, default: bool) -> bool:
+    scoped_value = os.getenv(account_env_name(name, account_key))
+    if scoped_value is not None:
+        return scoped_value.strip().lower() in {"1", "true", "yes", "on"}
+    return _env_flag(name, default)

@@ -67,12 +67,8 @@ class ContentGenerator:
             comment_prompt=str(payload.get("comment_prompt", "你更看好产业链里的哪个环节？欢迎留言讨论。")),
             summary=str(payload.get("summary", self._build_summary(extraction))),
             tags=self._ensure_list(payload.get("tags"), 6, fallback=self._fallback_tags(extraction)),
-            cover_prompt=str(payload.get("cover_prompt", self._build_cover_prompt(extraction))),
-            infographic_prompts=self._ensure_list(
-                payload.get("infographic_prompts"),
-                3,
-                fallback=self._build_infographic_prompts(extraction),
-            ),
+            cover_prompt="",
+            infographic_prompts=[],
             review_notes=self._ensure_list(payload.get("review_notes"), 3, fallback=[]),
         )
 
@@ -85,8 +81,8 @@ class ContentGenerator:
             comment_prompt="如果你只能盯一个产业链环节，你会选哪一段？欢迎在评论区聊聊。",
             summary=self._build_summary(extraction),
             tags=self._fallback_tags(extraction),
-            cover_prompt=self._build_cover_prompt(extraction),
-            infographic_prompts=self._build_infographic_prompts(extraction),
+            cover_prompt="",
+            infographic_prompts=[],
             review_notes=[
                 "建议人工再补一条更鲜明的观点句。",
                 "如有原始报告来源，建议在发文前补充出处。",

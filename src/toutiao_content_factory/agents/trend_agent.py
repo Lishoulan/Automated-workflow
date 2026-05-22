@@ -7,6 +7,8 @@ from toutiao_content_factory.models import CacheContext, ExtractionResult, Trend
 
 class TrendAgent(BaseAgent):
     agent_name = "TrendAgent"
+    SPORTS_TOKENS = ("体育", "足球", "篮球", "网球", "世界杯", "奥运", "英超", "西甲", "法网", "world cup", "football", "tennis", "french open", "grand slam")
+    INTERNATIONAL_TOKENS = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金", "仲裁", "白宫")
 
     ANGLE_NOISE_PREFIXES = (
         "材料里最强的增长信号包括",
@@ -22,6 +24,14 @@ class TrendAgent(BaseAgent):
         style: StyleProfile,
         cache_context: CacheContext,
     ) -> TrendReport:
+        benchmark_digest = self.benchmark_strategy_digest(
+            purpose="trend",
+            track_hint=extraction.focus_industry,
+            title_hint=extraction.topic_title,
+            focus_industry=extraction.focus_industry,
+            keywords=extraction.focus_keywords + extraction.supply_chain_keywords,
+            angle_hint=extraction.suggested_angle,
+        )
         prompt = self.render_prompt(
             "trend_prompt_v2.md",
             platform=self.settings.platform,
@@ -29,7 +39,7 @@ class TrendAgent(BaseAgent):
             industry_focus=self.settings.industry_focus,
             audience=self.settings.audience,
             style_digest=self.style_digest(style),
-            brand_digest=self.brand_digest(),
+            brand_digest=self.brand_digest(extra_sections=[benchmark_digest]),
             cache_note=self.cache_note(cache_context),
             source_digest=self._format_source_digest(extraction),
             signals_json=self.json_text(self._extraction_payload(extraction)),
@@ -44,6 +54,91 @@ class TrendAgent(BaseAgent):
             extraction.supply_chain_keywords[0] if extraction.supply_chain_keywords else "科技制造"
         )
         secondary = self._secondary_node(extraction, primary, "产业链") or "产业链"
+        content_mode = self._content_mode(extraction)
+
+        if content_mode == "sports":
+            hot_trends = self.unique(
+                extraction.industry_trends[:4]
+                + [
+                    f"{primary}相关内容正从单纯热点讨论转向赛前预期和赛后复盘。",
+                    f"{secondary}会成为影响后续判断的重要线索。",
+                ]
+            )[:4]
+            platform_topics = self.unique(
+                [
+                    f"{primary}复盘",
+                    f"{primary}争议点",
+                    f"{secondary}走势",
+                    "阵容变化",
+                    "比赛预期",
+                ]
+            )[:5]
+            audience_hooks = self.unique(
+                [
+                    f"这条{primary}消息真正值得看的，不是表面信息，而是它会不会改写后续判断。",
+                    f"{secondary}为什么会影响阵容选择、比赛走势或舆论风向？",
+                    "真正有阅读价值的，不是复述消息，而是把影响解释清楚。",
+                ]
+            )[:3]
+            recommended_angle = extraction.suggested_angle.strip().rstrip("。") if extraction.suggested_angle.strip() else (
+                f"这条{primary}热点真正值得写的，不是把新闻复述一遍，而是解释{secondary}背后的胜负手、争议点和后续走势"
+            )
+            timing_judgment = f"{primary}现在已经进入高讨论窗口，读者更关心后续走势而不是事件本身。"
+            competitive_edges = [
+                "先解释影响，再复盘消息本身。",
+                "把关键人物、关键节点和后续走势说清楚。",
+                "尽量避免空翻译和堆背景资料。",
+            ]
+            return TrendReport(
+                hot_trends=hot_trends,
+                platform_topics=platform_topics,
+                audience_hooks=audience_hooks,
+                recommended_angle=recommended_angle,
+                timing_judgment=timing_judgment,
+                competitive_edges=competitive_edges,
+            )
+
+        if content_mode == "international":
+            hot_trends = self.unique(
+                extraction.industry_trends[:4]
+                + [
+                    f"{primary}正在从单点消息转向更连续的博弈观察。",
+                    f"{secondary}会成为判断局势后续变化的重要线索。",
+                ]
+            )[:4]
+            platform_topics = self.unique(
+                [
+                    f"{primary}解读",
+                    f"{primary}博弈",
+                    f"{secondary}变化",
+                    "政策变量",
+                    "市场反馈",
+                ]
+            )[:5]
+            audience_hooks = self.unique(
+                [
+                    f"这条{primary}消息真正值得看的，不是表态本身，而是谁在施压、谁在让步。",
+                    f"{secondary}为什么会影响下一步谈判、政策动作或市场反应？",
+                    "真正有阅读价值的，不是播报消息，而是把博弈关系和影响链条说透。",
+                ]
+            )[:3]
+            recommended_angle = extraction.suggested_angle.strip().rstrip("。") if extraction.suggested_angle.strip() else (
+                f"这条{primary}热点真正值得写的，不是事件表面，而是{secondary}背后的利益重新分配和下一步博弈"
+            )
+            timing_judgment = f"{primary}已经进入需要持续跟踪政策与博弈变量的阶段。"
+            competitive_edges = [
+                "先解释事件，再解释利益，再解释后续变量。",
+                "把政策动作和市场反应连接起来。",
+                "避免空喊立场，也不要只做表面播报。",
+            ]
+            return TrendReport(
+                hot_trends=hot_trends,
+                platform_topics=platform_topics,
+                audience_hooks=audience_hooks,
+                recommended_angle=recommended_angle,
+                timing_judgment=timing_judgment,
+                competitive_edges=competitive_edges,
+            )
 
         hot_trends = self.unique(
             extraction.industry_trends[:4]
@@ -104,6 +199,15 @@ class TrendAgent(BaseAgent):
         )
 
     def _choose_angle(self, extraction: ExtractionResult, primary: str, secondary: str) -> str:
+        content_mode = self._content_mode(extraction)
+        if content_mode == "sports":
+            if extraction.suggested_angle.strip():
+                return extraction.suggested_angle.strip().rstrip("。")
+            return f"这条{primary}热点真正值得写的，不是把新闻复述一遍，而是解释{secondary}背后的胜负手、争议点和后续走势"
+        if content_mode == "international":
+            if extraction.suggested_angle.strip():
+                return extraction.suggested_angle.strip().rstrip("。")
+            return f"这条{primary}热点真正值得写的，不是事件表面，而是{secondary}背后的利益重新分配和下一步博弈"
         if extraction.suggested_angle.strip():
             return extraction.suggested_angle.strip().rstrip("。")
         points = self._analysis_points(extraction)
@@ -171,6 +275,25 @@ class TrendAgent(BaseAgent):
 
     def _contains_any(self, text: str, tokens: tuple[str, ...]) -> bool:
         return any(token in text for token in tokens)
+
+    def _content_mode(self, extraction: ExtractionResult) -> str:
+        text = " ".join(
+            item
+            for item in (
+                extraction.focus_industry,
+                extraction.topic_title,
+                extraction.suggested_angle,
+                extraction.writing_brief,
+                " ".join(extraction.focus_keywords[:6]),
+                " ".join(extraction.supply_chain_keywords[:6]),
+            )
+            if item
+        ).lower()
+        if any(token in text for token in self.SPORTS_TOKENS):
+            return "sports"
+        if any(token in text for token in self.INTERNATIONAL_TOKENS):
+            return "international"
+        return "generic"
 
     def _format_source_digest(self, extraction: ExtractionResult) -> str:
         return "\n".join(

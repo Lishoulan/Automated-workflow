@@ -1,0 +1,276 @@
+version: 1
+updated_at: "2026-05-22"
+platform: toutiao
+accounts:
+  - key: toutiao_36kr
+    name: "36氪头条号"
+    platform: toutiao
+    track: "科技商业"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 10
+    positioning: "泛科技与商业资讯强样本，适合学习热点压缩、公司动态与产业趋势的连接方式。"
+    content_pillars:
+      - "科技公司"
+      - "融资并购"
+      - "产业趋势"
+    notes: "适合作为科技总号的基础对标样本。"
+    source_feeds:
+      - label: "36kr RSS"
+        type: rss
+        urls:
+          - "https://36kr.com/feed-article"
+          - "https://36kr.com/feed-newsflash"
+    observation_articles:
+      - published_at: "近期"
+        title: "英伟达、苹果、OpenAI等科技公司动态观察"
+        keywords: ["AI", "芯片", "科技公司"]
+      - published_at: "近期"
+        title: "融资与产业链重组带来的商业变化"
+        keywords: ["融资", "产业链", "公司"]
+
+  - key: toutiao_huxiu
+    name: "虎嗅头条号"
+    platform: toutiao
+    track: "科技商业"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 9
+    positioning: "偏观点与判断的科技商业样本，适合学习结论先行、事件背后逻辑拆解。"
+    content_pillars:
+      - "公司战略"
+      - "行业变局"
+      - "商业判断"
+    notes: "重点参考其开头切题速度和观点密度。"
+    source_feeds:
+      - label: "虎嗅首页"
+        type: html
+        urls:
+          - "https://www.huxiu.com/"
+    observation_articles:
+      - published_at: "近期"
+        title: "热闹事件背后，真正改变行业格局的变量是什么"
+        keywords: ["格局", "变量", "行业", "判断"]
+      - published_at: "近期"
+        title: "不是谁最热，而是谁先把订单和利润跑出来"
+        keywords: ["订单", "利润", "兑现"]
+
+  - key: toutiao_zhidx
+    name: "智东西头条号"
+    platform: toutiao
+    track: "科技商业"
+    stage: core
+    monitor_enabled: true
+    monitor_priority: 8
+    positioning: "AI、机器人与智能硬件高相关样本，适合补足科技总号的专业密度。"
+    content_pillars:
+      - "AI硬件"
+      - "机器人"
+      - "产业落地"
+    notes: "适合强化科技号在机器人、AI硬件方向的判断框架。"
+    source_feeds:
+      - label: "智东西首页"
+        type: html
+        urls:
+          - "https://www.zhidx.com/"
+          - "https://www.zhidx.com/p/category/%E6%9C%BA%E5%99%A8%E4%BA%BA%E6%97%A0%E4%BA%BA%E6%9C%BA"
+          - "https://www.zhidx.com/p/category/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD"
+    observation_articles:
+      - published_at: "近期"
+        title: "具身智能进入交付验证期，真正要看的是订单与场景复制"
+        keywords: ["具身智能", "交付", "订单", "场景"]
+      - published_at: "近期"
+        title: "AI硬件热度上来后，利润开始往上游器件集中"
+        keywords: ["AI硬件", "利润", "上游", "器件"]
+
+  - key: toutiao_qbitai
+    name: "量子位头条号"
+    platform: toutiao
+    track: "科技商业"
+    stage: core
+    monitor_enabled: true
+    monitor_priority: 8
+    positioning: "AI热点响应快，适合学习高传播科技标题与热点角度切入。"
+    content_pillars:
+      - "大模型"
+      - "AI应用"
+      - "机器人热点"
+    notes: "适合补充科技号的传播感和热点响应速度。"
+    source_feeds:
+      - label: "Google News AI"
+        type: google_rss
+        urls:
+          - "https://news.google.com/rss/search?q=OpenAI&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+          - "https://news.google.com/rss/search?q=%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+          - "https://news.google.com/rss/search?q=%E6%9C%BA%E5%99%A8%E4%BA%BA&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+    observation_articles:
+      - published_at: "近期"
+        title: "一条AI热搜真正值得看的，不是参数，而是商业化窗口"
+        keywords: ["AI", "参数", "商业化"]
+      - published_at: "近期"
+        title: "机器人集体爆火之后，市场开始重估哪些环节先赚钱"
+        keywords: ["机器人", "赚钱", "环节", "重估"]
+
+  - key: toutiao_observer_world
+    name: "观察者网国际"
+    platform: toutiao
+    track: "国际热点"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 10
+    positioning: "国际局势与政策博弈高密度样本，适合学习冲突事件的因果拆解。"
+    content_pillars:
+      - "地缘冲突"
+      - "外交博弈"
+      - "政策表态"
+    notes: "重点参考事件背后各方利益与博弈顺序。"
+    source_feeds:
+      - label: "观察者网国际"
+        type: html
+        urls:
+          - "https://www.guancha.cn/internation"
+    observation_articles:
+      - published_at: "近期"
+        title: "一场国际表态背后，真正变化的是谁在施压谁在试探"
+        keywords: ["国际", "施压", "试探", "博弈"]
+      - published_at: "近期"
+        title: "外交动作看似突然，实则是几轮博弈后的结果"
+        keywords: ["外交", "博弈", "结果"]
+
+  - key: toutiao_huanqiu_world
+    name: "环球网国际"
+    platform: toutiao
+    track: "国际热点"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 9
+    positioning: "全球时政热点覆盖广，适合补充国际号的时效性和议题覆盖。"
+    content_pillars:
+      - "国际时政"
+      - "大国关系"
+      - "全球市场"
+    notes: "适合作为国际号的热点雷达层。"
+    source_feeds:
+      - label: "环球网国际"
+        type: html
+        urls:
+          - "https://world.huanqiu.com/"
+    observation_articles:
+      - published_at: "近期"
+        title: "全球市场的反应，往往比表态本身更值得看"
+        keywords: ["全球市场", "表态", "反应"]
+      - published_at: "近期"
+        title: "局势升级还是缓和，关键在下一步动作而不是今天的话"
+        keywords: ["局势", "升级", "缓和", "动作"]
+
+  - key: toutiao_cankao_world
+    name: "参考消息国际"
+    platform: toutiao
+    track: "国际热点"
+    stage: core
+    monitor_enabled: true
+    monitor_priority: 8
+    positioning: "国际议题覆盖稳定，适合补充国际号的多方观点和海外媒体线索。"
+    content_pillars:
+      - "海外观察"
+      - "多方观点"
+      - "国际舆论"
+    notes: "用于补充国际号的多角度素材，不直接照搬叙事。"
+    source_feeds:
+      - label: "参考消息国际"
+        type: html
+        urls:
+          - "https://www.cankaoxiaoxi.com/world/"
+    observation_articles:
+      - published_at: "近期"
+        title: "真正值得盯的不是 headline，而是后续谁跟进谁观望"
+        keywords: ["headline", "跟进", "观望"]
+      - published_at: "近期"
+        title: "国际冲突之外，能源、汇率和供应链才是外溢主线"
+        keywords: ["能源", "汇率", "供应链", "外溢"]
+
+  - key: toutiao_dongqiudi
+    name: "懂球帝头条号"
+    platform: toutiao
+    track: "体育赛事"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 10
+    positioning: "足球热点密度高，适合学习赛前悬念、赛后转折和关键人物打法。"
+    content_pillars:
+      - "足球"
+      - "阵容争议"
+      - "赛后复盘"
+    notes: "体育号优先参考其足球热点节奏和人物角度。"
+    source_feeds:
+      - label: "懂球帝"
+        type: html
+        urls:
+          - "https://www.dongqiudi.com/"
+    observation_articles:
+      - published_at: "近期"
+        title: "真正改变比赛走向的，往往不是比分而是那个关键转折点"
+        keywords: ["比赛", "转折点", "比分"]
+      - published_at: "近期"
+        title: "名单、换人和临场选择，决定了赛后舆论怎么走"
+        keywords: ["名单", "换人", "舆论"]
+
+  - key: toutiao_zhiboba
+    name: "直播吧头条号"
+    platform: toutiao
+    track: "体育赛事"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 9
+    positioning: "体育快讯与赛后信息密度高，适合补足体育号的热点反应速度。"
+    content_pillars:
+      - "即时赛况"
+      - "关键人物"
+      - "争议节点"
+    notes: "适合作为体育号的快反样本。"
+    source_feeds:
+      - label: "直播吧足球"
+        type: html
+        urls:
+          - "https://news.zhibo8.com/zuqiu/"
+      - label: "直播吧篮球"
+        type: html
+        urls:
+          - "https://news.zhibo8.com/nba/"
+    observation_articles:
+      - published_at: "近期"
+        title: "赛果出来之后，真正带阅读的往往是争议和关键人物"
+        keywords: ["赛果", "争议", "关键人物"]
+      - published_at: "近期"
+        title: "一场球为什么突然反转，答案通常藏在节奏和调整里"
+        keywords: ["反转", "节奏", "调整"]
+
+  - key: toutiao_bbc_sports
+    name: "国际体育样本池"
+    platform: toutiao
+    track: "体育赛事"
+    stage: core
+    monitor_enabled: true
+    monitor_priority: 8
+    positioning: "用于补充足球、网球等国际大赛热点，避免体育号只盯中文站内信息。"
+    content_pillars:
+      - "国际足球"
+      - "网球大赛"
+      - "赛事走向"
+    notes: "补充大赛型体育热点与海外赛场视角。"
+    source_feeds:
+      - label: "BBC Football"
+        type: rss
+        urls:
+          - "http://newsrss.bbc.co.uk/rss/sportonline_uk_edition/football/rss.xml"
+      - label: "BBC Tennis"
+        type: rss
+        urls:
+          - "http://newsrss.bbc.co.uk/rss/sportonline_uk_edition/tennis/rss.xml"
+    observation_articles:
+      - published_at: "近期"
+        title: "大赛话题最能带来阅读的，不是结果本身，而是谁会为结果负责"
+        keywords: ["大赛", "结果", "负责"]
+      - published_at: "近期"
+        title: "名单、伤病、赛程叠加之后，比赛预期会被整体改写"
+        keywords: ["名单", "伤病", "赛程", "预期"]

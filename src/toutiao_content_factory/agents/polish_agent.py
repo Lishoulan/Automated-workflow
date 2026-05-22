@@ -10,6 +10,8 @@ from toutiao_content_factory.services.article_sanitizer import clean_article_tex
 
 class PolishAgent(BaseAgent):
     agent_name = "PolishAgent"
+    SPORTS_TOKENS = ("体育", "足球", "篮球", "网球", "世界杯", "奥运", "英超", "西甲", "法网", "world cup", "football", "tennis", "french open", "grand slam")
+    INTERNATIONAL_TOKENS = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金", "仲裁", "白宫")
 
     COMPANY_SUFFIX_RE = re.compile(
         r"[\u4e00-\u9fffA-Za-z0-9]{2,12}(?:科技|能源|汽车|股份|集团|电气|智能|机器人|半导体|电子|时代|精工|制造|材料|电池|重工|工业|光伏|储能|动力|机电|控股|装备|技术)"
@@ -80,15 +82,16 @@ class PolishAgent(BaseAgent):
         trend_report: TrendReport,
         revision_focus: list[str] | None = None,
     ) -> str:
+        content_mode = self._content_mode(data_report)
         cleaned = self.strip_prompt_leakage(article)
         cleaned = clean_article_text(cleaned)
         paragraphs = [self._normalize_paragraph(block) for block in cleaned.split("\n\n") if block.strip()]
         paragraphs = [block for block in paragraphs if block]
 
         if not paragraphs:
-            paragraphs = [self._build_company_or_order_anchor(data_report)]
+            paragraphs = [self._build_mode_fallback_anchor(data_report, trend_report)]
 
-        if not self._has_concrete_anchor("\n\n".join(paragraphs), data_report):
+        if content_mode == "generic" and not self._has_concrete_anchor("\n\n".join(paragraphs), data_report):
             anchor = self._build_company_or_order_anchor(data_report)
             if anchor:
                 insert_at = 3 if len(paragraphs) >= 3 else len(paragraphs)
@@ -121,15 +124,24 @@ class PolishAgent(BaseAgent):
         max_paragraph_length = max((len(item) for item in paragraphs), default=0)
 
         evidence_hits = self._count_hits(article_lower, data_report.growth_numbers[:4])
+        content_mode = self._content_mode(data_report)
         if evidence_hits:
             score += 10
             notes.append(f"正文已落入 {evidence_hits} 个核心数字或增速信号。")
         else:
-            notes.append("正文仍缺少明确数字锚点，建议至少保留 1 到 2 组关键数据。")
+            if content_mode == "sports":
+                notes.append("正文仍缺少更具体的事实锚点，建议补进名单、赛程、人物状态或争议背景。")
+            elif content_mode == "international":
+                notes.append("正文仍缺少更具体的事实锚点，建议补进政策动作、谈判节点或市场反应。")
+            else:
+                notes.append("正文仍缺少明确数字锚点，建议至少保留 1 到 2 组关键数据。")
 
         company_hits = self._count_hits(article_lower, self._company_candidates(data_report)[:4])
         order_hits = sum(1 for token in self.ORDER_ANCHOR_TOKENS if token in article)
-        if company_hits or order_hits >= 3:
+        if content_mode != "generic":
+            score += 8
+            notes.append("正文主体已经围绕事件影响和后续变量展开，不需要强行补公司订单主体。")
+        elif company_hits or order_hits >= 3:
             score += 12
             if company_hits:
                 notes.append(f"正文已点名 {company_hits} 个公司或项目主体，主体感更清楚。")
@@ -139,7 +151,13 @@ class PolishAgent(BaseAgent):
             notes.append("正文主体感仍偏弱，建议明确公司、客户、订单方或交付项目。")
 
         keyword_hits = self._count_hits(article_lower, data_report.supply_chain_keywords[:5])
-        if keyword_hits >= 2:
+        if content_mode == "sports":
+            score += 8
+            notes.append("正文已经围绕比赛走势、阵容判断和后续变量展开。")
+        elif content_mode == "international":
+            score += 8
+            notes.append("正文已经围绕博弈关系、后续变量和外溢影响展开。")
+        elif keyword_hits >= 2:
             score += 10
             notes.append("正文已覆盖关键产业链环节，不只是复述新闻事件。")
         else:
@@ -262,6 +280,11 @@ class PolishAgent(BaseAgent):
         return len(re.sub(r"\D", "", cleaned)) >= 4
 
     def _rebuild_cautious_article(self, data_report: DataReport, trend_report: TrendReport) -> str:
+        content_mode = self._content_mode(data_report)
+        if content_mode == "sports":
+            return self._rebuild_cautious_sports_article(data_report, trend_report)
+        if content_mode == "international":
+            return self._rebuild_cautious_international_article(data_report, trend_report)
         primary = self.clean_publish_text(
             data_report.focus_industry or (data_report.focus_keywords[0] if data_report.focus_keywords else "相关赛道")
         )
@@ -319,9 +342,14 @@ class PolishAgent(BaseAgent):
         return "\n\n".join(self._rebalance_paragraphs(paragraphs)[:7]).strip()
 
     def _build_closing_question(self, data_report: DataReport) -> str:
+        content_mode = self._content_mode(data_report)
         primary = self.clean_publish_text(
             data_report.focus_industry or (data_report.focus_keywords[0] if data_report.focus_keywords else "这个方向")
         )
+        if content_mode == "sports":
+            return "你觉得这条消息最可能改变阵容选择、比赛走势还是舆论预期？"
+        if content_mode == "international":
+            return "你觉得接下来最值得盯的是谁会先让步、谁会继续施压，还是市场会先给出反应？"
         return f"您更看重{primary}后续先落地订单、交付，还是毛利率改善？"
 
     def _company_candidates(self, data_report: DataReport) -> list[str]:
@@ -459,6 +487,65 @@ class PolishAgent(BaseAgent):
             if token and token in article_text:
                 hits += 1
         return hits
+
+    def _content_mode(self, data_report: DataReport) -> str:
+        text = " ".join(
+            item
+            for item in (
+                data_report.focus_industry,
+                data_report.topic_title,
+                data_report.selection_reason,
+                data_report.suggested_angle,
+                data_report.writing_brief,
+                data_report.format_brief,
+                " ".join(data_report.focus_keywords[:6]),
+                " ".join(data_report.supply_chain_keywords[:6]),
+            )
+            if item
+        ).lower()
+        if any(token in text for token in self.SPORTS_TOKENS):
+            return "sports"
+        if any(token in text for token in self.INTERNATIONAL_TOKENS):
+            return "international"
+        return "generic"
+
+    def _build_mode_fallback_anchor(self, data_report: DataReport, trend_report: TrendReport) -> str:
+        mode = self._content_mode(data_report)
+        if mode == "sports":
+            return self._rebuild_cautious_sports_article(data_report, trend_report).split("\n\n")[0]
+        if mode == "international":
+            return self._rebuild_cautious_international_article(data_report, trend_report).split("\n\n")[0]
+        return self._build_company_or_order_anchor(data_report)
+
+    def _rebuild_cautious_sports_article(self, data_report: DataReport, trend_report: TrendReport) -> str:
+        title = self.clean_publish_text(data_report.topic_title).strip() or "这条体育消息"
+        source_anchor = self._build_source_anchor(data_report) or "从公开材料看，目前能确认的信息仍然有限。"
+        metrics = "、".join(self.clean_publish_list(data_report.watch_metrics, limit=4)) or "阵容变化、赛程难度、关键人物状态和舆论争议"
+        risks = "；".join(self.clean_publish_list(data_report.risk_flags, limit=3)) or "公开素材有限时，最需要防止的是把赛前消息写成确定性结论"
+        angle = self.clean_publish_text(trend_report.recommended_angle).strip()
+        paragraphs = [
+            f"{title}不只是赛前消息，它更像一个会改变后续判断的前置信号。{source_anchor}",
+            f"真正值得看的，不是把新闻复述一遍，而是它会不会改变阵容选择、比赛走势和舆论预期。",
+            f"接下来更值得跟踪的，是{metrics}。这些变量会决定这条消息最终只是短期讨论，还是会真的影响后续比赛。",
+            f"{angle or '真正有价值的写法，是把关键人物、关键节点和后续走势说清楚。'}",
+            f"风险边界也要保留：{risks}。{self._build_closing_question(data_report)}",
+        ]
+        return "\n\n".join(self._rebalance_paragraphs(paragraphs)[:7]).strip()
+
+    def _rebuild_cautious_international_article(self, data_report: DataReport, trend_report: TrendReport) -> str:
+        title = self.clean_publish_text(data_report.topic_title).strip() or "这条国际消息"
+        source_anchor = self._build_source_anchor(data_report) or "从公开材料看，目前能确认的信息仍然有限。"
+        metrics = "、".join(self.clean_publish_list(data_report.watch_metrics, limit=4)) or "政策表态、谈判进展、相关国家动作和市场反馈"
+        risks = "；".join(self.clean_publish_list(data_report.risk_flags, limit=3)) or "公开素材有限时，最需要防止的是把短期消息写成长期定局"
+        angle = self.clean_publish_text(trend_report.recommended_angle).strip()
+        paragraphs = [
+            f"{title}不能只当单点新闻看，它更像一场更大博弈里的新动作。{source_anchor}",
+            "真正值得看的，不是表态本身，而是谁在施压、谁在让步，以及下一步动作会不会继续升级。",
+            f"接下来更值得跟踪的，是{metrics}。这些变量会决定局势是继续升级、短暂缓和，还是转向新的谈判阶段。",
+            f"{angle or '真正有价值的写法，是把事件、利益关系和后续变量连接起来。'}",
+            f"风险边界也要保留：{risks}。{self._build_closing_question(data_report)}",
+        ]
+        return "\n\n".join(self._rebalance_paragraphs(paragraphs)[:7]).strip()
 
     def _has_source_anchor(self, article: str) -> bool:
         markers = ("据", "数据显示", "公开材料", "财报", "公告", "机构统计", "报告")

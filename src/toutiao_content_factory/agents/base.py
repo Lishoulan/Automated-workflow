@@ -6,6 +6,7 @@ import re
 
 from toutiao_content_factory.config import AppSettings, StyleProfile
 from toutiao_content_factory.models import CacheContext
+from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 
@@ -18,6 +19,8 @@ class BaseAgent:
         "energy_storage": "储能",
         "ai_hardware": "AI硬件",
         "industrial_automation": "工业自动化",
+        "international": "国际热点",
+        "sports": "体育赛事",
     }
     META_NOISE_PREFIXES = (
         "账号定位：",
@@ -55,6 +58,7 @@ class BaseAgent:
         self.prompt_repository = prompt_repository
         self.openai_service = openai_service
         self.logger = logger
+        self.growth_ops_service = GrowthOpsService(settings, logger)
 
     def render_prompt(self, template_name: str, **kwargs: str) -> str:
         return self.prompt_repository.render(template_name, **kwargs)
@@ -69,24 +73,69 @@ class BaseAgent:
             self.logger.warning("%s 模型调用失败，回退到本地策略: %s", self.agent_name, exc)
             return None
 
-    def style_digest(self, style: StyleProfile) -> str:
-        return (
+    def style_digest(self, style: StyleProfile, extra_sections: list[str] | None = None) -> str:
+        lines = [
             f"风格标识: {style.key}\n"
             f"风格名称: {style.label}\n"
             f"语气: {style.tone}\n"
             f"正文要求: {style.article_instruction}\n"
             f"标题要求: {style.title_instruction}\n"
             f"图片要求: {style.image_instruction}\n"
-            f"开头要求: {style.opening_instruction}"
-        )
+            f"开头要求: {style.opening_instruction}",
+        ]
+        for section in extra_sections or []:
+            section_text = str(section or "").strip()
+            if section_text:
+                lines.append(section_text)
+        return "\n".join(lines).strip()
 
-    def brand_digest(self) -> str:
-        return (
-            "写法节奏: 先下判断，再给数据，再拆产业链位置，再落到公司主体和跟踪变量，最后只留一小段风险边界。\n"
-            "成文禁忌: 不写泛新闻播报，不堆空形容词，不做无根据拔高。\n"
-            "输出禁令: 标题、正文、摘要、评论引导中不得出现账号名、栏目名、作者自称、品牌口号、运营指令。\n"
-            f"赛道主线: {self.settings.industry_focus}"
+    def brand_digest(self, extra_sections: list[str] | None = None) -> str:
+        lines = [
+            "写法节奏: 先下判断，再给数据，再拆产业链位置，再落到公司主体和跟踪变量，最后只留一小段风险边界。",
+            "成文禁忌: 不写泛新闻播报，不堆空形容词，不做无根据拔高。",
+            "输出禁令: 标题、正文、摘要、评论引导中不得出现账号名、栏目名、作者自称、品牌口号、运营指令。",
+            f"赛道主线: {self.settings.industry_focus}",
+        ]
+        for section in extra_sections or []:
+            section_text = str(section or "").strip()
+            if section_text:
+                lines.append(section_text)
+        return "\n".join(lines).strip()
+
+    def infer_benchmark_track(self, *parts: object) -> str:
+        chunks: list[str] = []
+        for part in parts:
+            if part is None:
+                continue
+            if isinstance(part, (list, tuple, set)):
+                chunks.extend(str(item).strip() for item in part if str(item).strip())
+                continue
+            text = str(part).strip()
+            if text:
+                chunks.append(text)
+        combined = " ".join(chunks) or self.settings.industry_focus
+        return self.growth_ops_service.infer_title_playbook_track(combined)
+
+    def benchmark_strategy_digest(
+        self,
+        *,
+        purpose: str,
+        track_hint: str = "",
+        title_hint: str = "",
+        focus_industry: str = "",
+        keywords: list[str] | None = None,
+        angle_hint: str = "",
+        extra_text: str = "",
+    ) -> str:
+        track = str(track_hint).strip() or self.infer_benchmark_track(
+            title_hint,
+            focus_industry,
+            keywords or [],
+            angle_hint,
+            extra_text,
+            self.settings.industry_focus,
         )
+        return self.growth_ops_service.build_benchmark_digest(track, purpose=purpose)
 
     def cache_note(self, cache_context: CacheContext) -> str:
         if cache_context.exact_hit:

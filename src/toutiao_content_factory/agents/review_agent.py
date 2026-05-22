@@ -10,6 +10,10 @@ from toutiao_content_factory.services.article_sanitizer import clean_article_tex
 
 class ReviewAgent(BaseAgent):
     agent_name = "ReviewAgent"
+    SCENE_TOKENS = ("机场", "电厂", "电站", "港口", "车间", "仓库", "园区", "工厂", "基地", "物流中心", "示范项目")
+    CROSS_BORDER_TOKENS = ("中国", "日本", "美国", "欧洲", "德国", "东京", "海外", "出海", "国际", "日韩")
+    CONFLICT_TOKENS = ("不是", "而是", "背后", "分化", "改写", "重估", "转移", "迁移", "突围", "挤压", "洗牌")
+    BENEFIT_SHIFT_TOKENS = ("利润", "毛利", "份额", "议价", "回款", "系统集成", "零部件", "整机", "运维", "服务")
     NUMERIC_TOKEN_RE = re.compile(
         r"\d+(?:\.\d+)?(?:%|倍|亿元|亿|万元|万亿元|万千瓦|万台|万套|GW|GWh|MWh|kWh|MW|W|年|月|季度|Q[1-4])?"
     )
@@ -21,10 +25,18 @@ class ReviewAgent(BaseAgent):
         style: StyleProfile,
         cache_context: CacheContext,
     ) -> dict[str, object]:
+        benchmark_track = self.clean_publish_text(data_report.focus_industry).strip() or self.infer_benchmark_track(
+            data_report.topic_title,
+            data_report.focus_keywords,
+            data_report.supply_chain_keywords,
+            content.article_angle,
+        )
+        self_benchmark_context = self.growth_ops_service.get_self_benchmark_track_context(benchmark_track)
+        benchmark_digest = self.growth_ops_service.build_benchmark_digest(benchmark_track, purpose="review")
         prompt = self.render_prompt(
             "review_prompt.md",
             platform=self.settings.platform,
-            style_digest=self.style_digest(style),
+            style_digest=self.style_digest(style, extra_sections=[benchmark_digest]),
             article_angle=content.article_angle,
             validation_notes_json=self.json_text(content.validation_notes[:8]),
             titles_json=self.json_text(content.titles),
@@ -34,8 +46,20 @@ class ReviewAgent(BaseAgent):
         )
 
         local_opening_lines = self._optimize_opening(content, data_report)
-        local_review_notes = self._build_review_notes(content, data_report, cache_context)
-        local_revision_suggestions = self._build_revision_suggestions(content, data_report)
+        matched_patterns = self._matched_self_benchmark_patterns(content, data_report, self_benchmark_context)
+        local_review_notes = self._build_review_notes(
+            content,
+            data_report,
+            cache_context,
+            self_benchmark_context=self_benchmark_context,
+            matched_patterns=matched_patterns,
+        )
+        local_revision_suggestions = self._build_revision_suggestions(
+            content,
+            data_report,
+            self_benchmark_context=self_benchmark_context,
+            matched_patterns=matched_patterns,
+        )
         unsupported_tokens = self._unsupported_numeric_tokens(content, data_report)
 
         payload = self.request_json("你是 ReviewAgent，只输出 JSON。", prompt)
@@ -48,6 +72,15 @@ class ReviewAgent(BaseAgent):
             if unsupported_tokens:
                 information_density = max(20, information_density - min(18, len(unsupported_tokens) * 4))
                 ai_generated_risk = min(95, ai_generated_risk + min(26, len(unsupported_tokens) * 6))
+            title_attraction, information_density, save_potential, completion_rate_potential, ai_generated_risk = self._apply_self_benchmark_adjustments(
+                title_attraction,
+                information_density,
+                save_potential,
+                completion_rate_potential,
+                ai_generated_risk,
+                self_benchmark_context=self_benchmark_context,
+                matched_patterns=matched_patterns,
+            )
 
             score = ContentScore(
                 overall_score=self._compute_overall(
@@ -68,6 +101,8 @@ class ReviewAgent(BaseAgent):
                     information_density,
                     completion_rate_potential,
                     ai_generated_risk,
+                    self_benchmark_context=self_benchmark_context,
+                    matched_patterns=matched_patterns,
                 ),
                 revision_suggestions=self._clean_list(payload.get("revision_suggestions"), 4)
                 or local_revision_suggestions,
@@ -89,13 +124,21 @@ class ReviewAgent(BaseAgent):
                 "content_score": score,
             }
 
-        return self._fallback(content, data_report, cache_context)
+        return self._fallback(
+            content,
+            data_report,
+            cache_context,
+            self_benchmark_context=self_benchmark_context,
+            matched_patterns=matched_patterns,
+        )
 
     def _fallback(
         self,
         content: GeneratedContent,
         data_report: DataReport,
         cache_context: CacheContext,
+        self_benchmark_context: dict[str, object] | None = None,
+        matched_patterns: list[str] | None = None,
     ) -> dict[str, object]:
         optimized_opening_lines = self._optimize_opening(content, data_report)
         title_attraction = self._score_title(content.recommended_titles[0] if content.recommended_titles else "")
@@ -108,6 +151,15 @@ class ReviewAgent(BaseAgent):
             information_density = max(20, information_density - min(18, len(unsupported_tokens) * 4))
             completion_rate_potential = max(20, completion_rate_potential - min(12, len(unsupported_tokens) * 3))
             ai_generated_risk = min(95, ai_generated_risk + min(26, len(unsupported_tokens) * 6))
+        title_attraction, information_density, save_potential, completion_rate_potential, ai_generated_risk = self._apply_self_benchmark_adjustments(
+            title_attraction,
+            information_density,
+            save_potential,
+            completion_rate_potential,
+            ai_generated_risk,
+            self_benchmark_context=self_benchmark_context,
+            matched_patterns=matched_patterns or [],
+        )
         overall_score = self._compute_overall(
             title_attraction,
             information_density,
@@ -128,8 +180,15 @@ class ReviewAgent(BaseAgent):
                 information_density,
                 completion_rate_potential,
                 ai_generated_risk,
+                self_benchmark_context=self_benchmark_context,
+                matched_patterns=matched_patterns or [],
             ),
-            revision_suggestions=self._build_revision_suggestions(content, data_report),
+            revision_suggestions=self._build_revision_suggestions(
+                content,
+                data_report,
+                self_benchmark_context=self_benchmark_context,
+                matched_patterns=matched_patterns or [],
+            ),
             pass_status=(
                 "needs_revision"
                 if unsupported_tokens
@@ -143,7 +202,14 @@ class ReviewAgent(BaseAgent):
         )
 
         review_notes = self.unique(
-            self._build_review_notes(content, data_report, cache_context) + list(content.validation_notes[:2])
+            self._build_review_notes(
+                content,
+                data_report,
+                cache_context,
+                self_benchmark_context=self_benchmark_context,
+                matched_patterns=matched_patterns or [],
+            )
+            + list(content.validation_notes[:2])
         )[:6]
         return {
             "optimized_opening_lines": optimized_opening_lines,
@@ -159,11 +225,13 @@ class ReviewAgent(BaseAgent):
             score += 6
         if any(token in title for token in ("真正", "背后", "为什么", "不是", "利润", "订单", "交付", "毛利")):
             score += 12
+        if any(token in title for token in self.SCENE_TOKENS):
+            score += 8
         if 16 <= len(title) <= min(28, self.settings.publishing.title_max_length):
             score += 10
         elif len(title) > self.settings.publishing.title_max_length:
             score -= 12
-        if any(token in title for token in ("看懂", "机会", "又火了", "开始进入兑现筛选期")):
+        if any(token in title for token in ("看懂", "机会", "又火了", "开始进入兑现筛选期", "更该看订单还是毛利")):
             score -= 14
         return max(20, min(95, score))
 
@@ -175,6 +243,13 @@ class ReviewAgent(BaseAgent):
         score += min(10, len(data_report.evidence_notes[:4]) * 2)
         score += min(8, data_report.evidence_strength // 10)
         score += min(8, content.validation_score // 12)
+        article = self._clean_article(content)
+        if self._has_scene_anchor(article):
+            score += 6
+        if self._has_conflict_shape(article):
+            score += 6
+        if self._has_benefit_shift_signal(article):
+            score += 6
         return min(98, score)
 
     def _score_save_potential(self, content: GeneratedContent, data_report: DataReport) -> int:
@@ -184,6 +259,10 @@ class ReviewAgent(BaseAgent):
         score += min(10, len(data_report.growth_numbers[:3]) * 3)
         if any(token in article for token in ("订单", "交付", "毛利", "验证", "产能", "客户", "份额")):
             score += 8
+        if self._has_benefit_shift_signal(article):
+            score += 8
+        if self._has_scene_anchor(article):
+            score += 4
         if content.summary:
             score += 4
         return min(96, score)
@@ -191,6 +270,7 @@ class ReviewAgent(BaseAgent):
     def _score_completion(self, content: GeneratedContent, opening_lines: list[str], data_report: DataReport) -> int:
         article = self._clean_article(content)
         paragraphs = self._paragraphs(article)
+        first_paragraph = paragraphs[0] if paragraphs else ""
         paragraph_lengths = [len(item) for item in paragraphs]
         average_length = round(sum(paragraph_lengths) / len(paragraph_lengths)) if paragraph_lengths else 0
         max_length = max(paragraph_lengths) if paragraph_lengths else 0
@@ -218,6 +298,14 @@ class ReviewAgent(BaseAgent):
         elif max_length >= (185 if compact_format else 220):
             score -= 8
         if "##" not in article and "#" not in article:
+            score += 4
+        if self._has_scene_anchor(article):
+            score += 4
+        if self._has_conflict_shape(article):
+            score += 4
+        if self._has_strong_judgment_opening(first_paragraph):
+            score += 4
+        if self._has_tracking_variable_close(article):
             score += 4
         return max(30, min(95, score))
 
@@ -247,13 +335,14 @@ class ReviewAgent(BaseAgent):
         cache_context: CacheContext,
     ) -> int:
         article = self._clean_article(content)
+        paragraphs = self._paragraphs(article)
+        first_paragraph = paragraphs[0] if paragraphs else ""
         generic_hits = len(
             re.findall(
                 r"值得关注的是|不难发现|换句话说|需要指出的是|从某种意义上说|可以看到|总体来看",
                 article,
             )
         )
-        paragraphs = self._paragraphs(article)
         average_length = round(sum(len(item) for item in paragraphs) / len(paragraphs)) if paragraphs else 0
         repeated_transitions = len(re.findall(r"先看|再看|最后看|真正决定", article))
         unsupported_count = len(self._unsupported_numeric_tokens(content, data_report))
@@ -270,9 +359,117 @@ class ReviewAgent(BaseAgent):
         risk += generic_hits * 5
         risk += max(0, repeated_transitions - 3) * 3
         risk += min(24, unsupported_count * 6)
+        if not self._has_scene_anchor(article):
+            risk += 4
+        if not self._has_conflict_shape(article):
+            risk += 5
+        if not self._has_benefit_shift_signal(article):
+            risk += 5
+        if not self._has_strong_judgment_opening(first_paragraph):
+            risk += 4
+        if not self._has_tracking_variable_close(article):
+            risk += 4
+        else:
+            risk -= 4
         if cache_context.similar_hit:
             risk -= 3
         return max(18, min(80, risk))
+
+    def _target_self_benchmark_patterns(self, context: dict[str, object] | None) -> list[str]:
+        if not context:
+            return []
+        return [str(item).strip() for item in context.get("patterns", []) if str(item).strip()]
+
+    def _matched_self_benchmark_patterns(
+        self,
+        content: GeneratedContent,
+        data_report: DataReport,
+        context: dict[str, object] | None,
+    ) -> list[str]:
+        targets = self._target_self_benchmark_patterns(context)
+        if not targets:
+            return []
+
+        article = self._clean_article(content)
+        title = content.recommended_titles[0] if content.recommended_titles else ""
+        paragraphs = self._paragraphs(article)
+        first_paragraph = paragraphs[0] if paragraphs else article
+        distinct_regions = [token for token in self.CROSS_BORDER_TOKENS if token in article]
+        companies = [item for item in data_report.companies[:4] if item and item in article]
+        numbers = self._extract_numeric_tokens(article)
+        matched: list[str] = []
+
+        for pattern in targets:
+            if pattern == "场景先行开头":
+                if any(token in first_paragraph or token in title for token in self.SCENE_TOKENS):
+                    matched.append(pattern)
+            elif pattern == "跨国对比冲突":
+                if len(distinct_regions) >= 2 and self._has_conflict_shape(article):
+                    matched.append(pattern)
+            elif pattern == "利润迁移框架":
+                if self._has_benefit_shift_signal(article) and self._has_conflict_shape(article):
+                    matched.append(pattern)
+            elif pattern == "具体数字配具体主体":
+                if numbers and (companies or len(distinct_regions) >= 1 or any(token in article for token in ("客户", "项目", "订单"))):
+                    matched.append(pattern)
+            elif pattern == "结尾保留跟踪变量":
+                if self._has_tracking_variable_close(article):
+                    matched.append(pattern)
+
+        return self.unique(matched)
+
+    def _apply_self_benchmark_adjustments(
+        self,
+        title_attraction: int,
+        information_density: int,
+        save_potential: int,
+        completion_rate_potential: int,
+        ai_generated_risk: int,
+        *,
+        self_benchmark_context: dict[str, object] | None,
+        matched_patterns: list[str],
+    ) -> tuple[int, int, int, int, int]:
+        targets = self._target_self_benchmark_patterns(self_benchmark_context)
+        if not targets:
+            return (
+                title_attraction,
+                information_density,
+                save_potential,
+                completion_rate_potential,
+                ai_generated_risk,
+            )
+
+        matched_count = len(matched_patterns)
+        if matched_count >= 4:
+            title_attraction += 2
+            information_density += 6
+            save_potential += 6
+            completion_rate_potential += 6
+            ai_generated_risk -= 6
+        elif matched_count >= 3:
+            title_attraction += 1
+            information_density += 4
+            save_potential += 4
+            completion_rate_potential += 4
+            ai_generated_risk -= 4
+        elif matched_count == 2:
+            information_density += 2
+            save_potential += 2
+            completion_rate_potential += 2
+            ai_generated_risk -= 2
+        elif matched_count == 0:
+            information_density -= 4
+            save_potential -= 4
+            completion_rate_potential -= 3
+            ai_generated_risk += 6
+
+        return (
+            max(20, min(98, title_attraction)),
+            max(20, min(98, information_density)),
+            max(20, min(96, save_potential)),
+            max(20, min(95, completion_rate_potential)),
+            max(18, min(80, ai_generated_risk)),
+        )
 
     def _compute_overall(
         self,
@@ -339,20 +536,36 @@ class ReviewAgent(BaseAgent):
         content: GeneratedContent,
         data_report: DataReport,
         cache_context: CacheContext,
+        self_benchmark_context: dict[str, object] | None = None,
+        matched_patterns: list[str] | None = None,
     ) -> list[str]:
         article = self._clean_article(content)
         notes: list[str] = []
         paragraphs = self._paragraphs(article)
         max_length = max((len(item) for item in paragraphs), default=0)
+        target_patterns = self._target_self_benchmark_patterns(self_benchmark_context)
+        matched = matched_patterns or []
 
         if not self._has_source_anchor(article):
             notes.append("建议补一句公开材料、财报或机构统计的出处感表达，证据会更稳。")
         if max_length >= 180:
             notes.append("正文仍有长段落，建议单段控制在 2 到 3 句，提升移动端完读率。")
+        if paragraphs and not self._has_strong_judgment_opening(paragraphs[0]):
+            notes.append("首段判断感还不够强，建议前三句直接回答为什么现在值得看、谁先受益。")
         if len(data_report.companies) and not any(company in article for company in data_report.companies[:3]):
             notes.append("建议在正文里点名 1 到 2 个公司或订单主体，主体感会更强。")
         if not any(token in article for token in ("订单", "交付", "验证", "毛利", "量产")):
             notes.append("可以再补一句订单、交付或毛利指标，让文章更有收藏价值。")
+        if not self._has_scene_anchor(article):
+            notes.append("建议补一个具体场景锚点，例如机场、电厂、园区、示范项目，增强读者停留感。")
+        if not self._has_conflict_shape(article):
+            notes.append("这篇稿子的冲突感还不够，建议明确写出谁受益、谁承压、利润向哪一环迁移。")
+        if not self._has_tracking_variable_close(article):
+            notes.append("结尾还不够像高质量分析号，建议收束到 1 到 2 个可跟踪变量，而不是泛泛总结。")
+        if target_patterns and len(matched) <= 1:
+            notes.append(
+                f"这篇稿子还没打中你自己高表现样本里的关键结构，建议优先补齐：{'、'.join(target_patterns[:3])}。"
+            )
         unsupported_tokens = self._unsupported_numeric_tokens(content, data_report)
         if unsupported_tokens:
             notes.append(f"正文出现未锚定数字：{'、'.join(unsupported_tokens[:4])}，要删掉杜撰比例或份额。")
@@ -363,17 +576,38 @@ class ReviewAgent(BaseAgent):
             notes.append("整体结构已经可发，发布前重点再核对数字口径和公司名称。")
         return notes[:4]
 
-    def _build_revision_suggestions(self, content: GeneratedContent, data_report: DataReport) -> list[str]:
+    def _build_revision_suggestions(
+        self,
+        content: GeneratedContent,
+        data_report: DataReport,
+        self_benchmark_context: dict[str, object] | None = None,
+        matched_patterns: list[str] | None = None,
+    ) -> list[str]:
         article = self._clean_article(content)
+        paragraphs = self._paragraphs(article)
         suggestions: list[str] = []
+        target_patterns = self._target_self_benchmark_patterns(self_benchmark_context)
+        matched = matched_patterns or []
         if not self._has_source_anchor(article):
             suggestions.append("在首段或第二段补一句“从公开材料看”或具体公告/报告出处，增强证据感。")
         if max((len(item) for item in self._paragraphs(article)), default=0) >= 180:
             suggestions.append("拆短长段落，每段尽量控制在 2 到 3 句，首屏不要堆太满。")
+        if paragraphs and not self._has_strong_judgment_opening(paragraphs[0]):
+            suggestions.append("重写前三句，先写判断，再写数据，再点出谁先受益或哪一环先兑现。")
         if not any(company in article for company in data_report.companies[:3]):
             suggestions.append("增加具体公司、项目或订单主体，避免写成泛行业评论。")
         if not any(token in article for token in ("订单", "交付", "验证", "毛利", "客户")):
             suggestions.append("补充订单、交付、客户验证或毛利变化，提升文章的收藏价值。")
+        if not self._has_scene_anchor(article):
+            suggestions.append("首段补进具体落地场景，不要只写赛道判断，最好能落到机场、电厂、园区或示范项目。")
+        if not self._has_conflict_shape(article):
+            suggestions.append("增加反差句和利益迁移句，明确写出谁先吃到利润、谁仍在价格战或验证期。")
+        if not self._has_tracking_variable_close(article):
+            suggestions.append("最后一段改成跟踪变量清单，明确后续该盯订单转化、并网节奏、回款、毛利或客户验收。")
+        if target_patterns and len(matched) <= 1:
+            suggestions.append(
+                f"按你自己的高表现样本补结构：优先把{'、'.join(target_patterns[:3])}压进开头和结尾。"
+            )
         unsupported_tokens = self._unsupported_numeric_tokens(content, data_report)
         if unsupported_tokens:
             suggestions.append("删掉素材里没有明确出现的新数字、新比例和新份额，证据不够就改成定性表达。")
@@ -387,13 +621,22 @@ class ReviewAgent(BaseAgent):
         information_density: int,
         completion_rate_potential: int,
         ai_generated_risk: int,
+        self_benchmark_context: dict[str, object] | None = None,
+        matched_patterns: list[str] | None = None,
     ) -> list[str]:
-        return [
+        lines = [
             f"标题吸引力 {title_attraction}，主要看数字、判断感、主体感和长度控制。",
             f"信息密度 {information_density}，核心取决于数字、公司、产业链和跟踪指标是否齐全。",
             f"完读率潜力 {completion_rate_potential}，重点看首屏判断是否清楚、段落是否适合手机阅读。",
             f"AI 痕迹风险 {ai_generated_risk}，分数越高越像模板稿，通常需要继续压缩套话和长句。",
         ]
+        target_patterns = self._target_self_benchmark_patterns(self_benchmark_context)
+        matched = matched_patterns or []
+        if target_patterns:
+            lines[1] = (
+                f"自有爆款模式命中 {len(matched)}/{len(target_patterns[:5])}，当前命中项：{'、'.join(matched[:4]) or '暂无'}。"
+            )
+        return lines[:4]
 
     def _determine_pass_status(
         self,
@@ -433,6 +676,24 @@ class ReviewAgent(BaseAgent):
             )
         )
 
+    def _has_strong_judgment_opening(self, text: str) -> bool:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        if "不是" in normalized and "而是" in normalized:
+            return True
+        return any(token in normalized for token in ("真正", "背后", "利润", "毛利", "订单", "交付", "兑现", "分化"))
+
+    def _has_tracking_variable_close(self, article: str) -> bool:
+        paragraphs = self._paragraphs(article)
+        if not paragraphs:
+            return False
+        closing = "\n".join(paragraphs[-2:]) if len(paragraphs) >= 2 else paragraphs[-1]
+        return any(
+            token in closing
+            for token in ("接下来最值得跟踪", "后续最值得跟踪", "真正值得跟踪", "继续跟踪", "变量", "订单转化", "并网节奏", "回款", "客户验收")
+        )
+
     def _primary_keyword(self, data_report: DataReport) -> str:
         candidates = self.clean_publish_list(
             data_report.focus_keywords + [data_report.focus_industry] + data_report.supply_chain_keywords,
@@ -452,6 +713,17 @@ class ReviewAgent(BaseAgent):
     def _has_source_anchor(self, article: str) -> bool:
         markers = ("据", "数据显示", "公开材料", "财报", "公告", "机构统计", "报告")
         return any(marker in article for marker in markers)
+
+    def _has_scene_anchor(self, article: str) -> bool:
+        return any(token in article for token in self.SCENE_TOKENS)
+
+    def _has_conflict_shape(self, article: str) -> bool:
+        if "不是" in article and "而是" in article:
+            return True
+        return any(token in article for token in self.CONFLICT_TOKENS)
+
+    def _has_benefit_shift_signal(self, article: str) -> bool:
+        return any(token in article for token in self.BENEFIT_SHIFT_TOKENS)
 
     def _unsupported_numeric_tokens(self, content: GeneratedContent, data_report: DataReport) -> list[str]:
         article = self._clean_article(content)

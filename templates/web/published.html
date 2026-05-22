@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 
-{% block title %}已发布预览 | AI 今日头条科技内容工厂{% endblock %}
+{% block title %}????? | ?????????{% endblock %}
 
 {% block content %}
 <section class="hero">
   <div>
     <p class="eyebrow">PUBLISHED PREVIEW</p>
     <h2>已发布文章预览</h2>
-    <p class="muted">这里展示账号 {{ account_label }} 最近实际提交到头条发布流程的标题、正文和图片素材。</p>
+    <p class="muted">这里展示账号 {{ account_label }} 最近实际提交到头条发布流程的标题与正文。</p>
   </div>
   <div class="hero-stats">
     <div class="metric-card">
@@ -47,32 +47,6 @@
       {% if item.topic_url %}
       <a class="text-link" href="{{ item.topic_url }}" target="_blank">查看原始来源</a>
       {% endif %}
-    </div>
-    {% endif %}
-
-    {% if item.images.cover or item.images.infographic_1 or item.images.infographic_2 %}
-    <div class="section-block">
-      <h4>发布素材图</h4>
-      <div class="image-grid">
-        {% if item.images.cover %}
-        <figure>
-          <img src="{{ item.images.cover }}" alt="封面图">
-          <figcaption>封面图</figcaption>
-        </figure>
-        {% endif %}
-        {% if item.images.infographic_1 %}
-        <figure>
-          <img src="{{ item.images.infographic_1 }}" alt="正文图 1">
-          <figcaption>正文图 1</figcaption>
-        </figure>
-        {% endif %}
-        {% if item.images.infographic_2 %}
-        <figure>
-          <img src="{{ item.images.infographic_2 }}" alt="正文图 2">
-          <figcaption>正文图 2</figcaption>
-        </figure>
-        {% endif %}
-      </div>
     </div>
     {% endif %}
 
@@ -116,3 +90,4 @@
 </section>
 {% endif %}
 {% endblock %}
+

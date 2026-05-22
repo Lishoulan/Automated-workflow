@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
-from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.config import AppSettings, sanitize_account_slug
 from toutiao_content_factory.models import DailyTopicsReport, TopicCandidate
 
 
@@ -22,12 +22,206 @@ class TopicSelectionResult:
 
 class TopicAutomationService:
     NORMALIZE_PATTERN = re.compile(r"[\s\W_]+", re.UNICODE)
+    ROBOT_TOKENS = (
+        "机器人",
+        "人形",
+        "具身",
+        "灵巧手",
+        "减速器",
+        "执行器",
+        "关节",
+        "伺服",
+        "机械臂",
+        "智元",
+        "宇树",
+        "优必选",
+    )
+    ENERGY_TOKENS = (
+        "储能",
+        "光伏",
+        "风电",
+        "锂电",
+        "电池",
+        "逆变器",
+        "并网",
+        "电站",
+        "PCS",
+        "EMS",
+        "液流电池",
+        "超级电容",
+        "绿电",
+    )
+    INTERNATIONAL_TOKENS = (
+        "国际",
+        "美国",
+        "欧洲",
+        "俄罗斯",
+        "乌克兰",
+        "中东",
+        "关税",
+        "制裁",
+        "外交",
+        "局势",
+        "油价",
+        "黄金",
+        "停火",
+        "谈判",
+    )
+    INTERNATIONAL_FALSE_POSITIVE_TOKENS = (
+        "迈阿密国际",
+        "天职国际",
+        "国际关系与战略研究所",
+        "国际关系学院",
+        "国际学校",
+        "国际版",
+        "国际赛",
+    )
+    SPORTS_TOKENS = (
+        "体育",
+        "足球",
+        "篮球",
+        "国足",
+        "男篮",
+        "女篮",
+        "欧冠",
+        "英超",
+        "西甲",
+        "中超",
+        "NBA",
+        "世界杯",
+        "奥运",
+        "乒乓",
+        "羽毛球",
+        "比分",
+        "联赛",
+        "转会",
+        "季后赛",
+        "点球",
+        "红牌",
+        "football",
+        "tennis",
+        "transfer",
+        "premier league",
+        "world cup",
+        "wimbledon",
+        "french open",
+        "grand slam",
+        "champion",
+        "squad",
+        "manager",
+    )
+    ROBOT_INDUSTRIES = {"humanoid_robot", "ai_hardware", "industrial_automation"}
+    ENERGY_INDUSTRIES = {"energy_storage", "new_energy"}
+    INTERNATIONAL_INDUSTRIES = {"international"}
+    SPORTS_INDUSTRIES = {"sports"}
     INDUSTRY_LABELS = {
         "humanoid_robot": "人形机器人",
         "new_energy": "新能源",
         "energy_storage": "储能",
         "ai_hardware": "AI硬件",
         "industrial_automation": "工业自动化",
+        "international": "国际热点",
+        "sports": "体育赛事",
+    }
+
+    ROBOT_TOKENS = (
+        "机器人",
+        "人形",
+        "具身",
+        "灵巧手",
+        "减速器",
+        "执行器",
+        "关节",
+        "伺服",
+        "机械臂",
+        "智元",
+        "宇树",
+        "优必选",
+    )
+    ENERGY_TOKENS = (
+        "储能",
+        "光伏",
+        "风电",
+        "锂电",
+        "电池",
+        "逆变器",
+        "并网",
+        "电站",
+        "PCS",
+        "EMS",
+        "液流电池",
+        "超级电容",
+        "绿电",
+    )
+    INTERNATIONAL_TOKENS = (
+        "国际",
+        "美国",
+        "欧洲",
+        "俄罗斯",
+        "乌克兰",
+        "中东",
+        "关税",
+        "制裁",
+        "外交",
+        "局势",
+        "油价",
+        "黄金",
+        "停火",
+        "谈判",
+        "白宫",
+        "北约",
+    )
+    INTERNATIONAL_FALSE_POSITIVE_TOKENS = (
+        "迈阿密国际",
+        "天职国际",
+        "国际关系与战略研究所",
+        "国际关系学院",
+        "国际学校",
+        "国际版",
+        "国际足球",
+    )
+    SPORTS_TOKENS = (
+        "体育",
+        "足球",
+        "篮球",
+        "国足",
+        "男篮",
+        "女篮",
+        "欧冠",
+        "英超",
+        "西甲",
+        "中超",
+        "NBA",
+        "世界杯",
+        "奥运",
+        "乒乓",
+        "羽毛球",
+        "比分",
+        "联赛",
+        "转会",
+        "季后赛",
+        "点球",
+        "红牌",
+        "football",
+        "tennis",
+        "transfer",
+        "premier league",
+        "world cup",
+        "wimbledon",
+        "french open",
+        "grand slam",
+        "champion",
+        "squad",
+        "manager",
+    )
+    INDUSTRY_LABELS = {
+        "humanoid_robot": "人形机器人",
+        "new_energy": "新能源",
+        "energy_storage": "储能",
+        "ai_hardware": "AI硬件",
+        "industrial_automation": "工业自动化",
+        "international": "国际热点",
+        "sports": "体育赛事",
     }
 
     def __init__(self, settings: AppSettings, logger: logging.Logger) -> None:
@@ -140,11 +334,12 @@ class TopicAutomationService:
         industries = "、".join(humanized_industries) if humanized_industries else "相关赛道待补充"
         keywords = "、".join(topic.matched_keywords) if topic.matched_keywords else "关键词待补充"
         numbers = "、".join(topic.extracted_numbers) if topic.extracted_numbers else "暂无明确数字"
-        summary = topic.summary or topic.title
-        snippet = self._clean_topic_snippet_for_prompt(topic.snippet or "", summary)
+        summary = self._preferred_topic_summary(topic)
+        snippet = self._preferred_topic_snippet(topic, summary)
         published_at = topic.published_at or "时间未标注"
         primary_industry = humanized_industries[0] if humanized_industries else "相关赛道"
         primary_keywords = "、".join(topic.matched_keywords[:4]) if topic.matched_keywords else keywords
+        topic_mode = self._topic_mode(topic)
         selection_reason = self._build_selection_reason(topic, primary_industry, primary_keywords, numbers)
         suggested_angle = self._build_suggested_angle(topic, primary_industry, primary_keywords, numbers)
         follow_up_focus = self._build_follow_up_focus(topic, primary_industry, primary_keywords)
@@ -153,7 +348,14 @@ class TopicAutomationService:
         format_brief = self._build_content_format_brief(topic, primary_industry)
         paragraph_instruction = self._build_paragraph_instruction(topic)
         quality_flags = "、".join(topic.quality_flags) if topic.quality_flags else "无"
+        title_potential_reasons = "、".join(topic.title_potential_reasons) if topic.title_potential_reasons else "无"
         word_target = self._build_word_target(topic)
+        prompt_track = self._resolve_prompt_track(topic, primary_industry)
+        closing_instruction = self._build_closing_instruction(
+            topic,
+            topic_mode=topic_mode,
+            primary_industry=primary_industry,
+        )
 
         return (
             f"标题：{topic.title}\n"
@@ -171,20 +373,105 @@ class TopicAutomationService:
             f"段落要求：{paragraph_instruction}\n"
             f"证据强度：{topic.evidence_strength}\n"
             f"选题质量分：{topic.quality_score}\n"
+            f"标题潜力分：{topic.title_potential_score}\n"
+            f"标题打法赛道：{prompt_track}\n"
+            f"标题抓手：{title_potential_reasons}\n"
             f"质量标记：{quality_flags}\n"
             f"建议字数：{word_target}\n\n"
             "素材摘要：\n"
             f"- 摘要：{summary}\n"
             f"- 补充片段：{snippet}\n"
-            f"- 热度判断：阅读分 {topic.read_score} / 收藏分 {topic.save_score} / 讨论分 {topic.discussion_score}\n\n"
+            f"- 热度判断：阅读分 {topic.read_score} / 收藏分 {topic.save_score} / 讨论分 {topic.discussion_score} / 标题潜力 {topic.title_potential_score}\n\n"
             f"入选理由：{selection_reason}\n"
             f"推荐主结论：{suggested_angle}\n"
             f"跟踪变量：{follow_up_focus}\n"
             f"固定写法：{writing_brief}\n\n"
+            f"{closing_instruction}"
+        ).strip()
+
+    def _preferred_topic_summary(self, topic: TopicCandidate) -> str:
+        summary = str(topic.summary or "").strip()
+        snippet = self._clean_topic_snippet_for_prompt(topic.snippet or "", topic.title)
+        if (
+            not summary
+            or summary == topic.title
+            or self._looks_like_mojibake(summary)
+            or self._summary_uses_wrong_domain_template(topic, summary)
+        ):
+            if snippet and not self._looks_like_mojibake(snippet):
+                return snippet
+            return topic.title
+        return summary[:180]
+
+    def _preferred_topic_snippet(self, topic: TopicCandidate, fallback: str) -> str:
+        snippet = self._clean_topic_snippet_for_prompt(topic.snippet or "", fallback)
+        if self._looks_like_mojibake(snippet):
+            return fallback
+        return snippet
+
+    def _looks_like_mojibake(self, text: str) -> bool:
+        candidate = str(text or "").strip()
+        if not candidate:
+            return False
+        markers = ("锛", "銆", "鐨", "鏈", "鍙", "璇", "鏂", "顒", "姹", "闃", "", "�")
+        score = sum(candidate.count(marker) for marker in markers)
+        return score >= 2
+
+    def _summary_uses_wrong_domain_template(self, topic: TopicCandidate, text: str) -> bool:
+        mode = self._topic_mode(topic)
+        candidate = str(text or "").strip()
+        if mode not in {"sports", "international"} or not candidate:
+            return False
+        wrong_markers = ("项目落地", "订单节奏", "产业链", "融资", "交付", "客户验证", "利润兑现")
+        return any(marker in candidate for marker in wrong_markers)
+
+    def _topic_mode(self, topic: TopicCandidate) -> str:
+        if self._is_sports_topic(topic):
+            return "sports"
+        if self._is_international_topic(topic):
+            return "international"
+        return "generic"
+
+    def _resolve_prompt_track(self, topic: TopicCandidate, primary_industry: str) -> str:
+        mode = self._topic_mode(topic)
+        if mode == "sports":
+            return "体育赛事"
+        if mode == "international":
+            return "国际热点"
+        return str(topic.title_playbook_track or primary_industry).strip() or primary_industry
+
+    def _build_closing_instruction(
+        self,
+        topic: TopicCandidate,
+        *,
+        topic_mode: str,
+        primary_industry: str,
+    ) -> str:
+        if topic_mode == "sports":
+            return (
+                "请先准确理解并消化素材里的英文信息，再写成自然中文体育分析稿。"
+                "不要逐句硬翻，不要保留英文新闻腔，不要写成产业链、订单、融资、公司主体分析。"
+                "重点写清：这件事为什么今天值得看、关键人物或球队是谁、真正的转折点或争议点是什么、"
+                "它会怎样影响后续赛程、阵容选择、舆论走向或比赛预期。"
+                "如果素材是名单、签表、采访、奖金争议或赛前消息，必须解释它对比赛走势意味着什么。"
+                "全文自然分成4到6段，每段2到3句，不要出现 #、##、项目符号或英文小标题；"
+                "如果事实不足，不要编造比分、伤病、采访原话或内幕。"
+                "结尾只留一个开放式讨论问题。"
+            )
+        if topic_mode == "international":
+            return (
+                "请先准确理解并消化素材里的英文信息，再写成自然中文国际热点解读稿。"
+                "不要逐句直译，不要写成产业链、订单、融资或公司主体分析稿。"
+                "重点写清：事件本身发生了什么、核心博弈方是谁、各自的利益和压力在哪里、"
+                "这件事接下来最值得跟踪的政策变量或市场变量是什么，以及它对中国、全球市场或地缘局势可能意味着什么。"
+                "全文自然分成5到6段，每段2到3句，不要出现 #、##、项目符号或空泛口号。"
+                "如果事实不足，就明确写到已知边界，不要补造细节。"
+            )
+        return (
             "请围绕这条产业线索，重点分析："
             "这条线索目前处于什么阶段、涉及哪些公司/项目/订单主体、融资或订单意味着什么、它在产业链里卡住了哪一段、"
             "后续最值得跟踪的变量是什么，以及哪些风险会影响兑现节奏。"
-        ).strip()
+        )
 
     def _clean_topic_snippet_for_prompt(self, snippet: str, fallback: str) -> str:
         candidate = str(snippet or "").strip()
@@ -227,6 +514,7 @@ class TopicAutomationService:
         humanized_industries = self._humanize_industries(topic.matched_industries)
         primary_industry = humanized_industries[0] if humanized_industries else "相关赛道"
         primary_keywords = "、".join(topic.matched_keywords[:4]) if topic.matched_keywords else "关键词待补充"
+        prompt_track = self._resolve_prompt_track(topic, primary_industry)
         selection_reason = self._build_selection_reason(
             topic,
             primary_industry,
@@ -254,12 +542,14 @@ class TopicAutomationService:
             f"- 匹配赛道：{'、'.join(humanized_industries) or '无'}\n"
             f"- 关键词：{'、'.join(topic.matched_keywords) or '无'}\n"
             f"- 关键数字：{'、'.join(topic.extracted_numbers) or '无'}\n"
-            f"- 评分：总分 {topic.total_score} / 阅读 {topic.read_score} / 收藏 {topic.save_score} / 讨论 {topic.discussion_score}\n\n"
+            f"- 评分：总分 {topic.total_score} / 阅读 {topic.read_score} / 收藏 {topic.save_score} / 讨论 {topic.discussion_score} / 标题潜力 {topic.title_potential_score}\n\n"
             "## 质量判断\n\n"
             f"- 选题类型：{topic.topic_type_label or topic.topic_type or '行业事件'}\n"
             f"- 推荐体裁：{content_format_label}\n"
             f"- 证据强度：{topic.evidence_strength}\n"
             f"- 选题质量分：{topic.quality_score}\n"
+            f"- 标题打法赛道：{prompt_track}\n"
+            f"- 标题抓手：{'、'.join(topic.title_potential_reasons) or '无'}\n"
             f"- 质量标记：{'、'.join(topic.quality_flags) or '无'}\n"
             f"- 体裁要求：{format_brief}\n"
             f"- 段落要求：{paragraph_instruction}\n\n"
@@ -295,19 +585,32 @@ class TopicAutomationService:
         primary_keywords: str,
         numbers: str,
     ) -> str:
+        topic_mode = self._topic_mode(topic)
         reasons: list[str] = []
         if topic.is_high_read or topic.read_score >= 60:
             reasons.append("具备较强阅读潜力")
         if topic.is_high_save or topic.save_score >= 55:
             reasons.append("更容易形成收藏型内容")
+        if topic.title_potential_score >= 72:
+            reasons.append("标题改写空间大，容易起判断型标题")
         if topic.is_high_discussion or topic.discussion_score >= 50:
             reasons.append("讨论度有扩散空间")
         if numbers != "暂无明确数字":
             reasons.append("自带数字抓手")
         if primary_keywords and primary_keywords != "关键词待补充":
-            reasons.append(f"与{primary_industry}里的{primary_keywords.split('、')[0]}环节相关")
+            if topic_mode == "sports":
+                reasons.append(f"与{primary_keywords.split('、')[0]}这类体育话题直接相关")
+            elif topic_mode == "international":
+                reasons.append(f"与{primary_keywords.split('、')[0]}这类国际议题直接相关")
+            else:
+                reasons.append(f"与{primary_industry}里的{primary_keywords.split('、')[0]}环节相关")
         if not reasons:
-            reasons.append(f"题材与{primary_industry}主线相关，适合写成产业链分析稿")
+            if topic_mode == "sports":
+                reasons.append("题材处在赛前预期、赛后复盘或争议扩散的高关注区间")
+            elif topic_mode == "international":
+                reasons.append("题材处在国际博弈和市场预期变化的高关注区间")
+            else:
+                reasons.append(f"题材与{primary_industry}主线相关，适合写成产业链分析稿")
         return "，".join(reasons[:3]) + "。"
 
     def _build_suggested_angle(
@@ -317,25 +620,37 @@ class TopicAutomationService:
         primary_keywords: str,
         numbers: str,
     ) -> str:
+        topic_mode = self._topic_mode(topic)
         primary_keyword = primary_keywords.split("、")[0] if primary_keywords and primary_keywords != "关键词待补充" else primary_industry
+        if topic_mode == "sports":
+            return (
+                f"这条体育热点真正值得写的，不是把新闻复述一遍，而是解释{primary_keyword}背后的胜负手、争议点和后续走势。"
+                "读者真正关心的是：这会不会改变阵容选择、比赛预期、舆论风向，或者直接影响下一场比赛。"
+            )
+        if topic_mode == "international":
+            return (
+                f"这条国际热点真正值得写的，不是事件表面，而是{primary_keyword}背后的利益重新分配和下一步博弈。"
+                "读者真正关心的是：谁在施压、谁在让步、接下来最可能出现什么变化。"
+            )
+        keyword_phrase = self._keyword_angle_phrase(primary_industry, primary_keyword)
         title_text = f"{topic.title} {topic.summary} {topic.snippet}"
         if any(token in title_text for token in ("融资", "押注", "投资", "募资")):
             return (
-                f"这不只是融资新闻，更像是资本开始提前卡位{primary_industry}在{primary_keyword}环节的下一轮兑现机会，"
+                f"这不只是融资新闻，更像是资本开始提前卡位{primary_industry}{keyword_phrase}的下一轮兑现机会，"
                 "真正要看的不是估值故事，而是客户验证、量产或订单能否接上。"
             )
         if any(token in title_text for token in ("订单", "签约", "中标", "拿下", "合作")):
             return (
-                f"这条线真正值得写的，不是单一订单事件，而是{primary_industry}在{primary_keyword}环节的需求开始外溢，"
+                f"这条线真正值得写的，不是单一订单事件，而是{primary_industry}{keyword_phrase}的需求开始外溢，"
                 "后面要看交付节奏和利润率能否同步跟上。"
             )
         if numbers != "暂无明确数字":
             return (
-                f"{primary_industry}这轮升温不是空转，{primary_keyword}等环节已经出现可验证信号，"
+                f"{primary_industry}这轮升温不是空转，{self._keyword_signal_phrase(primary_industry, primary_keyword)}已经出现可验证信号，"
                 "接下来要看订单、交付和利润谁先落地。"
             )
         return (
-            f"这不是一条孤立热点，而是{primary_industry}在{primary_keyword}环节出现新的卡位信号，"
+            f"这不是一条孤立热点，而是{primary_industry}{keyword_phrase}出现新的卡位信号，"
             "真正要看的还是客户验证、交付进度和后续盈利能力。"
         )
 
@@ -345,7 +660,12 @@ class TopicAutomationService:
         primary_industry: str,
         primary_keywords: str,
     ) -> str:
+        topic_mode = self._topic_mode(topic)
         title_text = f"{topic.title} {topic.summary} {topic.snippet}"
+        if topic_mode == "sports":
+            return "阵容变化、赛程难度、关键人物状态、舆论争议是否继续发酵"
+        if topic_mode == "international":
+            return "政策表态、谈判进展、市场反馈、相关国家是否跟进动作"
         if primary_industry == "AI硬件" or "芯片" in primary_keywords:
             return "客户导入、流片或量产进度、单机价值量、毛利率变化"
         if primary_industry == "储能":
@@ -357,6 +677,17 @@ class TopicAutomationService:
         return "客户验证、订单落地、交付节奏、毛利率变化"
 
     def _build_writing_brief(self, topic: TopicCandidate, primary_industry: str) -> str:
+        topic_mode = self._topic_mode(topic)
+        if topic_mode == "sports":
+            return (
+                "写成体育解读稿：先点出判断，再解释关键人物、关键节点和争议点，"
+                "把事件为什么影响后续比赛说透，不要堆背景资料，更不要写成生硬直译稿。"
+            )
+        if topic_mode == "international":
+            return (
+                "写成国际热点解读稿：先交代变化，再拆博弈双方，再说后续变量和外溢影响，"
+                "避免新闻播报腔，也不要空喊立场。"
+            )
         if topic.recommended_format == "quick_commentary":
             return (
                 "写成快讯点评稿：先下判断，再用一到两个关键事实解释为什么现在值得看，"
@@ -378,6 +709,11 @@ class TopicAutomationService:
         )
 
     def _build_content_format_brief(self, topic: TopicCandidate, primary_industry: str) -> str:
+        topic_mode = self._topic_mode(topic)
+        if topic_mode == "sports":
+            return "适合写成体育复盘或赛前判断稿，重点解释影响胜负的关键变量、争议点和后续走势。"
+        if topic_mode == "international":
+            return "适合写成国际局势解读稿，重点解释博弈关系、变量变化和后续影响。"
         if topic.recommended_format == "quick_commentary":
             return "适合写成短而硬的事件点评，重点回答为什么值得看、谁会先受益、哪些变量还未验证。"
         if topic.recommended_format == "project_breakdown":
@@ -387,6 +723,11 @@ class TopicAutomationService:
         return f"适合写成{primary_industry}深度分析稿，重点拆产业链位置、订单兑现和利润分化。"
 
     def _build_paragraph_instruction(self, topic: TopicCandidate) -> str:
+        topic_mode = self._topic_mode(topic)
+        if topic_mode == "sports":
+            return "4到6段，每段2到3句，优先保证段落自然，图片应放在完整段落之间，不要切断句子。"
+        if topic_mode == "international":
+            return "5到6段，每段2到3句，先事件、再博弈、再影响、再变量，结尾不要喊口号。"
         if topic.recommended_format == "quick_commentary":
             return "4到5段，每段2句，首段先下判断，结尾只留一个分歧问题。"
         if topic.recommended_format == "project_breakdown":
@@ -396,6 +737,11 @@ class TopicAutomationService:
         return "5到7段，每段2到3句，先判断、再数据、再产业链、再主体、再风险边界。"
 
     def _build_word_target(self, topic: TopicCandidate) -> int:
+        topic_mode = self._topic_mode(topic)
+        if topic_mode == "sports":
+            return 900
+        if topic_mode == "international":
+            return 1000
         if topic.recommended_format == "quick_commentary":
             return 800
         if topic.recommended_format == "data_recap":
@@ -422,6 +768,24 @@ class TopicAutomationService:
     def _normalize_text(self, text: str) -> str:
         return self.NORMALIZE_PATTERN.sub("", text.lower())
 
+    def _keyword_angle_phrase(self, primary_industry: str, primary_keyword: str) -> str:
+        industry = str(primary_industry or "").strip()
+        keyword = str(primary_keyword or "").strip()
+        if not keyword or keyword == industry:
+            return "核心项目"
+        if keyword in industry or industry in keyword:
+            return f"里与{keyword}相关的关键环节"
+        return f"在{keyword}环节"
+
+    def _keyword_signal_phrase(self, primary_industry: str, primary_keyword: str) -> str:
+        industry = str(primary_industry or "").strip()
+        keyword = str(primary_keyword or "").strip()
+        if not keyword or keyword == industry:
+            return f"{industry}核心环节"
+        if keyword in industry or industry in keyword:
+            return keyword
+        return f"{keyword}等环节"
+
     def _available_topics(
         self,
         topics: list[TopicCandidate],
@@ -436,16 +800,32 @@ class TopicAutomationService:
             if allow_generated_duplicates
             else self._load_generated_keys_for_today()
         )
+        cross_account_published_keys = self._load_cross_account_published_keys_for_today()
+        cross_account_generated_keys = (
+            {"titles": set(), "urls": set()}
+            if allow_generated_duplicates
+            else self._load_cross_account_generated_keys_for_today()
+        )
         available: list[TopicCandidate] = []
         for topic in topics:
+            if not self._topic_matches_account_boundary(topic):
+                continue
             if topic.url and topic.url in published_keys["urls"]:
                 continue
             if topic.url and topic.url in generated_keys["urls"]:
+                continue
+            if topic.url and topic.url in cross_account_published_keys["urls"]:
+                continue
+            if topic.url and topic.url in cross_account_generated_keys["urls"]:
                 continue
             normalized_title = self._normalize_text(topic.title)
             if normalized_title and normalized_title in published_keys["titles"]:
                 continue
             if normalized_title and normalized_title in generated_keys["titles"]:
+                continue
+            if normalized_title and normalized_title in cross_account_published_keys["titles"]:
+                continue
+            if normalized_title and normalized_title in cross_account_generated_keys["titles"]:
                 continue
             available.append(topic)
         return available
@@ -500,3 +880,183 @@ class TopicAutomationService:
             if topic_url:
                 result["urls"].add(topic_url)
         return result
+
+    def _load_cross_account_published_keys_for_today(self) -> dict[str, set[str]]:
+        result = {"titles": set(), "urls": set()}
+        today = datetime.now().date().isoformat()
+        for account_key in self._iter_other_enabled_account_keys():
+            history_path = self._resolve_output_dir_for_account(account_key) / self.settings.publishing.history_filename
+            if not history_path.exists():
+                continue
+            try:
+                payload = json.loads(history_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, list):
+                continue
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                published_at = str(item.get("published_at", "")).strip()
+                if not published_at.startswith(today):
+                    continue
+                topic_title = str(item.get("topic_title", "")).strip()
+                topic_url = str(item.get("topic_url", "")).strip()
+                if topic_title:
+                    result["titles"].add(self._normalize_text(topic_title))
+                if topic_url:
+                    result["urls"].add(topic_url)
+        return result
+
+    def _load_cross_account_generated_keys_for_today(self) -> dict[str, set[str]]:
+        result = {"titles": set(), "urls": set()}
+        today = datetime.now().strftime("%Y%m%d")
+        for account_key in self._iter_other_enabled_account_keys():
+            runs_root = self._resolve_output_dir_for_account(account_key) / self.settings.automation.archive_dirname
+            if not runs_root.exists():
+                continue
+            for run_dir in runs_root.iterdir():
+                if not run_dir.is_dir() or not run_dir.name.startswith(today):
+                    continue
+                topic_path = run_dir / f"{self.settings.automation.selected_topic_basename}.json"
+                if not topic_path.exists():
+                    continue
+                try:
+                    payload = json.loads(topic_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    continue
+                topic = payload.get("selected_topic")
+                if not isinstance(topic, dict):
+                    continue
+                topic_title = str(topic.get("title", "")).strip()
+                topic_url = str(topic.get("url", "")).strip()
+                if topic_title:
+                    result["titles"].add(self._normalize_text(topic_title))
+                if topic_url:
+                    result["urls"].add(topic_url)
+        return result
+
+    def _iter_other_enabled_account_keys(self) -> list[str]:
+        keys: list[str] = []
+        for account_key, profile in self.settings.account_profiles.items():
+            if account_key == self.settings.account_key:
+                continue
+            if not getattr(profile, "enabled", True):
+                continue
+            keys.append(account_key)
+        return keys
+
+    def _resolve_output_dir_for_account(self, account_key: str) -> Path:
+        profile = self.settings.account_profiles.get(account_key)
+        if profile is not None and str(profile.output_dir).strip():
+            candidate = Path(str(profile.output_dir).strip())
+            return candidate if candidate.is_absolute() else (self.settings.project_root / candidate)
+        slug = sanitize_account_slug(account_key)
+        if slug == "default":
+            return self.settings.project_root / "output"
+        return self.settings.project_root / "output" / "accounts" / slug
+
+    def _topic_matches_account_boundary(self, topic: TopicCandidate) -> bool:
+        account_key = self.settings.account_key
+        if account_key == "robot_notes":
+            return self._is_international_topic(topic)
+        if account_key == "energy_notes":
+            return self._is_sports_topic(topic)
+        if account_key == "default":
+            return not self._is_reserved_for_specialist_account(topic)
+        return True
+
+    def filter_topics_for_account(self, topics: list[TopicCandidate]) -> list[TopicCandidate]:
+        return [topic for topic in topics if self._topic_matches_account_boundary(topic)]
+
+    def _is_reserved_for_specialist_account(self, topic: TopicCandidate) -> bool:
+        robot_enabled = bool(self.settings.account_profiles.get("robot_notes")) and bool(
+            self.settings.account_profiles["robot_notes"].enabled
+        )
+        energy_enabled = bool(self.settings.account_profiles.get("energy_notes")) and bool(
+            self.settings.account_profiles["energy_notes"].enabled
+        )
+        if robot_enabled and self._is_international_topic(topic):
+            return True
+        if energy_enabled and self._is_sports_topic(topic):
+            return True
+        return False
+
+    def _is_robot_topic(self, topic: TopicCandidate) -> bool:
+        robot_score, energy_score, international_score, sports_score = self._topic_domain_scores(topic)
+        industries = {str(item).strip() for item in topic.matched_industries if str(item).strip()}
+        track = str(topic.title_playbook_track or "").strip()
+        if track == "AI机器人" and energy_score == 0 and international_score == 0 and sports_score == 0:
+            return True
+        if robot_score >= 2 and energy_score == 0 and international_score == 0 and sports_score == 0:
+            return True
+        if industries and industries.issubset(self.ROBOT_INDUSTRIES) and robot_score >= 1 and energy_score == 0 and international_score == 0 and sports_score == 0:
+            return True
+        return False
+
+    def _is_energy_topic(self, topic: TopicCandidate) -> bool:
+        robot_score, energy_score, international_score, sports_score = self._topic_domain_scores(topic)
+        industries = {str(item).strip() for item in topic.matched_industries if str(item).strip()}
+        track = str(topic.title_playbook_track or "").strip()
+        if track == "新能源储能" and robot_score == 0 and international_score == 0 and sports_score == 0:
+            return True
+        if energy_score >= 2 and robot_score == 0 and international_score == 0 and sports_score == 0:
+            return True
+        if industries and industries.issubset(self.ENERGY_INDUSTRIES) and energy_score >= 1 and robot_score == 0 and international_score == 0 and sports_score == 0:
+            return True
+        return False
+
+    def _is_international_topic(self, topic: TopicCandidate) -> bool:
+        _, _, international_score, sports_score = self._topic_domain_scores(topic)
+        industries = {str(item).strip() for item in topic.matched_industries if str(item).strip()}
+        track = str(topic.title_playbook_track or "").strip()
+        text = "\n".join(
+            item
+            for item in (
+                topic.title,
+                topic.summary,
+                topic.snippet,
+                " ".join(topic.matched_keywords),
+            )
+            if item
+        )
+        if any(token in text for token in self.INTERNATIONAL_FALSE_POSITIVE_TOKENS):
+            return False
+        if track == "国际热点" and sports_score == 0:
+            return True
+        if international_score >= 2 and sports_score == 0:
+            return True
+        if industries and industries.issubset(self.INTERNATIONAL_INDUSTRIES) and international_score >= 2 and sports_score == 0:
+            return True
+        return False
+
+    def _is_sports_topic(self, topic: TopicCandidate) -> bool:
+        _, _, international_score, sports_score = self._topic_domain_scores(topic)
+        industries = {str(item).strip() for item in topic.matched_industries if str(item).strip()}
+        track = str(topic.title_playbook_track or "").strip()
+        if "sports" in industries and international_score == 0:
+            return True
+        if track == "体育赛事" and international_score == 0:
+            return True
+        if sports_score >= 2 and international_score == 0:
+            return True
+        if industries and industries.issubset(self.SPORTS_INDUSTRIES) and sports_score >= 1 and international_score == 0:
+            return True
+        return False
+
+    def _topic_domain_scores(self, topic: TopicCandidate) -> tuple[int, int, int, int]:
+        text = "\n".join(
+            item
+            for item in (
+                topic.title,
+                topic.summary,
+                topic.snippet,
+                " ".join(topic.matched_keywords),
+            )
+            if item
+        )
+        robot_score = sum(1 for token in self.ROBOT_TOKENS if token and token in text)
+        energy_score = sum(1 for token in self.ENERGY_TOKENS if token and token in text)
+        international_score = sum(1 for token in self.INTERNATIONAL_TOKENS if token and token in text)
+        sports_score = sum(1 for token in self.SPORTS_TOKENS if token and token in text)
+        return robot_score, energy_score, international_score, sports_score

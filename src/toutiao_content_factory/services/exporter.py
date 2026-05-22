@@ -3,31 +3,36 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from toutiao_content_factory.models import ImageArtifacts, WorkflowResult
+from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.models import WorkflowResult
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 
 
 class ExportService:
-    def __init__(self, output_dir: Path, logger) -> None:
-        self.output_dir = output_dir
+    def __init__(self, settings: AppSettings, logger) -> None:
+        self.settings = settings
+        self.output_dir = settings.output_dir
         self.logger = logger
+        self.growth_ops_service = GrowthOpsService(settings, logger)
 
-    def export(self, result: WorkflowResult, image_artifacts: ImageArtifacts | None = None) -> dict[str, Path]:
+    def export(self, result: WorkflowResult) -> dict[str, Path]:
         article_path = self.output_dir / "article.md"
         editorial_path = self.output_dir / "editorial_packet.md"
         titles_path = self.output_dir / "titles.txt"
-        cover_prompt_path = self.output_dir / "cover_prompt.txt"
-        infographic_path = self.output_dir / "infographic_prompts.txt"
         score_path = self.output_dir / "content_score.json"
         workflow_path = self.output_dir / "workflow_result.json"
+        benchmark_path = self.output_dir / "benchmark_strategy.json"
 
         article_path.write_text(self._build_publish_article(result), encoding="utf-8")
         editorial_path.write_text(self._build_editorial_packet(result), encoding="utf-8")
         titles_path.write_text(self._build_titles_package(result), encoding="utf-8")
-        cover_prompt_path.write_text(result.content.cover_prompt.strip() + "\n", encoding="utf-8")
-        infographic_path.write_text(self._build_infographic_package(result), encoding="utf-8")
         score_path.write_text(
             json.dumps(self._build_score_package(result), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        benchmark_path.write_text(
+            json.dumps(self._build_benchmark_strategy(result), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         workflow_path.write_text(
@@ -39,21 +44,10 @@ class ExportService:
             "article": article_path,
             "editorial_packet": editorial_path,
             "titles": titles_path,
-            "cover_prompt": cover_prompt_path,
-            "infographic_prompts": infographic_path,
             "content_score": score_path,
+            "benchmark_strategy": benchmark_path,
             "workflow_result": workflow_path,
         }
-        if image_artifacts is not None:
-            exported["cover_png"] = image_artifacts.cover_png
-            for index, path in enumerate(image_artifacts.infographic_pngs, start=1):
-                exported[f"infographic_{index}_png"] = path
-            if image_artifacts.cover_svg is not None:
-                exported["cover_svg"] = image_artifacts.cover_svg
-            for index, path in enumerate(image_artifacts.infographic_svgs, start=1):
-                exported[f"infographic_{index}_svg"] = path
-            for index, path in enumerate(image_artifacts.html_files, start=1):
-                exported[f"layout_{index}_html"] = path
         self.logger.info("Export completed: %s", exported)
         return exported
 
@@ -66,6 +60,7 @@ class ExportService:
     def _build_editorial_packet(self, result: WorkflowResult) -> str:
         content = result.content
         score = result.content_score
+        benchmark_strategy = self._build_benchmark_strategy(result)
         recommended_titles = "\n".join(
             f"{index}. {title}" for index, title in enumerate(content.recommended_titles, start=1)
         ) or "1. 暂无推荐标题"
@@ -87,8 +82,18 @@ class ExportService:
             "# 编辑包\n\n"
             f"- 风格：{result.style_label}\n"
             f"- 切入角度：{content.article_angle}\n"
+            f"- 对标赛道：{benchmark_strategy.get('track', '') or '未命中'}\n"
+            f"- 参考账号：{'、'.join(benchmark_strategy.get('benchmark_accounts', [])[:4]) or '当前赛道高质量分析号'}\n"
+            f"- 自有高表现样本：{'；'.join(benchmark_strategy.get('self_benchmark_titles', [])[:2]) or '暂无'}\n"
             f"- 缓存状态：{result.cache_status}\n"
             f"- 缓存说明：{content.cache_note or '无'}\n\n"
+            "## 对标写法重点\n\n"
+            f"- 核心写法：{benchmark_strategy.get('voice_summary', '') or '无'}\n"
+            f"- 读者价值：{benchmark_strategy.get('reader_value', '') or '无'}\n"
+            f"- 内部复用线索：{'；'.join(benchmark_strategy.get('self_benchmark_patterns', [])[:4]) or '暂无'}\n"
+            f"- 开头规则：{'；'.join(benchmark_strategy.get('opening_rules', [])[:3]) or '无'}\n"
+            f"- 正文结构：{'；'.join(benchmark_strategy.get('structure_rules', [])[:4]) or '无'}\n"
+            f"- 规避项：{'；'.join(benchmark_strategy.get('avoid_patterns', [])[:4]) or '无'}\n\n"
             "## 推荐标题\n\n"
             f"{recommended_titles}\n\n"
             "## 开头前三句优化\n\n"
@@ -133,14 +138,6 @@ class ExportService:
         )
         return f"全部标题：\n{all_titles}\n\n推荐标题：\n{recommended}\n"
 
-    def _build_infographic_package(self, result: WorkflowResult) -> str:
-        lines = [f"{index}. {item}" for index, item in enumerate(result.content.infographic_prompts, start=1)]
-        if result.data_report.growth_numbers:
-            lines.append("")
-            lines.append("可用数据抓手：")
-            lines.extend(f"- {item}" for item in result.data_report.growth_numbers[:5])
-        return "\n".join(lines) + "\n"
-
     def _build_score_package(self, result: WorkflowResult) -> dict[str, object]:
         score = result.content_score
         return {
@@ -167,4 +164,37 @@ class ExportService:
             "publish_risk_flags": score.publish_risk_flags,
             "publish_recommendation": score.publish_recommendation,
             "publish_notes": score.publish_notes,
+        }
+
+    def _build_benchmark_strategy(self, result: WorkflowResult) -> dict[str, object]:
+        focus_track = str(result.data_report.focus_industry or "").strip()
+        combined = " ".join(
+            [
+                result.data_report.topic_title,
+                result.data_report.focus_industry,
+                *result.data_report.focus_keywords[:6],
+                *result.data_report.supply_chain_keywords[:6],
+                result.content.article_angle,
+            ]
+        )
+        track = focus_track or self.growth_ops_service.infer_title_playbook_track(combined)
+        context = self.growth_ops_service.get_benchmark_strategy_context(track)
+        return {
+            "generated_at": result.created_at,
+            "track": context.get("track", track),
+            "benchmark_accounts": context.get("benchmark_accounts", []),
+            "voice_summary": context.get("voice_summary", ""),
+            "reader_value": context.get("reader_value", ""),
+            "top_keywords": context.get("top_keywords", []),
+            "opening_rules": context.get("opening_rules", []),
+            "structure_rules": context.get("structure_rules", []),
+            "angle_rules": context.get("angle_rules", []),
+            "review_focus": context.get("review_focus", []),
+            "avoid_patterns": context.get("avoid_patterns", []),
+            "example_titles": context.get("example_titles", [])[:5],
+            "self_benchmark_titles": context.get("self_benchmark_titles", [])[:5],
+            "self_benchmark_patterns": context.get("self_benchmark_patterns", [])[:6],
+            "self_benchmark_notes": context.get("self_benchmark_notes", [])[:5],
+            "self_benchmark_hits": context.get("self_benchmark_hits", [])[:3],
+            "self_benchmark_summary": context.get("self_benchmark_summary", {}),
         }

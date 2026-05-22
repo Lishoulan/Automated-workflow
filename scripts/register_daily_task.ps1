@@ -29,7 +29,7 @@ $ResolvedScriptPath = if ($ScriptPath) {
 else {
     Join-Path $ProjectRoot "scripts\daily_run.ps1"
 }
-$WrapperPath = Join-Path $ProjectRoot "scripts\daily_run_wrapper.cmd"
+$WrapperPath = Join-Path $ProjectRoot "scripts\daily_run_wrapper.vbs"
 $AccountSlug = (($AccountKey -replace '[^a-zA-Z0-9]+', '-') -replace '(^-+|-+$)', '').ToLower()
 if ([string]::IsNullOrWhiteSpace($AccountSlug)) {
     $AccountSlug = "default"
@@ -100,7 +100,7 @@ $index = 1
 foreach ($time in $Times) {
     $taskName = "$TaskPrefix-$AccountSlug-$index"
     $psArgumentString = ($actionArguments -join " ")
-    $taskCommand = "`"$WrapperPath`" $psArgumentString"
+    $taskCommand = "wscript.exe //B //nologo `"$WrapperPath`" $psArgumentString"
     $createOutput = schtasks /Create /TN $taskName /SC DAILY /ST $time /TR $taskCommand /F 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to register scheduled task $taskName at $time. $createOutput"

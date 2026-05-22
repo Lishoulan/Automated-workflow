@@ -82,7 +82,13 @@ $accountsJson = $pythonCommand | & $PythonExe -
 $accounts = $accountsJson | ConvertFrom-Json
 
 if ($AccountKeys -and $AccountKeys.Count -gt 0) {
-    $requestedKeys = @($AccountKeys | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+    $requestedKeys = @(
+        $AccountKeys |
+        Where-Object { $_ -and $_.Trim() } |
+        ForEach-Object { $_ -split "," } |
+        Where-Object { $_ -and $_.Trim() } |
+        ForEach-Object { $_.Trim() }
+    )
     if ($requestedKeys.Count -eq 0) {
         throw "AccountKeys was provided, but no valid account key was found."
     }
@@ -97,34 +103,30 @@ if ($AccountKeys -and $AccountKeys.Count -gt 0) {
 }
 
 foreach ($accountKey in $accounts) {
-    $arguments = @(
-        "-ExecutionPolicy", "Bypass",
-        "-File", $RegisterScript,
-        "-TaskPrefix", $TaskPrefix,
-        "-AccountKey", [string]$accountKey,
-        "-RetryCount", [string]$RetryCount,
-        "-RetryDelaySeconds", [string]$RetryDelaySeconds
-    )
-
-    if ($Times -and $Times.Count -gt 0) {
-        $arguments += @("-Times", $Times)
+    Write-Host "Registering scheduled tasks for account: $accountKey"
+    $invokeParameters = @{
+        TaskPrefix = $TaskPrefix
+        AccountKey = [string]$accountKey
+        RetryCount = $RetryCount
+        RetryDelaySeconds = $RetryDelaySeconds
     }
-
+    if ($Times -and $Times.Count -gt 0) {
+        $invokeParameters["Times"] = $Times
+    }
     if ($PythonPath) {
-        $arguments += @("-PythonPath", $PythonPath)
+        $invokeParameters["PythonPath"] = $PythonPath
     }
     if ($Style) {
-        $arguments += @("-Style", $Style)
+        $invokeParameters["Style"] = $Style
     }
     if ($DryRun.IsPresent) {
-        $arguments += "-DryRun"
+        $invokeParameters["DryRun"] = $true
     }
     if ($EnableAutoPublish.IsPresent) {
-        $arguments += "-EnableAutoPublish"
+        $invokeParameters["EnableAutoPublish"] = $true
     }
 
-    Write-Host "Registering scheduled tasks for account: $accountKey"
-    & powershell.exe @arguments
+    & $RegisterScript @invokeParameters
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to register scheduled tasks for account: $accountKey"
     }

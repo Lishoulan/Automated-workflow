@@ -23,35 +23,32 @@ if (-not (Test-Path -LiteralPath $RegisterScript)) {
     throw "Script not found: $RegisterScript"
 }
 
-$arguments = @(
-    "-ExecutionPolicy", "Bypass",
-    "-File", $RegisterScript,
-    "-TaskPrefix", $TaskPrefix,
-    "-AccountKey", $AccountKey,
-    "-ScriptPath", "scripts\\wechat_daily_run.ps1",
-    "-RetryCount", [string]$RetryCount,
-    "-RetryDelaySeconds", [string]$RetryDelaySeconds
-)
-
-foreach ($time in $Times) {
-    $arguments += @("-Times", $time)
+$invokeParameters = @{
+    TaskPrefix = $TaskPrefix
+    AccountKey = $AccountKey
+    ScriptPath = "scripts\\wechat_daily_run.ps1"
+    RetryCount = $RetryCount
+    RetryDelaySeconds = $RetryDelaySeconds
 }
 
+if ($Times -and $Times.Count -gt 0) {
+    $invokeParameters["Times"] = $Times
+}
 if ($PythonPath) {
-    $arguments += @("-PythonPath", $PythonPath)
+    $invokeParameters["PythonPath"] = $PythonPath
 }
 if ($Style) {
-    $arguments += @("-Style", $Style)
+    $invokeParameters["Style"] = $Style
 }
 if ($DryRun.IsPresent) {
-    $arguments += "-DryRun"
+    $invokeParameters["DryRun"] = $true
 }
 if ($VisibleBrowser.IsPresent) {
-    $arguments += "-VisibleBrowser"
+    $invokeParameters["VisibleBrowser"] = $true
 }
 if ($EnableAutoPublish.IsPresent) {
-    $arguments += "-EnableAutoPublish"
+    $invokeParameters["EnableAutoPublish"] = $true
 }
 
-& powershell.exe @arguments
+& $RegisterScript @invokeParameters
 exit $LASTEXITCODE

@@ -1,381 +1,254 @@
-# AI Toutiao Content Factory
+<div align="center">
 
-An automated content workflow for Chinese tech-industry media accounts.
+# 🏭 AI Content Factory
 
-It can:
-- collect trending topics from configured sources
-- analyze data and industry signals
-- generate titles, article body, tags, summary, and image prompts
-- generate cover and infographic assets
-- review and approve runs
-- auto-publish to Toutiao Creator Center with Playwright
-- manage scheduled daily runs and a local web console
+**AI 驱动的全平台自媒体内容工厂 — 一键从热点到发布**
 
-## Stack
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688.svg)](https://fastapi.tiangolo.com)
+[![Playwright](https://img.shields.io/badge/Playwright-1.52%2B-2EAD33.svg)](https://playwright.dev)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-- Python
-- FastAPI + Uvicorn
-- Playwright
-- OpenAI-compatible text/image APIs
-- Pillow / Matplotlib / Jinja2
+[English](#english) · [中文](#中文)
 
-## Project Structure
+</div>
 
-```text
-.
-|- src/                         # application source
-|- scripts/                     # bootstrap, scheduling, login, web startup
-|- prompts/                     # prompt templates
-|- templates/                   # HTML templates
-|- static/                      # web assets
-|- input/                       # optional manual input files
-|- main.py                      # CLI entry
-|- webapp.py                    # web console entry
-|- config.yaml                  # app configuration
-|- requirements.txt
-|- .env.example
-`- README.md
-```
+---
 
-Runtime directories such as `output/`, `logs/`, `cache/`, `.runtime/`, and `.venv/` are intentionally excluded from Git.
+<a id="中文"></a>
 
-## Quick Start On A New Computer
+## ✨ 这是什么？
 
-### 1. Requirements
+**AI Content Factory** 是一套面向中文科技自媒体的全自动内容生产流水线。从热点采集、数据分析、文章撰写、标题优化、合规审核到多平台发布，全部由 AI Agent 协作完成，无需人工干预。
+
+> 🎯 **一句话概括**：给一个 API Key，还你一个 7×24 小时不停更的自媒体矩阵。
+
+### 🖥️ 内置 Web 控制台
+
+实时查看选题池、内容生成进度、审核结果、发布状态，一切尽在掌握。
+
+### 🤖 多 Agent 协作架构
+
+| Agent | 职责 |
+|-------|------|
+| 🔥 Trend Agent | 热点采集与趋势分析 |
+| 📊 Data Agent | 数据提取与行业信号解读 |
+| ✍️ Writer Agent | 深度长文生成（1200+ 字） |
+| 🏷️ Title Agent | 20 选 3 标题优化 |
+| 💎 Polish Agent | 去 AI 味润色 |
+| 🔍 Review Agent | 质量评分与 AI 风险检测 |
+| 📋 Publish Review Agent | 发布前终审 |
+| 📐 WeChat Layout Agent | 公众号排版适配 |
+
+---
+
+## 🚀 核心特性
+
+- **全流程自动化** — 热点 → 选题 → 写作 → 审核 → 发布，零人工介入
+- **多平台支持** — 今日头条、微信公众号、抖音，一个流水线全覆盖
+- **多账号矩阵** — 隔离运行目录、浏览器 Profile、发布历史，互不干扰
+- **合规先行** — AIGC 声明、AI 风险评分、内容安全守卫，符合 2026 平台规则
+- **智能选题** — 对标账号分析 + 自有爆款学习，选题越来越准
+- **定时调度** — Windows 任务计划程序，每天 4 个时段自动运行
+- **Web 控制台** — FastAPI 驱动的本地 Dashboard，实时监控一切
+- **OpenAI 兼容** — 支持 DeepSeek、通义千问等任何 OpenAI 兼容 API
+
+---
+
+## 📦 快速开始
+
+### 环境要求
 
 - Windows 10/11
-- Python 3.11+ available as `python`
-- Microsoft Edge installed
+- Python 3.10+
+- Microsoft Edge
 
-### 2. Clone the Repository
-
-```powershell
-git clone <your-repo-url>
-cd <your-repo-folder>
-```
-
-### 3. Bootstrap The Environment
-
-This creates `.venv`, installs dependencies, installs Playwright Chromium, and creates `.env` from `.env.example` if needed.
+### 安装
 
 ```powershell
+git clone https://github.com/Lishoulan/Automated-workflow.git
+cd Automated-workflow
 powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
 ```
 
-### 4. Fill In `.env`
+### 配置
 
-Edit `.env` and set at minimum:
+编辑 `.env`，至少填写：
 
-- `OPENAI_API_KEY`
-- `OPENAI_BASE_URL`
-- `OPENAI_MODEL`
-
-If you use an OpenAI-compatible relay for images:
-
-- `IMAGE_BACKEND=image2`
-- `IMAGE_API_KEY`
-- `IMAGE_BASE_URL`
-- `IMAGE_MODEL`
-
-If you want auto-publish:
-
-- `TARGET_PLATFORM=all`
-- `TOUTIAO_PUBLISH_ENABLED=1`
-- `TOUTIAO_AUTO_PUBLISH=1`
-- `WECHAT_ENABLED=1`
-- `WECHAT_AUTO_PUBLISH=1`
-- `WECHAT_APP_ID`
-- `WECHAT_APP_SECRET`
-
-To let the daily workflow try multiple candidate topics before giving up:
-
-- `TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS=3`
-
-### 5. Initialize Toutiao + WeChat Login
-
-This opens the persistent browser sessions used by the scheduled workflow and lets you log in to Toutiao Creator Center and WeChat Official Accounts once.
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\init_publish_login.ps1
+```ini
+OPENAI_API_KEY=your_key
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-chat
 ```
 
-### 6. Start The Web Console
+### 启动
 
 ```powershell
+# 启动 Web 控制台
 powershell -ExecutionPolicy Bypass -File .\scripts\start_webapp.ps1
-```
 
-Default URL:
-
-```text
-http://127.0.0.1:8000
-```
-
-If port `8000` is occupied:
-
-```powershell
-python .\webapp.py --port 8001
-```
-
-## Common Commands
-
-### Generate One Manual Run
-
-```powershell
+# 或命令行生成一篇文章
 python .\main.py
 ```
 
-Run for a specific account:
+打开 http://127.0.0.1:8000 即可看到控制台。
+
+---
+
+## 🎮 常用命令
 
 ```powershell
-python .\main.py --account robot_notes
-python .\main.py --account energy_notes
-```
+# 生成一篇文章
+python .\main.py
 
-### Collect Topics Only
-
-```powershell
+# 仅采集选题
 python .\main.py --topics-only
-```
 
-Or for a specific account:
-
-```powershell
-python .\main.py --account robot_notes --topics-only
-```
-
-### Run The Full Daily Pipeline
-
-```powershell
+# 完整日常流水线（采集 → 写作 → 审核 → 发布）
 python .\main.py --daily-run --refresh-cache
-```
 
-Or for a specific account:
+# 指定账号运行
+python .\main.py --account robot_notes --daily-run
 
-```powershell
-python .\main.py --account robot_notes --daily-run --refresh-cache
-```
-
-`--daily-run` now acts as an autopilot flow:
-
-- it collects fresh topics
-- it tries up to `TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS` candidates
-- it auto-approves high-quality runs
-- it auto-publishes Toutiao when `TOUTIAO_AUTO_PUBLISH=1`
-- it also creates WeChat drafts, and submits them when `WECHAT_AUTO_PUBLISH=1`
-- set `TARGET_PLATFORM=all` if you want one scheduled workflow to handle every enabled platform together
-
-If Toutiao publish fails with `code=2010` / no publish permission, the browser session reached the platform but the logged-in account itself cannot publish from Creator Center. Re-run login initialization with the correct account and verify manual publishing works first.
-
-### Publish The Latest Approved Run
-
-```powershell
+# 发布最新审核通过的文章
 python .\main.py --publish-latest-approved
-```
 
-WeChat draft / publish:
-
-```powershell
-python .\main.py --prepare-wechat-launch-day 2
-python .\main.py --prepare-wechat-launch-week
-python .\main.py --generate-images-run --run-dir "D:\path\to\output\runs\your_run_dir"
-python .\main.py --wechat-draft-latest-approved
-python .\main.py --wechat-publish-latest-approved
-python .\main.py --init-wechat-login
-```
-
-`--wechat-draft-latest-approved` uses the official WeChat API to create a draft. `--wechat-publish-latest-approved` now creates the draft and then uses the logged-in browser session to submit it from the 草稿箱.
-`--prepare-wechat-launch-day` and `--prepare-wechat-launch-week` build WeChat launch-week article packages and matching cover / infographic prompt files using the same visual strategy as the Toutiao workflow.
-`--generate-images-run` regenerates the real image assets for any existing run package.
-
-Optional `md2wechat` layout backend for WeChat:
-
-```powershell
-WECHAT_LAYOUT_BACKEND=md2wechat
-WECHAT_MD2WECHAT_ENABLED=1
-MD2WECHAT_THEME=default
-MD2WECHAT_CLI_PATH=
-```
-
-If you have the local `md2wechat` CLI installed, the WeChat flow can use it without any API key. `MD2WECHAT_CLI_PATH` is optional and only needed when the command is not already on `PATH`.
-
-If `MD2WECHAT_API_KEY` is present, the flow prefers the hosted API. If no key is provided, it tries the local CLI. If both are unavailable and `MD2WECHAT_FALLBACK_TO_BUILTIN=1`, it automatically falls back to the built-in HTML renderer.
-
-Or for a specific account:
-
-```powershell
-python .\main.py --account robot_notes --publish-latest-approved
-python .\main.py --account energy_notes --publish-latest-approved
-```
-
-Growth ops / benchmarking:
-
-```powershell
-python .\main.py --build-benchmark-report
-python .\main.py --backfill-performance-ledger
-python .\main.py --build-performance-report
-python .\main.py --record-performance --run-dir "D:\path\to\output\runs\your_run_dir" --performance-platform wechat --snapshot-date 2026-05-20 --impression-count 10000 --read-count 860 --recommendation-read-count 520 --like-count 22 --wow-count 11 --share-count 6 --comment-count 8 --follower-gain 17
-```
-
-- Benchmark source file: `branding/benchmark_accounts.yaml`
-- Self benchmark source file: `branding/self_benchmark_articles.yaml`
-- Generated benchmark report: `output/growth_ops/benchmark_report.md`
-- Generated self benchmark report: `output/growth_ops/self_benchmark_report.md`
-- Performance ledger: `output/growth_ops/performance/performance_ledger.json`
-- Performance review report: `output/growth_ops/performance/performance_report.md`
-- Each content run now exports `output/benchmark_strategy.json`, and the same benchmark strategy is injected into trend analysis, data extraction, article writing, and review scoring so the workflow follows the selected benchmark-account playbook instead of using benchmarks only for titles.
-- The benchmark layer now has two sources: external benchmark accounts and your own validated high-performing articles. Fill `branding/self_benchmark_articles.yaml`, then keep appending post-publish metrics with `--record-performance` so the workflow gradually learns from your own winners.
-
-### Publish A Specific Run
-
-```powershell
-python .\main.py --publish-run --run-dir "D:\path\to\output\runs\your_run_dir"
-```
-
-## Schedule Automatic Daily Runs
-
-Register 4 tasks at `08:00`, `12:00`, `18:30`, and `22:00`:
-
-```powershell
+# 注册每日定时任务（08:00 / 12:00 / 18:30 / 22:00）
 powershell -ExecutionPolicy Bypass -File .\scripts\register_daily_task.ps1 -EnableAutoPublish
 ```
 
-Register all configured accounts:
+---
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\register_all_accounts.ps1 -EnableAutoPublish
+## 🏗️ 项目结构
+
+```
+├── src/toutiao_content_factory/
+│   ├── agents/           # AI Agent 集合
+│   ├── services/         # 核心业务服务
+│   ├── loaders/          # 文档加载器
+│   ├── renderers/        # 渲染器
+│   ├── utils/            # 工具函数
+│   └── web/              # Web 控制台
+├── prompts/              # Prompt 模板
+├── scripts/              # 启动/调度/登录脚本
+├── templates/web/        # HTML 模板
+├── static/               # CSS/图标
+├── branding/             # 品牌与对标配置
+├── config/               # 运行时配置
+├── main.py               # CLI 入口
+├── webapp.py             # Web 入口
+└── config.yaml           # 应用配置
 ```
 
-Register the separate WeChat-only task at `07:00`:
+---
+
+## 🔧 技术栈
+
+| 层级 | 技术 |
+|------|------|
+| AI 引擎 | OpenAI-compatible API (DeepSeek / GPT / Qwen) |
+| Web 框架 | FastAPI + Uvicorn |
+| 浏览器自动化 | Playwright (Edge) |
+| 图像生成 | OpenAI Image API / Pillow / Matplotlib |
+| 模板引擎 | Jinja2 |
+| 任务调度 | Windows Task Scheduler + APScheduler |
+| 数据格式 | YAML / JSON / Markdown |
+
+---
+
+## 🛡️ 安全与合规
+
+- `.env` 和 API Key 永远不会被提交到 Git
+- 浏览器 Profile 目录独立隔离，账号互不干扰
+- AIGC 声明自动添加，符合平台反自动化创作规范
+- 内容安全守卫（Content Guard）自动检测敏感词
+- AI 风险评分超过阈值自动拦截，不发布低质量内容
+- 默认"草稿 + 人工审核"模式，自动发布需手动开启
+
+---
+
+## 📊 增长运营
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\register_wechat_daily_task.ps1 -AccountKey default -EnableAutoPublish
+# 生成对标账号分析报告
+python .\main.py --build-benchmark-report
+
+# 记录文章表现数据
+python .\main.py --record-performance --run-dir "..." --impression-count 10000 --read-count 860
+
+# 生成表现分析报告
+python .\main.py --build-performance-report
 ```
 
-Unregister tasks manually in Windows Task Scheduler, or extend this repo with your own cleanup script.
+系统会从对标账号和自有爆款中持续学习，让选题和写作策略越来越精准。
 
-## Multi-Account Rules
+---
 
-The project already uses one shared workflow for the default account and all sub-accounts. There is no separate publish implementation per account.
+## 🌐 多平台发布
 
-- `default` uses root runtime directories such as `input/`, `output/`, `logs/`, `cache/`, and `.runtime/toutiao_profile/`
-- sub-accounts use isolated directories under `input/accounts/<slug>/`, `output/accounts/<slug>/`, `logs/accounts/<slug>/`, `cache/accounts/<slug>/`, and `.runtime/accounts/<account_key>/toutiao_profile/`
-- the same `main.py`, review flow, scheduler scripts, and Playwright publish service are reused for every account
-- each account must still complete its own Toutiao login initialization once, because browser sessions are isolated per account profile
-- WeChat also uses an isolated browser profile per account; run `python .\main.py --account <key> --init-wechat-login` once before browser submission
+| 平台 | 状态 | 方式 |
+|------|------|------|
+| 今日头条 | ✅ 完整支持 | Playwright 浏览器自动化 |
+| 微信公众号 | ✅ 完整支持 | 官方 API + 浏览器提交 |
+| 抖音 | 🧪 实验性 | 浏览器自动化（需校准选择器） |
 
-Currently configured first-wave accounts:
+---
 
-- `default` -> `??????`
-- `robot_notes` -> `???????`
-- `energy_notes` -> `??????`
+## 🤝 贡献
 
-Initialize login for each account:
+欢迎提交 Issue 和 Pull Request！
+
+1. Fork 本仓库
+2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -m 'Add amazing feature'`)
+4. 推送分支 (`git push origin feature/amazing-feature`)
+5. 提交 Pull Request
+
+---
+
+## 📄 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。
+
+---
+
+<a id="english"></a>
+
+## ✨ What is this?
+
+**AI Content Factory** is a fully automated content production pipeline for Chinese tech media. From trending topic discovery, data analysis, article writing, title optimization, compliance review to multi-platform publishing — all handled by collaborative AI Agents with zero human intervention.
+
+> 🎯 **TL;DR**: Give it an API Key, get a 24/7 self-updating media matrix.
+
+### Key Features
+
+- **Full Pipeline Automation** — Trending → Topic → Writing → Review → Publish
+- **Multi-Platform** — Toutiao, WeChat Official Account, Douyin
+- **Multi-Account Matrix** — Isolated profiles, histories, and directories
+- **Compliance First** — AIGC declarations, AI risk scoring, content guard
+- **Smart Topic Selection** — Benchmark analysis + self-learning from top performers
+- **Scheduled Runs** — 4 daily time slots via Windows Task Scheduler
+- **Web Dashboard** — FastAPI-powered local console for real-time monitoring
+- **OpenAI Compatible** — Works with DeepSeek, Qwen, or any OpenAI-compatible API
+
+### Quick Start
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\init_publish_login.ps1 -AccountKey default
-powershell -ExecutionPolicy Bypass -File .\scripts\init_publish_login.ps1 -AccountKey robot_notes
-powershell -ExecutionPolicy Bypass -File .\scripts\init_publish_login.ps1 -AccountKey energy_notes
+git clone https://github.com/Lishoulan/Automated-workflow.git
+cd Automated-workflow
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
+# Edit .env with your API key, then:
+python .\main.py --daily-run --refresh-cache
 ```
 
-## Migration Notes
+### Tech Stack
 
-To move this project to another computer, copy only:
+Python · FastAPI · Playwright · OpenAI API · Pillow · Jinja2 · APScheduler
 
-- source files in this repository
-- your `.env`
+---
 
-Do not copy these blindly unless you explicitly want the old machine state:
+<div align="center">
 
-- `.venv/`
-- `output/`
-- `logs/`
-- `cache/`
+**如果这个项目对你有帮助，请给个 ⭐ Star！**
 
-You may copy this if you want to preserve Toutiao login state exactly:
-
-- `.runtime/toutiao_profile/`
-
-But the safer option is to re-run login initialization on the new machine.
-
-## Publishing Notes
-
-Current publish flow supports:
-
-- title + article body
-- first inline image as the lead cover image
-- second inline article image inserted later between paragraphs
-- first-release declaration
-- work declaration adjustments
-
-Shared publish strategy for all accounts:
-
-- `cover.png` is inserted at the beginning of the article body and is used by Toutiao as the lead cover image
-- `infographic_1.png` is inserted later at a paragraph boundary, not in the middle of a sentence
-- the publish flow does not depend on the unstable dedicated cover upload panel unless it must fall back
-- duplicate inline image assets are deduplicated before upload
-- title length is clipped before publish to fit Toutiao limits
-
-This means the default account and every configured sub-account now share the same stable image publishing path.
-
-Because Toutiao publish is implemented through browser automation rather than an official publish API, selector changes on Toutiao may require maintenance.
-
-WeChat publishing uses the same approved run package and converts it into公众号草稿/发布 payloads.
-
-## Security
-
-Do not commit:
-
-- `.env`
-- API keys
-- browser profile directories
-- publish debug outputs
-
-## Upload To GitHub
-
-If your current machine has `git` installed:
-
-```powershell
-git init
-git add .
-git commit -m "Initial commit"
-git remote add origin <your-github-repo-url>
-git branch -M main
-git push -u origin main
-```
-
-If this machine does not have `git`, install Git for Windows first, then run the commands above.
-
-
-## Douyin First Version
-
-A first Douyin workflow is now wired into the project for `??` positioning with browser-session based publishing prep.
-
-Current commands:
-
-```powershell
-python .\main.py --prepare-douyin-run --run-dir "D:\path	o\output
-uns\your_run_dir"
-python .\main.py --init-douyin-login
-```
-
-What it does today:
-
-- builds a Douyin-ready package from an approved run under `publish/douyin/`
-- exports `douyin_payload.json`, clipped title, caption, hashtags, and publish notes
-- reuses generated images so the same visual assets can feed Douyin??
-- stores a separate persistent browser profile for each account
-
-Current limitation:
-
-- the browser publish flow is now wired, but live creator selectors may still need one calibration pass against your own account session
-- `DOUYIN_DAILY_POST_TARGET=10` is supported as a planning target, but for new accounts a lower real publish frequency is still safer for distribution and risk control
-
-Recommended config baseline:
-
-- `DOUYIN_NICHE=??`
-- `DOUYIN_PUBLISH_MODE=browser`
-- `DOUYIN_DAILY_POST_TARGET=10`
-
-After you log in once with `--init-douyin-login`, we can do the next step: lock selectors from your actual creator page and finish the auto-publish loop.
-
+</div>

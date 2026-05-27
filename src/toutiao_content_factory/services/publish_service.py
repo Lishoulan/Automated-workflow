@@ -188,12 +188,20 @@ class PublishService:
                 return
 
             self.logger.info("Waiting for publish session lock (%s)...", purpose)
+            deadline = time.monotonic() + 60
             while True:
                 try:
                     handle.seek(0)
                     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
                     break
                 except OSError:
+                    if time.monotonic() >= deadline:
+                        self.logger.warning("Publish session lock timed out after 60s for %s, forcing release.", purpose)
+                        try:
+                            lock_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        break
                     time.sleep(1)
 
             try:

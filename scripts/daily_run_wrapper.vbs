@@ -5,7 +5,7 @@ Dim arg
 Dim exitCode
 
 Set shell = CreateObject("WScript.Shell")
-command = "powershell.exe"
+command = "powershell.exe -NoProfile -ExecutionPolicy Bypass"
 
 For i = 0 To WScript.Arguments.Count - 1
     arg = WScript.Arguments(i)

@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-chcp 65001 > $null
+try { chcp 65001 > $null } catch {}
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
@@ -29,6 +29,12 @@ try {
     & $VenvPython -m pip install -r requirements.txt
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to install requirements."
+    }
+
+    Write-Host "Installing toutiao_content_factory package (editable mode)..."
+    & $VenvPython -m pip install -e .
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install toutiao_content_factory package."
     }
 
     Write-Host "Installing Playwright browser..."

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.utils.runtime_status import recover_stale_running_status
 
 
 @dataclass
@@ -26,6 +27,9 @@ class RunSummary:
     publish_readiness_score: int
     has_publish: bool
     publish_title: str
+    can_retry: bool
+    retry_platforms: list[dict[str, str]]
+    latest_platform_status: dict[str, dict[str, str]]
     path: Path
 
 
@@ -59,6 +63,9 @@ class PublishStatusSummary:
     pgc_id: str
     message: str
     external_url: str
+    screenshot_url: str
+    dom_url: str
+    debug_dir: str
     has_result: bool
 
 
@@ -134,26 +141,402 @@ class WebViewService:
         latest_score = self._load_json(self.output_dir / "content_score.json") or {}
         latest_selected_topic = (self._load_json(self.output_dir / "selected_topic.json") or {}).get("selected_topic", {})
         latest_workflow = self._load_json(self.output_dir / "workflow_result.json") or {}
-        scheduled_status = self._normalize_dashboard_scheduled_status(
-            self._load_json(self.automation_dir / "scheduled_status.json") or {}
-        )
+        cost_summary = self._build_cost_summary()
+        latest_workflow_report = self.load_latest_workflow_report()
+        scheduled_status = self._normalize_dashboard_scheduled_status(self.load_scheduled_status() or {})
+        schedule_runtime = self._build_schedule_runtime_summary(scheduled_status)
         latest_publish = self.load_latest_publish_status()
+        latest_wechat = self.load_latest_wechat_status()
         publish_preflight = self.load_publish_preflight()
+        platform_health = self.load_platform_health()
+        topic_pool = self.load_topic_pool_summary()
+        content_guard = self.load_content_guard_summary()
+        performance_feedback = self.load_performance_feedback()
+        health_panel = self.build_health_panel(platform_health)
+        notifications = self.list_notifications(limit=8)
+        scheduled_logs = self.list_scheduled_logs(limit=6)
+        snapshot = self.build_account_snapshot()
+        pipeline_timeline = self._build_pipeline_timeline(
+            scheduled_status=scheduled_status,
+            workflow_report=latest_workflow_report,
+            notifications=notifications,
+            latest_publish=latest_publish,
+            latest_wechat=latest_wechat,
+        )
+        actionable_alerts = self._build_actionable_alerts(
+            platform_health=platform_health,
+            workflow_report=latest_workflow_report,
+            notifications=notifications,
+            scheduled_status=scheduled_status,
+        )
+        log_console = self._build_log_console_summary(scheduled_logs)
+        retry_runs = [run for run in runs if getattr(run, "can_retry", False)]
         return {
             "daily_topics": topics,
             "runs": runs,
+            "retry_runs": retry_runs,
             "latest_score": latest_score,
             "latest_selected_topic": latest_selected_topic,
             "latest_workflow": latest_workflow,
+            "cost_summary": cost_summary,
+            "latest_workflow_report": latest_workflow_report,
             "latest_publish": latest_publish,
+            "latest_wechat": latest_wechat,
             "publish_preflight": publish_preflight,
             "scheduled_tasks": self.list_scheduled_tasks(),
-            "scheduled_logs": self.list_scheduled_logs(limit=6),
+            "scheduled_logs": scheduled_logs,
             "scheduled_status": scheduled_status,
+            "schedule_runtime": schedule_runtime,
             "scheduled_windows": self.list_scheduled_windows(),
-            "notifications": self.list_notifications(limit=8),
+            "notifications": notifications,
             "publish_history": self.list_publish_history(limit=8),
+            "platform_health": platform_health,
+            "topic_pool": topic_pool,
+            "content_guard": content_guard,
+            "performance_feedback": performance_feedback,
+            "health_panel": health_panel,
+            "account_snapshot": snapshot,
+            "account_overviews": [],
+            "pipeline_timeline": pipeline_timeline,
+            "actionable_alerts": actionable_alerts,
+            "log_console": log_console,
         }
+
+    def _build_cost_summary(self) -> dict[str, Any]:
+        today_prefix = datetime.now().strftime("%Y%m%d")
+        total_cost = 0.0
+        run_count = 0
+
+        if self.runs_dir.exists():
+            for run_dir in self.runs_dir.iterdir():
+                if not run_dir.is_dir() or not run_dir.name.startswith(today_prefix):
+                    continue
+                workflow_payload = self._load_json(run_dir / "workflow_result.json")
+                if not isinstance(workflow_payload, dict):
+                    continue
+                total_cost += float(workflow_payload.get("estimated_cost", 0.0) or 0.0)
+                run_count += 1
+
+        average_cost = total_cost / run_count if run_count else 0.0
+        return {
+            "today_total_cost": round(total_cost, 4),
+            "average_cost_per_article": round(average_cost, 4),
+            "run_count": run_count,
+        }
+
+    def _build_pipeline_timeline(
+        self,
+        *,
+        scheduled_status: dict[str, Any],
+        workflow_report: dict[str, Any],
+        notifications: list[dict[str, Any]],
+        latest_publish: PublishStatusSummary,
+        latest_wechat: WechatPublishStatusSummary,
+    ) -> list[dict[str, str]]:
+        stages: list[dict[str, str]] = []
+        final_attempt = workflow_report.get("final_attempt", {}) if isinstance(workflow_report, dict) else {}
+        workflow_status = str((workflow_report or {}).get("status", "")).strip().lower()
+        platform_results = final_attempt.get("platform_results", {}) if isinstance(final_attempt, dict) else {}
+        topic_title = str(final_attempt.get("topic_title", "")).strip()
+        run_dir = str(final_attempt.get("run_dir", "")).strip()
+
+        image_fallback = any(
+            str(item.get("type", "")).strip().lower() == "image_generation_fallback"
+            or str(item.get("title", "")).strip().lower() == "image2 fallback triggered"
+            for item in notifications
+            if isinstance(item, dict)
+        )
+        schedule_message = str(
+            scheduled_status.get("overall_message") or scheduled_status.get("message") or ""
+        ).strip()
+        platform_errors = self._collect_workflow_error_text(workflow_report)
+        publish_states = [
+            str(item.get("status", "")).strip().lower()
+            for item in platform_results.values()
+            if isinstance(item, dict) and str(item.get("status", "")).strip()
+        ]
+
+        precheck_tone = "success"
+        precheck_status = "success"
+        precheck_message = "??????????????"
+        if "blocked" in str(scheduled_status.get("overall_status", "")).lower() or "preflight" in schedule_message.lower():
+            precheck_tone = "error"
+            precheck_status = "blocked"
+            precheck_message = schedule_message or "????????"
+        elif str(scheduled_status.get("overall_status", "")).lower() == "aborted":
+            precheck_tone = "warn"
+            precheck_status = "aborted"
+            precheck_message = schedule_message or "???????????????????"
+        stages.append(self._timeline_node("preflight", "????", precheck_status, precheck_tone, precheck_message))
+
+        if topic_title:
+            topic_message = f"??????{topic_title}"
+            topic_tone = "success"
+            topic_status = "success"
+        elif workflow_status == "no_topics":
+            topic_message = "???????????????"
+            topic_tone = "warn"
+            topic_status = "no_topics"
+        else:
+            topic_message = "????????????"
+            topic_tone = "neutral"
+            topic_status = "idle"
+        stages.append(self._timeline_node("topics", "????", topic_status, topic_tone, topic_message))
+
+        if run_dir:
+            generation_message = f"????????????{Path(run_dir).name}"
+            generation_tone = "success"
+            generation_status = "success"
+        elif workflow_status in {"failed", "generation_failed"}:
+            generation_message = "?????????"
+            generation_tone = "error"
+            generation_status = "failed"
+        else:
+            generation_message = "?????????"
+            generation_tone = "neutral"
+            generation_status = "idle"
+        stages.append(self._timeline_node("generation", "????", generation_status, generation_tone, generation_message))
+
+        image_message = "????????"
+        image_tone = "success"
+        image_status = "success"
+        if image_fallback:
+            image_message = "???????????????????/???"
+            image_tone = "warn"
+            image_status = "fallback"
+        elif not run_dir:
+            image_message = "??????????"
+            image_tone = "neutral"
+            image_status = "idle"
+        stages.append(self._timeline_node("images", "????", image_status, image_tone, image_message))
+
+        publish_tone = "neutral"
+        publish_status = "idle"
+        publish_message = "????????"
+        if publish_states:
+            if any(state in {"failed", "error", "blocked"} for state in publish_states) and any(
+                state in {"submitted", "submitted_for_review", "published", "success", "draft_created"}
+                for state in publish_states
+            ):
+                publish_tone = "warn"
+                publish_status = "partial_success"
+                publish_message = "?????????????????????"
+            elif any(state in {"failed", "error", "blocked"} for state in publish_states):
+                publish_tone = "error"
+                publish_status = "failed"
+                publish_message = platform_errors[0] if platform_errors else "???????"
+            else:
+                publish_tone = "success"
+                publish_status = "success"
+                publish_message = "?????????????"
+        stages.append(self._timeline_node("publish", "??/????", publish_status, publish_tone, publish_message))
+
+        archive_tone = "neutral"
+        archive_status = "idle"
+        archive_message = "???????"
+        overall_status = str(scheduled_status.get("overall_status") or scheduled_status.get("status") or "").strip().lower()
+        if overall_status in {"success", "completed"}:
+            archive_tone = "success"
+            archive_status = overall_status
+            archive_message = "??????????"
+        elif overall_status in {"partial_success", "review_required"}:
+            archive_tone = "warn"
+            archive_status = overall_status
+            archive_message = schedule_message or "?????????????????"
+        elif overall_status in {"failed", "blocked", "aborted"}:
+            archive_tone = "error" if overall_status != "aborted" else "warn"
+            archive_status = overall_status
+            archive_message = schedule_message or "????????????????"
+        elif latest_publish.has_result or latest_wechat.has_result:
+            archive_tone = "success"
+            archive_status = "success"
+            archive_message = "????????????"
+        stages.append(self._timeline_node("archive", "????", archive_status, archive_tone, archive_message))
+        return stages
+
+    def _timeline_node(self, key: str, label: str, status: str, tone: str, message: str) -> dict[str, str]:
+        return {
+            "key": key,
+            "label": label,
+            "status": status,
+            "tone": tone,
+            "message": message,
+        }
+
+    def _build_actionable_alerts(
+        self,
+        *,
+        platform_health: dict[str, Any],
+        workflow_report: dict[str, Any],
+        notifications: list[dict[str, Any]],
+        scheduled_status: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        alerts: list[dict[str, str]] = []
+        platforms = platform_health.get("platforms", {}) if isinstance(platform_health, dict) else {}
+        all_messages: list[str] = []
+        for item in notifications:
+            if isinstance(item, dict):
+                all_messages.append(str(item.get("message", "")))
+                data = item.get("data", {}) if isinstance(item.get("data"), dict) else {}
+                error = str(data.get("error", "")).strip()
+                if error:
+                    all_messages.append(error)
+                workflow_errors = data.get("workflow_errors", []) if isinstance(data.get("workflow_errors"), list) else []
+                all_messages.extend(str(error_text) for error_text in workflow_errors)
+        all_messages.extend(self._collect_workflow_error_text(workflow_report))
+        for platform_name in ("toutiao", "wechat", "douyin"):
+            payload = platforms.get(platform_name, {}) if isinstance(platforms, dict) else {}
+            if isinstance(payload, dict):
+                all_messages.extend(str(item) for item in payload.get("blocking_flags", []) if str(item).strip())
+                all_messages.extend(str(item) for item in payload.get("warnings", []) if str(item).strip())
+
+        invalid_ip = self._extract_invalid_ip("\n".join(all_messages))
+        if invalid_ip:
+            alerts.append(
+                {
+                    "tone": "error",
+                    "title": "??????? API ??????? IP",
+                    "message": f"?????? IP ? {invalid_ip}??????????????????????????????",
+                    "action_kind": "copy_ip",
+                    "action_label": "???? IP",
+                    "action_value": invalid_ip,
+                    "secondary_label": "??????",
+                    "secondary_value": "https://mp.weixin.qq.com/",
+                }
+            )
+
+        login_message = self._detect_login_issue(platforms, workflow_report)
+        if login_message:
+            alerts.append(
+                {
+                    "tone": "warn",
+                    "title": f"?{login_message['label']}????????????",
+                    "message": login_message["message"],
+                    "action_kind": "init_login",
+                    "action_label": "??????",
+                    "action_value": self.account_key,
+                    "secondary_label": "?????",
+                    "secondary_value": self.account_key,
+                }
+            )
+
+        fallback_item = next(
+            (
+                item
+                for item in notifications
+                if isinstance(item, dict) and str(item.get("type", "")).strip().lower() == "image_generation_fallback"
+            ),
+            None,
+        )
+        if isinstance(fallback_item, dict):
+            normalized = self._normalize_notification_message(fallback_item)
+            alerts.append(
+                {
+                    "tone": "info",
+                    "title": "???????????????",
+                    "message": normalized,
+                    "action_kind": "none",
+                    "action_label": "",
+                    "action_value": "",
+                    "secondary_label": "",
+                    "secondary_value": "",
+                }
+            )
+
+        scheduled_overall = str(scheduled_status.get("overall_status") or scheduled_status.get("status") or "").strip().lower()
+        scheduled_message = str(scheduled_status.get("overall_message") or scheduled_status.get("message") or "").strip()
+        if scheduled_overall in {"aborted", "failed", "blocked"} and scheduled_message:
+            alerts.append(
+                {
+                    "tone": "warn" if scheduled_overall == "aborted" else "error",
+                    "title": "?????????????????",
+                    "message": scheduled_message,
+                    "action_kind": "refresh_health",
+                    "action_label": "??????",
+                    "action_value": self.account_key,
+                    "secondary_label": "????",
+                    "secondary_value": "open_log_modal",
+                }
+            )
+
+        if not alerts:
+            alerts.append(
+                {
+                    "tone": "success",
+                    "title": "????????????????",
+                    "message": "?????????????????????????",
+                    "action_kind": "none",
+                    "action_label": "",
+                    "action_value": "",
+                    "secondary_label": "",
+                    "secondary_value": "",
+                }
+            )
+        return alerts
+
+    def _build_log_console_summary(self, scheduled_logs: list[LogSummary]) -> dict[str, Any]:
+        latest = scheduled_logs[0] if scheduled_logs else None
+        return {
+            "has_logs": bool(scheduled_logs),
+            "latest_name": latest.name if latest else "",
+            "latest_modified_at": latest.modified_at if latest else "",
+            "recent_count": len(scheduled_logs),
+            "entries": [
+                {
+                    "name": item.name,
+                    "modified_at": item.modified_at,
+                    "size_kb": item.size_kb,
+                    "url": item.url,
+                }
+                for item in scheduled_logs
+            ],
+        }
+
+    def _collect_workflow_error_text(self, workflow_report: dict[str, Any]) -> list[str]:
+        if not isinstance(workflow_report, dict):
+            return []
+        final_attempt = workflow_report.get("final_attempt", {}) if isinstance(workflow_report.get("final_attempt"), dict) else {}
+        platform_errors = final_attempt.get("platform_errors", []) if isinstance(final_attempt.get("platform_errors"), list) else []
+        return [str(item).strip() for item in platform_errors if str(item).strip()]
+
+    def _extract_invalid_ip(self, raw_text: str) -> str:
+        if not raw_text:
+            return ""
+        match = re.search(r"invalid ip\s+([0-9]{1,3}(?:\.[0-9]{1,3}){3})", raw_text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        match = re.search(r"??\s*IP[^0-9]*([0-9]{1,3}(?:\.[0-9]{1,3}){3})", raw_text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return ""
+
+    def _detect_login_issue(self, platforms: dict[str, Any], workflow_report: dict[str, Any]) -> dict[str, str] | None:
+        checks = [
+            ("toutiao", "????"),
+            ("wechat", "???"),
+            ("douyin", "??"),
+        ]
+        workflow_errors = "\n".join(self._collect_workflow_error_text(workflow_report)).lower()
+        for key, label in checks:
+            payload = platforms.get(key, {}) if isinstance(platforms, dict) else {}
+            if not isinstance(payload, dict):
+                continue
+            messages: list[str] = []
+            messages.extend(str(item) for item in payload.get("blocking_flags", []) if str(item).strip())
+            messages.extend(str(item) for item in payload.get("warnings", []) if str(item).strip())
+            diagnostics = payload.get("diagnostics", {}) if isinstance(payload.get("diagnostics"), dict) else {}
+            blocked_reason = str(diagnostics.get("blocked_reason", "")).strip().upper()
+            combined = "\n".join(messages).lower()
+            if blocked_reason == "BLOCKED_BY_IP":
+                continue
+            workflow_platform_hit = key in workflow_errors or label.lower() in workflow_errors
+            if any(token in combined for token in ["login", "session", "??", "expired", "draft box"]) or (
+                workflow_platform_hit
+                and any(token in workflow_errors for token in ["login", "session", "draft box", "creator login is required"])
+            ):
+                detail = messages[0] if messages else "????????????????????????????????"
+                return {"platform": key, "label": label, "message": detail}
+        return None
 
     def _normalize_dashboard_scheduled_status(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict) or not payload:
@@ -177,6 +560,93 @@ class WebViewService:
             else:
                 normalized["message"] = "头条已正常提交，但至少有一个其他平台发布失败。"
         return normalized
+
+    def _build_schedule_runtime_summary(self, scheduled_status: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(scheduled_status, dict) or not scheduled_status:
+            return {
+                "state": "unknown",
+                "label": "暂无记录",
+                "tone": "neutral",
+                "is_running": False,
+                "updated_at": "",
+                "message": "还没有检测到定时执行记录。",
+                "log_file": "",
+                "log_name": "",
+                "log_url": "",
+                "attempt_label": "",
+                "platform_cards": [],
+            }
+
+        status_value = str(scheduled_status.get("overall_status") or scheduled_status.get("status") or "").strip().lower()
+        updated_at = str(scheduled_status.get("updated_at") or scheduled_status.get("last_run_time") or "").strip()
+        message = str(scheduled_status.get("overall_message") or scheduled_status.get("message") or "").strip()
+        log_file = str(scheduled_status.get("log_file", "")).strip()
+        log_url = self.resolve_log_url(log_file) if log_file else ""
+        attempt = int(scheduled_status.get("attempt", 0) or 0)
+        max_attempts = int(scheduled_status.get("max_attempts", 0) or 0)
+        attempt_label = f"第 {attempt}/{max_attempts} 次尝试" if attempt > 0 and max_attempts > 0 else ""
+
+        mapping = {
+            "running": ("执行中", "pending"),
+            "blocked": ("已阻塞", "error"),
+            "failed": ("执行失败", "error"),
+            "partial_success": ("部分成功", "pending"),
+            "success": ("执行成功", "approved"),
+            "completed": ("执行完成", "approved"),
+            "review_required": ("待人工审核", "pending"),
+            "idle": ("空闲", "neutral"),
+            "aborted": ("异常中止", "error"),
+        }
+        label, tone = mapping.get(status_value, ("未知", "neutral"))
+        if not message:
+            if status_value == "running":
+                message = "定时流程仍在运行中。"
+            elif status_value == "blocked":
+                message = "定时流程被预检或登录态问题阻塞。"
+            elif status_value in {"success", "completed"}:
+                message = "最近一次定时流程已完成。"
+            elif status_value == "partial_success":
+                message = "最近一次定时流程部分成功，至少有一个平台失败。"
+            elif status_value == "failed":
+                message = "最近一次定时流程失败，请查看日志。"
+            elif status_value == "aborted":
+                message = "上一次定时流程异常中止，系统已自动回收运行状态。"
+            else:
+                message = "暂时没有可用的运行状态。"
+
+        platform_cards: list[dict[str, str]] = []
+        platforms = scheduled_status.get("platforms", {}) if isinstance(scheduled_status.get("platforms"), dict) else {}
+        for key, title in (("toutiao", "今日头条"), ("wechat", "公众号"), ("douyin", "抖音")):
+            item = platforms.get(key)
+            if not isinstance(item, dict):
+                continue
+            item_status = str(item.get("status", "idle")).strip().lower() or "idle"
+            item_meta = self._describe_status(item_status)
+            platform_cards.append(
+                {
+                    "key": key,
+                    "label": title,
+                    "status": item_status,
+                    "status_label": item_meta["label"],
+                    "tone": item_meta["tone"],
+                    "message": str(item.get("message", "")).strip() or "暂无平台执行说明。",
+                    "updated_at": str(item.get("last_run", "")).strip(),
+                }
+            )
+
+        return {
+            "state": status_value or "unknown",
+            "label": label,
+            "tone": tone,
+            "is_running": status_value == "running",
+            "updated_at": updated_at,
+            "message": message,
+            "log_file": log_file,
+            "log_name": Path(log_file).name if log_file else "",
+            "log_url": log_url,
+            "attempt_label": attempt_label,
+            "platform_cards": platform_cards,
+        }
 
     def build_account_snapshot(
         self,
@@ -272,6 +742,10 @@ class WebViewService:
             },
             "toutiao": toutiao_platform,
             "wechat": wechat_platform,
+            "platform_health": self.load_platform_health(),
+            "health_panel": self.build_health_panel(self.load_platform_health()),
+            "topic_pool": self.load_topic_pool_summary(),
+            "content_guard": self.load_content_guard_summary(),
         }
 
     def load_run_detail(self, run_name: str) -> dict[str, Any]:
@@ -307,10 +781,15 @@ class WebViewService:
             artifacts["publish_package"] = self._artifact_url(
                 run_name, f"{self.settings.review.publish_dirname}/toutiao_publish_package.md"
             )
+        debug_bundle = self._build_debug_bundle_view(publish_result, run_name)
         if publish_result:
             artifacts["publish_result"] = self._artifact_url(
                 run_name, f"{self.settings.review.publish_dirname}/publish_result.json"
             )
+        if debug_bundle.get("screenshot_url"):
+            artifacts["debug_screenshot"] = str(debug_bundle["screenshot_url"])
+        if debug_bundle.get("dom_url"):
+            artifacts["debug_dom"] = str(debug_bundle["dom_url"])
 
         return {
             "run": self._build_run_summary(run_dir),
@@ -319,6 +798,7 @@ class WebViewService:
             "publish_meta": publish_meta,
             "publish_result": publish_result,
             "publish_status": publish_status,
+            "debug_bundle": debug_bundle,
             "content_score": content_score,
             "workflow_result": workflow_result,
             "preflight_summary": preflight_summary,
@@ -494,7 +974,8 @@ class WebViewService:
         return self._build_wechat_status_summary(publish_result, latest)
 
     def load_scheduled_status(self) -> dict[str, Any]:
-        payload = self._load_json(self.automation_dir / "scheduled_status.json")
+        path = self.automation_dir / "scheduled_status.json"
+        payload = recover_stale_running_status(path)
         return payload if isinstance(payload, dict) else {}
 
     def load_latest_workflow_report(self) -> dict[str, Any]:
@@ -527,6 +1008,357 @@ class WebViewService:
             "benchmark_accounts": [item for item in benchmark_accounts if isinstance(item, dict)],
             "top_titles": [item for item in top_titles if isinstance(item, dict)],
             "artifact_url": self._account_output_artifact_url("automation/benchmark_topic_merge.json"),
+        }
+
+    def load_platform_health(self) -> dict[str, Any]:
+        path = self.automation_dir / "platform_health.json"
+        payload = self._load_json(path)
+        if not isinstance(payload, dict):
+            return {
+                "generated_at": "",
+                "status": "unknown",
+                "status_label": "未知",
+                "status_tone": "neutral",
+                "blocking_count": 0,
+                "platforms": {},
+            }
+
+        platforms = payload.get("platforms", {}) if isinstance(payload.get("platforms"), dict) else {}
+        normalized_platforms: dict[str, Any] = {}
+        blocking_count = 0
+        worst_tone = "success"
+        for name, item in platforms.items():
+            if not isinstance(item, dict):
+                continue
+            status_value = str(item.get("status", "unknown")).strip().lower() or "unknown"
+            meta = self._describe_status(status_value)
+            blocking_flags = item.get("blocking_flags", []) if isinstance(item.get("blocking_flags"), list) else []
+            warnings = item.get("warnings", []) if isinstance(item.get("warnings"), list) else []
+            blocking_count += len(blocking_flags)
+            if meta["tone"] == "error":
+                worst_tone = "error"
+            elif meta["tone"] == "warn" and worst_tone != "error":
+                worst_tone = "warn"
+            normalized_platforms[str(name)] = {
+                **item,
+                "status_label": meta["label"],
+                "status_tone": meta["tone"],
+                "blocking_flags": blocking_flags,
+                "warnings": warnings,
+            }
+
+        if worst_tone == "error":
+            status_value = "blocked"
+        elif worst_tone == "warn":
+            status_value = "pending"
+        elif normalized_platforms:
+            status_value = "ready"
+        else:
+            status_value = "unknown"
+        status_meta = self._describe_status(status_value)
+        return {
+            "generated_at": str(payload.get("generated_at", "")).strip(),
+            "status": status_value,
+            "status_label": status_meta["label"],
+            "status_tone": status_meta["tone"],
+            "blocking_count": blocking_count,
+            "platforms": normalized_platforms,
+        }
+
+    def load_topic_pool_summary(self) -> dict[str, Any]:
+        path = self.automation_dir / "topic_pool" / "topic_pool_summary.json"
+        payload = self._load_json(path)
+        if not isinstance(payload, dict):
+            return {
+                "status": "unknown",
+                "status_label": "未知",
+                "status_tone": "neutral",
+                "total_rows": 0,
+                "pending_count": 0,
+                "selected_count": 0,
+                "discarded_count": 0,
+            }
+
+        pending_count = int(payload.get("pending_count", 0) or 0)
+        total_rows = int(payload.get("total_rows", 0) or 0)
+        selected_count = int(payload.get("selected_count", 0) or 0)
+        discarded_count = int(payload.get("discarded_count", 0) or 0)
+        if pending_count > 0:
+            status_value = "ready"
+        elif total_rows > 0:
+            status_value = "no_topics"
+        else:
+            status_value = "unknown"
+        status_meta = self._describe_status(status_value)
+        return {
+            "status": status_value,
+            "status_label": status_meta["label"],
+            "status_tone": status_meta["tone"],
+            "total_rows": total_rows,
+            "pending_count": pending_count,
+            "selected_count": selected_count,
+            "discarded_count": discarded_count,
+        }
+
+    def load_content_guard_summary(self) -> dict[str, Any]:
+        path = self.automation_dir / "content_guard_report.json"
+        payload = self._load_json(path)
+        if not isinstance(payload, dict):
+            return {
+                "status": "unknown",
+                "status_label": "未知",
+                "status_tone": "neutral",
+                "similarity": 0.0,
+                "threshold": 0.0,
+                "matched_title": "",
+            }
+
+        blocked = bool(payload.get("blocked", False))
+        similarity = float(payload.get("max_similarity", 0.0) or 0.0)
+        threshold = float(payload.get("threshold", 0.0) or 0.0)
+        if blocked:
+            status_value = "blocked"
+        elif similarity > 0:
+            status_value = "pending"
+        else:
+            status_value = "ready"
+        status_meta = self._describe_status(status_value)
+        return {
+            "status": status_value,
+            "status_label": status_meta["label"],
+            "status_tone": status_meta["tone"],
+            "similarity": similarity,
+            "threshold": threshold,
+            "matched_title": str(payload.get("matched_title", "")).strip(),
+        }
+
+    def load_performance_feedback(self) -> dict[str, Any]:
+        performance_dir = self.output_dir / "growth_ops" / "performance"
+        report_path = performance_dir / "performance_report.json"
+        ledger_path = performance_dir / "performance_ledger.json"
+
+        report_payload = self._load_json(report_path)
+        ledger_payload = self._load_json(ledger_path)
+        report = report_payload if isinstance(report_payload, dict) else {}
+        summary = report.get("summary", {}) if isinstance(report.get("summary"), dict) else {}
+        ledger_rows = ledger_payload if isinstance(ledger_payload, list) else []
+        valid_rows = [item for item in ledger_rows if isinstance(item, dict)]
+        valid_rows.sort(
+            key=lambda item: str(item.get("published_at", "")).strip() or str(item.get("updated_at", "")).strip(),
+            reverse=True,
+        )
+
+        published_count = int(summary.get("published_count", 0) or 0)
+        if published_count <= 0:
+            published_count = len(valid_rows)
+
+        with_metrics_count = int(summary.get("with_metrics_count", 0) or 0)
+        if with_metrics_count <= 0:
+            with_metrics_count = sum(
+                1
+                for item in valid_rows
+                if isinstance(item.get("metrics_latest"), dict) and bool(item.get("metrics_latest"))
+            )
+
+        averages = summary.get("averages", {}) if isinstance(summary.get("averages"), dict) else {}
+        top_by_reads = summary.get("top_by_reads", []) if isinstance(summary.get("top_by_reads"), list) else []
+        top_articles = [item for item in top_by_reads if isinstance(item, dict)][:5]
+
+        latest_records: list[dict[str, Any]] = []
+        for item in valid_rows[:5]:
+            metrics = item.get("metrics_latest", {}) if isinstance(item.get("metrics_latest"), dict) else {}
+            tags = item.get("experiment_tags", {}) if isinstance(item.get("experiment_tags"), dict) else {}
+            publish_status = str(item.get("publish_status", "")).strip() or "unknown"
+            publish_meta = self._describe_status(publish_status)
+            run_name = Path(str(item.get("run_dir", "")).strip()).name
+            latest_records.append(
+                {
+                    "title": str(item.get("title", "")).strip(),
+                    "platform": str(item.get("platform", "")).strip() or "toutiao",
+                    "published_at": str(item.get("published_at", "")).strip(),
+                    "publish_status": publish_status,
+                    "publish_status_label": publish_meta["label"],
+                    "publish_status_tone": publish_meta["tone"],
+                    "run_name": run_name,
+                    "has_metrics": bool(metrics),
+                    "read_count": int(metrics.get("read_count", 0) or 0),
+                    "impression_count": int(metrics.get("impression_count", 0) or 0),
+                    "read_rate": float(metrics.get("read_rate", 0) or 0),
+                    "interaction_rate": float(metrics.get("interaction_rate", 0) or 0),
+                    "recommendation_ratio": float(metrics.get("recommendation_ratio", 0) or 0),
+                    "title_style": str(tags.get("title_style", "")).strip(),
+                    "content_angle": str(tags.get("content_angle", "")).strip(),
+                    "topic_bucket": str(tags.get("topic_bucket", "")).strip(),
+                    "test_focus": str(tags.get("test_focus", "")).strip(),
+                    "run_detail_url": f"/runs/{run_name}?account={self.account_key}" if run_name else "",
+                }
+            )
+
+        normalized_averages = {
+            "read_rate": float(averages.get("read_rate", 0) or 0),
+            "interaction_rate": float(averages.get("interaction_rate", 0) or 0),
+            "recommendation_ratio": float(averages.get("recommendation_ratio", 0) or 0),
+        }
+
+        generated_at = str(report.get("generated_at", "")).strip()
+        if not generated_at and valid_rows:
+            generated_at = str(valid_rows[0].get("updated_at", "")).strip()
+
+        if published_count <= 0:
+            status_value = "idle"
+            summary_message = "还没有沉淀到可分析的发布数据。"
+        elif with_metrics_count > 0:
+            status_value = "ready"
+            summary_message = f"已收集到 {with_metrics_count} 条带指标的样本，可以开始做标题和内容方向复盘。"
+        else:
+            status_value = "pending"
+            summary_message = "已经有发布记录，但平台侧指标还没有回流完成。"
+        status_meta = self._describe_status(status_value)
+
+        recommendations = self._build_performance_recommendations(
+            published_count=published_count,
+            with_metrics_count=with_metrics_count,
+            averages=normalized_averages,
+            latest_records=latest_records,
+            top_articles=top_articles,
+        )
+
+        return {
+            "available": bool(report or valid_rows),
+            "generated_at": generated_at,
+            "status": status_value,
+            "status_label": status_meta["label"],
+            "status_tone": status_meta["tone"],
+            "summary_message": summary_message,
+            "published_count": published_count,
+            "with_metrics_count": with_metrics_count,
+            "averages": normalized_averages,
+            "top_articles": top_articles,
+            "latest_records": latest_records,
+            "recommendations": recommendations,
+            "artifacts": {
+                "report_json": self._account_output_artifact_url("growth_ops/performance/performance_report.json")
+                if report_path.exists()
+                else "",
+                "ledger_json": self._account_output_artifact_url("growth_ops/performance/performance_ledger.json")
+                if ledger_path.exists()
+                else "",
+                "report_md": self._account_output_artifact_url("growth_ops/performance/performance_report.md")
+                if (performance_dir / "performance_report.md").exists()
+                else "",
+                "ledger_csv": self._account_output_artifact_url("growth_ops/performance/performance_ledger.csv")
+                if (performance_dir / "performance_ledger.csv").exists()
+                else "",
+            },
+        }
+
+    def _build_performance_recommendations(
+        self,
+        *,
+        published_count: int,
+        with_metrics_count: int,
+        averages: dict[str, float],
+        latest_records: list[dict[str, Any]],
+        top_articles: list[dict[str, Any]],
+    ) -> list[str]:
+        recommendations: list[str] = []
+        if published_count <= 0:
+            return ["先稳定发满 3 到 5 篇内容，再根据数据判断标题和选题方向。"]
+
+        if with_metrics_count <= 0:
+            recommendations.append("优先补齐曝光、阅读和互动数据，避免在没有反馈的情况下盲目调 prompt。")
+        else:
+            if averages.get("read_rate", 0.0) < 5.0:
+                recommendations.append("平均阅读率低于 5%，优先优化标题和封面承诺感。")
+            if averages.get("interaction_rate", 0.0) < 3.0:
+                recommendations.append("平均互动率低于 3%，需要增强正文观点密度和结尾互动设计。")
+            if averages.get("recommendation_ratio", 0.0) > 0:
+                recommendations.append(
+                    f"当前推荐流量占比约 {round(float(averages.get('recommendation_ratio', 0.0)), 2)}%，可以继续测试相近题材的标题打法。"
+                )
+
+        style_counts: dict[str, int] = {}
+        bucket_counts: dict[str, int] = {}
+        for item in latest_records:
+            style = str(item.get("title_style", "")).strip()
+            bucket = str(item.get("topic_bucket", "")).strip()
+            if style:
+                style_counts[style] = style_counts.get(style, 0) + 1
+            if bucket:
+                bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+            if str(item.get("publish_status", "")).strip() == "draft_saved":
+                recommendations.append("近期存在仅保存草稿的样本，复盘时要单独区分草稿测试和真实发布效果。")
+                break
+
+        if style_counts:
+            best_style = max(style_counts.items(), key=lambda pair: pair[1])[0]
+            recommendations.append(f"最近产出最多的标题风格是 {best_style}，建议继续做 A/B 测试而不是长期只用一种写法。")
+        if bucket_counts:
+            best_bucket = max(bucket_counts.items(), key=lambda pair: pair[1])[0]
+            recommendations.append(f"当前内容集中在 {best_bucket} 题材，后续可再补 3 到 5 篇相邻题材样本做对比。")
+
+        if top_articles:
+            top_item = top_articles[0]
+            top_style = str(top_item.get("title_style", "")).strip()
+            top_title = str(top_item.get("title", "")).strip()
+            if top_style:
+                recommendations.append(f"目前表现最好的标题风格是 {top_style}，可以拆解《{top_title}》的结构继续复用。")
+            elif top_title:
+                recommendations.append(f"优先复盘《{top_title}》为什么跑出来，再决定下一轮选题与标题策略。")
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in recommendations:
+            normalized = item.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return deduped[:5]
+
+    def build_health_panel(self, platform_health: dict[str, Any]) -> dict[str, Any]:
+        items: list[dict[str, Any]] = []
+        platforms = platform_health.get("platforms", {}) if isinstance(platform_health, dict) else {}
+        for key, label in (("toutiao", "今日头条"), ("wechat", "公众号"), ("douyin", "抖音")):
+            payload = platforms.get(key)
+            if not isinstance(payload, dict):
+                continue
+            blocking_flags = payload.get("blocking_flags", []) if isinstance(payload.get("blocking_flags"), list) else []
+            warnings = payload.get("warnings", []) if isinstance(payload.get("warnings"), list) else []
+            message = ""
+            if blocking_flags:
+                message = str(blocking_flags[0])
+            elif warnings:
+                message = str(warnings[0])
+            else:
+                message = "状态正常"
+            diagnostics = payload.get("diagnostics", {}) if isinstance(payload.get("diagnostics"), dict) else {}
+            blocked_reason = str(diagnostics.get("blocked_reason", "")).strip().upper()
+            needs_login = (
+                bool(payload.get("enabled"))
+                and str(payload.get("status_tone", "")) == "error"
+                and blocked_reason != "BLOCKED_BY_IP"
+            )
+            items.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "status_label": str(payload.get("status_label", "未知")),
+                    "status_tone": str(payload.get("status_tone", "neutral")),
+                    "needs_login": needs_login,
+                    "message": message,
+                    "blocked_reason": blocked_reason,
+                    "config_url": "https://mp.weixin.qq.com/",
+                    "login_command": (
+                        f"powershell -ExecutionPolicy Bypass -File .\\scripts\\init_publish_login.ps1 -Account {self.settings.account_key}"
+                        if needs_login and key in {"toutiao", "wechat"}
+                        else ""
+                    ),
+                }
+            )
+        return {
+            "updated_at": str(platform_health.get("generated_at", "")).strip() if isinstance(platform_health, dict) else "",
+            "items": items,
         }
 
     def load_wechat_publish_preflight(self) -> dict[str, Any]:
@@ -613,6 +1445,7 @@ class WebViewService:
         )
         selected_topic = selected_topic_payload.get("selected_topic", {})
         publish_title = str(publish_meta.get("selected_title", ""))
+        retry_platforms, latest_platform_status = self._collect_run_retry_state(path)
         return RunSummary(
             name=path.name,
             created_at=str(created_at),
@@ -629,8 +1462,55 @@ class WebViewService:
             publish_readiness_score=int(score_snapshot.get("publish_readiness_score", 0)),
             has_publish=(path / self.settings.review.publish_dirname).exists(),
             publish_title=publish_title,
+            can_retry=bool(retry_platforms),
+            retry_platforms=retry_platforms,
+            latest_platform_status=latest_platform_status,
             path=path,
         )
+
+    def _collect_run_retry_state(self, run_dir: Path) -> tuple[list[dict[str, str]], dict[str, dict[str, str]]]:
+        publish_root = run_dir / self.settings.review.publish_dirname
+        specs = [
+            ("toutiao", "????", publish_root / "publish_result.json", publish_root.exists()),
+            ("wechat", "???", publish_root / "wechat" / "wechat_publish_result.json", (publish_root / "wechat").exists()),
+            ("douyin", "??", publish_root / "douyin" / "douyin_publish_result.json", (publish_root / "douyin").exists()),
+        ]
+        retry_platforms: list[dict[str, str]] = []
+        latest_platform_status: dict[str, dict[str, str]] = {}
+        success_states = {"published", "submitted", "submitted_for_review", "success", "approved", "draft_created"}
+
+        for platform, label, result_path, has_assets in specs:
+            payload = self._load_json(result_path) if result_path.exists() else {}
+            payload = payload if isinstance(payload, dict) else {}
+            status = str(payload.get("status", "")).strip().lower()
+            message = str(payload.get("message") or payload.get("error") or payload.get("submit_status") or "").strip()
+            if not status and has_assets:
+                status = "pending"
+                message = "?????????????????"
+            elif not status:
+                status = "idle"
+                message = "??????????"
+            meta = self._describe_status(status)
+            latest_platform_status[platform] = {
+                "platform": platform,
+                "label": label,
+                "status": status,
+                "status_label": meta["label"],
+                "tone": meta["tone"],
+                "message": message or meta["label"],
+            }
+            if has_assets and status not in success_states:
+                retry_platforms.append(
+                    {
+                        "platform": platform,
+                        "label": label,
+                        "status": status,
+                        "status_label": meta["label"],
+                        "tone": meta["tone"],
+                        "message": message or meta["label"],
+                    }
+                )
+        return retry_platforms, latest_platform_status
 
     def _build_publish_status_summary(
         self,
@@ -641,6 +1521,7 @@ class WebViewService:
         backend = publish_result.get("backend_response_summary", {}) if isinstance(publish_result, dict) else {}
         record = publish_result.get("record", {}) if isinstance(publish_result, dict) else {}
         source = publish_result if isinstance(publish_result, dict) and publish_result else fallback_payload
+        debug_bundle = self._build_debug_bundle_view(publish_result if isinstance(publish_result, dict) else {}, run_name)
         return PublishStatusSummary(
             status=str(source.get("status", fallback_payload.get("status", "not_published"))),
             submitted_at=str(source.get("published_at", fallback_payload.get("published_at", ""))),
@@ -650,6 +1531,9 @@ class WebViewService:
             pgc_id=str(backend.get("pgc_id", "")),
             message=str(backend.get("message", publish_result.get("message", ""))),
             external_url=str(source.get("external_url", fallback_payload.get("external_url", ""))),
+            screenshot_url=str(debug_bundle.get("screenshot_url", "")),
+            dom_url=str(debug_bundle.get("dom_url", "")),
+            debug_dir=str(debug_bundle.get("debug_dir", "")),
             has_result=bool(publish_result or fallback_payload),
         )
 
@@ -714,7 +1598,7 @@ class WebViewService:
     def _read_text(self, path: Path) -> str:
         if not path.exists():
             return ""
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8", errors="replace")
 
     def _parse_titles_file(self, path: Path) -> dict[str, list[str]]:
         text = self._read_text(path)
@@ -744,6 +1628,41 @@ class WebViewService:
 
     def _artifact_url(self, run_name: str, relative_path: str) -> str:
         return f"/artifacts/{self.account_key}/runs/{run_name}/{relative_path}"
+
+    def _build_debug_bundle_view(self, publish_result: dict[str, Any], run_name: str) -> dict[str, str]:
+        if not isinstance(publish_result, dict) or not publish_result:
+            return {}
+
+        screenshot_path = str(publish_result.get("screenshot_path", "") or "").strip()
+        dom_path = str(publish_result.get("dom_path", "") or "").strip()
+        debug_dir = str(publish_result.get("debug_bundle_dir", "") or "").strip()
+        artifacts = publish_result.get("debug_artifacts", {}) if isinstance(publish_result.get("debug_artifacts"), dict) else {}
+
+        if not screenshot_path:
+            screenshot_path = str(artifacts.get("screenshot", "") or "").strip()
+        if not dom_path:
+            dom_path = str(artifacts.get("page_html", "") or "").strip()
+
+        return {
+            "debug_dir": debug_dir,
+            "screenshot_url": self._absolute_path_to_output_artifact_url(screenshot_path),
+            "dom_url": self._absolute_path_to_output_artifact_url(dom_path),
+        }
+
+    def _absolute_path_to_output_artifact_url(self, absolute_path: str) -> str:
+        raw = str(absolute_path or "").strip()
+        if not raw:
+            return ""
+        candidate = Path(raw)
+        try:
+            resolved = candidate.resolve(strict=False)
+            output_root = self.output_dir.resolve()
+        except Exception:
+            return ""
+        if resolved == output_root or output_root not in resolved.parents:
+            return ""
+        relative = resolved.relative_to(output_root).as_posix()
+        return self._account_output_artifact_url(relative)
 
     def _account_output_artifact_url(self, relative_path: str) -> str:
         return f"/artifacts/{self.account_key}/output/{relative_path}"
@@ -939,15 +1858,31 @@ class WebViewService:
         benchmark_merge: dict[str, Any],
     ) -> dict[str, Any]:
         schedule_meta = self._summarize_task_group(tasks)
-        scheduled_status_value = str(scheduled_status.get("status", "")).strip()
+        scheduled_status_value = str(scheduled_status.get("overall_status") or scheduled_status.get("status") or "").strip()
         scheduled_workflow_status = str(scheduled_status.get("workflow_status", "")).strip().lower()
         scheduled_publish_status = str(scheduled_status.get("publish_status", "")).strip()
+        blocking_flags = publish_preflight.get("blocking_flags", []) if isinstance(publish_preflight, dict) else []
+        warnings = publish_preflight.get("warnings", []) if isinstance(publish_preflight, dict) else []
+        scheduled_updated_at = str(scheduled_status.get("updated_at", "")).strip()
+        preflight_updated_at = str(self.load_platform_health().get("generated_at", "")).strip()
+        scheduled_status_is_stale = self._is_stale_blocked_status(
+            scheduled_status_value=scheduled_status_value,
+            scheduled_updated_at=scheduled_updated_at,
+            preflight_updated_at=preflight_updated_at,
+            has_preflight_blockers=bool(blocking_flags),
+        )
         if (
             scheduled_status_value.lower() == "failed"
             and scheduled_workflow_status in {"platform_publish_failed", "platform_partial_success"}
             and scheduled_publish_status
         ):
             status_value = scheduled_publish_status
+        elif scheduled_status_is_stale:
+            status_value = (
+                str(latest_publish.status).strip()
+                or (latest_run.review_status if latest_run is not None else "")
+                or "ready"
+            )
         else:
             status_value = (
                 scheduled_status_value
@@ -956,8 +1891,6 @@ class WebViewService:
                 or "idle"
             )
         status_meta = self._describe_status(status_value)
-        blocking_flags = publish_preflight.get("blocking_flags", []) if isinstance(publish_preflight, dict) else []
-        warnings = publish_preflight.get("warnings", []) if isinstance(publish_preflight, dict) else []
         creator_name = (
             ((publish_preflight.get("diagnostics", {}) or {}).get("summary", {}) or {}).get("creator_name", "")
             if isinstance(publish_preflight, dict)
@@ -989,7 +1922,7 @@ class WebViewService:
             "latest_status_tone": status_meta["tone"],
             "latest_title": latest_title,
             "latest_run_name": latest_run_name,
-            "latest_updated_at": str(scheduled_status.get("updated_at", "")).strip()
+            "latest_updated_at": scheduled_updated_at
             or latest_publish.submitted_at
             or (latest_run.created_at if latest_run is not None else ""),
             "review_status": str(scheduled_status.get("review_status", "")).strip()
@@ -1016,6 +1949,34 @@ class WebViewService:
             },
         }
 
+    def _is_stale_blocked_status(
+        self,
+        *,
+        scheduled_status_value: str,
+        scheduled_updated_at: str,
+        preflight_updated_at: str,
+        has_preflight_blockers: bool,
+    ) -> bool:
+        normalized = scheduled_status_value.strip().lower()
+        if normalized not in {"blocked", "failed"}:
+            return False
+        if has_preflight_blockers:
+            return False
+        scheduled_ts = self._safe_iso_timestamp(scheduled_updated_at)
+        preflight_ts = self._safe_iso_timestamp(preflight_updated_at)
+        if scheduled_ts <= 0 or preflight_ts <= 0:
+            return False
+        return preflight_ts >= scheduled_ts
+
+    def _safe_iso_timestamp(self, value: str) -> float:
+        text = str(value or "").strip()
+        if not text:
+            return 0.0
+        try:
+            return datetime.fromisoformat(text).timestamp()
+        except ValueError:
+            return 0.0
+
     def _build_wechat_platform_snapshot(
         self,
         *,
@@ -1026,17 +1987,34 @@ class WebViewService:
         benchmark_merge: dict[str, Any],
     ) -> dict[str, Any]:
         schedule_meta = self._summarize_task_group(tasks)
+        health_payload = self.load_platform_health().get("platforms", {}).get("wechat", {})
+        diagnostics = health_payload.get("diagnostics", {}) if isinstance(health_payload, dict) and isinstance(health_payload.get("diagnostics"), dict) else {}
+        blocked_reason = str(diagnostics.get("blocked_reason", "")).strip().upper()
+        invalid_ip = str(diagnostics.get("invalid_ip", "")).strip()
+
         status_value = "disabled" if not self.settings.wechat.enabled else (latest_wechat.status or "idle")
+        if blocked_reason == "BLOCKED_BY_IP":
+            status_value = "blocked_by_ip"
         status_meta = self._describe_status(status_value)
+
         preflight_state = "disabled"
         if self.settings.wechat.enabled:
             preflight_state = str(wechat_preflight.get("state", "")).strip()
             if not preflight_state:
                 preflight_state = "not_initialized"
+        if blocked_reason == "BLOCKED_BY_IP":
+            preflight_state = "blocked_by_ip"
         preflight_meta = self._describe_status(preflight_state)
+
         latest_log_url = latest_log.url if latest_log is not None else ""
         latest_log_name = latest_log.name if latest_log is not None else ""
         benchmark_context = self._build_platform_benchmark_context(benchmark_merge, platform="wechat")
+        preflight_message = (
+            f"IP 白名单未放行，当前本机出口 IP: {invalid_ip or 'unknown'}。"
+            if blocked_reason == "BLOCKED_BY_IP"
+            else str(wechat_preflight.get("current_url", "")).strip()
+            or ("公众号未启用" if not self.settings.wechat.enabled else "暂未初始化公众号浏览器登录态。")
+        )
         return {
             "key": "wechat",
             "label": "公众号",
@@ -1058,8 +2036,7 @@ class WebViewService:
             "layout_backend": latest_wechat.layout_backend,
             "preflight_label": preflight_meta["label"],
             "preflight_tone": preflight_meta["tone"],
-            "preflight_message": str(wechat_preflight.get("current_url", "")).strip()
-            or ("公众号未启用" if not self.settings.wechat.enabled else "未初始化公众号登录态"),
+            "preflight_message": preflight_message,
             "latest_log_url": latest_log_url,
             "latest_log_name": latest_log_name,
             "benchmark_context": benchmark_context,
@@ -1177,13 +2154,33 @@ class WebViewService:
         attention_items: list[str],
     ) -> dict[str, str]:
         latest_status = str(toutiao_platform.get("latest_status", "")).strip().lower()
+        toutiao_ok = all(
+            str(value) != "error"
+            for value in (
+                toutiao_platform.get("latest_status_tone", ""),
+                toutiao_platform.get("preflight_tone", ""),
+                toutiao_platform.get("schedule", {}).get("tone", ""),
+            )
+        )
+        wechat_enabled = bool(wechat_platform.get("enabled"))
+        wechat_bad = any(
+            str(value) == "error"
+            for value in (
+                wechat_platform.get("latest_status_tone", ""),
+                wechat_platform.get("preflight_tone", ""),
+                wechat_platform.get("schedule", {}).get("tone", ""),
+            )
+        )
         tones = {
             str(toutiao_platform.get("latest_status_tone", "")),
             str(toutiao_platform.get("preflight_tone", "")),
             str(toutiao_platform.get("schedule", {}).get("tone", "")),
             str(wechat_platform.get("latest_status_tone", "")),
+            str(wechat_platform.get("preflight_tone", "")),
             str(wechat_platform.get("schedule", {}).get("tone", "")),
         }
+        if toutiao_ok and wechat_enabled and wechat_bad:
+            return {"label": "头条正常，公众号异常", "tone": "warn"}
         if "error" in tones:
             return {"label": "存在阻塞", "tone": "error"}
         if latest_status == "no_topics" and (not attention_items or all(self._is_soft_attention_item(item) for item in attention_items)):
@@ -1283,14 +2280,19 @@ class WebViewService:
             "review_required": "待人工审核",
             "pending": "待处理",
             "manual_review": "待人工审核",
+            "manual_intervention_required": "需人工干预",
             "running": "执行中",
             "queued": "排队中",
+            "partial_success": "部分成功",
         }
         error_states = {
             "failed": "执行失败",
             "error": "执行失败",
             "blocked": "存在阻塞",
+            "blocked_by_ip": "IP 白名单阻塞",
             "missing": "缺少结果",
+            "aborted": "异常中止",
+            "rejected": "审核驳回（需人工干预）",
         }
         neutral_states = {
             "unknown": "未知",

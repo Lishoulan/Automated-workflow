@@ -92,10 +92,12 @@ class ImageGenerationSettings:
     mobile_width: int
     mobile_height: int
     backend: str
+    backend_priority: str
     api_mode: str
     model_name: str
     model_base_url: str
     model_api_key: str
+    request_timeout_seconds: float
     cover_size: str
     infographic_size: str
     max_generated_assets: int
@@ -125,10 +127,12 @@ class ImageGenerationSettings:
             mobile_width=int(payload.get("mobile_width", 1080)),
             mobile_height=int(payload.get("mobile_height", 1920)),
             backend=str(payload.get("backend", "renderer")),
+            backend_priority=str(payload.get("backend_priority", "image2,local")),
             api_mode=str(payload.get("api_mode", "images")),
             model_name=str(payload.get("model_name", "gpt-image-1")),
             model_base_url=str(payload.get("model_base_url", "")),
             model_api_key=str(payload.get("model_api_key", "")),
+            request_timeout_seconds=float(payload.get("request_timeout_seconds", 15)),
             cover_size=str(payload.get("cover_size", "1536x1024")),
             infographic_size=str(payload.get("infographic_size", "1024x1536")),
             max_generated_assets=int(payload.get("max_generated_assets", 2)),
@@ -156,6 +160,7 @@ class ImageGenerationSettings:
 class AutomationSettings:
     default_topic_rank: int
     max_daily_topic_attempts: int
+    daily_run_times: list[str]
     archive_outputs: bool
     archive_dirname: str
     selected_topic_basename: str
@@ -165,6 +170,7 @@ class AutomationSettings:
         return cls(
             default_topic_rank=int(payload.get("default_topic_rank", 1)),
             max_daily_topic_attempts=int(payload.get("max_daily_topic_attempts", 3)),
+            daily_run_times=[str(item).strip() for item in payload.get("daily_run_times", []) if str(item).strip()],
             archive_outputs=bool(payload.get("archive_outputs", True)),
             archive_dirname=str(payload.get("archive_dirname", "runs")),
             selected_topic_basename=str(payload.get("selected_topic_basename", "selected_topic")),
@@ -218,6 +224,7 @@ class ReviewSettings:
 class PublishSettings:
     enabled: bool
     auto_publish: bool
+    draft_only: bool
     platform: str
     base_url: str
     publish_url: str
@@ -241,6 +248,7 @@ class PublishSettings:
         return cls(
             enabled=bool(payload.get("enabled", False)),
             auto_publish=bool(payload.get("auto_publish", False)),
+            draft_only=bool(payload.get("draft_only", False)),
             platform=str(payload.get("platform", "toutiao")),
             base_url=str(payload.get("base_url", "https://mp.toutiao.com/")),
             publish_url=str(payload.get("publish_url", "")),
@@ -261,6 +269,7 @@ class PublishSettings:
 class WechatSettings:
     enabled: bool
     auto_publish: bool
+    toutiao_sync_delay_seconds: int
     app_id: str
     app_secret: str
     account_name: str
@@ -286,6 +295,7 @@ class WechatSettings:
         return cls(
             enabled=bool(payload.get("enabled", False)),
             auto_publish=bool(payload.get("auto_publish", False)),
+            toutiao_sync_delay_seconds=int(payload.get("toutiao_sync_delay_seconds", 1800)),
             app_id=str(payload.get("app_id", "")).strip(),
             app_secret=str(payload.get("app_secret", "")).strip(),
             account_name=str(payload.get("account_name", "")).strip(),
@@ -305,6 +315,53 @@ class WechatSettings:
             md2wechat_convert_version=str(payload.get("md2wechat_convert_version", "v1")).strip() or "v1",
             md2wechat_cli_path=str(payload.get("md2wechat_cli_path", "")).strip(),
             md2wechat_fallback_to_builtin=bool(payload.get("md2wechat_fallback_to_builtin", True)),
+        )
+
+
+@dataclass(frozen=True)
+class DouyinSettings:
+    enabled: bool
+    auto_publish: bool
+    niche: str
+    publish_mode: str
+    daily_post_target: int
+    base_url: str
+    publish_url: str
+    user_data_dir: str
+    channel: str
+    executable_path: str
+    headless: bool
+    wait_timeout_ms: int
+    history_filename: str
+    title_max_length: int
+    caption_max_length: int
+    max_images: int
+    selectors: dict[str, list[str]]
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "DouyinSettings":
+        selectors = {
+            str(key): [str(item) for item in value]
+            for key, value in dict(payload.get("selectors", {})).items()
+        }
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            auto_publish=bool(payload.get("auto_publish", False)),
+            niche=str(payload.get("niche", "??")).strip() or "??",
+            publish_mode=str(payload.get("publish_mode", "browser")).strip() or "browser",
+            daily_post_target=int(payload.get("daily_post_target", 3)),
+            base_url=str(payload.get("base_url", "https://creator.douyin.com/")).strip(),
+            publish_url=str(payload.get("publish_url", "https://creator.douyin.com/creator-micro/content/upload")).strip(),
+            user_data_dir=str(payload.get("user_data_dir", ".runtime/douyin_profile")).strip(),
+            channel=str(payload.get("channel", "msedge")).strip(),
+            executable_path=str(payload.get("executable_path", "")).strip(),
+            headless=bool(payload.get("headless", False)),
+            wait_timeout_ms=int(payload.get("wait_timeout_ms", 20000)),
+            history_filename=str(payload.get("history_filename", "douyin_publish_history.json")).strip(),
+            title_max_length=int(payload.get("title_max_length", 30)),
+            caption_max_length=int(payload.get("caption_max_length", 220)),
+            max_images=int(payload.get("max_images", 3)),
+            selectors=selectors,
         )
 
 
@@ -396,6 +453,7 @@ class AppSettings:
     review: ReviewSettings
     publishing: PublishSettings
     wechat: WechatSettings
+    douyin: DouyinSettings
     account_profiles: dict[str, AccountProfile]
     raw_account_profiles: dict[str, dict[str, Any]]
     available_account_keys: list[str]
@@ -480,6 +538,7 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
                 str(automation_config.max_daily_topic_attempts),
             )
         ),
+        daily_run_times=automation_config.daily_run_times,
         archive_outputs=automation_config.archive_outputs,
         archive_dirname=automation_config.archive_dirname,
         selected_topic_basename=automation_config.selected_topic_basename,
@@ -487,6 +546,7 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     review_config = ReviewSettings.from_dict(merged_payload.get("review", {}))
     publishing_config = PublishSettings.from_dict(merged_payload.get("publishing", {}))
     wechat_config = WechatSettings.from_dict(merged_payload.get("wechat", {}))
+    douyin_config = DouyinSettings.from_dict(merged_payload.get("douyin", {}))
 
     default_style = os.getenv("DEFAULT_STYLE", str(writing_config.get("default_style", "deep_industry_analysis")))
     is_default_account = account_profile.key == DEFAULT_ACCOUNT_KEY
@@ -532,6 +592,22 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         scoped_publish_history
         or (os.getenv("TOUTIAO_PUBLISH_HISTORY_FILE") if is_default_account else None)
         or publishing_config.history_filename
+    )
+    default_douyin_profile_relative = (
+        ".runtime/douyin_profile"
+        if is_default_account
+        else f".runtime/accounts/{account_profile.slug}/douyin_profile"
+    )
+    douyin_profile_value = (
+        os.getenv(account_env_name("DOUYIN_BROWSER_PROFILE_DIR", account_profile.key))
+        or (os.getenv("DOUYIN_BROWSER_PROFILE_DIR") if is_default_account else None)
+        or douyin_config.user_data_dir
+        or default_douyin_profile_relative
+    )
+    douyin_history_value = (
+        os.getenv(account_env_name("DOUYIN_PUBLISH_HISTORY_FILE", account_profile.key))
+        or (os.getenv("DOUYIN_PUBLISH_HISTORY_FILE") if is_default_account else None)
+        or douyin_config.history_filename
     )
 
     return AppSettings(
@@ -594,10 +670,14 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
             mobile_width=image_config.mobile_width,
             mobile_height=image_config.mobile_height,
             backend=os.getenv("IMAGE_BACKEND", image_config.backend),
+            backend_priority=os.getenv("IMAGE_BACKEND_PRIORITY", image_config.backend_priority),
             api_mode=os.getenv("IMAGE_API_MODE", image_config.api_mode),
             model_name=os.getenv("IMAGE_MODEL", image_config.model_name),
             model_base_url=os.getenv("IMAGE_BASE_URL", image_config.model_base_url),
             model_api_key=os.getenv("IMAGE_API_KEY", image_config.model_api_key),
+            request_timeout_seconds=float(
+                os.getenv("IMAGE_REQUEST_TIMEOUT_SECONDS", str(image_config.request_timeout_seconds))
+            ),
             cover_size=os.getenv("IMAGE_COVER_SIZE", image_config.cover_size),
             infographic_size=os.getenv("IMAGE_INFOGRAPHIC_SIZE", image_config.infographic_size),
             max_generated_assets=int(
@@ -657,6 +737,7 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         publishing=PublishSettings(
             enabled=_env_flag("TOUTIAO_PUBLISH_ENABLED", publishing_config.enabled),
             auto_publish=_env_flag("TOUTIAO_AUTO_PUBLISH", publishing_config.auto_publish),
+            draft_only=_env_flag("TOUTIAO_PUBLISH_DRAFT_ONLY", publishing_config.draft_only),
             platform=os.getenv("TOUTIAO_PUBLISH_PLATFORM", publishing_config.platform),
             base_url=os.getenv("TOUTIAO_PUBLISH_BASE_URL", publishing_config.base_url),
             publish_url=os.getenv("TOUTIAO_PUBLISH_URL", publishing_config.publish_url),
@@ -681,6 +762,13 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         wechat=WechatSettings(
             enabled=_env_flag_scoped("WECHAT_ENABLED", account_profile.key, wechat_config.enabled),
             auto_publish=_env_flag_scoped("WECHAT_AUTO_PUBLISH", account_profile.key, wechat_config.auto_publish),
+            toutiao_sync_delay_seconds=int(
+                _env_value_scoped(
+                    "WECHAT_TOUTIAO_SYNC_DELAY",
+                    account_profile.key,
+                    str(wechat_config.toutiao_sync_delay_seconds),
+                )
+            ),
             app_id=os.getenv("WECHAT_APP_ID", wechat_config.app_id),
             app_secret=os.getenv("WECHAT_APP_SECRET", wechat_config.app_secret),
             account_name=os.getenv("WECHAT_ACCOUNT_NAME", wechat_config.account_name),
@@ -706,6 +794,43 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
                 "MD2WECHAT_FALLBACK_TO_BUILTIN",
                 wechat_config.md2wechat_fallback_to_builtin,
             ),
+        ),
+        douyin=DouyinSettings(
+            enabled=_env_flag_scoped("DOUYIN_ENABLED", account_profile.key, douyin_config.enabled),
+            auto_publish=_env_flag_scoped("DOUYIN_AUTO_PUBLISH", account_profile.key, douyin_config.auto_publish),
+            niche=_env_value_scoped("DOUYIN_NICHE", account_profile.key, douyin_config.niche),
+            publish_mode=_env_value_scoped("DOUYIN_PUBLISH_MODE", account_profile.key, douyin_config.publish_mode),
+            daily_post_target=int(
+                _env_value_scoped("DOUYIN_DAILY_POST_TARGET", account_profile.key, str(douyin_config.daily_post_target))
+            ),
+            base_url=_env_value_scoped("DOUYIN_BASE_URL", account_profile.key, douyin_config.base_url),
+            publish_url=_env_value_scoped("DOUYIN_PUBLISH_URL", account_profile.key, douyin_config.publish_url),
+            user_data_dir=douyin_profile_value,
+            channel=_env_value_scoped("DOUYIN_PUBLISH_CHANNEL", account_profile.key, douyin_config.channel),
+            executable_path=_env_value_scoped(
+                "DOUYIN_BROWSER_EXECUTABLE",
+                account_profile.key,
+                douyin_config.executable_path,
+            ),
+            headless=_env_flag_scoped("DOUYIN_PUBLISH_HEADLESS", account_profile.key, douyin_config.headless),
+            wait_timeout_ms=int(
+                _env_value_scoped("DOUYIN_PUBLISH_TIMEOUT_MS", account_profile.key, str(douyin_config.wait_timeout_ms))
+            ),
+            history_filename=douyin_history_value,
+            title_max_length=int(
+                _env_value_scoped("DOUYIN_TITLE_MAX_LENGTH", account_profile.key, str(douyin_config.title_max_length))
+            ),
+            caption_max_length=int(
+                _env_value_scoped(
+                    "DOUYIN_CAPTION_MAX_LENGTH",
+                    account_profile.key,
+                    str(douyin_config.caption_max_length),
+                )
+            ),
+            max_images=int(
+                _env_value_scoped("DOUYIN_MAX_IMAGES", account_profile.key, str(douyin_config.max_images))
+            ),
+            selectors=douyin_config.selectors,
         ),
         account_profiles=raw_account_profiles,
         raw_account_profiles={
@@ -986,6 +1111,7 @@ def _default_config_payload() -> dict[str, Any]:
         "automation": {
             "default_topic_rank": 1,
             "max_daily_topic_attempts": 3,
+            "daily_run_times": [],
             "archive_outputs": True,
             "archive_dirname": "runs",
             "selected_topic_basename": "selected_topic",
@@ -1059,6 +1185,7 @@ def _default_config_payload() -> dict[str, Any]:
         "wechat": {
             "enabled": False,
             "auto_publish": False,
+            "toutiao_sync_delay_seconds": 1800,
             "app_id": "",
             "app_secret": "",
             "account_name": "公众号名称",
@@ -1078,6 +1205,45 @@ def _default_config_payload() -> dict[str, Any]:
             "md2wechat_convert_version": "v1",
             "md2wechat_cli_path": "",
             "md2wechat_fallback_to_builtin": True,
+        },
+        "douyin": {
+            "enabled": False,
+            "auto_publish": False,
+            "niche": "??",
+            "publish_mode": "browser",
+            "daily_post_target": 3,
+            "base_url": "https://creator.douyin.com/",
+            "publish_url": "https://creator.douyin.com/creator-micro/content/upload",
+            "user_data_dir": ".runtime/douyin_profile",
+            "channel": "msedge",
+            "executable_path": "",
+            "headless": False,
+            "wait_timeout_ms": 20000,
+            "history_filename": "douyin_publish_history.json",
+            "title_max_length": 30,
+            "caption_max_length": 220,
+            "max_images": 3,
+            "selectors": {
+                "caption_input": [
+                    "textarea[placeholder*='??????']",
+                    "textarea[placeholder*='??']",
+                    "div[contenteditable='true']"
+                ],
+                "image_upload": [
+                    "input[type='file'][accept*='image']",
+                    "input[type='file']"
+                ],
+                "publish_button": [
+                    "button:has-text('??')",
+                    "button:has-text('????')",
+                    "div[role='button']:has-text('??')"
+                ],
+                "success_indicator": [
+                    "text=????",
+                    "text=???",
+                    "text=????"
+                ]
+            }
         },
         "styles": _default_style_payloads(),
     }

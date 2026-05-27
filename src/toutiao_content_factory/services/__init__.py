@@ -7,6 +7,7 @@ from .growth_ops_service import GrowthOpsService
 from .extractor import SignalExtractor
 from .openai_service import OpenAIContentService
 from .pipeline import ContentFactoryPipeline
+from .performance_service import PerformanceService
 from .prompt_repository import PromptRepository
 from .review_service import ReviewWorkflowService
 from .topic_collection import TopicCollectionService
@@ -21,6 +22,7 @@ __all__ = [
     "ExportService",
     "GrowthOpsService",
     "OpenAIContentService",
+    "PerformanceService",
     "PromptRepository",
     "ReviewWorkflowService",
     "SignalExtractor",

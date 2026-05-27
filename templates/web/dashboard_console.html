@@ -1,0 +1,827 @@
+﻿{% extends "base.html" %}
+
+{% block title %}单账号看板 | 手蓝内容工厂{% endblock %}
+
+{% block content %}
+<style>
+  .panel-highlight {
+    background:
+      linear-gradient(135deg, rgba(61, 225, 255, 0.08), transparent 48%),
+      linear-gradient(180deg, rgba(18, 34, 53, 0.97), rgba(12, 26, 41, 0.97));
+  }
+  .button-inline {
+    width: auto;
+    min-width: 0;
+    padding-inline: 14px;
+  }
+  .timeline-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .timeline-card,
+  .alert-card {
+    border-radius: 18px;
+    border: 1px solid var(--line);
+    background: rgba(7, 17, 29, 0.62);
+    padding: 16px;
+  }
+  .timeline-card {
+    position: relative;
+    min-height: 168px;
+  }
+  .timeline-card strong,
+  .alert-card strong {
+    display: block;
+    margin: 10px 0 8px;
+  }
+  .timeline-card p,
+  .alert-card p {
+    margin: 0;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+  .timeline-card-success,
+  .alert-card-success {
+    border-color: rgba(46, 211, 154, 0.35);
+    box-shadow: 0 0 0 1px rgba(46, 211, 154, 0.1) inset;
+  }
+  .timeline-card-warn,
+  .alert-card-warn {
+    border-color: rgba(240, 179, 90, 0.35);
+    box-shadow: 0 0 0 1px rgba(240, 179, 90, 0.1) inset;
+  }
+  .timeline-card-error,
+  .alert-card-error {
+    border-color: rgba(255, 110, 110, 0.35);
+    box-shadow: 0 0 0 1px rgba(255, 110, 110, 0.1) inset;
+  }
+  .timeline-card-neutral,
+  .alert-card-info,
+  .alert-card-neutral {
+    border-color: rgba(157, 194, 255, 0.2);
+  }
+  .timeline-index {
+    display: inline-flex;
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    color: #04111d;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  }
+  .alerts-list {
+    display: grid;
+    gap: 12px;
+  }
+  .alert-card {
+    display: flex;
+    gap: 18px;
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+  .alert-actions,
+  .retry-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .retry-run-list {
+    gap: 14px;
+  }
+  .retry-run-card {
+    border-radius: 18px;
+    padding: 16px;
+    background: rgba(7, 17, 29, 0.4);
+    border: 1px solid var(--line);
+  }
+  .wrap-line {
+    flex-wrap: wrap;
+  }
+  .modal[hidden] {
+    display: none;
+  }
+  .modal {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+  }
+  .modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(4, 10, 18, 0.7);
+    backdrop-filter: blur(6px);
+  }
+  .modal-dialog {
+    position: relative;
+    z-index: 1;
+    width: min(1080px, calc(100vw - 40px));
+    margin: 42px auto;
+    padding: 22px;
+    border-radius: 24px;
+    border: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(18, 34, 53, 0.98), rgba(7, 17, 29, 0.98));
+    box-shadow: var(--shadow);
+  }
+  .modal-head,
+  .modal-toolbar {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .modal-toolbar {
+    margin: 16px 0;
+  }
+  .modal-toolbar .input-like {
+    flex: 1;
+  }
+  .modal-log-console {
+    min-height: 420px;
+    max-height: 65vh;
+    overflow: auto;
+  }
+  @media (max-width: 1180px) {
+    .timeline-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 900px) {
+    .timeline-grid,
+    .account-grid,
+    .two-col {
+      grid-template-columns: 1fr;
+    }
+    .alert-card,
+    .modal-head,
+    .modal-toolbar {
+      flex-direction: column;
+      align-items: stretch;
+    }
+  }
+</style>
+
+<section class="hero">
+  <div>
+    <p class="eyebrow">CONTROL CENTER</p>
+    <h2>单账号运营看板</h2>
+    <p class="muted">当前账号为 {{ account_label }}。现在这页会直接告诉你今天跑到哪一步、哪里卡住、怎么补救，以及哪些批次可以一键补发。</p>
+  </div>
+  <div class="hero-stats">
+    <div class="metric-card">
+      <span>今日流水线</span>
+      <strong>{{ dashboard.schedule_runtime.label if dashboard.schedule_runtime else "暂无" }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>待处理提醒</span>
+      <strong>{{ dashboard.actionable_alerts|length if dashboard.actionable_alerts else 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>可补发批次</span>
+      <strong>{{ dashboard.retry_runs|length if dashboard.retry_runs else 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>热点候选数</span>
+      <strong>{{ dashboard.daily_topics.total_selected_items if dashboard.daily_topics else 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>平台健康</span>
+      <strong>{{ dashboard.platform_health.status_label }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>综合评分</span>
+      <strong>{{ dashboard.latest_score.scores.overall_score if dashboard.latest_score and dashboard.latest_score.scores else 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>今日总消耗(元)</span>
+      <strong>{{ '%.4f'|format(dashboard.cost_summary.today_total_cost if dashboard.cost_summary else 0) }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>篇均成本</span>
+      <strong>{{ '%.4f'|format(dashboard.cost_summary.average_cost_per_article if dashboard.cost_summary else 0) }}</strong>
+    </div>
+  </div>
+</section>
+
+<section class="panel panel-highlight">
+  <div class="panel-head">
+    <div>
+      <h3>今日流水线执行时光轴</h3>
+      <p>从预检到归档，直接看今天卡在哪一步。</p>
+    </div>
+    <div class="meta-line">
+      {% if dashboard.schedule_runtime and dashboard.schedule_runtime.updated_at %}
+      <span>最近更新 {{ dashboard.schedule_runtime.updated_at }}</span>
+      {% endif %}
+      <button type="button" class="button button-outline button-inline" id="open-log-modal">查看今日运行日志</button>
+    </div>
+  </div>
+  <div class="timeline-grid">
+    {% for stage in dashboard.pipeline_timeline %}
+    <article class="timeline-card timeline-card-{{ stage.tone }}">
+      <span class="timeline-index">{{ loop.index }}</span>
+      <strong>{{ stage.label }}</strong>
+      <span class="pill pill-{{ stage.tone }}">{{ stage.status }}</span>
+      <p>{{ stage.message }}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel panel-alerts">
+  <div class="panel-head">
+    <div>
+      <h3>动作指引待办箱</h3>
+      <p>这里只保留你需要立刻处理的动作，不展示原始 traceback。</p>
+    </div>
+  </div>
+  <div class="alerts-list">
+    {% for alert in dashboard.actionable_alerts %}
+    <article class="alert-card alert-card-{{ alert.tone }}">
+      <div>
+        <strong>{{ alert.title }}</strong>
+        <p>{{ alert.message }}</p>
+      </div>
+      <div class="alert-actions">
+        {% if alert.action_kind == "copy_ip" %}
+        <button type="button" class="button button-outline button-inline js-copy-value" data-value="{{ alert.action_value }}">{{ alert.action_label }}</button>
+        {% elif alert.action_kind == "init_login" %}
+        <button type="button" class="button button-secondary button-inline js-init-login" data-account="{{ alert.action_value }}">{{ alert.action_label }}</button>
+        {% elif alert.action_kind == "refresh_health" %}
+        <button type="button" class="button button-outline button-inline js-refresh-health" data-account="{{ alert.action_value }}">{{ alert.action_label }}</button>
+        {% endif %}
+
+        {% if alert.secondary_value == "open_log_modal" %}
+        <button type="button" class="button button-outline button-inline" data-open-log-modal="1">{{ alert.secondary_label }}</button>
+        {% elif alert.secondary_value and alert.secondary_value.startswith("http") %}
+        <a class="button button-outline button-inline" href="{{ alert.secondary_value }}" target="_blank">{{ alert.secondary_label }}</a>
+        {% elif alert.secondary_label and alert.secondary_value %}
+        <button type="button" class="button button-outline button-inline js-copy-value" data-value="{{ alert.secondary_value }}">{{ alert.secondary_label }}</button>
+        {% endif %}
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>一键补发控制台</h3>
+      <p>只重用已生成的稿件与素材，不重新消耗 LLM Token。</p>
+    </div>
+    {% if dashboard.retry_runs %}
+    <div class="status-list retry-run-list">
+      {% for run in dashboard.retry_runs %}
+      <div class="status-row status-row-stack retry-run-card" id="retry-run-{{ run.name }}">
+        <div>
+          <strong>{{ run.selected_topic_title or run.name }}</strong>
+          <p>{{ run.name }} · 审核 {{ run.review_status }} · 就绪分 {{ run.publish_readiness_score }}</p>
+          <div class="meta-line wrap-line">
+            {% for item in run.retry_platforms %}
+            <span class="pill pill-{{ item.tone }}">{{ item.label }}: {{ item.status_label }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="retry-actions">
+          {% for item in run.retry_platforms %}
+          <button
+            type="button"
+            class="button button-inline {% if item.tone == 'error' %}button-secondary{% else %}button-outline{% endif %} js-retry-publish"
+            data-run-id="{{ run.name }}"
+            data-platform="{{ item.platform }}"
+            data-account="{{ account_key }}"
+          >补发{{ item.label }}</button>
+          {% endfor %}
+          <a class="text-link" href="/runs/{{ run.name }}?account={{ account_key }}">查看批次</a>
+        </div>
+        <p class="muted retry-feedback" data-run-feedback="{{ run.name }}"></p>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">最近批次里没有需要补发的内容。</p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>平台健康红绿灯</h3>
+      <p>{% if dashboard.health_panel.updated_at %}最近刷新 {{ dashboard.health_panel.updated_at }}{% else %}还没有健康检查结果{% endif %}</p>
+    </div>
+    {% if dashboard.health_panel and dashboard.health_panel["items"] %}
+    <div class="status-list">
+      {% for health in dashboard.health_panel["items"] %}
+      <div class="status-row">
+        <div>
+          <strong>{{ health.label }}</strong>
+          <p>{{ health.message }}</p>
+          {% if health.blocked_reason == "BLOCKED_BY_IP" %}
+          <p class="muted">请前往 <a class="text-link" href="{{ health.config_url }}" target="_blank">微信公众平台</a> 更新 IP 白名单。</p>
+          {% elif health.needs_login and health.login_command %}
+          <p class="muted">建议重新初始化登录态：<code>{{ health.login_command }}</code></p>
+          {% endif %}
+        </div>
+        <div class="right-meta">
+          <span class="pill pill-{{ 'error' if health.needs_login else health.status_tone }}">{{ health.status_label }}</span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="button-grid">
+      <form method="post" action="/actions/collect-platform-health">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <button class="button button-outline" type="submit">刷新健康度</button>
+      </form>
+      <form method="post" action="/actions/init-login">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <button class="button button-secondary" type="submit">一键唤起登录</button>
+      </form>
+    </div>
+    {% else %}
+    <p class="empty">当前还没有平台健康检测结果。</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>账号总览</h3>
+      <p>可以快速切到其他账号并查看最近状态</p>
+    </div>
+    <div class="account-grid">
+      {% for item in account_overviews %}
+      <article class="account-card{% if item.is_current %} account-card-current{% endif %}">
+        <div class="account-card-head">
+          <div>
+            <strong>{{ item.label }}</strong>
+            <p class="muted">{{ item.key }}</p>
+          </div>
+          {% if item.is_current %}
+          <span class="pill pill-approved">当前账号</span>
+          {% else %}
+          <a class="text-link" href="/dashboard?account={{ item.key }}">切换</a>
+          {% endif %}
+        </div>
+        <div class="meta-line">
+          <span>批次 {{ item.run_count }}</span>
+          <span>状态 {{ item.overall_label }}</span>
+        </div>
+        <p class="account-topic">{{ item.latest_topic_title or item.latest_run_name or "暂无最近内容" }}</p>
+        <div class="meta-line">
+          <span>审核 {{ item.latest_review_status or "暂无" }}</span>
+          <span>总览 {{ item.overall_label }}</span>
+        </div>
+        {% if item.latest_run_name %}
+        <a class="text-link" href="/runs/{{ item.latest_run_name }}?account={{ item.key }}">查看最近批次</a>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>当前运行状态</h3>
+      <p>查看本账号最近一次自动化执行和平台拆分状态</p>
+    </div>
+    {% if dashboard.schedule_runtime %}
+    <div class="schedule-runtime-card schedule-runtime-card-{{ dashboard.schedule_runtime.tone }}">
+      <div class="schedule-runtime-head">
+        <span class="pill pill-{{ dashboard.schedule_runtime.tone }}">{{ dashboard.schedule_runtime.label }}</span>
+        {% if dashboard.schedule_runtime.updated_at %}
+        <span class="muted">{{ dashboard.schedule_runtime.updated_at }}</span>
+        {% endif %}
+      </div>
+      <p class="schedule-runtime-message">{{ dashboard.schedule_runtime.message }}</p>
+      <div class="meta-line">
+        {% if dashboard.schedule_runtime.attempt_label %}
+        <span>{{ dashboard.schedule_runtime.attempt_label }}</span>
+        {% endif %}
+        {% if dashboard.schedule_runtime.log_url %}
+        <a class="text-link" href="{{ dashboard.schedule_runtime.log_url }}" target="_blank">{{ dashboard.schedule_runtime.log_name or "查看日志" }}</a>
+        {% endif %}
+      </div>
+      {% if dashboard.schedule_runtime.platform_cards %}
+      <div class="status-stack">
+        <strong>平台执行拆分</strong>
+        <div class="status-list">
+          {% for item in dashboard.schedule_runtime.platform_cards %}
+          <div class="status-row">
+            <div>
+              <strong>{{ item.label }}</strong>
+              <p>{{ item.message }}</p>
+              {% if item.updated_at %}
+              <p class="muted">{{ item.updated_at }}</p>
+              {% endif %}
+            </div>
+            <div class="right-meta">
+              <span class="pill pill-{{ item.tone }}">{{ item.status_label }}</span>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+    {% else %}
+    <p class="empty">定时脚本还没有执行记录。</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>最近发布状态</h3>
+      <p>查看当前账号最近一次投递结果</p>
+    </div>
+    {% if dashboard.latest_publish.has_result %}
+    <div class="status-card">
+      <div class="status-card-head">
+        <strong>{{ dashboard.latest_publish.status }}</strong>
+        <span class="pill pill-pending">{{ dashboard.latest_publish.submitted_at or "未记录时间" }}</span>
+      </div>
+      <p>{{ dashboard.latest_publish.title or "暂无标题" }}</p>
+      <div class="meta-line">
+        <span>批次 {{ dashboard.latest_publish.run_name or "未记录" }}</span>
+        <span>PGC ID {{ dashboard.latest_publish.pgc_id or "未返回" }}</span>
+      </div>
+      {% if dashboard.latest_publish.message %}
+      <p class="muted">后台返回：{{ dashboard.latest_publish.message }}</p>
+      {% endif %}
+      <div class="meta-line wrap-line">
+        {% if dashboard.latest_publish.run_name %}
+        <a class="text-link" href="/runs/{{ dashboard.latest_publish.run_name }}?account={{ account_key }}">查看该批次详情</a>
+        {% endif %}
+        {% if dashboard.latest_publish.screenshot_url %}
+        <a class="text-link" href="{{ dashboard.latest_publish.screenshot_url }}" target="_blank">失败截图</a>
+        {% endif %}
+        {% if dashboard.latest_publish.dom_url %}
+        <a class="text-link" href="{{ dashboard.latest_publish.dom_url }}" target="_blank">DOM</a>
+        {% endif %}
+      </div>
+    </div>
+    {% else %}
+    <p class="empty">当前账号还没有发布记录。</p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>最近日志文件</h3>
+      <p>直接在网页里打开和筛选最近 5 次日志</p>
+    </div>
+    {% if dashboard.log_console.entries %}
+    <div class="status-list">
+      {% for log in dashboard.log_console.entries %}
+      <div class="status-row">
+        <div>
+          <strong>{{ log.name }}</strong>
+          <p>{{ log.modified_at }} · {{ '%.1f'|format(log.size_kb) }} KB</p>
+        </div>
+        <div class="right-meta">
+          <button type="button" class="button button-outline button-inline js-open-log" data-file-name="{{ log.name }}">网页查看</button>
+          <a class="text-link" href="{{ log.url }}" target="_blank">原文件</a>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">当前账号还没有可展示的日志文件。</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>今日自动执行</h3>
+      <p>按时间窗查看当前账号执行结果</p>
+    </div>
+    <div class="status-list">
+      {% for slot in dashboard.scheduled_windows %}
+      <div class="status-row">
+        <div>
+          <strong>
+            {% if slot.slot_label == "morning" %}早间档{% elif slot.slot_label == "noon" %}午间档{% elif slot.slot_label == "evening" %}傍晚档{% else %}夜间档{% endif %}
+            · {{ slot.expected_time }}
+          </strong>
+          <p>{{ slot.updated_at or "暂无执行时间" }} · {{ slot.message }}</p>
+          {% if slot.run_name %}
+          <p class="muted">批次 {{ slot.run_name }}{% if slot.publish_status %} · 发布 {{ slot.publish_status }}{% endif %}{% if slot.publish_pgc_id %} · PGC {{ slot.publish_pgc_id }}{% endif %}</p>
+          {% endif %}
+        </div>
+        <div class="right-meta">
+          <span class="pill pill-pending">{{ slot.status }}</span>
+          {% if slot.run_name %}
+          <a class="text-link" href="/runs/{{ slot.run_name }}?account={{ account_key }}">查看批次</a>
+          {% endif %}
+          {% if slot.log_url %}
+          <a class="text-link" href="{{ slot.log_url }}" target="_blank">日志</a>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>质量评分</h3>
+      <p>当前账号最新内容的正文校验与发布就绪度</p>
+    </div>
+    {% set scores = dashboard.latest_score.scores if dashboard.latest_score and dashboard.latest_score.scores else {} %}
+    <div class="score-grid">
+      <div class="score-card">
+        <span>综合分</span>
+        <strong>{{ scores.overall_score or 0 }}</strong>
+      </div>
+      <div class="score-card">
+        <span>正文校验分</span>
+        <strong>{{ scores.validation_score or 0 }}</strong>
+      </div>
+      <div class="score-card">
+        <span>发布就绪分</span>
+        <strong>{{ scores.publish_readiness_score or 0 }}</strong>
+      </div>
+      <div class="score-card">
+        <span>AI 风险</span>
+        <strong>{{ scores.ai_generated_risk or 0 }}</strong>
+      </div>
+      <div class="score-card">
+        <span>今日总消耗(元)</span>
+        <strong>{{ '%.4f'|format(dashboard.cost_summary.today_total_cost if dashboard.cost_summary else 0) }}</strong>
+      </div>
+      <div class="score-card">
+        <span>篇均成本</span>
+        <strong>{{ '%.4f'|format(dashboard.cost_summary.average_cost_per_article if dashboard.cost_summary else 0) }}</strong>
+      </div>
+    </div>
+
+    <div class="section-block">
+      <h4>运行护栏</h4>
+      <ul class="bullet-list">
+        <li>平台健康：{{ dashboard.platform_health.status_label }}{% if dashboard.platform_health.generated_at %} · {{ dashboard.platform_health.generated_at }}{% endif %}</li>
+        <li>离线选题池：{{ dashboard.topic_pool.status_label }} · 总数 {{ dashboard.topic_pool.total_rows }} / 待用 {{ dashboard.topic_pool.pending_count }}</li>
+        <li>内容防重：{{ dashboard.content_guard.status_label }}{% if dashboard.content_guard.similarity %} · 相似度 {{ '%.2f'|format(dashboard.content_guard.similarity * 100) }}%{% endif %}</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>快捷动作</h3>
+      <p>直接对当前账号触发核心流程</p>
+    </div>
+    <div class="button-grid">
+      <form method="post" action="/actions/collect-topics">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <button class="button button-outline" type="submit">采集热点</button>
+      </form>
+      <form method="post" action="/actions/daily-run">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <input type="hidden" name="style" value="{{ default_style }}">
+        <button class="button" type="submit">完整日更</button>
+      </form>
+      <form method="post" action="/actions/auto-run">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <input type="hidden" name="style" value="{{ default_style }}">
+        <button class="button button-secondary" type="submit">自动选题生成</button>
+      </form>
+      <form method="post" action="/actions/refresh-dashboard">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <button class="button button-outline" type="submit">刷新首页数据</button>
+      </form>
+      <form method="post" action="/actions/publish-preflight">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <button class="button button-secondary" type="submit">刷新发布预检</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>热点概览</h3>
+      <p>当前账号最新热点池结果</p>
+    </div>
+    {% if dashboard.daily_topics and dashboard.daily_topics.topics %}
+    <ol class="topic-list">
+      {% for topic in dashboard.daily_topics.topics[:5] %}
+      <li>
+        <div>
+          <strong>{{ topic.title }}</strong>
+          <p>{{ topic.source }} · 总分 {{ topic.total_score }} · 阅读 {{ topic.read_score }}</p>
+        </div>
+        <a class="text-link" href="{{ topic.url }}" target="_blank">原文</a>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="empty">当前账号还没有 `daily_topics.json`，先执行一次热点采集。</p>
+    {% endif %}
+  </div>
+</section>
+
+<div class="modal" id="log-modal" hidden>
+  <div class="modal-backdrop" data-close-log-modal="1"></div>
+  <div class="modal-dialog">
+    <div class="modal-head">
+      <div>
+        <h3>运行日志观察窗</h3>
+        <p class="muted">可查看最近 5 次日志，也可以对内容做关键词筛选。</p>
+      </div>
+      <button type="button" class="button button-outline button-inline" data-close-log-modal="1">关闭</button>
+    </div>
+    <div class="modal-toolbar">
+      <select id="log-file-select" class="input-like"></select>
+      <input id="log-keyword" class="input-like" type="text" placeholder="输入关键词筛选，如 wechat / image2 / failed">
+      <button type="button" class="button button-outline button-inline" id="refresh-log-view">刷新日志</button>
+    </div>
+    <pre id="log-viewer-output" class="log-console modal-log-console">正在加载日志...</pre>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    const accountKey = {{ account_key|tojson }};
+
+    async function postForm(url, params) {
+      const body = new URLSearchParams(params);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+        body: body.toString(),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `Request failed: ${response.status}`);
+      }
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        return response.json();
+      }
+      return response.text();
+    }
+
+    document.querySelectorAll(".js-copy-value").forEach((button) => {
+      button.dataset.originalLabel = button.textContent;
+      button.addEventListener("click", async () => {
+        const value = button.dataset.value || "";
+        if (!value) return;
+        await navigator.clipboard.writeText(value);
+        button.textContent = "已复制";
+        setTimeout(() => {
+          button.textContent = button.dataset.originalLabel || "复制";
+        }, 1600);
+      });
+    });
+
+    document.querySelectorAll(".js-init-login").forEach((button) => {
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          await postForm("/actions/init-login", { account: button.dataset.account || accountKey });
+          button.textContent = "已唤起登录";
+        } catch (error) {
+          alert(`唤起登录失败：${error}`);
+          button.disabled = false;
+        }
+      });
+    });
+
+    document.querySelectorAll(".js-refresh-health").forEach((button) => {
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          await postForm("/actions/collect-platform-health", { account: button.dataset.account || accountKey });
+          window.location.reload();
+        } catch (error) {
+          alert(`刷新健康度失败：${error}`);
+          button.disabled = false;
+        }
+      });
+    });
+
+    document.querySelectorAll(".js-retry-publish").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const runId = button.dataset.runId;
+        const platform = button.dataset.platform;
+        const feedback = document.querySelector(`[data-run-feedback="${runId}"]`);
+        button.disabled = true;
+        if (feedback) {
+          feedback.textContent = `正在补发 ${platform}...`;
+        }
+        try {
+          await postForm("/api/publish/retry", {
+            run_id: runId,
+            account: button.dataset.account || accountKey,
+            platform,
+          });
+          if (feedback) {
+            feedback.textContent = `${platform} 补发已完成。`;
+          }
+          button.textContent = `已补发${platform}`;
+        } catch (error) {
+          if (feedback) {
+            feedback.textContent = `补发失败：${error}`;
+          }
+          alert(`补发失败：${error}`);
+          button.disabled = false;
+        }
+      });
+    });
+
+    const logModal = document.getElementById("log-modal");
+    const logSelect = document.getElementById("log-file-select");
+    const logKeyword = document.getElementById("log-keyword");
+    const logOutput = document.getElementById("log-viewer-output");
+
+    async function loadLogList() {
+      const response = await fetch(`/api/logs/list?account=${encodeURIComponent(accountKey)}`);
+      const payload = await response.json();
+      const items = payload.items || [];
+      if (logSelect) {
+        logSelect.innerHTML = "";
+        items.forEach((item) => {
+          const option = document.createElement("option");
+          option.value = item.name;
+          option.textContent = `${item.display_name} · ${item.modified_at}`;
+          logSelect.appendChild(option);
+        });
+      }
+      return items;
+    }
+
+    async function loadLogContent(fileName) {
+      if (!logOutput || !fileName) {
+        return;
+      }
+      logOutput.textContent = "正在读取日志...";
+      const params = new URLSearchParams({ account: accountKey, file_name: fileName });
+      if (logKeyword && logKeyword.value.trim()) {
+        params.set("keyword", logKeyword.value.trim());
+      }
+      const response = await fetch(`/api/logs/view?${params.toString()}`);
+      const payload = await response.json();
+      logOutput.textContent = payload.content || "该日志暂无内容。";
+      logOutput.scrollTop = 0;
+    }
+
+    async function openLogModal(fileName) {
+      if (!logModal) return;
+      logModal.hidden = false;
+      const items = await loadLogList();
+      const selected = fileName || (items[0] ? items[0].name : "");
+      if (logSelect && selected) {
+        logSelect.value = selected;
+      }
+      if (selected) {
+        await loadLogContent(selected);
+      } else if (logOutput) {
+        logOutput.textContent = "当前没有可查看的日志文件。";
+      }
+    }
+
+    function closeLogModal() {
+      if (logModal) {
+        logModal.hidden = true;
+      }
+    }
+
+    const openLogModalButton = document.getElementById("open-log-modal");
+    if (openLogModalButton) {
+      openLogModalButton.addEventListener("click", () => openLogModal());
+    }
+    document.querySelectorAll("[data-open-log-modal='1']").forEach((button) => {
+      button.addEventListener("click", () => openLogModal());
+    });
+    document.querySelectorAll(".js-open-log").forEach((button) => {
+      button.addEventListener("click", () => openLogModal(button.dataset.fileName || ""));
+    });
+    document.querySelectorAll("[data-close-log-modal='1']").forEach((button) => {
+      button.addEventListener("click", closeLogModal);
+    });
+    if (logSelect) {
+      logSelect.addEventListener("change", () => loadLogContent(logSelect.value));
+    }
+    const refreshLogButton = document.getElementById("refresh-log-view");
+    if (refreshLogButton) {
+      refreshLogButton.addEventListener("click", () => {
+        if (logSelect && logSelect.value) {
+          loadLogContent(logSelect.value);
+        }
+      });
+    }
+  })();
+</script>
+{% endblock %}

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
+import yaml
 
 from toutiao_content_factory.agents.base import BaseAgent
 from toutiao_content_factory.config import StyleProfile
@@ -10,6 +13,7 @@ from toutiao_content_factory.services.article_sanitizer import clean_article_tex
 
 class WriterAgent(BaseAgent):
     agent_name = "WriterAgent"
+    REQUIRED_HEADING_COUNT = (3, 4)
 
     COMPANY_SUFFIX_RE = re.compile(
         r"[\u4e00-\u9fffA-Za-z0-9]{2,12}(?:科技|能源|汽车|股份|集团|电气|智能|机器人|半导体|电子|时代|精工|制造|材料|电池|重工|工业|光伏|储能|动力|机电|控股|装备|技术)"
@@ -84,6 +88,9 @@ class WriterAgent(BaseAgent):
         )
         self_benchmark_context = self.growth_ops_service.get_self_benchmark_track_context(benchmark_track)
         benchmark_digest = self.growth_ops_service.build_benchmark_digest(benchmark_track, purpose="writer")
+        tone_directive = self._tone_directive(style)
+        viral_template_instruction = self._viral_template_instruction(style, self_benchmark_context)
+        kol_voice_instruction = self._kol_voice_instruction()
         prompt = self.render_prompt(
             "article_prompt_v2.md",
             platform=self.settings.platform,
@@ -92,6 +99,9 @@ class WriterAgent(BaseAgent):
             audience=self.settings.audience,
             style_digest=self.style_digest(style),
             brand_digest=self.brand_digest(extra_sections=[benchmark_digest]),
+            tone_directive=tone_directive,
+            viral_template_instruction=viral_template_instruction,
+            kol_voice_instruction=kol_voice_instruction,
             cache_note=self.cache_note(cache_context),
             trend_json=self.json_text(trend_report.__dict__),
             data_json=self.json_text(data_report.__dict__),
@@ -102,7 +112,8 @@ class WriterAgent(BaseAgent):
             evidence_strength=str(data_report.evidence_strength or 0),
             topic_quality_score=str(data_report.topic_quality_score or 0),
         )
-        payload = self.request_json("你是 WriterAgent，只输出 JSON。", prompt)
+        system_prompt = f"{self._writer_system_prompt(style)}{self.best_practices_instruction()}"
+        payload = self.request_json(system_prompt, prompt)
         if payload:
             opening_lines = self._finalize_opening_lines(
                 payload.get("opening_lines"),
@@ -337,7 +348,7 @@ class WriterAgent(BaseAgent):
 
         if content_format == "quick_commentary":
             lines = [
-                f"{scene_anchor or number or '这条新进展'}不能只当新闻看。",
+                self._varied_opening_first_line(scene_anchor, number, "这条新进展"),
                 f"{primary}现在更该看谁先把执行层信号做实。",
                 self._short_angle_line(angle),
             ]
@@ -346,15 +357,15 @@ class WriterAgent(BaseAgent):
         if content_format == "data_recap":
             lines = [
                 f"{number or '这组数据'}不是结果，而是{primary}重新定价的起点。",
-                f"{primary}接下来真正要看的是哪些环节先把数字变成订单和利润。",
+                f"{primary}接下来需要重点关注的是哪些环节先把数字变成订单和利润。",
                 self._short_angle_line(angle),
             ]
             return self._normalize_opening_lines(lines)
 
         if content_format == "project_breakdown":
             lines = [
-                f"{scene_anchor or company or primary}这次变化，关键不在热度而在兑现链条。",
-                f"{primary}真正值得拆的是主体位置、交付节奏和利润归属。",
+                f"{scene_anchor or company or primary}这次变化，关键在于兑现链条。",
+                f"{primary}值得深入拆解的是主体位置、交付节奏和利润归属。",
                 self._short_angle_line(angle),
             ]
             return self._normalize_opening_lines(lines)
@@ -377,39 +388,54 @@ class WriterAgent(BaseAgent):
 
         if "储能" in resolved_track or "新能源" in resolved_track:
             lines = [
-                f"{number or scene_anchor or '这轮项目变化'}不是景气平均抬升，而是{primary}开始拼并网、回款和毛利。",
-                f"{primary}现在真正该看的，不是签约数量有多热闹，而是谁先把订单变成出货和现金流。",
+                f"{number or scene_anchor or '这轮项目变化'}不仅是景气抬升，更是{primary}在并网、回款和毛利上的竞争。",
+                f"{primary}需要关注的，是签约数量背后谁能先把订单变成出货和现金流。",
                 self._short_angle_line(angle),
             ]
             return self._normalize_opening_lines(lines)
 
         if "机器人" in resolved_track:
             lines = [
-                f"{scene_anchor or number or '这轮机器人进展'}不是演示更热闹，而是{primary}开始进入客户验证和交付筛选。",
-                f"{primary}接下来分胜负的关键，不是讲故事能力，而是谁先把场景、订单和交付跑通。",
+                f"{scene_anchor or number or '这轮机器人进展'}不仅是演示升级，更是{primary}进入客户验证和交付筛选的新阶段。",
+                f"{primary}接下来的关键，在于谁能把场景、订单和交付真正跑通。",
                 self._short_angle_line(angle),
             ]
             return self._normalize_opening_lines(lines)
 
         if style.key == "finance_report":
             lines = [
-                f"{number or '这组数据'}不是终点，而是{primary}重新定价的起点。",
-                "市场接下来不会平均奖励所有公司，只会奖励先把订单和交付兑现出来的那一批。",
+                f"{number or '这组数据'}标志着{primary}重新定价的开始。",
+                "市场接下来会更看重那些能把订单和交付兑现出来的公司。",
                 self._short_angle_line(angle),
             ]
         elif style.key == "tech_media":
             lines = [
-                f"{scene_anchor or company or primary}背后的执行层信号，比概念热度更值得看。",
-                contrast_line or f"{number or '这轮变化'}之后，行业真正分化的往往是客户验证、交付节奏和毛利兑现。",
+                f"{scene_anchor or company or primary}背后的执行层信号值得关注。",
+                contrast_line or f"{number or '这轮变化'}之后，行业会在客户验证、交付节奏和毛利兑现上逐渐分化。",
                 self._short_angle_line(angle),
             ]
         else:
             lines = [
-                contrast_line or f"{number or '这轮变化'}不等于行业已经全面起飞，它更像是筛选真正受益者的开始。",
-                f"{primary}现在最重要的不是故事，而是谁能把订单、交付和利润串起来。",
+                contrast_line or f"{number or '这轮变化'}是行业筛选真正受益者的开始。",
+                f"{primary}能否成功，取决于谁能把订单、交付和利润有效串联起来。",
                 self._short_angle_line(angle),
             ]
         return self._normalize_opening_lines(lines)
+
+    def _varied_opening_first_line(self, scene_anchor: str, number: str, default: str) -> str:
+        """提供多样化的开头第一句，避免模板化"""
+        options = [
+            f"{scene_anchor or number or default}值得我们深入分析。",
+            f"{scene_anchor or number or default}背后有值得关注的变化。",
+            f"{scene_anchor or number or default}正在引发新的思考。",
+            f"{scene_anchor or number or default}带来了新的观察角度。",
+            f"{scene_anchor or number or default}背后的逻辑值得我们探究。",
+            f"{scene_anchor or number or default}正在改变行业的走向。",
+            f"{scene_anchor or number or default}为我们提供了新的视角。",
+            f"{scene_anchor or number or default}背后的趋势值得关注。",
+        ]
+        import random
+        return random.choice(options)
 
     def _build_data_paragraph(self, primary: str, core_data: list[str], evidence: str) -> str:
         data_text = "；".join(core_data) if core_data else "公开信息还不足以支撑过度乐观的结论"
@@ -658,6 +684,7 @@ class WriterAgent(BaseAgent):
                 data_report,
                 self_benchmark_context=self_benchmark_context,
             )
+            paragraphs = self._ensure_structured_headings(paragraphs, trend_report, data_report)
         paragraphs = self._ensure_closing_question(paragraphs, comment_prompt or self._default_comment_prompt(data_report))
         _min_paragraphs, max_paragraphs = self._paragraph_bounds(data_report.content_format or "deep_analysis")
         article_text = "\n\n".join(paragraphs[:max_paragraphs]).strip()
@@ -678,6 +705,78 @@ class WriterAgent(BaseAgent):
         if re.search(r"(^|\n)\s*[A-Za-z][A-Za-z0-9 ,:'?!.\-]{18,}", text):
             return True
         return False
+
+    def _writer_system_prompt(self, style: StyleProfile) -> str:
+        return (
+            "你是 WriterAgent，只输出 JSON。"
+            " 开头前两句必须出现悬念、反差数据或反直觉判断中的至少一种。"
+            " 正文必须包含 3 到 4 个以 ### 开头的小标题。"
+            " 小标题必须有对仗感或冲突感。"
+            " 结尾必须给出一个具体的开放式互动问题，不能只写“你怎么看”。"
+            " 禁止使用“今天我们来探讨”“不可否认”“值得注意的是”“综上所述”等套话。"
+            f" 当前风格语气：{style.tone}"
+        )
+
+    def _tone_directive(self, style: StyleProfile) -> str:
+        parts = [
+            f"严格执行当前语气：{style.tone}",
+            f"正文写法重点：{style.article_instruction or '先判断，再证据，再拆变量。'}",
+            f"开头写法重点：{style.opening_instruction or '开头先抛钩子，再落到事实。'}",
+        ]
+        return "\n".join(f"- {item}" for item in parts if item.strip())
+
+    def _viral_template_instruction(self, style: StyleProfile, self_benchmark_context: dict[str, object] | None) -> str:
+        patterns = self._self_benchmark_patterns(self_benchmark_context)
+        pattern_text = "；".join(patterns[:4]) if patterns else "钩子开场；事实还原；冲突拆解；变量判断；互动收口"
+        return (
+            "启用爆款模板机制，但禁止标题党和低质夸张。\n"
+            f"- 参考结构：{pattern_text}\n"
+            "- 文章优先采用：钩子开场 -> 事实还原 -> 冲突拆解 -> 变量判断 -> 互动收口\n"
+            "- 刻意减少整齐划一的 AI 句式，允许更短段落和更有顿挫的真人复盘语感。"
+        )
+
+    def _kol_voice_instruction(self) -> str:
+        writing_payload = self._writer_runtime_options()
+        enabled = bool(writing_payload.get("kol_voice_enabled", False))
+        if not enabled:
+            return "未启用特定大V表达模仿，保持自然、克制、口语化但不过火。"
+
+        name = str(writing_payload.get("kol_voice_name", "")).strip() or "指定大V"
+        style = str(writing_payload.get("kol_voice_style", "")).strip() or "短段落、适度破折号、适度反问句、口语化转折"
+        return (
+            f"已启用大V口语化表达参考：{name}\n"
+            f"- 只借鉴表达习惯，不模仿原句、身份和观点归属。\n"
+            f"- 表达要求：{style}\n"
+            "- 可以使用更短的段落，适度加入破折号和反问句，但不要堆砌。"
+        )
+
+    def _writer_runtime_options(self) -> dict[str, object]:
+        config_path = getattr(self.settings, "config_path", None)
+        if not isinstance(config_path, Path) or not config_path.exists():
+            return {}
+
+        try:
+            payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return {}
+
+        if not isinstance(payload, dict):
+            return {}
+
+        merged: dict[str, object] = {}
+        root_writing = payload.get("writing", {})
+        if isinstance(root_writing, dict):
+            merged.update(root_writing)
+
+        account_key = str(getattr(self.settings, "account_key", "")).strip()
+        accounts = payload.get("accounts", {})
+        if isinstance(accounts, dict):
+            account_payload = accounts.get(account_key, {})
+            if isinstance(account_payload, dict):
+                account_writing = account_payload.get("writing", {})
+                if isinstance(account_writing, dict):
+                    merged.update(account_writing)
+        return merged
 
     def _finalize_summary(
         self,
@@ -725,16 +824,85 @@ class WriterAgent(BaseAgent):
         primary = self._primary_keyword(data_report) if data_report is not None else "这个赛道"
         content_format = data_report.content_format if data_report is not None else ""
         if content_mode == "sports":
-            return "你觉得这条消息最可能改变阵容选择、比赛走势还是舆论预期"
+            return self._varied_sports_comment_prompt()
         if content_mode == "international":
-            return "你觉得接下来最值得盯的是谁会先让步、谁会继续施压，还是市场会先给出反应"
+            return self._varied_international_comment_prompt()
         if content_format == "data_recap":
-            return f"你觉得{primary}下一步更该盯需求扩张、价格变化还是利润兑现"
+            return self._varied_data_comment_prompt(primary)
         if content_format == "project_breakdown":
-            return f"你更看好{primary}里哪类项目最先把订单兑现成利润"
+            return self._varied_project_comment_prompt(primary)
         if content_format == "quick_commentary":
-            return f"这条新进展里，你最看重客户验证、交付节奏还是毛利变化"
-        return f"你更看好{primary}里哪个环节最先把订单兑现成利润？"
+            return self._varied_quick_comment_prompt(primary)
+        return self._varied_default_comment_prompt(primary)
+
+    def _varied_sports_comment_prompt(self) -> str:
+        options = [
+            "你觉得这条消息会如何影响后续的阵容选择？",
+            "在你看来，这场比赛的走势会因此改变吗？",
+            "你认为舆论会如何解读这次变化？",
+            "如果是你，会如何调整接下来的策略？",
+            "你觉得最值得关注的是哪个方面？",
+        ]
+        import random
+        return random.choice(options)
+
+    def _varied_international_comment_prompt(self) -> str:
+        options = [
+            "你觉得接下来各方会如何调整策略？",
+            "在你看来，谁会是这次博弈的受益者？",
+            "你认为市场会如何反应？",
+            "如果是你，会关注哪些变化？",
+            "你觉得最关键的变量是什么？",
+        ]
+        import random
+        return random.choice(options)
+
+    def _varied_data_comment_prompt(self, primary: str) -> str:
+        options = [
+            f"你觉得{primary}下一步的机会在哪里？",
+            f"{primary}的价格走势会如何变化？",
+            f"在你看来，{primary}的利润何时能兑现？",
+            f"你更看好{primary}的哪个发展方向？",
+            f"{primary}接下来需要关注哪些指标？",
+        ]
+        import random
+        return random.choice(options)
+
+    def _varied_project_comment_prompt(self, primary: str) -> str:
+        options = [
+            f"你觉得{primary}里哪类项目最有潜力？",
+            f"{primary}的交付节奏会如何推进？",
+            f"在你看来，{primary}的利润会如何分配？",
+            f"你更关注{primary}的哪个环节？",
+            f"{primary}里哪些项目值得期待？",
+        ]
+        import random
+        return random.choice(options)
+
+    def _varied_quick_comment_prompt(self, primary: str) -> str:
+        options = [
+            f"这条新进展里，你最看重什么？",
+            f"{primary}的客户验证会顺利吗？",
+            f"在你看来，{primary}的交付节奏如何？",
+            f"你觉得{primary}的毛利会有改善吗？",
+            f"{primary}接下来会如何发展？",
+        ]
+        import random
+        return random.choice(options)
+
+    def _varied_default_comment_prompt(self, primary: str) -> str:
+        options = [
+            f"你觉得{primary}里哪个环节最有机会？",
+            f"{primary}的订单什么时候能兑现？",
+            f"在你看来，{primary}的未来发展如何？",
+            f"你更看好{primary}的哪条赛道？",
+            f"{primary}接下来需要关注什么？",
+            f"你对{primary}的前景怎么看？",
+            f"{primary}的利润会如何变化？",
+            f"你觉得{primary}的核心竞争力在哪里？",
+        ]
+        import random
+        return random.choice(options)
 
     def _finalize_opening_lines(
         self,
@@ -798,6 +966,53 @@ class WriterAgent(BaseAgent):
                 limit=5,
             )
         return [item.lstrip("#") for item in topics[:5]]
+
+    def _ensure_structured_headings(
+        self,
+        paragraphs: list[str],
+        trend_report: TrendReport,
+        data_report: DataReport,
+    ) -> list[str]:
+        blocks = [item.strip() for item in paragraphs if item.strip()]
+        heading_count = sum(1 for item in blocks if item.startswith("### "))
+        if self.REQUIRED_HEADING_COUNT[0] <= heading_count <= self.REQUIRED_HEADING_COUNT[1]:
+            return blocks
+
+        prose = [item for item in blocks if not item.startswith("### ")]
+        if len(prose) < 3:
+            return blocks
+
+        headings = self._build_section_headings(trend_report, data_report, len(prose))
+        structured: list[str] = []
+        body_count = min(len(headings), len(prose))
+        for index in range(body_count):
+            structured.append(f"### {headings[index]}")
+            structured.append(prose[index])
+        if len(prose) > body_count:
+            structured.extend(prose[body_count:])
+        return structured
+
+    def _build_section_headings(
+        self,
+        trend_report: TrendReport,
+        data_report: DataReport,
+        paragraph_count: int,
+    ) -> list[str]:
+        primary = self._primary_keyword(data_report)
+        content_mode = self._content_mode(data_report)
+        if content_mode == "international":
+            candidates = ["表态很响，动作更真", "压力在前，筹码在后", "局势未定，变量先行", "牌面很满，底牌未亮"]
+        elif content_mode == "sports":
+            candidates = ["名单已出，悬念未散", "节奏在变，胜负未定", "热议很猛，细节更硬", "看似明朗，实则拉扯"]
+        else:
+            candidates = [
+                f"{primary}在热，兑现偏冷",
+                "看着提速，实则分化",
+                "数据先行，利润未满",
+                "故事不小，变量更大",
+            ]
+        desired = 4 if paragraph_count >= 4 else 3
+        return candidates[:desired]
 
     def _article_angle(self, trend_report: TrendReport, data_report: DataReport) -> str:
         content_mode = self._content_mode(data_report)
@@ -1320,8 +1535,23 @@ class WriterAgent(BaseAgent):
     def _short_angle_line(self, angle: str) -> str:
         text = self.clean_publish_text(angle).strip().rstrip("。")
         if not text:
-            return "真正该看的，是订单和交付谁先兑现。"
+            return self._varied_angle_line()
         return f"{text}。"
+
+    def _varied_angle_line(self) -> str:
+        """提供多样化的角度结尾，避免模板化"""
+        options = [
+            "这背后的变化，值得我们持续跟踪。",
+            "这些信号值得我们重点关注。",
+            "后续的发展趋势值得期待。",
+            "我们可以从多个维度来观察。",
+            "这为我们提供了新的思考角度。",
+            "背后的逻辑值得深入分析。",
+            "这正是市场正在关注的焦点。",
+            "关键在于如何把握其中的机遇。",
+        ]
+        import random
+        return random.choice(options)
 
     def _long_angle_line(self, angle: str) -> str:
         text = self.clean_publish_text(angle).strip().rstrip("。")

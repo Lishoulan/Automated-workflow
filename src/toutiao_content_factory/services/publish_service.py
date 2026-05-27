@@ -1,9 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
 import logging
 import re
+import shutil
 import time
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -15,6 +16,7 @@ from urllib.parse import parse_qs
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import PublishRecord
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 
 try:
@@ -31,6 +33,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for non-Windows envir
 
 
 class PublishService:
+    DEBUG_PATH_PATTERN = re.compile(r"Debug files saved to:\s*(?P<path>.+)$", re.IGNORECASE)
     NORMALIZE_PATTERN = re.compile(r"[\s\W_]+", re.UNICODE)
     SUCCESS_HISTORY_STATUSES = {"published", "submitted_for_review", "submitted", "success"}
     META_NOISE_PREFIXES = (
@@ -165,6 +168,7 @@ class PublishService:
         self.logger = logger
         self.history_path = settings.output_dir / settings.publishing.history_filename
         self.growth_ops_service = GrowthOpsService(settings, logger)
+        self.content_guard_service = ContentGuardService(settings, logger)
 
     @contextmanager
     def _publish_session_lock(self, purpose: str):
@@ -201,11 +205,11 @@ class PublishService:
                 except Exception:
                     pass
 
-    def publish_run(self, run_dir: Path) -> dict[str, Path]:
+    def publish_run(self, run_dir: Path, *, declare_first_release: bool = True) -> dict[str, Path]:
         with self._publish_session_lock("publish run"):
-            return self._publish_run_locked(run_dir)
+            return self._publish_run_locked(run_dir, declare_first_release=declare_first_release)
 
-    def _publish_run_locked(self, run_dir: Path) -> dict[str, Path]:
+    def _publish_run_locked(self, run_dir: Path, *, declare_first_release: bool = True) -> dict[str, Path]:
         if not self.settings.publishing.enabled:
             raise RuntimeError("Publishing is disabled. Set TOUTIAO_PUBLISH_ENABLED=1 first.")
 
@@ -223,12 +227,18 @@ class PublishService:
         topic = publish_meta.get("selected_topic") or {}
         topic_title = str(topic.get("title", ""))
         topic_url = str(topic.get("url", ""))
-        if not self.settings.publishing.allow_duplicate_topics and self._was_topic_published(topic_title, topic_url):
+        if (
+            not bool(self.settings.publishing.draft_only)
+            and not self.settings.publishing.allow_duplicate_topics
+            and self._was_topic_published(topic_title, topic_url)
+        ):
             raise RuntimeError("This topic has already been published today. Duplicate publish blocked.")
 
         title = self._clip_title(str(publish_meta.get("selected_title", "")).strip())
         article = self._sanitize_article_for_publish(self._read_text(publish_dir / "article.md").strip())
         preflight_summary = self._collect_preflight_summary_locked()
+        content_guard_report = self.content_guard_service.build_publish_guard_report(run_dir)
+        preflight_summary = self._merge_content_guard_summary(preflight_summary, content_guard_report)
         blocking_flags = list(preflight_summary.get("blocking_flags", []))
         should_bypass_preflight = self._should_bypass_preflight_blockers(preflight_summary)
         if blocking_flags and not should_bypass_preflight:
@@ -243,6 +253,9 @@ class PublishService:
             result_payload = self._publish_to_toutiao(
                 title=title,
                 article=article,
+                draft_only=bool(self.settings.publishing.draft_only),
+                run_dir=run_dir,
+                declare_first_release=declare_first_release,
             )
         except Exception as exc:
             self._write_failed_publish_result(
@@ -319,7 +332,7 @@ class PublishService:
                 executable_path=self.settings.publishing.executable_path or None,
             )
             try:
-                page = browser.new_page()
+                page = browser.pages[0] if browser.pages else browser.new_page()
                 diagnostic_events: list[dict[str, Any]] = []
                 self._install_publish_diagnostic_capture(page, diagnostic_events)
                 page.goto(
@@ -371,6 +384,18 @@ class PublishService:
 
                 if not preflight_summary or preflight_summary.get("blocking_flags"):
                     export_paths = self._write_preflight_summary(preflight_summary or {})
+                    self._append_notification(
+                        level="warn",
+                        title="Publish login required",
+                        message="Toutiao login session initialization timed out before the account became publish-capable.",
+                        notification_type="publish_login_required",
+                        data={
+                            "account_key": self.settings.account_key,
+                            "platform": self.settings.publishing.platform,
+                            "current_url": page.url,
+                            **{name: str(path) for name, path in export_paths.items()},
+                        },
+                    )
                     raise RuntimeError(
                         "Login session initialization timed out before the account reached a publish-capable state. "
                         f"Current URL: {page.url}. Preflight summary saved to: {export_paths.get('publish_preflight')}"
@@ -412,17 +437,26 @@ class PublishService:
                 executable_path=self.settings.publishing.executable_path or None,
             )
             try:
-                page = browser.new_page()
+                page = browser.pages[0] if browser.pages else browser.new_page()
                 diagnostic_events: list[dict[str, Any]] = []
                 self._install_publish_diagnostic_capture(page, diagnostic_events)
-                page.goto(
-                    publish_url,
-                    wait_until="domcontentloaded",
-                    timeout=self.settings.publishing.wait_timeout_ms,
-                )
+                self._goto_publish_page(page, publish_url)
                 page.wait_for_timeout(2500)
+                notes: list[str] = []
+                self._dismiss_ai_assistant_drawer(page, notes)
+                self._wait_for_publish_editor_ready(page)
                 diagnostics = self._build_publish_diagnostics(diagnostic_events)
-                return self._build_preflight_summary_from_diagnostics(page.url, diagnostics)
+                summary = self._build_preflight_summary_from_diagnostics(page.url, diagnostics)
+                if summary.get("blocking_flags") and self._page_looks_publish_capable(page):
+                    summary["blocking_flags"] = [
+                        item
+                        for item in list(summary.get("blocking_flags", []))
+                        if item != "Current browser session does not appear to have an accessible Toutiao publish page."
+                    ]
+                    warnings = list(summary.get("warnings", []))
+                    warnings.append("Diagnostics API was incomplete, but the publish editor DOM was detected.")
+                    summary["warnings"] = self._unique_texts(warnings)
+                return summary
             except Exception as exc:
                 return {
                     "blocking_flags": [f"Publish preflight failed: {self._clean_visible_text(exc)}"],
@@ -436,7 +470,60 @@ class PublishService:
         summary = self.collect_preflight_summary()
         return self._write_preflight_summary(summary)
 
-    def _publish_to_toutiao(self, title: str, article: str) -> dict[str, Any]:
+    def _merge_content_guard_summary(
+        self,
+        preflight_summary: dict[str, Any],
+        content_guard_report: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = dict(preflight_summary or {})
+        payload["blocking_flags"] = self._unique_texts(
+            list(payload.get("blocking_flags", []))
+            + list(content_guard_report.get("blocking_flags", []))
+        )
+        payload["warnings"] = self._unique_texts(
+            list(payload.get("warnings", []))
+            + list(content_guard_report.get("warnings", []))
+        )
+        payload["content_guard"] = content_guard_report
+        return payload
+
+    def _append_notification(
+        self,
+        *,
+        level: str,
+        title: str,
+        message: str,
+        notification_type: str,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        notifications_path = self.settings.automation_dir / "notifications.json"
+        notifications_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = self._load_json(notifications_path)
+        items: list[dict[str, Any]] = []
+        if isinstance(existing, list):
+            items = [item for item in existing if isinstance(item, dict)]
+        elif isinstance(existing, dict):
+            items = [existing]
+
+        entry = {
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "level": level,
+            "type": notification_type,
+            "title": title,
+            "message": message,
+            "data": data or {},
+        }
+        payload = [entry, *items[:49]]
+        notifications_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _publish_to_toutiao(
+        self,
+        title: str,
+        article: str,
+        draft_only: bool = False,
+        run_dir: Path | None = None,
+        declare_first_release: bool = True,
+    ) -> dict[str, Any]:
         if sync_playwright is None:
             raise RuntimeError(
                 "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`."
@@ -456,17 +543,13 @@ class PublishService:
                 executable_path=self.settings.publishing.executable_path or None,
             )
             try:
-                page = browser.new_page()
+                page = browser.pages[0] if browser.pages else browser.new_page()
                 publish_events: list[dict[str, Any]] = []
                 diagnostic_events: list[dict[str, Any]] = []
                 self._install_publish_event_capture(page, publish_events)
                 self._install_publish_diagnostic_capture(page, diagnostic_events)
 
-                page.goto(
-                    publish_url,
-                    wait_until="domcontentloaded",
-                    timeout=self.settings.publishing.wait_timeout_ms,
-                )
+                self._goto_publish_page(page, publish_url)
                 page.wait_for_timeout(1500)
 
                 if self.settings.publishing.base_url not in page.url:
@@ -476,11 +559,7 @@ class PublishService:
                 if "/profile_v4/graphic/publish" not in page.url:
                     if not self._maybe_click(page, selectors.get("new_post_button", [])):
                         notes.append("New post button not clicked. Falling back to direct publish URL.")
-                        page.goto(
-                            publish_editor_url,
-                            wait_until="domcontentloaded",
-                            timeout=self.settings.publishing.wait_timeout_ms,
-                        )
+                        self._goto_publish_page(page, publish_editor_url)
                         page.wait_for_timeout(1500)
 
                 self._dismiss_ai_assistant_drawer(page, notes)
@@ -498,11 +577,7 @@ class PublishService:
 
                 if (not title_selector or not editor_selector) and page.url != publish_editor_url:
                     notes.append("Editor selectors not found on current page. Retrying publish URL directly.")
-                    page.goto(
-                        publish_editor_url,
-                        wait_until="domcontentloaded",
-                        timeout=self.settings.publishing.wait_timeout_ms,
-                    )
+                    self._goto_publish_page(page, publish_editor_url)
                     page.wait_for_timeout(1500)
                     self._dismiss_ai_assistant_drawer(page, notes)
                     self._wait_for_publish_editor_ready(page)
@@ -539,11 +614,15 @@ class PublishService:
                 self._dismiss_ai_assistant_drawer(page, notes)
                 self._set_editor_content(page, editor_selector, article, notes)
                 self._apply_default_work_declarations(page, notes)
-                self._apply_safe_publish_options(page, notes)
+                self._apply_safe_publish_options(page, notes, declare_first_release=declare_first_release)
                 self._finalize_editor_state(page, title_locator, editor_selector, title, notes)
                 self._dismiss_ai_assistant_drawer(page, notes)
-                cover_mode = "none"
-                self._ensure_no_cover_mode(page, notes)
+                cover_path = self._resolve_toutiao_cover_asset(run_dir, notes)
+                cover_mode = self._resolve_cover_mode(cover_path) if cover_path is not None else "none"
+                if cover_mode == "single" and cover_path is not None:
+                    self._apply_cover_image(page, cover_path, notes)
+                else:
+                    self._ensure_no_cover_mode(page, notes)
                 self._stabilize_publish_form(page, notes)
 
                 diagnostics = self._build_publish_diagnostics(diagnostic_events)
@@ -558,6 +637,22 @@ class PublishService:
                     start_index=draft_watch_start,
                 ):
                     notes.append("Draft autosave was not confirmed. Continuing with a direct publish attempt.")
+
+                if draft_only:
+                    notes.append("Draft-only mode enabled. Stopped after draft autosave confirmation.")
+                    return {
+                        "status": "draft_saved",
+                        "published_at": datetime.now().isoformat(timespec="seconds"),
+                        "external_url": page.url,
+                        "notes": self._finalize_notes(notes),
+                        "cover_mode": cover_mode,
+                        "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
+                        "backend_response_summary": {},
+                        "publish_request_summary": {
+                            "url": page.url,
+                            "save_mode": "draft_only",
+                        },
+                    }
 
                 self._dismiss_ai_assistant_drawer(page, notes)
                 page.wait_for_timeout(700)
@@ -626,6 +721,54 @@ class PublishService:
             path = self.settings.project_root / path
         return path
 
+    def _resolve_toutiao_cover_asset(self, run_dir: Path | None, notes: list[str]) -> Path | None:
+        if run_dir is None:
+            notes.append("Skipped Toutiao cover upload because no run directory was provided.")
+            return None
+
+        image_result = self._load_json(
+            run_dir / self.settings.review.publish_dirname / "image_generation_result.json"
+        )
+        if not image_result:
+            notes.append("Skipped Toutiao cover upload because image_generation_result.json is missing.")
+            return None
+
+        if bool(image_result.get("used_fallback", False)):
+            notes.append("Skipped Toutiao cover upload because image2 failed and fallback images are not uploaded.")
+            return None
+
+        backend = str(image_result.get("backend", "")).strip().lower()
+        backend_priority = image_result.get("backend_priority", [])
+        model = str(image_result.get("model", "")).strip()
+        effective_remote_backend = ""
+        if isinstance(backend_priority, list):
+            for item in backend_priority:
+                candidate = str(item).strip().lower()
+                if candidate and candidate not in {"renderer", "local", "local_renderer"}:
+                    effective_remote_backend = candidate
+                    break
+        if not effective_remote_backend and backend not in {"", "renderer", "local", "local_renderer"}:
+            effective_remote_backend = backend
+        if not effective_remote_backend:
+            notes.append(
+                f"Skipped Toutiao cover upload because no successful remote image backend was recorded (`{backend or 'unknown'}`)."
+            )
+            return None
+
+        cover_path = self._resolve_existing_publish_asset(
+            run_dir=run_dir,
+            publish_dir_name="images",
+            filename="cover.png",
+        )
+        if cover_path is None:
+            notes.append("Skipped Toutiao cover upload because the generated cover file was not found.")
+            return None
+
+        notes.append(
+            f"Toutiao cover upload enabled from successful remote image generation ({effective_remote_backend}, {model or 'unknown model'})."
+        )
+        return cover_path
+
     def _clip_title(self, title: str) -> str:
         title = " ".join(self._sanitize_publish_text(title).split()).strip()
         limit = max(1, int(self.settings.publishing.title_max_length))
@@ -633,10 +776,47 @@ class PublishService:
             return title
         return title[:limit].rstrip(" \t\r\n,，。！？、:：;；-")
 
+    def _goto_publish_page(self, page, url: str) -> None:
+        timeout_ms = max(self.settings.publishing.wait_timeout_ms, 30000)
+        attempts = 3
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=timeout_ms,
+                )
+                try:
+                    page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 10000))
+                except Exception:
+                    pass
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt >= attempts:
+                    break
+                page.wait_for_timeout(1200 * attempt)
+        if last_error is not None:
+            raise last_error
+
     def _load_json(self, path: Path) -> dict[str, Any]:
         if not path.exists():
             return {}
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def _resolve_existing_publish_asset(
+        self,
+        *,
+        run_dir: Path | None,
+        publish_dir_name: str,
+        filename: str,
+    ) -> Path | None:
+        if run_dir is not None:
+            candidate = run_dir / self.settings.review.publish_dirname / publish_dir_name / filename
+            if candidate.exists():
+                return candidate
+        return None
 
     def _write_preflight_summary(self, summary: dict[str, Any]) -> dict[str, Path]:
         automation_dir = self.settings.automation_dir
@@ -689,6 +869,23 @@ class PublishService:
                 return resolved
             page.wait_for_timeout(350)
         return None
+
+    def _page_looks_publish_capable(self, page) -> bool:
+        current_url = page.url if hasattr(page, "url") else ""
+        if "/profile_v4/graphic/publish" not in current_url:
+            return False
+
+        title_selector = self._resolve_editor_selector(
+            page,
+            self.settings.publishing.selectors.get("title_input", []),
+            self.DEFAULT_TITLE_SELECTORS,
+        )
+        editor_selector = self._resolve_editor_selector(
+            page,
+            self.settings.publishing.selectors.get("article_editor", []),
+            self.DEFAULT_EDITOR_SELECTORS,
+        )
+        return bool(title_selector and editor_selector)
 
     def _wait_for_publish_editor_ready(self, page) -> None:
         editor_shell_selectors = [
@@ -1916,7 +2113,7 @@ class PublishService:
         if cleared_labels:
             notes.append(f"Cleared work declarations: {', '.join(cleared_labels)}")
 
-    def _apply_safe_publish_options(self, page, notes: list[str]) -> None:
+    def _apply_safe_publish_options(self, page, notes: list[str], *, declare_first_release: bool = True) -> None:
         applied_labels: list[str] = []
         label = self._set_named_checkbox_state(
             page,
@@ -1925,13 +2122,14 @@ class PublishService:
                 "label.byte-checkbox:has-text('声明首发')",
                 "label.byte-checkbox:has(input[value='1'])",
             ],
-            checked=True,
+            checked=declare_first_release,
         )
         if label:
             applied_labels.append(label)
 
         if applied_labels:
-            notes.append(f"Applied publish options: {', '.join(applied_labels)}")
+            action = "Applied" if declare_first_release else "Cleared"
+            notes.append(f"{action} publish options: {', '.join(applied_labels)}")
         else:
             notes.append("Publish option selectors for first-release were not found.")
 
@@ -2296,6 +2494,9 @@ class PublishService:
             [
                 ".article-cover-radio-group label.byte-radio:has(input[value='2'])",
                 "label.byte-radio:has-text('单图')",
+                "label.byte-radio:has-text('单封面')",
+                "label.byte-radio:has-text('一张图')",
+                "label:has-text('单图封面')",
             ],
         )
 
@@ -3013,6 +3214,7 @@ class PublishService:
         error: str,
         preflight_summary: dict[str, Any] | None = None,
     ) -> None:
+        debug_bundle = self._build_debug_bundle_from_error(error)
         failure_payload = {
             "status": "failed",
             "failed_at": datetime.now().isoformat(timespec="seconds"),
@@ -3023,10 +3225,77 @@ class PublishService:
             "error": self._clean_visible_text(error),
             "preflight_summary": preflight_summary or {},
         }
+        if debug_bundle:
+            failure_payload.update(debug_bundle)
         (publish_dir / "publish_result.json").write_text(
             json.dumps(failure_payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def _build_debug_bundle_from_error(self, error: str) -> dict[str, Any]:
+        debug_dir = self._extract_debug_dir_from_error(error)
+        if debug_dir is None:
+            return {}
+        return self._serialize_debug_bundle(debug_dir)
+
+    def _extract_debug_dir_from_error(self, error: str) -> Path | None:
+        match = self.DEBUG_PATH_PATTERN.search(error or "")
+        if not match:
+            return None
+        raw_path = match.group("path").strip().strip("\"'")
+        if not raw_path:
+            return None
+        debug_dir = Path(raw_path)
+        if not debug_dir.is_absolute():
+            debug_dir = Path.cwd() / debug_dir
+        return debug_dir
+
+    def _serialize_debug_bundle(self, debug_dir: Path) -> dict[str, Any]:
+        resolved_dir = debug_dir.expanduser().resolve(strict=False)
+        artifacts = self._collect_debug_artifacts(resolved_dir)
+        payload: dict[str, Any] = {
+            "debug_bundle_dir": str(resolved_dir),
+            "debug_artifacts": artifacts,
+        }
+        if artifacts.get("screenshot"):
+            payload["screenshot_path"] = artifacts["screenshot"]
+        if artifacts.get("page_html"):
+            payload["dom_path"] = artifacts["page_html"]
+        if artifacts.get("current_url"):
+            payload["current_url_path"] = artifacts["current_url"]
+        if artifacts.get("context"):
+            payload["context_path"] = artifacts["context"]
+        if not resolved_dir.exists():
+            payload["debug_bundle_missing"] = True
+            return payload
+        payload["debug_bundle_manifest"] = {
+            "platform": self.settings.publishing.platform,
+            "captured_at": self._extract_debug_bundle_timestamp(resolved_dir),
+            "debug_dir": str(resolved_dir),
+            "artifacts": artifacts,
+        }
+        return payload
+
+    def _collect_debug_artifacts(self, debug_dir: Path) -> dict[str, str]:
+        artifact_names = {
+            "screenshot": "publish_page.png",
+            "page_html": "publish_page.html",
+            "current_url": "current_url.txt",
+            "context": "publish_context.json",
+        }
+        artifacts: dict[str, str] = {}
+        for key, filename in artifact_names.items():
+            candidate = debug_dir / filename
+            if candidate.exists():
+                artifacts[key] = str(candidate.resolve(strict=False))
+        return artifacts
+
+    def _extract_debug_bundle_timestamp(self, debug_dir: Path) -> str:
+        try:
+            captured_at = datetime.strptime(debug_dir.name, "%Y%m%d-%H%M%S")
+        except ValueError:
+            return ""
+        return captured_at.isoformat(timespec="seconds")
 
     def _load_history(self) -> list[PublishRecord]:
         if not self.history_path.exists():
@@ -3080,18 +3349,41 @@ class PublishService:
         return None
 
     def _maybe_click(self, page, selectors: list[str], required: bool = True) -> bool:
+        return self.safe_click(page, selectors, required=required)
+
+    def safe_click(self, page, selectors: list[str], timeout: int = 10000, required: bool = True) -> bool:
+        try:
+            page.wait_for_load_state("networkidle", timeout=min(timeout, 8000))
+        except Exception:
+            pass
         selector = self._first_visible_selector(page, selectors, strict=False)
         if not selector:
             return False if not required else False
 
         locator = page.locator(selector).first
         try:
-            locator.click(timeout=1500)
+            locator.scroll_into_view_if_needed(timeout=1000)
         except Exception:
-            locator.click(force=True, timeout=1500)
-        return True
+            pass
+        try:
+            locator.click(timeout=min(timeout, 1500))
+            return True
+        except Exception:
+            try:
+                locator.click(force=True, timeout=min(timeout, 1500))
+                return True
+            except Exception:
+                return False if not required else False
 
     def _click_immediate_publish_button(self, page, configured_selectors: list[str], notes: list[str]) -> bool:
+        try:
+            semantic_button = page.get_by_role("button", name=re.compile(r"^(发布|立即发布)$")).first
+            if self._locator_is_visible(semantic_button) and self._click_button_candidate(semantic_button):
+                notes.append("Clicked primary publish button via semantic role selector.")
+                return True
+        except Exception:
+            pass
+
         preferred_selectors: list[str] = [
             ".publish-footer-content button.byte-btn-primary.publish-btn-last",
             ".publish-footer-content button.publish-btn-last.byte-btn-primary",
@@ -3369,7 +3661,44 @@ class PublishService:
             except Exception as exc:
                 self.logger.warning("Failed to save publish debug context: %s", exc)
 
+        self._refresh_latest_debug_bundle(debug_dir)
         return debug_dir
+
+    def _refresh_latest_debug_bundle(self, debug_dir: Path) -> None:
+        latest_dir = self.settings.output_dir / "debug"
+        latest_dir.mkdir(parents=True, exist_ok=True)
+
+        mapping = {
+            "publish_page.png": "latest_error.png",
+            "publish_page.html": "latest_error_dom.html",
+            "current_url.txt": "latest_error_url.txt",
+            "publish_context.json": "latest_error_context.json",
+        }
+        copied: dict[str, str] = {}
+        for source_name, target_name in mapping.items():
+            source = debug_dir / source_name
+            if not source.exists():
+                continue
+            target = latest_dir / target_name
+            try:
+                shutil.copyfile(source, target)
+                copied[source_name] = str(target.resolve(strict=False))
+            except Exception as exc:
+                self.logger.warning("Failed to refresh latest Toutiao debug artifact %s: %s", target_name, exc)
+
+        manifest = {
+            "platform": self.settings.publishing.platform,
+            "captured_at": self._extract_debug_bundle_timestamp(debug_dir),
+            "debug_dir": str(debug_dir.resolve(strict=False)),
+            "artifacts": copied,
+        }
+        try:
+            (latest_dir / "latest_error_manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            self.logger.warning("Failed to write latest Toutiao debug manifest: %s", exc)
 
     def _confirm_publish_modal(self, page, notes: list[str]) -> None:
         clicked_texts: list[str] = []

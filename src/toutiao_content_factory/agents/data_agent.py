@@ -356,7 +356,13 @@ class DataAgent(BaseAgent):
             96,
             round(evidence_strength * 0.72 + len(evidence_notes) * 2 + len(growth_numbers) * 2),
         )
-        topic_quality_flags = list(extraction.topic_quality_flags)
+        topic_quality_flags = self._build_topic_quality_flags(
+            extraction=extraction,
+            core_data=core_data,
+            growth_numbers=growth_numbers,
+            companies=companies,
+            evidence_notes=evidence_notes,
+        )
         word_target = extraction.word_target or self._word_target_for_format(content_format, content_mode=content_mode)
         paragraph_instruction = extraction.paragraph_instruction.strip() or self._paragraph_instruction_for_format(
             content_format,
@@ -379,6 +385,37 @@ class DataAgent(BaseAgent):
             "topic_quality_flags": topic_quality_flags,
             "word_target": word_target,
         }
+
+    def _build_topic_quality_flags(
+        self,
+        extraction: ExtractionResult,
+        core_data: list[str],
+        growth_numbers: list[str],
+        companies: list[str],
+        evidence_notes: list[str],
+    ) -> list[str]:
+        flags = list(extraction.topic_quality_flags)
+        if not core_data:
+            flags.append("missing_core_data")
+        if not growth_numbers:
+            flags.append("missing_growth_numbers")
+        if not companies:
+            flags.append("missing_companies")
+        if not evidence_notes:
+            flags.append("missing_evidence_notes")
+        if not extraction.topic_title.strip():
+            flags.append("missing_topic_title")
+        if len(core_data) + len(growth_numbers) + len(companies) <= 2:
+            flags.append("low_information_density")
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in flags:
+            normalized = str(item).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        return result
 
     def _infer_topic_type(self, extraction: ExtractionResult) -> str:
         text = f"{extraction.topic_title} {extraction.merged_text}".lower()

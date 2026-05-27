@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}???? | ?????????{% endblock %}
+{% block title %}批次详情 | 手蓝内容工厂{% endblock %}
 
 {% block content %}
 <section class="hero">
@@ -67,6 +67,24 @@
       <input type="hidden" name="account" value="{{ account_key }}">
       <button class="button button-secondary" type="submit">直接自动发布</button>
     </form>
+    <div class="section-block">
+      <h4>单平台补发</h4>
+      <form method="post" action="/runs/{{ detail.run.name }}/retry" class="inline-form">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <input type="hidden" name="platform" value="toutiao">
+        <button class="button button-outline" type="submit">补发头条</button>
+      </form>
+      <form method="post" action="/runs/{{ detail.run.name }}/retry" class="inline-form">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <input type="hidden" name="platform" value="wechat">
+        <button class="button button-outline" type="submit">补发公众号</button>
+      </form>
+      <form method="post" action="/runs/{{ detail.run.name }}/retry" class="inline-form">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <input type="hidden" name="platform" value="douyin">
+        <button class="button button-outline" type="submit">补发抖音</button>
+      </form>
+    </div>
     <form method="post" action="/runs/{{ detail.run.name }}/reject" class="stack-form danger-form">
       <input type="hidden" name="account" value="{{ account_key }}">
       <label>
@@ -118,122 +136,95 @@
         <span>PGC ID {{ detail.publish_status.pgc_id or "未返回" }}</span>
       </div>
       {% if detail.publish_status.message %}
-      <p class="muted">后台返回：{{ detail.publish_status.message }}</p>
+      <p class="muted">{{ detail.publish_status.message }}</p>
       {% endif %}
       {% if detail.publish_status.external_url %}
-      <a class="text-link" href="{{ detail.publish_status.external_url }}" target="_blank">打开头条发布页</a>
+      <a class="text-link" href="{{ detail.publish_status.external_url }}" target="_blank">打开平台页面</a>
       {% endif %}
     </div>
     {% else %}
-    <p class="empty">这篇稿子还没有自动发布记录。</p>
+    <p class="empty">当前批次还没有发布结果。</p>
+    {% endif %}
+
+    {% if detail.debug_bundle and (detail.debug_bundle.screenshot_url or detail.debug_bundle.dom_url) %}
+    <div class="section-block">
+      <h4>自动化排障快照</h4>
+      {% if detail.debug_bundle.screenshot_url %}
+      <a class="text-link" href="{{ detail.debug_bundle.screenshot_url }}" target="_blank">打开失败截图</a>
+      <div class="section-block">
+        <img src="{{ detail.debug_bundle.screenshot_url }}" alt="发布失败截图" style="width:100%; border-radius:16px; border:1px solid rgba(148,163,184,.2);">
+      </div>
+      {% endif %}
+      <div class="meta-line">
+        {% if detail.debug_bundle.dom_url %}
+        <a class="text-link" href="{{ detail.debug_bundle.dom_url }}" target="_blank">查看当前 DOM</a>
+        {% endif %}
+        {% if detail.debug_bundle.debug_dir %}
+        <span class="muted">{{ detail.debug_bundle.debug_dir }}</span>
+        {% endif %}
+      </div>
+    </div>
     {% endif %}
 
     {% if detail.preflight_summary %}
     <div class="section-block">
-      <h4>发布前置检查</h4>
-      {% if detail.preflight_summary.blocking_flags %}
-      <ul class="bullet-list risk-list">
-        {% for note in detail.preflight_summary.blocking_flags %}
-        <li>{{ note }}</li>
-        {% endfor %}
-      </ul>
-      {% endif %}
-      {% if detail.preflight_summary.warnings %}
+      <h4>发布前检查</h4>
       <ul class="bullet-list">
-        {% for note in detail.preflight_summary.warnings %}
-        <li>{{ note }}</li>
+        {% for key, value in detail.preflight_summary.items() %}
+        <li>{{ key }}: {{ value }}</li>
         {% endfor %}
       </ul>
-      {% endif %}
     </div>
     {% endif %}
   </div>
 
   <div class="panel">
     <div class="panel-head">
-      <h3>标题候选</h3>
-      <p>推荐标题优先</p>
+      <h3>候选标题</h3>
+      <p>审核时可直接参考或改写</p>
     </div>
+    {% if detail.titles.items %}
     <ol class="candidate-list">
-      {% for title in detail.titles.recommended_titles %}
-      <li>{{ title }}</li>
-      {% endfor %}
-      {% for title in detail.titles.all_titles %}
+      {% for title in detail.titles.items %}
       <li>{{ title }}</li>
       {% endfor %}
     </ol>
+    {% else %}
+    <p class="empty">当前批次没有解析到候选标题。</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>正文草稿</h3>
+      <p>来自 `article.md`</p>
+    </div>
+    {% if detail.article_body %}
+    <div class="section-block">
+      <pre>{{ detail.article_body }}</pre>
+    </div>
+    {% else %}
+    <p class="empty">未找到正文草稿。</p>
+    {% endif %}
   </div>
 
   <div class="panel">
     <div class="panel-head">
-      <h3>资源链接</h3>
-      <p>下载或预览归档内容</p>
+      <h3>审核与发布包</h3>
+      <p>便于检查导出的审核材料是否完整</p>
     </div>
     <div class="link-list">
-      {% for name, url in detail.artifacts.items() %}
-      <a class="text-link" href="{{ url }}" target="_blank">{{ name }}</a>
+      {% for key, url in detail.artifacts.items() %}
+      <a class="run-row" href="{{ url }}" {% if key != 'run_detail' %}target="_blank"{% endif %}>
+        <div>
+          <strong>{{ key }}</strong>
+          <p>{{ url }}</p>
+        </div>
+      </a>
       {% endfor %}
     </div>
   </div>
 </section>
-
-<section class="grid two-col">
-  <div class="panel">
-    <div class="panel-head">
-      <h3>正文成稿</h3>
-      <p>这是当前批次真正用于发布的正文</p>
-    </div>
-    <div class="section-block">
-      <pre>{{ detail.article_body }}</pre>
-    </div>
-  </div>
-
-  <div class="panel">
-    <div class="panel-head">
-      <h3>正文校验</h3>
-      <p>内容可信度、密度与发布前检查备注</p>
-    </div>
-    {% set validation_notes = detail.content_score.validation_notes if detail.content_score and detail.content_score.validation_notes else [] %}
-    {% if validation_notes %}
-    <div class="section-block">
-      <h4>正文校验备注</h4>
-      <ul class="bullet-list">
-        {% for note in validation_notes %}
-        <li>{{ note }}</li>
-        {% endfor %}
-      </ul>
-    </div>
-    {% endif %}
-    {% if detail.publish_result %}
-    <div class="section-block">
-      <h4>完整发布结果</h4>
-      <pre>{{ detail.publish_result | tojson(indent=2) }}</pre>
-    </div>
-    {% endif %}
-  </div>
-</section>
-
-<section class="grid two-col">
-  <div class="panel">
-    <div class="panel-head">
-      <h3>编辑与审核包</h3>
-      <p>保留标题、摘要、评分和发布上下文</p>
-    </div>
-    <div class="section-block">
-      <h4>编辑包</h4>
-      <pre>{{ detail.editorial_packet }}</pre>
-    </div>
-    <div class="section-block">
-      <h4>审核包</h4>
-      <pre>{{ detail.review_packet }}</pre>
-    </div>
-    {% if detail.publish_package %}
-    <div class="section-block">
-      <h4>发布包</h4>
-      <pre>{{ detail.publish_package }}</pre>
-    </div>
-    {% endif %}
-  </div>
-</section>
 {% endblock %}
-

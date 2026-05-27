@@ -39,11 +39,28 @@ class TitleAgent(BaseAgent):
     )
     WEAK_SUFFIXES = ("现在走到哪一步了", "会怎么走", "还能走多远", "怎么看", "是什么信号")
 
+    DISCOURAGED_TITLE_PATTERNS = (
+        "竟然", "万万没想到", "背后原因", "原来是因为", "天理难容",
+        "大变局", "出事了", "震惊", "背后真相", "令人震惊",
+        "不敢相信", "看哭了", "太可怕了", "细思极恐",
+    )
+
+    CURIOSITY_TOKENS = ("不是", "而是", "背后", "真正", "为什么", "谁在", "谁能", "谁会", "到底", "竟然", "难道", "居然", "反常", "意外", "颠覆", "反转", "没想到", "想不到", "秘密", "真相")
+    RATIONAL_TOKENS = ("利润", "毛利", "盈利", "兑现", "估值", "份额", "红利", "毛利率", "订单", "交付", "验证", "客户", "量产", "出货", "签约", "开工", "数据", "增长", "下滑", "同比", "环比", "占比", "规模", "增速", "收入", "营收", "成本", "拐点", "分化", "重估")
+
     MODE_NOISE_TOKENS = ("产业链", "订单", "交付", "毛利", "利润", "兑现", "科技制造", "融资")
 
     def __init__(self, settings, prompt_repository, openai_service, logger) -> None:
         super().__init__(settings, prompt_repository, openai_service, logger)
         self.growth_ops_service = GrowthOpsService(settings, logger)
+
+    def validate_title_compliance(self, title: str) -> bool:
+        if len(title) > 30:
+            return False
+        for pattern in self.DISCOURAGED_TITLE_PATTERNS:
+            if pattern in title:
+                return False
+        return True
 
     def run(
         self,
@@ -52,7 +69,7 @@ class TitleAgent(BaseAgent):
         data_report: DataReport,
         style: StyleProfile,
         cache_context: CacheContext,
-    ) -> dict[str, list[str]]:
+    ) -> dict[str, list[str] | str]:
         playbook_context = self._build_title_playbook_context(data_report)
         prompt = self.render_prompt(
             "title_prompt_v2.md",
@@ -73,10 +90,15 @@ class TitleAgent(BaseAgent):
         )
 
         preferred_from_model: list[str] = []
-        payload = self.request_json("你是 TitleAgent，只输出 JSON。", prompt)
+        model_title_a = ""
+        model_title_b = ""
+        system_prompt = f"你是 TitleAgent，只输出 JSON。{self.best_practices_instruction()}"
+        payload = self.request_json(system_prompt, prompt)
         if payload:
             titles = self._dedupe_titles(payload.get("titles"), cache_context)
             preferred_from_model = self._dedupe_titles(payload.get("recommended_titles"), cache_context)
+            model_title_a = str(payload.get("title_a", "") or "").strip()
+            model_title_b = str(payload.get("title_b", "") or "").strip()
         else:
             titles = []
 
@@ -92,9 +114,18 @@ class TitleAgent(BaseAgent):
         ranked_titles = self._rank_titles(titles, data_report, preferred_from_model)
         recommended_titles = self._pick_recommended_titles(ranked_titles, data_report)
 
+        dual = self._pick_dual_titles(ranked_titles, data_report, model_title_a, model_title_b, cache_context)
+
+        compliant_titles = [t for t in ranked_titles if self.validate_title_compliance(t)]
+        if compliant_titles:
+            ranked_titles = compliant_titles
+
         return {
             "titles": ranked_titles[: self.settings.title_count],
             "recommended_titles": recommended_titles[: self.settings.recommended_title_count],
+            "title_a": dual["title_a"],
+            "title_b": dual["title_b"],
+            "alt_title": dual["title_b"],
         }
 
     def _fallback_titles(
@@ -312,6 +343,60 @@ class TitleAgent(BaseAgent):
             if keyword and keyword not in {"机器人", "科技制造"}:
                 adapted = adapted.replace("机器人", keyword)
         return self._fit_title_length(adapted.strip())
+
+    def _pick_dual_titles(
+        self,
+        ranked_titles: list[str],
+        data_report: DataReport,
+        model_title_a: str,
+        model_title_b: str,
+        cache_context: CacheContext,
+    ) -> dict[str, str]:
+        curiosity_title = ""
+        rational_title = ""
+
+        if model_title_a:
+            sanitized = self._sanitize_title(model_title_a)
+            if sanitized and self.normalize_title(sanitized) not in {self.normalize_title(t) for t in cache_context.avoid_titles}:
+                curiosity_title = sanitized
+        if model_title_b:
+            sanitized = self._sanitize_title(model_title_b)
+            if sanitized and self.normalize_title(sanitized) not in {self.normalize_title(t) for t in cache_context.avoid_titles}:
+                rational_title = sanitized
+
+        if not curiosity_title or not rational_title:
+            for title in ranked_titles:
+                is_curiosity = self._is_curiosity_title(title)
+                is_rational = self._is_rational_title(title)
+                if not curiosity_title and is_curiosity:
+                    curiosity_title = title
+                if not rational_title and is_rational:
+                    rational_title = title
+                if curiosity_title and rational_title:
+                    break
+
+        if not curiosity_title and ranked_titles:
+            curiosity_title = ranked_titles[0]
+        if not rational_title and len(ranked_titles) > 1:
+            for title in ranked_titles[1:]:
+                if title != curiosity_title:
+                    rational_title = title
+                    break
+        if not rational_title and len(ranked_titles) == 1:
+            rational_title = ranked_titles[0]
+
+        return {"title_a": curiosity_title, "title_b": rational_title}
+
+    def _is_curiosity_title(self, title: str) -> bool:
+        if "？" in title or "?" in title:
+            return True
+        return any(token in title for token in self.CURIOSITY_TOKENS)
+
+    def _is_rational_title(self, title: str) -> bool:
+        if any(char.isdigit() for char in title):
+            if any(token in title for token in self.RATIONAL_TOKENS):
+                return True
+        return any(token in title for token in self.RATIONAL_TOKENS[:14])
 
     def _rank_titles(
         self,

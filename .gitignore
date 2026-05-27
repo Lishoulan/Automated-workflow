@@ -16,8 +16,18 @@ images/
 
 .idea/
 .vscode/
+.trae/
 Thumbs.db
 Desktop.ini
+
+catboost_info/
+*.egg-info/
+dist/
+build/
+*.egg
+
+guard-smoke-*/
+config/guard-*/
 
 SKILL.md
 zettaranc-skill-main/

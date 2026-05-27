@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from dataclasses import dataclass
 
 try:
     from openai import OpenAI
@@ -12,12 +14,29 @@ from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import AIRequestError, AIResponseFormatError
 
 
+@dataclass
+class UsageCostSnapshot:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost: float = 0.0
+
+
 class OpenAIContentService:
     def __init__(self, settings: AppSettings, logger: logging.Logger, force_mock: bool = False) -> None:
         self.settings = settings
         self.logger = logger
         self.force_mock = force_mock
         self.client = None
+        self.usage_snapshot = UsageCostSnapshot()
+        self.prompt_token_rate = self._resolve_rate(
+            "OPENAI_PROMPT_TOKEN_RATE",
+            self._default_prompt_rate(),
+        )
+        self.completion_token_rate = self._resolve_rate(
+            "OPENAI_COMPLETION_TOKEN_RATE",
+            self._default_completion_rate(),
+        )
 
         if not force_mock and settings.openai_api_key:
             if OpenAI is None:
@@ -37,6 +56,7 @@ class OpenAIContentService:
             raise AIRequestError("Model client is not available.")
 
         response = self._request_structured_json(system_prompt=system_prompt, user_prompt=user_prompt)
+        self._accumulate_usage(response)
         content = self._extract_message_content(response)
 
         try:
@@ -46,6 +66,18 @@ class OpenAIContentService:
 
         self.logger.info("Model response parsed as JSON successfully.")
         return payload
+
+    @property
+    def estimated_cost(self) -> float:
+        return self.usage_snapshot.estimated_cost
+
+    def get_usage_snapshot(self) -> UsageCostSnapshot:
+        return UsageCostSnapshot(
+            prompt_tokens=self.usage_snapshot.prompt_tokens,
+            completion_tokens=self.usage_snapshot.completion_tokens,
+            total_tokens=self.usage_snapshot.total_tokens,
+            estimated_cost=self.usage_snapshot.estimated_cost,
+        )
 
     def _request_structured_json(self, system_prompt: str, user_prompt: str):
         try:
@@ -83,6 +115,59 @@ class OpenAIContentService:
                 )
             except Exception as retry_exc:  # pragma: no cover - network call
                 raise AIRequestError(f"Model request failed: {retry_exc}") from retry_exc
+
+    def _accumulate_usage(self, response) -> None:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        total_tokens = int(getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or 0)
+        request_cost = self._estimate_request_cost(prompt_tokens, completion_tokens)
+
+        self.usage_snapshot.prompt_tokens += prompt_tokens
+        self.usage_snapshot.completion_tokens += completion_tokens
+        self.usage_snapshot.total_tokens += total_tokens
+        self.usage_snapshot.estimated_cost = round(self.usage_snapshot.estimated_cost + request_cost, 6)
+
+        self.logger.info(
+            "Model usage recorded: prompt_tokens=%s completion_tokens=%s estimated_cost=%.6f",
+            prompt_tokens,
+            completion_tokens,
+            request_cost,
+        )
+
+    def _estimate_request_cost(self, prompt_tokens: int, completion_tokens: int) -> float:
+        prompt_cost = (prompt_tokens / 1000.0) * self.prompt_token_rate
+        completion_cost = (completion_tokens / 1000.0) * self.completion_token_rate
+        return round(prompt_cost + completion_cost, 6)
+
+    def _resolve_rate(self, env_name: str, default_value: float) -> float:
+        raw = os.getenv(env_name, "").strip()
+        if not raw:
+            return default_value
+        try:
+            return float(raw)
+        except ValueError:
+            self.logger.warning("Invalid token rate for %s=%s, fallback to %.6f", env_name, raw, default_value)
+            return default_value
+
+    def _default_prompt_rate(self) -> float:
+        model_name = str(self.settings.openai_model or "").lower()
+        if "deepseek-reasoner" in model_name:
+            return 0.004
+        if "deepseek" in model_name:
+            return 0.001
+        return 0.001
+
+    def _default_completion_rate(self) -> float:
+        model_name = str(self.settings.openai_model or "").lower()
+        if "deepseek-reasoner" in model_name:
+            return 0.016
+        if "deepseek" in model_name:
+            return 0.002
+        return 0.002
 
     def _extract_message_content(self, response) -> str:
         content = (response.choices[0].message.content or "").strip()

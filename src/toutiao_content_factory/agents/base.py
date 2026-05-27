@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 
 from toutiao_content_factory.config import AppSettings, StyleProfile
 from toutiao_content_factory.models import CacheContext
@@ -62,6 +63,29 @@ class BaseAgent:
 
     def render_prompt(self, template_name: str, **kwargs: str) -> str:
         return self.prompt_repository.render(template_name, **kwargs)
+
+    def best_practices_rule_path(self) -> Path:
+        return self.settings.project_root / "config" / "best_practices_rule.txt"
+
+    def read_best_practices_rules(self) -> str:
+        path = self.best_practices_rule_path()
+        if not path.exists():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            self.logger.warning("Failed to read best practices rules from %s: %s", path, exc)
+            return ""
+
+    def best_practices_instruction(self) -> str:
+        rules = self.read_best_practices_rules()
+        if not rules:
+            return ""
+        return (
+            "\n[最新实战爆款经验]\n"
+            f"{rules}\n"
+            "以上经验来自真实流量反馈总结，生成时必须优先执行，除非与平台合规要求冲突。"
+        )
 
     def request_json(self, system_prompt: str, user_prompt: str) -> dict | None:
         if not self.openai_service.available:

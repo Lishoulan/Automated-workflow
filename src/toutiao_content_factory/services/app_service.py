@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 
 from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.exceptions import LowQualityAbortException, PlatformAuthError
 from toutiao_content_factory.models import DailyTopicsReport, TopicCandidate
 from toutiao_content_factory.services.automation import TopicAutomationService
 from toutiao_content_factory.services.pipeline import ContentFactoryPipeline
@@ -17,9 +20,14 @@ from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.agents import BenchmarkMonitorAgent, SampleCollectorAgent
-from toutiao_content_factory.services.wechat_service import WechatPublishService
+from toutiao_content_factory.services.wechat_service import WechatIpWhitelistBlockedException, WechatPublishService
 from toutiao_content_factory.services.wechat_launch_service import WechatLaunchService
 from toutiao_content_factory.services.image_generation_service import ImageGenerationService
+from toutiao_content_factory.services.douyin_service import DouyinPublishService
+from toutiao_content_factory.services.topic_pool_service import TopicPoolService
+from toutiao_content_factory.services.platform_health_service import PlatformHealthService
+from toutiao_content_factory.services.content_guard_service import ContentGuardService
+from toutiao_content_factory.services.notification_service import NotificationService
 
 
 class ContentFactoryAppService:
@@ -31,11 +39,26 @@ class ContentFactoryAppService:
         self.wechat_service = WechatPublishService(settings, logger)
         self.wechat_launch_service = WechatLaunchService(settings, logger)
         self.image_generation_service = ImageGenerationService(settings, logger)
+        self.douyin_service = DouyinPublishService(settings, logger)
         self.growth_ops_service = GrowthOpsService(settings, logger)
+        self.topic_pool_service = TopicPoolService(settings, logger)
+        self.content_guard_service = ContentGuardService(settings, logger)
+        self.notification_service = NotificationService(dict(os.environ))
+        self.platform_health_service = PlatformHealthService(
+            settings,
+            logger,
+            toutiao_publish_service=self.review_service.publish_service,
+            wechat_publish_service=self.wechat_service,
+            douyin_publish_service=self.douyin_service,
+        )
 
     def collect_topics(self) -> dict[str, str]:
         topic_collector = TopicCollectionService(self.settings, self.logger)
-        topic_exporter = TopicExportService(self.settings.output_dir, self.logger)
+        topic_exporter = TopicExportService(
+            self.settings.output_dir,
+            self.logger,
+            topic_pool_service=self.topic_pool_service,
+        )
         topic_report = topic_collector.collect_sync()
         exported: dict[str, str] = {}
         benchmark_platform = self._resolve_benchmark_platform_for_workflow()
@@ -378,6 +401,16 @@ class ContentFactoryAppService:
                 title_query=topic_title,
                 allow_generated_duplicates=refresh_cache or dry_run,
             )
+        guard_result = self.content_guard_service.evaluate_candidate_topic(
+            topic_title=selection.topic.title,
+            topic_url=selection.topic.url,
+        )
+        if bool(guard_result.get("blocked")):
+            raise ValueError(
+                "Selected topic is too similar to a recent published run. "
+                f"Matched: {guard_result.get('matched_title', '')} "
+                f"(similarity={guard_result.get('similarity', 0.0)})."
+            )
         exported_files.update({name: str(path) for name, path in selection.exported_files.items()})
 
         content_exports = self.manual_run(
@@ -397,6 +430,14 @@ class ContentFactoryAppService:
             if self.settings.review.auto_prepare and isinstance(archive_root, Path):
                 review_exports = self.review_service.prepare_review(archive_root)
                 exported_files.update({name: str(path) for name, path in review_exports.items()})
+                guard_report = self.content_guard_service.evaluate_run(archive_root)
+                exported_files["content_guard_report"] = str(archive_root / "content_guard_report.json")
+                if guard_report.get("blocked"):
+                    self.logger.warning(
+                        "Generated run is too similar to a recent published run: matched=%s similarity=%s",
+                        guard_report.get("matched_title", ""),
+                        guard_report.get("similarity", 0.0),
+                    )
 
         return exported_files
 
@@ -437,6 +478,30 @@ class ContentFactoryAppService:
         except Exception as exc:
             self.logger.warning("Self-benchmark refresh skipped for daily run: %s", exc)
 
+        auth_health = self.platform_health_service.ensure_publish_ready()
+        platform_health_path = str(auth_health.get("platform_health", "")).strip()
+        if platform_health_path:
+            exported_files["platform_health"] = platform_health_path
+        blocking_platforms = [str(item) for item in auth_health.get("blocking_platforms", []) if str(item).strip()]
+        if blocking_platforms:
+            message = (
+                "Publish login precheck failed before daily_run model generation. "
+                f"blocked_platforms={', '.join(blocking_platforms)}; "
+                f"account={self.settings.account_key}; "
+                f"platform_health={platform_health_path or 'N/A'}"
+            )
+            self.logger.error(message)
+            self._notify_platform_auth_failure(
+                blocking_platforms=blocking_platforms,
+                platform_health_path=platform_health_path,
+                auth_health=auth_health,
+            )
+            raise PlatformAuthError(
+                message,
+                blocking_platforms=blocking_platforms,
+                platform_health_path=platform_health_path,
+            )
+
         candidate_specs = self._build_daily_candidate_specs(
             topic_rank=topic_rank,
             topic_title=topic_title,
@@ -457,16 +522,38 @@ class ContentFactoryAppService:
                 len(candidate_specs),
                 candidate["title"],
             )
-            attempt_exports = self.auto_run(
-                style_override=style_override,
-                dry_run=dry_run,
-                refresh_cache=refresh_cache,
-                topic_title=str(candidate["title"]),
-                collect_if_missing=False,
-                force_collect=False,
-                no_archive=no_archive,
-                fast_mode=fast_mode,
-            )
+            try:
+                attempt_exports = self.auto_run(
+                    style_override=style_override,
+                    dry_run=dry_run,
+                    refresh_cache=refresh_cache,
+                    topic_title=str(candidate["title"]),
+                    collect_if_missing=False,
+                    force_collect=False,
+                    no_archive=no_archive,
+                    fast_mode=fast_mode,
+                )
+            except LowQualityAbortException as exc:
+                self.logger.info(
+                    "Daily workflow skipped low-quality candidate %s/%s: %s",
+                    attempt_index,
+                    len(candidate_specs),
+                    exc,
+                )
+                losing_attempts.append(
+                    {
+                        "attempt_index": attempt_index,
+                        "candidate_rank": int(candidate["rank"]),
+                        "topic_title": str(candidate["title"]),
+                        "topic_url": str(candidate["url"]),
+                        "run_dir": "",
+                        "score_snapshot": {},
+                        "qualified_for_auto_approval": False,
+                        "status": "low_quality_skipped",
+                        "skip_reason": str(exc),
+                    }
+                )
+                continue
             exported_files.update(attempt_exports)
 
             run_dir = self._resolve_run_dir_from_exports(attempt_exports)
@@ -590,20 +677,114 @@ class ContentFactoryAppService:
         result = self.review_service.reject_review(resolved, reviewer_notes=review_notes)
         return {name: str(path) for name, path in result.items()}
 
-    def publish_run(self, run_dir: str | None = None) -> dict[str, str]:
+    def publish_run(
+        self,
+        run_dir: str | None = None,
+        draft_only: bool = False,
+        *,
+        declare_first_release: bool = True,
+    ) -> dict[str, str]:
         resolved = self.review_service.resolve_run_dir(run_dir)
-        result = self.review_service.publish_run(resolved)
+        previous_draft_only = self.settings.publishing.draft_only
+        object.__setattr__(self.settings.publishing, "draft_only", bool(draft_only))
+        try:
+            result = self.review_service.publish_run(resolved, declare_first_release=declare_first_release)
+        finally:
+            object.__setattr__(self.settings.publishing, "draft_only", previous_draft_only)
         return {name: str(path) for name, path in result.items()}
 
-    def publish_latest_approved(self, unpublished_only: bool = True, today_only: bool = True) -> dict[str, str]:
+    def publish_latest_approved(
+        self,
+        unpublished_only: bool = True,
+        today_only: bool = True,
+        draft_only: bool = False,
+    ) -> dict[str, str]:
         resolved = self.review_service.resolve_latest_approved_run(
             unpublished_only=unpublished_only,
             today_only=today_only,
         )
-        result = self.review_service.publish_run(resolved)
+        previous_draft_only = self.settings.publishing.draft_only
+        object.__setattr__(self.settings.publishing, "draft_only", bool(draft_only))
+        try:
+            result = self.review_service.publish_run(resolved)
+        finally:
+            object.__setattr__(self.settings.publishing, "draft_only", previous_draft_only)
         exported = {name: str(path) for name, path in result.items()}
         exported["resolved_run_dir"] = str(resolved)
         return exported
+
+    def reset_account_state(self) -> dict[str, str]:
+        automation_dir = self.settings.automation_dir
+        automation_dir.mkdir(parents=True, exist_ok=True)
+        cleaned: dict[str, str] = {}
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        for name in [
+            "scheduled_status.json",
+            "platform_health.json",
+            "publish_preflight.json",
+            "wechat_publish_preflight.json",
+            "douyin_publish_preflight.json",
+            "last_wechat_publish_result.json",
+        ]:
+            path = automation_dir / name
+            if path.exists():
+                backup = path.with_suffix(path.suffix + f".{timestamp}.bak")
+                backup.write_text(path.read_text(encoding="utf-8-sig", errors="replace"), encoding="utf-8")
+                cleaned[f"backup_{name}"] = str(backup)
+
+        clean_payloads = {
+            "scheduled_status.json": {
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+                "last_run_time": datetime.now().isoformat(timespec="seconds"),
+                "account_key": self.settings.account_key,
+                "account_slug": self.settings.account_slug,
+                "status": "reset",
+                "overall_status": "idle",
+                "overall_message": "Account automation state was reset.",
+                "message": "Account automation state was reset.",
+                "platforms": {
+                    "toutiao": {"status": "idle", "last_run": "", "message": ""},
+                    "wechat": {"status": "idle", "last_run": "", "message": ""},
+                    "douyin": {"status": "idle", "last_run": "", "message": ""},
+                },
+            },
+            "platform_health.json": {
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+                "account_key": self.settings.account_key,
+                "account_slug": self.settings.account_slug,
+                "platforms": {},
+            },
+            "publish_preflight.json": {},
+            "wechat_publish_preflight.json": {},
+            "douyin_publish_preflight.json": {},
+            "last_wechat_publish_result.json": {},
+        }
+        for name, payload in clean_payloads.items():
+            target = automation_dir / name
+            target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            cleaned[name.replace('.', '_')] = str(target)
+
+        repaired_runs = 0
+        for run_dir in self.settings.runs_dir.iterdir() if self.settings.runs_dir.exists() else []:
+            if not run_dir.is_dir():
+                continue
+            publish_dir = run_dir / self.settings.review.publish_dirname
+            if not publish_dir.exists():
+                continue
+            result_path = publish_dir / "publish_result.json"
+            if not result_path.exists():
+                continue
+            try:
+                json.loads(result_path.read_text(encoding="utf-8-sig"))
+            except Exception:
+                broken_backup = result_path.with_suffix(result_path.suffix + f".{timestamp}.bak")
+                broken_backup.write_text(result_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+                result_path.unlink(missing_ok=True)
+                repaired_runs += 1
+
+        cleaned["repaired_publish_results"] = str(repaired_runs)
+        return cleaned
 
     def publish_wechat_run(self, run_dir: str | None = None, submit: bool = False) -> dict[str, str]:
         resolved = self.review_service.resolve_run_dir(run_dir)
@@ -654,6 +835,52 @@ class ContentFactoryAppService:
         result = self.wechat_service.initialize_login_session()
         return {name: str(value) for name, value in result.items()}
 
+    def initialize_douyin_publish_login(self) -> dict[str, str]:
+        result = self.douyin_service.initialize_login_session()
+        return {name: str(value) for name, value in result.items()}
+
+    def prepare_douyin_run(self, run_dir: str | None = None) -> dict[str, str]:
+        resolved = self.review_service.resolve_run_dir(run_dir)
+        result = self.douyin_service.prepare_run(resolved)
+        exported = {name: str(path) for name, path in result.items()}
+        exported["resolved_run_dir"] = str(resolved)
+        return exported
+
+    def publish_douyin_run(self, run_dir: str | None = None) -> dict[str, str]:
+        resolved = self.review_service.resolve_run_dir(run_dir)
+        result = self.douyin_service.publish_run(resolved)
+        exported = {name: str(path) for name, path in result.items()}
+        exported["resolved_run_dir"] = str(resolved)
+        return exported
+
+    def retry_platform_publish(self, run_dir: str | None, platform: str) -> dict[str, str]:
+        resolved = self.review_service.resolve_run_dir(run_dir)
+        platform_key = str(platform or "").strip().lower()
+        if platform_key not in {"toutiao", "wechat", "douyin"}:
+            raise ValueError(f"Unsupported retry platform: {platform}")
+
+        if platform_key == "toutiao":
+            result = self.review_service.publish_run(resolved)
+            platform_snapshot = self._load_toutiao_publish_snapshot(resolved)
+        elif platform_key == "wechat":
+            result = self.wechat_service.publish_run(resolved, submit=self.settings.wechat.auto_publish)
+            platform_snapshot = self._load_wechat_publish_snapshot(resolved)
+            self._write_latest_wechat_automation_snapshot(resolved)
+        else:
+            result = self.douyin_service.publish_run(resolved)
+            platform_snapshot = self._load_douyin_publish_snapshot(resolved)
+
+        exported = {name: str(path) for name, path in result.items()}
+        exported["resolved_run_dir"] = str(resolved)
+        status_path = self._write_retry_publish_status(
+            run_dir=resolved,
+            platform=platform_key,
+            platform_snapshot=platform_snapshot,
+            exported=exported,
+        )
+        exported["scheduled_status"] = str(status_path)
+        return exported
+
     def prepare_wechat_launch_day(self, day_index: int) -> dict[str, str]:
         result = self.wechat_launch_service.prepare_day(day_index)
         return {name: str(path) for name, path in result.items()}
@@ -664,13 +891,99 @@ class ContentFactoryAppService:
 
     def generate_images_for_run(self, run_dir: str | None = None) -> dict[str, str]:
         resolved = self.review_service.resolve_run_dir(run_dir)
-        result = self.image_generation_service.generate_for_run(resolved)
+        if (not self.settings.wechat.enabled) and str(self.settings.publishing.cover_mode or "auto").strip().lower() == "none":
+            publish_dir = resolved / self.settings.review.publish_dirname
+            skipped_path = publish_dir / "image_generation_skipped.json"
+            skipped_payload = {
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+                "account_key": self.settings.account_key,
+                "run_dir": str(resolved),
+                "reason": "Current workflow uses Toutiao no-cover mode and has no WeChat image consumer enabled.",
+            }
+            skipped_path.write_text(json.dumps(skipped_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return {
+                "resolved_run_dir": str(resolved),
+                "image_generation_skipped": str(skipped_path),
+            }
+        include_infographics = bool(self.settings.wechat.enabled)
+        result = self.image_generation_service.generate_for_run(resolved, include_infographics=include_infographics)
         exported = {name: str(path) for name, path in result.items()}
         exported["resolved_run_dir"] = str(resolved)
         return exported
 
+    def audit_account_artifacts(self) -> dict[str, str]:
+        configured_slugs = {profile.slug for profile in self.settings.account_profiles.values()}
+        report = {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "configured_account_slugs": sorted(configured_slugs),
+            "artifacts": {},
+        }
+        roots = {
+            "output_accounts": self.settings.project_root / "output" / "accounts",
+            "logs_accounts": self.settings.project_root / "logs" / "accounts",
+            "runtime_accounts": self.settings.project_root / ".runtime" / "accounts",
+            "cache_accounts": self.settings.project_root / "cache" / "accounts",
+            "input_accounts": self.settings.project_root / "input" / "accounts",
+        }
+        stale_candidates = []
+        for label, root in roots.items():
+            entries = []
+            if root.exists():
+                for item in sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name.lower()):
+                    is_configured = item.name in configured_slugs
+                    entries.append(
+                        {
+                            "name": item.name,
+                            "path": str(item.resolve()),
+                            "configured": is_configured,
+                            "last_modified": datetime.fromtimestamp(item.stat().st_mtime).isoformat(timespec="seconds"),
+                        }
+                    )
+                    if not is_configured:
+                        stale_candidates.append(str(item.resolve()))
+            report["artifacts"][label] = entries
+        report["stale_paths"] = sorted(set(stale_candidates))
+        report_path = self.settings.automation_dir / "account_artifact_audit.json"
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"account_artifact_audit": str(report_path)}
+
+    def cleanup_stale_account_artifacts(self) -> dict[str, str]:
+        configured_slugs = {profile.slug for profile in self.settings.account_profiles.values()}
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        trash_root = self.settings.project_root / ".cleanup_trash" / timestamp
+        trash_root.mkdir(parents=True, exist_ok=True)
+        moved = []
+        roots = [
+            self.settings.project_root / "output" / "accounts",
+            self.settings.project_root / "logs" / "accounts",
+            self.settings.project_root / ".runtime" / "accounts",
+            self.settings.project_root / "cache" / "accounts",
+            self.settings.project_root / "input" / "accounts",
+        ]
+        for root in roots:
+            if not root.exists():
+                continue
+            for item in [p for p in root.iterdir() if p.is_dir() and p.name not in configured_slugs]:
+                target = trash_root / item.relative_to(self.settings.project_root)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                item.rename(target)
+                moved.append({"from": str(item.resolve()), "to": str(target.resolve())})
+        result_path = self.settings.automation_dir / "account_artifact_cleanup.json"
+        payload = {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "configured_account_slugs": sorted(configured_slugs),
+            "trash_root": str(trash_root.resolve()),
+            "moved": moved,
+        }
+        result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"account_artifact_cleanup": str(result_path), "cleanup_trash_root": str(trash_root.resolve())}
+
     def collect_publish_preflight(self) -> dict[str, str]:
         result = self.review_service.publish_service.export_preflight_summary()
+        return {name: str(value) for name, value in result.items()}
+
+    def collect_platform_health(self) -> dict[str, str]:
+        result = self.platform_health_service.collect()
         return {name: str(value) for name, value in result.items()}
 
     def build_benchmark_report(self) -> dict[str, str]:
@@ -926,40 +1239,113 @@ class ContentFactoryAppService:
         platform_results: dict[str, dict[str, object]] = {}
         platform_errors: list[str] = []
 
-        if not self.settings.skip_image_generation:
+        should_generate_images = (
+            not self.settings.skip_image_generation
+            and (
+                self.settings.wechat.enabled
+                or str(self.settings.publishing.cover_mode or "auto").strip().lower() != "none"
+            )
+        )
+        if should_generate_images:
             try:
-                image_exports = self.image_generation_service.generate_for_run(run_dir)
+                image_exports = self.image_generation_service.generate_for_run(
+                    run_dir,
+                    include_infographics=bool(self.settings.wechat.enabled),
+                )
                 exported_files.update({name: str(path) for name, path in image_exports.items()})
             except Exception as exc:
                 message = f"Image generation failed before publish: {exc}"
                 platform_errors.append(message)
                 self.logger.exception(message)
+        else:
+            self.logger.info(
+                "Skipping image generation for run %s because current platform workflow does not consume generated images.",
+                run_dir,
+            )
 
-        if self.settings.publishing.enabled and self.settings.publishing.auto_publish:
-            try:
-                toutiao_exports = self.publish_run(str(run_dir))
-                exported_files.update(toutiao_exports)
-                platform_results["toutiao"] = self._load_toutiao_publish_snapshot(run_dir)
-            except Exception as exc:
-                message = f"Toutiao publish failed: {exc}"
-                platform_errors.append(message)
-                platform_results["toutiao"] = {"status": "failed", "error": str(exc)}
-                self.logger.exception(message)
-
+        wechat_completed = False
         if self.settings.wechat.enabled:
             try:
-                wechat_exports = self.publish_wechat_run(str(run_dir), submit=self.settings.wechat.auto_publish)
+                wechat_exports = self.publish_wechat_run(str(run_dir), submit=True)
                 exported_files.update(wechat_exports)
                 platform_results["wechat"] = self._load_wechat_publish_snapshot(run_dir)
                 snapshot_path = self._write_latest_wechat_automation_snapshot(run_dir)
                 exported_files["wechat_automation_result"] = str(snapshot_path)
+                wechat_completed = self._wechat_publish_succeeded(platform_results["wechat"])
+                if not wechat_completed:
+                    message = (
+                        "WeChat publish did not reach a submitted state. "
+                        "Toutiao publish is blocked to preserve WeChat first-release priority."
+                    )
+                    platform_errors.append(message)
+                    self.logger.warning(message)
+            except WechatIpWhitelistBlockedException as exc:
+                message = f"WeChat publish blocked by IP whitelist: {exc}"
+                platform_errors.append(message)
+                platform_results["wechat"] = {
+                    "status": "blocked_by_ip",
+                    "error": str(exc),
+                    "invalid_ip": str(getattr(exc, "ip_address", "")).strip(),
+                }
+                self.logger.warning(message)
             except Exception as exc:
                 message = f"WeChat publish failed: {exc}"
                 platform_errors.append(message)
                 platform_results["wechat"] = {"status": "failed", "error": str(exc)}
                 self.logger.exception(message)
 
+        if self.settings.publishing.enabled and self.settings.publishing.auto_publish:
+            if self.settings.wechat.enabled and not wechat_completed:
+                platform_results.setdefault(
+                    "toutiao",
+                    {
+                        "status": "blocked_waiting_for_wechat",
+                        "error": "WeChat publish did not complete successfully before Toutiao distribution.",
+                    },
+                )
+            else:
+                delay_seconds = self._get_wechat_toutiao_sync_delay_seconds()
+                if delay_seconds > 0 and self.settings.wechat.enabled:
+                    self.logger.info(
+                        "Waiting %s seconds after successful WeChat publish before Toutiao distribution.",
+                        delay_seconds,
+                    )
+                    time.sleep(delay_seconds)
+                try:
+                    toutiao_exports = self.publish_run(str(run_dir), declare_first_release=False)
+                    exported_files.update(toutiao_exports)
+                    platform_results["toutiao"] = self._load_toutiao_publish_snapshot(run_dir)
+                except Exception as exc:
+                    message = f"Toutiao publish failed: {exc}"
+                    platform_errors.append(message)
+                    platform_results["toutiao"] = {"status": "failed", "error": str(exc)}
+                    self.logger.exception(message)
+
+        if self.settings.douyin.enabled and self.settings.douyin.auto_publish:
+            try:
+                douyin_exports = self.publish_douyin_run(str(run_dir))
+                exported_files.update(douyin_exports)
+                platform_results["douyin"] = self._load_douyin_publish_snapshot(run_dir)
+            except Exception as exc:
+                message = f"Douyin publish failed: {exc}"
+                platform_errors.append(message)
+                platform_results["douyin"] = {"status": "failed", "error": str(exc)}
+                self.logger.exception(message)
+
         return exported_files, platform_results, platform_errors
+
+    def _wechat_publish_succeeded(self, snapshot: dict[str, object]) -> bool:
+        status = str(snapshot.get("status", "")).strip().lower()
+        submit_status = str(snapshot.get("submit_status", "")).strip().lower()
+        return status in {"submitted", "published", "success"} or submit_status in {
+            "submitted",
+            "published",
+            "success",
+        }
+
+    def _get_wechat_toutiao_sync_delay_seconds(self) -> int:
+        delay = int(getattr(self.settings.wechat, "toutiao_sync_delay_seconds", 1800) or 0)
+        return max(delay, 0)
 
     def _load_toutiao_publish_snapshot(self, run_dir: Path) -> dict[str, object]:
         result_path = run_dir / self.settings.review.publish_dirname / "publish_result.json"
@@ -997,12 +1383,139 @@ class ContentFactoryAppService:
             "draft_media_id": draft_media_id,
         }
 
+    def _load_douyin_publish_snapshot(self, run_dir: Path) -> dict[str, object]:
+        result_path = run_dir / self.settings.review.publish_dirname / "douyin" / "douyin_publish_result.json"
+        if not result_path.exists():
+            return {"status": "missing"}
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return {"status": "invalid"}
+        return {
+            "status": str(payload.get("status", "")).strip() or "submitted",
+            "external_url": str(payload.get("external_url", "")).strip(),
+            "image_count": int(payload.get("image_count", 0) or 0),
+        }
+
     def _write_latest_wechat_automation_snapshot(self, run_dir: Path) -> Path:
         source_path = run_dir / self.settings.review.publish_dirname / "wechat" / "wechat_publish_result.json"
         snapshot_path = self.settings.automation_dir / "last_wechat_publish_result.json"
         if source_path.exists():
             snapshot_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
         return snapshot_path
+
+    def _normalize_platform_status(self, status: str) -> str:
+        normalized = str(status or "").strip().lower()
+        if normalized in {"running", "retrying"}:
+            return "running"
+        if normalized in {"success", "completed", "published", "submitted", "approved", "draft_created", "ready"}:
+            return "success"
+        if normalized in {"failed", "error", "blocked", "blocked_by_ip", "publish_login_required", "missing", "invalid"}:
+            return "failed"
+        return "idle"
+
+    def _resolve_overall_platform_status(self, platforms: dict[str, dict[str, object]]) -> str:
+        states = {self._normalize_platform_status(str(item.get("status", ""))) for item in platforms.values() if isinstance(item, dict)}
+        states.discard("")
+        if "running" in states:
+            return "running"
+        if "success" in states and "failed" in states:
+            return "partial_success"
+        if "failed" in states:
+            return "failed"
+        if "success" in states:
+            return "success"
+        return "idle"
+
+    def _build_scheduled_platform_map(
+        self,
+        payload: dict[str, object],
+        *,
+        updates: dict[str, dict[str, object]] | None = None,
+        now: str,
+    ) -> dict[str, dict[str, object]]:
+        existing = payload.get("platforms", {}) if isinstance(payload.get("platforms"), dict) else {}
+        result: dict[str, dict[str, object]] = {}
+        for key in ("toutiao", "wechat", "douyin"):
+            previous = existing.get(key, {}) if isinstance(existing.get(key), dict) else {}
+            result[key] = {
+                "status": str(previous.get("status", "idle") or "idle"),
+                "last_run": str(previous.get("last_run", "") or ""),
+                "message": str(previous.get("message", "") or ""),
+            }
+        for key, item in (updates or {}).items():
+            if key not in result or not isinstance(item, dict):
+                continue
+            result[key] = {
+                "status": self._normalize_platform_status(str(item.get("status", ""))),
+                "last_run": str(item.get("last_run", now) or now),
+                "message": str(item.get("message", "") or ""),
+            }
+        return result
+
+    def _write_retry_publish_status(
+        self,
+        *,
+        run_dir: Path,
+        platform: str,
+        platform_snapshot: dict[str, object],
+        exported: dict[str, str],
+    ) -> Path:
+        status_path = self.settings.automation_dir / "scheduled_status.json"
+        if status_path.exists():
+            try:
+                payload = json.loads(status_path.read_text(encoding="utf-8-sig"))
+            except json.JSONDecodeError:
+                payload = {}
+        else:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        now = datetime.now().isoformat(timespec="seconds")
+        platform_status = str(platform_snapshot.get("status", "")).strip() or "submitted"
+        platform_message = f"Retry publish finished for {platform}: {platform_status}."
+        platforms = self._build_scheduled_platform_map(
+            payload,
+            updates={
+                platform: {
+                    "status": platform_status,
+                    "last_run": now,
+                    "message": platform_message,
+                }
+            },
+            now=now,
+        )
+        overall_status = self._resolve_overall_platform_status(platforms)
+
+        payload["updated_at"] = now
+        payload["last_run_time"] = now
+        payload["run_name"] = run_dir.name
+        payload["run_dir"] = str(run_dir)
+        payload["status"] = platform_status
+        payload["overall_status"] = overall_status
+        payload["overall_message"] = platform_message
+        payload["workflow_status"] = f"retry_{platform}"
+        payload["message"] = platform_message
+        payload["retry_platform"] = platform
+        payload["platforms"] = platforms
+
+        if platform == "toutiao":
+            payload["publish_status"] = platform_status
+            payload["publish_url"] = str(platform_snapshot.get("external_url", "")).strip()
+        elif platform == "wechat":
+            payload["wechat_status"] = platform_status
+            payload["wechat_submit_status"] = str(platform_snapshot.get("submit_status", "")).strip()
+            payload["wechat_publish_url"] = str(platform_snapshot.get("external_url", "")).strip()
+            payload["wechat_draft_media_id"] = str(platform_snapshot.get("draft_media_id", "")).strip()
+        elif platform == "douyin":
+            payload["douyin_status"] = platform_status
+            payload["douyin_publish_url"] = str(platform_snapshot.get("external_url", "")).strip()
+
+        if "resolved_run_dir" in exported:
+            payload["resolved_run_dir"] = exported["resolved_run_dir"]
+
+        status_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return status_path
 
     def _summarize_platform_workflow_status(
         self,
@@ -1076,6 +1589,43 @@ class ContentFactoryAppService:
         report_path = self.settings.automation_dir / "last_daily_workflow_report.json"
         report_path.write_text(json.dumps(report_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"workflow_report": str(report_path)}
+
+    def _notify_platform_auth_failure(
+        self,
+        *,
+        blocking_platforms: list[str],
+        platform_health_path: str,
+        auth_health: dict[str, object],
+    ) -> None:
+        run_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+        platform_labels = {
+            "toutiao": "Toutiao",
+            "wechat": "WeChat OA",
+            "douyin": "Douyin",
+        }
+        readable_platforms = [platform_labels.get(item, item) for item in blocking_platforms]
+        platform_messages: list[str] = []
+        platforms = auth_health.get("platforms", {})
+        if isinstance(platforms, dict):
+            for key in blocking_platforms:
+                payload = platforms.get(key, {})
+                if not isinstance(payload, dict):
+                    continue
+                blockers = [str(item) for item in payload.get("blocking_flags", []) if str(item).strip()]
+                if blockers:
+                    platform_messages.append(f"{platform_labels.get(key, key)}: {' | '.join(blockers)}")
+        message = (
+            f"{run_time} publish auth precheck failed before model generation.\n"
+            f"account: {self.settings.account_key}\n"
+            f"blocked platforms: {', '.join(readable_platforms)}\n"
+            f"reasons: {'; '.join(platform_messages) if platform_messages else 'login session invalid'}\n"
+            f"platform health: {platform_health_path or 'N/A'}\n"
+            "This run was aborted before any AI generation to avoid unnecessary cost."
+        )
+        try:
+            self.notification_service.notify_urgent("[URGENT] Publish auth precheck failed", message)
+        except Exception as exc:
+            self.logger.warning("Failed to send urgent platform auth notification: %s", exc)
 
     def _load_selected_title(self, run_dir: Path | None) -> str:
         if run_dir is None:

@@ -1,4 +1,4 @@
 @echo off
 setlocal
-powershell.exe -WindowStyle Hidden %*
+powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden %*
 endlocal

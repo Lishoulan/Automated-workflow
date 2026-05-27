@@ -92,6 +92,13 @@ class CacheService:
         self.index_path.write_text(json.dumps(filtered, ensure_ascii=False, indent=2), encoding="utf-8")
         self.logger.info("缓存已写入: %s", self._result_path(result.cache_key))
 
+    def lexical_similarity(self, left_text: str, right_text: str) -> float:
+        left = self._normalize_text(left_text)
+        right = self._normalize_text(right_text)
+        if not left or not right:
+            return 0.0
+        return SequenceMatcher(None, left[:2400], right[:2400]).ratio()
+
     def _find_similar_record(self, normalized: str, style_key: str, cache_key: str) -> dict | None:
         index = self._load_index()
         best_record: dict | None = None

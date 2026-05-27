@@ -258,6 +258,7 @@ class WorkflowResult:
     cache_status: str
     model_used: str
     created_at: str
+    estimated_cost: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -276,6 +277,31 @@ class WorkflowResult:
             cache_status=str(payload.get("cache_status", "miss")),
             model_used=str(payload.get("model_used", "")),
             created_at=str(payload.get("created_at", "")),
+            estimated_cost=float(payload.get("estimated_cost", 0.0) or 0.0),
+        )
+
+
+@dataclass
+class ArticlePerformance:
+    url: str
+    title: str
+    publish_date: str
+    views: int
+    interactions: int
+    roi_score: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ArticlePerformance":
+        return cls(
+            url=str(payload.get("url", "")),
+            title=str(payload.get("title", "")),
+            publish_date=str(payload.get("publish_date", "")),
+            views=int(payload.get("views", 0) or 0),
+            interactions=int(payload.get("interactions", 0) or 0),
+            roi_score=float(payload.get("roi_score", 0.0) or 0.0),
         )
 
 

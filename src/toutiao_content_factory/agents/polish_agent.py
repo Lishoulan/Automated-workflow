@@ -6,6 +6,7 @@ from toutiao_content_factory.agents.base import BaseAgent
 from toutiao_content_factory.config import StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, TrendReport
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.compliance_service import is_aigc_declaration_enabled
 
 
 class PolishAgent(BaseAgent):
@@ -18,10 +19,56 @@ class PolishAgent(BaseAgent):
     )
     INVALID_COMPANY_MARKERS = {"这家公司", "某公司", "相关公司", "头部企业", "企业", "公司", "厂商", "供应商", "项目方", "客户"}
     INVALID_COMPANY_FRAGMENTS = {"更像", "再落到", "再拆", "资本", "开始", "真正", "故事", "机会", "验证", "订单", "交付", "利润", "估值", "背后"}
+    AI_CLICHE_PHRASES = {
+        "在当今快节奏的社会中": "",
+        "不可否认的是": "",
+        "总而言之": "",
+        "综上所述": "",
+        "令人深思的是": "",
+        "发人深省": "",
+        "众所周知": "",
+        "显而易见": "",
+        "毋庸置疑": "",
+        "这不禁让人思考": "",
+        "不难发现": "",
+        "不可否认": "",
+        "双刃剑": "利弊并存",
+        "值得关注的是": "",
+        "换言之": "",
+        "深入探讨": "拆解",
+        "如前所述": "",
+        "值得注意的是": "",
+        "由此可见": "",
+        "归根结底": "核心问题在于",
+        "从某种程度上说": "",
+        "毋容讳言": "",
+        "令人瞩目的是": "",
+        "引人深思": "",
+        "一方面": "",
+        "另一方面": "",
+        "首先": "",
+        "其次": "",
+        "最后": "",
+    }
     ORDER_ANCHOR_TOKENS = ("订单", "中标", "客户", "定点", "签约", "项目", "交付", "量产", "验收", "采购")
     SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?])")
     NUMERIC_TOKEN_RE = re.compile(
         r"\d+(?:\.\d+)?(?:%|倍|亿元|亿|万元|万亿元|万千瓦|万台|万套|GW|GWh|MWh|kWh|MW|W|年|月|季度|Q[1-4])?"
+    )
+
+    ANTI_AI_FLAVOR_APPENDIX = (
+        "\n\n[反AI味约束 - 必须遵守]\n"
+        "1. 禁止使用以下词汇：综上所述、不可否认、双刃剑、值得关注的是、换言之、深入探讨、"
+        "如前所述、值得注意的是、不难发现、由此可见、众所周知、毋庸置疑、总而言之、归根结底、"
+        "从某种程度上说、令人瞩目的是、引人深思、一方面、另一方面、首先、其次、最后。\n"
+        "2. 句子平均长度控制在20字以内，超过35字的句子必须拆分。\n"
+        "3. 采用科技媒体记者的第一人称观察视角（如'笔者认为'、'在现场看到'）。\n"
+        "4. 穿插具体的、未经AI抽象化的原始数据（如'同比下滑14.2%'，而非'大幅下滑'）。\n"
+        "5. 每段不超过3个句子，段落之间用事实或数据衔接。\n"
+        "6. 避免使用排比句和对称结构。\n"
+        "7. 开头3句内必须出现至少1个具体数据或事实。\n"
+        "8. 全文'据'/'数据显示'/'财报显示'等事实锚点不少于3处。\n"
+        "9. 结尾避免总结式收束，改用一个具体判断或前瞻性观察结束。"
     )
 
     def run(
@@ -46,6 +93,7 @@ class PolishAgent(BaseAgent):
             article=content.article,
             summary=content.summary,
         )
+        prompt = prompt + self.ANTI_AI_FLAVOR_APPENDIX
         payload = self.request_json("你是 PolishAgent，只输出 JSON。", prompt)
         if payload:
             polished = str(payload.get("polished_article", "")).strip()
@@ -85,6 +133,7 @@ class PolishAgent(BaseAgent):
         content_mode = self._content_mode(data_report)
         cleaned = self.strip_prompt_leakage(article)
         cleaned = clean_article_text(cleaned)
+        cleaned = self._remove_ai_cliches(cleaned)
         paragraphs = [self._normalize_paragraph(block) for block in cleaned.split("\n\n") if block.strip()]
         paragraphs = [block for block in paragraphs if block]
 
@@ -208,7 +257,56 @@ class PolishAgent(BaseAgent):
         else:
             notes.append("段落数量偏少，建议至少整理成 5 段。")
 
+        template_count = self._count_template_patterns(article)
+        if template_count <= 2:
+            score += 10
+            notes.append("正文表达多样化，模板化句式使用较少。")
+        elif template_count <= 4:
+            score += 5
+            notes.append("正文存在少量模板化表达，建议适当调整句式。")
+        else:
+            notes.append("正文模板化表达偏多，建议增加表达多样性。")
+
+        ai_cliche_count = sum(1 for phrase in self.AI_CLICHE_PHRASES if phrase in article)
+        if ai_cliche_count > 2:
+            score -= 10
+            notes.append(f"正文包含 {ai_cliche_count} 个 AI 常见口头禅，建议删除或改写。")
+
         return self.unique(notes)[:8], min(100, score)
+
+    def _count_template_patterns(self, article: str) -> int:
+        patterns = [
+            "不是.*而是.*",
+            "不只是.*而是.*",
+            "真正值得.*的是.*",
+            "关键不在.*而在.*",
+            "这意味着.*",
+            "这说明.*",
+            "可以看出.*",
+            "从中可以.*",
+        ]
+        count = 0
+        for pattern in patterns:
+            matches = re.findall(pattern, article)
+            count += len(matches)
+        cliche_count = sum(1 for phrase in self.AI_CLICHE_PHRASES if phrase in article)
+        count += cliche_count
+        return count
+
+    def _remove_ai_cliches(self, article: str) -> str:
+        for phrase, replacement in self.AI_CLICHE_PHRASES.items():
+            if phrase not in article:
+                continue
+            if replacement:
+                article = article.replace(phrase, replacement)
+            else:
+                article = article.replace(phrase, "")
+        article = re.sub(r"[，、]{2,}", "，", article)
+        article = re.sub(r"[。]{2,}", "。", article)
+        article = re.sub(r"\s{2,}", " ", article)
+        article = re.sub(r"^[，。、；：\s]+", "", article)
+        article = re.sub(r"[，。、；：\s]+$", "", article, flags=re.MULTILINE)
+        return article.strip()
 
     def _should_rebuild_cautious(
         self,

@@ -10,6 +10,8 @@ from pathlib import Path
 
 from toutiao_content_factory.config import AppSettings, sanitize_account_slug
 from toutiao_content_factory.models import DailyTopicsReport, TopicCandidate
+from toutiao_content_factory.services.schema_guard_service import SchemaGuardService
+from toutiao_content_factory.services.topic_pool_service import TopicPoolService
 
 
 @dataclass
@@ -227,6 +229,7 @@ class TopicAutomationService:
     def __init__(self, settings: AppSettings, logger: logging.Logger) -> None:
         self.settings = settings
         self.logger = logger
+        self.topic_pool_service = TopicPoolService(settings, logger)
 
     def prepare_auto_run(
         self,
@@ -282,6 +285,8 @@ class TopicAutomationService:
             json.dumps(manifest_payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        if selected_topic is not None:
+            self.topic_pool_service.mark_selected(selected_topic, run_dir=archive_root)
         archived["archive_root"] = archive_root
         archived["run_manifest"] = manifest_path
         self.logger.info("Run archived: %s", archive_root)
@@ -289,15 +294,26 @@ class TopicAutomationService:
 
     def _load_daily_topics(self) -> DailyTopicsReport:
         report_path = self.settings.output_dir / "daily_topics.json"
+        report: DailyTopicsReport | None = None
+        if report_path.exists():
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            report = SchemaGuardService.validate_daily_topics_report(payload)
+            if report.topics:
+                return report
+
+        fallback_report = self.topic_pool_service.build_fallback_report()
+        if fallback_report.topics:
+            self.logger.warning(
+                "daily_topics.json is missing or empty for account=%s. Falling back to local topic pool / evergreen topics.",
+                self.settings.account_key,
+            )
+            return fallback_report
+
         if not report_path.exists():
             raise FileNotFoundError(
                 f"daily_topics.json not found at {report_path}. Run --collect-topics first."
             )
-        payload = json.loads(report_path.read_text(encoding="utf-8"))
-        report = DailyTopicsReport.from_dict(payload)
-        if not report.topics:
-            raise ValueError("daily_topics.json contains no available topics.")
-        return report
+        raise ValueError("daily_topics.json contains no available topics.")
 
     def _select_topic(
         self,
@@ -310,6 +326,16 @@ class TopicAutomationService:
             report.topics,
             allow_generated_duplicates=allow_generated_duplicates,
         )
+        if not available_topics:
+            available_topics = self._available_topics_soft(
+                report.topics,
+                allow_generated_duplicates=allow_generated_duplicates,
+            )
+            if available_topics:
+                self.logger.warning(
+                    "[Topic Engine] Strict filtering yielded no topics for account=%s. A softer fallback pass was activated.",
+                    self.settings.account_key,
+                )
         if not available_topics:
             raise ValueError("No unpublished topics are available for today.")
 
@@ -830,6 +856,36 @@ class TopicAutomationService:
             available.append(topic)
         return available
 
+    def _available_topics_soft(
+        self,
+        topics: list[TopicCandidate],
+        allow_generated_duplicates: bool = False,
+    ) -> list[TopicCandidate]:
+        if self.settings.publishing.allow_duplicate_topics:
+            return list(topics)
+
+        published_keys = self._load_published_keys_for_today()
+        generated_keys = (
+            {"titles": set(), "urls": set()}
+            if allow_generated_duplicates
+            else self._load_generated_keys_for_today()
+        )
+        available: list[TopicCandidate] = []
+        for topic in topics:
+            if not self._topic_matches_account_boundary(topic):
+                continue
+            if topic.url and topic.url in published_keys["urls"]:
+                continue
+            normalized_title = self._normalize_text(topic.title)
+            if normalized_title and normalized_title in published_keys["titles"]:
+                continue
+            if topic.url and topic.url in generated_keys["urls"]:
+                continue
+            if normalized_title and normalized_title in generated_keys["titles"]:
+                continue
+            available.append(topic)
+        return available
+
     def _load_published_keys_for_today(self) -> dict[str, set[str]]:
         history_path = self.settings.output_dir / self.settings.publishing.history_filename
         result = {"titles": set(), "urls": set()}
@@ -1060,3 +1116,35 @@ class TopicAutomationService:
         international_score = sum(1 for token in self.INTERNATIONAL_TOKENS if token and token in text)
         sports_score = sum(1 for token in self.SPORTS_TOKENS if token and token in text)
         return robot_score, energy_score, international_score, sports_score
+
+def daily_run(
+    settings: AppSettings,
+    logger: logging.Logger,
+    style_override: str | None = None,
+    dry_run: bool = False,
+    refresh_cache: bool = False,
+    topic_rank: int | None = None,
+    topic_title: str | None = None,
+    no_archive: bool = False,
+    fast_mode: bool = False,
+) -> dict[str, str]:
+    from toutiao_content_factory.services.app_service import ContentFactoryAppService
+
+    service = ContentFactoryAppService(settings, logger)
+    return service.daily_run(
+        style_override=style_override,
+        dry_run=dry_run,
+        refresh_cache=refresh_cache,
+        topic_rank=topic_rank,
+        topic_title=topic_title,
+        no_archive=no_archive,
+        fast_mode=fast_mode,
+    )
+
+def collect_performance_data(
+    settings: AppSettings,
+    logger: logging.Logger,
+) -> dict[str, object]:
+    from toutiao_content_factory.services.performance_service import collect_performance_data as collect_job
+
+    return collect_job(settings, logger)

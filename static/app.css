@@ -393,6 +393,15 @@ textarea {
   color: var(--muted);
 }
 
+.status-row-stack {
+  align-items: stretch;
+}
+
+.status-row-stack .right-meta {
+  min-width: 120px;
+  align-items: flex-end;
+}
+
 .status-card {
   display: grid;
   gap: 10px;
@@ -410,6 +419,45 @@ textarea {
   margin-top: 18px;
   padding-top: 18px;
   border-top: 1px solid var(--line);
+}
+
+.schedule-runtime-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(7, 17, 29, 0.54);
+}
+
+.schedule-runtime-card-pending {
+  box-shadow: inset 0 0 0 1px rgba(76, 178, 255, 0.18);
+}
+
+.schedule-runtime-card-approved {
+  box-shadow: inset 0 0 0 1px rgba(46, 211, 154, 0.18);
+}
+
+.schedule-runtime-card-error {
+  box-shadow: inset 0 0 0 1px rgba(255, 110, 110, 0.22);
+}
+
+.schedule-runtime-card-neutral {
+  box-shadow: inset 0 0 0 1px rgba(157, 194, 255, 0.12);
+}
+
+.schedule-runtime-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.schedule-runtime-message {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.6;
 }
 
 .note-card {

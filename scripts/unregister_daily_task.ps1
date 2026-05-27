@@ -1,7 +1,6 @@
 param(
     [string]$TaskPrefix = "ToutiaoContentFactory",
-    [string]$AccountKey = "default",
-    [int]$Count = 4
+    [string]$AccountKey = "default"
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,11 +9,16 @@ if ([string]::IsNullOrWhiteSpace($AccountSlug)) {
     $AccountSlug = "default"
 }
 $taskNames = New-Object System.Collections.Generic.List[string]
-for ($index = 1; $index -le $Count; $index++) {
+$defaultPublishCount = 4
+for ($index = 1; $index -le $defaultPublishCount; $index++) {
     $taskNames.Add("$TaskPrefix-$AccountSlug-$index")
     if ($AccountSlug -eq "default") {
         $taskNames.Add("$TaskPrefix-$index")
     }
+}
+$taskNames.Add("$TaskPrefix-$AccountSlug-collect-performance")
+if ($AccountSlug -eq "default") {
+    $taskNames.Add("$TaskPrefix-collect-performance")
 }
 
 $taskNames = $taskNames | Select-Object -Unique

@@ -1,34 +1,83 @@
 {% extends "base.html" %}
 
-{% block title %}??? | ?????????{% endblock %}
+{% block title %}单账号看板 | 手蓝内容工厂{% endblock %}
 
 {% block content %}
 <section class="hero">
   <div>
     <p class="eyebrow">CONTROL CENTER</p>
-    <h2>??????????</h2>
-    <p class="muted">当前账号为 {{ account_label }}。你可以在这里切换账号、查看各账号状态，并直接触发采集、生成、审核和发布。</p>
+    <h2>单账号运营看板</h2>
+    <p class="muted">当前账号为 {{ account_label }}。这里集中展示热点池、批次质量、平台健康、定时执行与最近发布结果。</p>
   </div>
   <div class="hero-stats">
     <div class="metric-card">
-      <span>当前账号热点数</span>
+      <span>热点候选数</span>
       <strong>{{ dashboard.daily_topics.total_selected_items if dashboard.daily_topics else 0 }}</strong>
     </div>
     <div class="metric-card">
-      <span>当前账号批次数</span>
+      <span>归档批次数</span>
       <strong>{{ dashboard.runs|length }}</strong>
     </div>
     <div class="metric-card">
-      <span>当前综合分</span>
+      <span>综合评分</span>
       <strong>{{ dashboard.latest_score.scores.overall_score if dashboard.latest_score and dashboard.latest_score.scores else 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>平台健康</span>
+      <strong>{{ dashboard.platform_health.status_label }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>离线选题池</span>
+      <strong>{{ dashboard.topic_pool.pending_count }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>内容防重</span>
+      <strong>{{ dashboard.content_guard.status_label }}</strong>
     </div>
   </div>
 </section>
 
+{% if dashboard.health_panel and dashboard.health_panel["items"] %}
+<section class="panel">
+  <div class="panel-head">
+    <h3>平台健康红绿灯</h3>
+    <p>{% if dashboard.health_panel.updated_at %}最近刷新 {{ dashboard.health_panel.updated_at }}{% else %}还没有健康检查结果{% endif %}</p>
+  </div>
+  <div class="status-list">
+    {% for health in dashboard.health_panel["items"] %}
+    <div class="status-row">
+      <div>
+        <strong>{{ health.label }}</strong>
+        <p>{{ health.message }}</p>
+        {% if health.blocked_reason == "BLOCKED_BY_IP" %}
+        <p class="muted">请前往 <a class="text-link" href="{{ health.config_url }}" target="_blank">微信公众平台</a> 更新 IP 白名单。</p>
+        {% elif health.needs_login and health.login_command %}
+        <p class="muted">请重新初始化登录态：<code>{{ health.login_command }}</code></p>
+        {% endif %}
+      </div>
+      <div class="right-meta">
+        <span class="pill pill-{{ 'error' if health.needs_login else health.status_tone }}">{{ health.status_label }}</span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="button-grid">
+    <form method="post" action="/actions/collect-platform-health">
+      <input type="hidden" name="account" value="{{ account_key }}">
+      <button class="button button-outline" type="submit">刷新健康度</button>
+    </form>
+    <form method="post" action="/actions/init-login">
+      <input type="hidden" name="account" value="{{ account_key }}">
+      <button class="button button-secondary" type="submit">一键唤起登录</button>
+    </form>
+  </div>
+</section>
+{% endif %}
+
 <section class="panel">
   <div class="panel-head">
     <h3>账号总览</h3>
-    <p>在一个后台里查看全部账号的最近运行与发布状态</p>
+    <p>可以快速切到其他账号并查看最近状态</p>
   </div>
   <div class="account-grid">
     {% for item in account_overviews %}
@@ -41,17 +90,17 @@
         {% if item.is_current %}
         <span class="pill pill-approved">当前账号</span>
         {% else %}
-        <a class="text-link" href="/?account={{ item.key }}">切换</a>
+        <a class="text-link" href="/dashboard?account={{ item.key }}">切换</a>
         {% endif %}
       </div>
       <div class="meta-line">
-        <span>批次 {{ item.runs_count }}</span>
-        <span>自动化 {{ item.scheduled_status or "未运行" }}</span>
+        <span>批次 {{ item.run_count }}</span>
+        <span>状态 {{ item.overall_label }}</span>
       </div>
-      <p class="account-topic">{{ item.latest_topic_title or item.latest_publish_title or "暂无最近内容" }}</p>
+      <p class="account-topic">{{ item.latest_topic_title or item.latest_run_name or "暂无最近内容" }}</p>
       <div class="meta-line">
         <span>审核 {{ item.latest_review_status or "暂无" }}</span>
-        <span>发布 {{ item.latest_publish_status or "暂无" }}</span>
+        <span>总览 {{ item.overall_label }}</span>
       </div>
       {% if item.latest_run_name %}
       <a class="text-link" href="/runs/{{ item.latest_run_name }}?account={{ item.key }}">查看最近批次</a>
@@ -65,7 +114,7 @@
   <div class="panel">
     <div class="panel-head">
       <h3>定时任务</h3>
-      <p>当前账号的 09:00 / 12:00 / 18:00 自动执行状态</p>
+      <p>查看当前账号的计划任务与最近执行状态</p>
     </div>
     {% if dashboard.scheduled_tasks %}
     <div class="status-list">
@@ -84,10 +133,46 @@
     {% endif %}
 
     <div class="status-stack">
-      <strong>最近自动化状态</strong>
-      {% if dashboard.scheduled_status %}
-      <p>{{ dashboard.scheduled_status.status }} · {{ dashboard.scheduled_status.updated_at }}</p>
-      <p class="muted">{{ dashboard.scheduled_status.message }}</p>
+      <strong>当前运行状态</strong>
+      {% if dashboard.schedule_runtime %}
+      <div class="schedule-runtime-card schedule-runtime-card-{{ dashboard.schedule_runtime.tone }}">
+        <div class="schedule-runtime-head">
+          <span class="pill pill-{{ dashboard.schedule_runtime.tone }}">{{ dashboard.schedule_runtime.label }}</span>
+          {% if dashboard.schedule_runtime.updated_at %}
+          <span class="muted">{{ dashboard.schedule_runtime.updated_at }}</span>
+          {% endif %}
+        </div>
+        <p class="schedule-runtime-message">{{ dashboard.schedule_runtime.message }}</p>
+        <div class="meta-line">
+          {% if dashboard.schedule_runtime.attempt_label %}
+          <span>{{ dashboard.schedule_runtime.attempt_label }}</span>
+          {% endif %}
+          {% if dashboard.schedule_runtime.log_url %}
+          <a class="text-link" href="{{ dashboard.schedule_runtime.log_url }}" target="_blank">{{ dashboard.schedule_runtime.log_name or "查看日志" }}</a>
+          {% endif %}
+        </div>
+        {% if dashboard.schedule_runtime.platform_cards %}
+        <div class="status-stack">
+          <strong>平台执行拆分</strong>
+          <div class="status-list">
+            {% for item in dashboard.schedule_runtime.platform_cards %}
+            <div class="status-row">
+              <div>
+                <strong>{{ item.label }}</strong>
+                <p>{{ item.message }}</p>
+                {% if item.updated_at %}
+                <p class="muted">{{ item.updated_at }}</p>
+                {% endif %}
+              </div>
+              <div class="right-meta">
+                <span class="pill pill-{{ item.tone }}">{{ item.status_label }}</span>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+      </div>
       {% else %}
       <p class="empty">定时脚本还没有执行记录。</p>
       {% endif %}
@@ -113,12 +198,168 @@
       {% if dashboard.latest_publish.message %}
       <p class="muted">后台返回：{{ dashboard.latest_publish.message }}</p>
       {% endif %}
-      {% if dashboard.latest_publish.run_name %}
-      <a class="text-link" href="/runs/{{ dashboard.latest_publish.run_name }}?account={{ account_key }}">查看该批次详情</a>
-      {% endif %}
+      <div class="meta-line">
+        {% if dashboard.latest_publish.run_name %}
+        <a class="text-link" href="/runs/{{ dashboard.latest_publish.run_name }}?account={{ account_key }}">查看该批次详情</a>
+        {% endif %}
+        {% if dashboard.latest_publish.screenshot_url %}
+        <a class="text-link" href="{{ dashboard.latest_publish.screenshot_url }}" target="_blank">失败截图</a>
+        {% endif %}
+        {% if dashboard.latest_publish.dom_url %}
+        <a class="text-link" href="{{ dashboard.latest_publish.dom_url }}" target="_blank">DOM</a>
+        {% endif %}
+      </div>
     </div>
     {% else %}
     <p class="empty">当前账号还没有发布记录。</p>
+    {% endif %}
+  </div>
+</section>
+
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>效果反馈</h3>
+      <p>{% if dashboard.performance_feedback.generated_at %}最近更新 {{ dashboard.performance_feedback.generated_at }}{% else %}还没有沉淀出效果反馈数据{% endif %}</p>
+    </div>
+    {% if dashboard.performance_feedback.available %}
+    <div class="score-grid">
+      <div class="score-card">
+        <span>已发布样本</span>
+        <strong>{{ dashboard.performance_feedback.published_count }}</strong>
+      </div>
+      <div class="score-card">
+        <span>带指标样本</span>
+        <strong>{{ dashboard.performance_feedback.with_metrics_count }}</strong>
+      </div>
+      <div class="score-card">
+        <span>平均阅读率</span>
+        <strong>{{ '%.2f'|format(dashboard.performance_feedback.averages.read_rate or 0) }}%</strong>
+      </div>
+      <div class="score-card">
+        <span>平均互动率</span>
+        <strong>{{ '%.2f'|format(dashboard.performance_feedback.averages.interaction_rate or 0) }}%</strong>
+      </div>
+    </div>
+    <p class="muted">{{ dashboard.performance_feedback.summary_message }}</p>
+    <div class="meta-line">
+      {% if dashboard.performance_feedback.artifacts.report_json %}
+      <a class="text-link" href="{{ dashboard.performance_feedback.artifacts.report_json }}" target="_blank">报告 JSON</a>
+      {% endif %}
+      {% if dashboard.performance_feedback.artifacts.ledger_json %}
+      <a class="text-link" href="{{ dashboard.performance_feedback.artifacts.ledger_json }}" target="_blank">台账 JSON</a>
+      {% endif %}
+      {% if dashboard.performance_feedback.artifacts.report_md %}
+      <a class="text-link" href="{{ dashboard.performance_feedback.artifacts.report_md }}" target="_blank">报告 Markdown</a>
+      {% endif %}
+      {% if dashboard.performance_feedback.artifacts.ledger_csv %}
+      <a class="text-link" href="{{ dashboard.performance_feedback.artifacts.ledger_csv }}" target="_blank">台账 CSV</a>
+      {% endif %}
+    </div>
+    {% if dashboard.performance_feedback.top_articles %}
+    <div class="section-block">
+      <h4>表现最好的内容</h4>
+      <ul class="bullet-list">
+        {% for item in dashboard.performance_feedback.top_articles[:3] %}
+        <li>{{ item.title }} · 阅读 {{ item.read_count }} · 阅读率 {{ '%.2f'|format(item.read_rate or 0) }}% · 互动率 {{ '%.2f'|format(item.interaction_rate or 0) }}%</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% if dashboard.performance_feedback.recommendations %}
+    <div class="section-block">
+      <h4>运营建议</h4>
+      <ul class="bullet-list">
+        {% for item in dashboard.performance_feedback.recommendations %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% else %}
+    <p class="empty">当前还没有足够的数据可供复盘。</p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>最近样本明细</h3>
+      <p>按最近发布的内容查看题材、标题风格和数据表现。</p>
+    </div>
+    {% if dashboard.performance_feedback.latest_records %}
+    <div class="status-list">
+      {% for item in dashboard.performance_feedback.latest_records %}
+      <div class="status-row status-row-stack">
+        <div>
+          <strong>{{ item.title or "暂无标题" }}</strong>
+          <p>{{ item.published_at or "暂无时间" }} · {{ item.platform }} · {{ item.publish_status_label }}</p>
+          <p class="muted">
+            {% if item.topic_bucket %}题材 {{ item.topic_bucket }}{% endif %}
+            {% if item.title_style %} · 标题风格 {{ item.title_style }}{% endif %}
+            {% if item.content_angle %} · 内容角度 {{ item.content_angle }}{% endif %}
+          </p>
+          {% if item.has_metrics %}
+          <p class="muted">阅读 {{ item.read_count }} · 曝光 {{ item.impression_count }} · 阅读率 {{ '%.2f'|format(item.read_rate or 0) }}% · 互动率 {{ '%.2f'|format(item.interaction_rate or 0) }}%</p>
+          {% else %}
+          <p class="muted">当前样本还没有回流指标。</p>
+          {% endif %}
+          {% if item.test_focus %}
+          <p class="muted">测试重点：{{ item.test_focus }}</p>
+          {% endif %}
+        </div>
+        <div class="right-meta">
+          <span class="pill pill-{{ item.publish_status_tone }}">{{ item.publish_status_label }}</span>
+          {% if item.run_detail_url %}
+          <a class="text-link" href="{{ item.run_detail_url }}">查看详情</a>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">当前还没有足够的数据可供复盘。</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="grid two-col">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>实时日志</h3>
+      <p>直接在看板里查看当前账号最近日志流，无需再单独打开本地文件。</p>
+    </div>
+    <div class="section-block">
+      <label class="muted" for="live-log-select">日志文件</label>
+      <select id="live-log-select" class="input-like">
+        <option value="">自动跟随最近日志</option>
+        {% for log in dashboard.scheduled_logs %}
+        <option value="{{ log.name }}">{{ log.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <pre id="live-log-output" class="log-console">等待日志流连接...</pre>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>最近日志文件</h3>
+      <p>快速打开定时执行日志</p>
+    </div>
+    {% if dashboard.scheduled_logs %}
+    <div class="status-list">
+      {% for log in dashboard.scheduled_logs %}
+      <div class="status-row">
+        <div>
+          <strong>{{ log.name }}</strong>
+          <p>{{ log.modified_at }} · {{ '%.1f'|format(log.size_kb) }} KB</p>
+        </div>
+        <a class="text-link" href="{{ log.url }}" target="_blank">打开</a>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">当前账号还没有可展示的日志文件。</p>
     {% endif %}
   </div>
 </section>
@@ -127,14 +368,14 @@
   <div class="panel">
     <div class="panel-head">
       <h3>今日自动执行</h3>
-      <p>按三个时间窗查看当前账号执行结果</p>
+      <p>按时间窗查看当前账号执行结果</p>
     </div>
     <div class="status-list">
       {% for slot in dashboard.scheduled_windows %}
       <div class="status-row">
         <div>
           <strong>
-            {% if slot.slot_label == "morning" %}早上档{% elif slot.slot_label == "noon" %}中午档{% else %}晚上档{% endif %}
+            {% if slot.slot_label == "morning" %}早间档{% elif slot.slot_label == "noon" %}午间档{% elif slot.slot_label == "evening" %}傍晚档{% else %}夜间档{% endif %}
             · {{ slot.expected_time }}
           </strong>
           <p>{{ slot.updated_at or "暂无执行时间" }} · {{ slot.message }}</p>
@@ -180,6 +421,16 @@
         <strong>{{ scores.ai_generated_risk or 0 }}</strong>
       </div>
     </div>
+
+    <div class="section-block">
+      <h4>运行护栏</h4>
+      <ul class="bullet-list">
+        <li>平台健康：{{ dashboard.platform_health.status_label }}{% if dashboard.platform_health.updated_at %} · {{ dashboard.platform_health.updated_at }}{% endif %}</li>
+        <li>离线选题池：{{ dashboard.topic_pool.status_label }} · 总数 {{ dashboard.topic_pool.total_rows }} / 待用 {{ dashboard.topic_pool.pending_count }}</li>
+        <li>内容防重：{{ dashboard.content_guard.status_label }}{% if dashboard.content_guard.similarity %} · 相似度 {{ '%.2f'|format(dashboard.content_guard.similarity * 100) }}%{% endif %}</li>
+      </ul>
+    </div>
+
     {% if dashboard.latest_score.validation_notes %}
     <div class="section-block">
       <h4>正文校验备注</h4>
@@ -267,142 +518,48 @@
     {% endif %}
   </div>
 </section>
+{% endblock %}
 
-<section class="grid two-col">
-  <div class="panel">
-    <div class="panel-head">
-      <h3>手动生成</h3>
-      <p>适合临时粘贴新闻、研报或你自己的分析框架</p>
-    </div>
-    <form method="post" action="/actions/manual-run" class="stack-form">
-      <input type="hidden" name="account" value="{{ account_key }}">
-      <label>
-        <span>写作风格</span>
-        <select name="style">
-          {% for style in styles %}
-          <option value="{{ style.key }}" {% if style.key == default_style %}selected{% endif %}>{{ style.label }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>
-        <span>输入文本</span>
-        <textarea name="paste_text" rows="10" placeholder="直接粘贴新闻、研报摘要或你的分析框架"></textarea>
-      </label>
-      <label class="check">
-        <input type="checkbox" name="include_input_dir" value="true">
-        <span>同时读取 input 目录</span>
-      </label>
-      <label class="check">
-        <input type="checkbox" name="dry_run" value="true">
-        <span>仅本地草稿，不调用模型</span>
-      </label>
-      <label class="check">
-        <input type="checkbox" name="refresh_cache" value="true">
-        <span>忽略缓存重新生成</span>
-      </label>
-      <button class="button" type="submit">开始生成</button>
-    </form>
-  </div>
+{% block scripts %}
+<script>
+  (function () {
+    const accountKey = {{ account_key|tojson }};
+    const select = document.getElementById("live-log-select");
+    const output = document.getElementById("live-log-output");
+    if (!select || !output) {
+      return;
+    }
 
-  <div class="panel">
-    <div class="panel-head">
-      <h3>自动生成</h3>
-      <p>从当前账号热点池自动挑题并归档</p>
-    </div>
-    <form method="post" action="/actions/auto-run" class="stack-form">
-      <input type="hidden" name="account" value="{{ account_key }}">
-      <label>
-        <span>写作风格</span>
-        <select name="style">
-          {% for style in styles %}
-          <option value="{{ style.key }}" {% if style.key == default_style %}selected{% endif %}>{{ style.label }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>
-        <span>指定排名</span>
-        <input type="number" name="topic_rank" min="1" placeholder="默认使用第 1 条">
-      </label>
-      <label>
-        <span>或标题关键词</span>
-        <input type="text" name="topic_title" placeholder="例如：人形机器人">
-      </label>
-      <label class="check">
-        <input type="checkbox" name="collect_topics" value="true">
-        <span>运行前强制重新采集热点</span>
-      </label>
-      <label class="check">
-        <input type="checkbox" name="dry_run" value="true">
-        <span>仅本地草稿，不调用模型</span>
-      </label>
-      <label class="check">
-        <input type="checkbox" name="refresh_cache" value="true">
-        <span>忽略缓存重新生成</span>
-      </label>
-      <label class="check">
-        <input type="checkbox" name="no_archive" value="true">
-        <span>本次结果不归档</span>
-      </label>
-      <button class="button button-secondary" type="submit">自动选题生成</button>
-    </form>
-  </div>
-</section>
+    let source = null;
 
-<section class="grid two-col">
-  <div class="panel">
-    <div class="panel-head">
-      <h3>发布前置检查</h3>
-      <p>检查当前账号浏览器发布会话与头条后台返回</p>
-    </div>
-    {% if dashboard.publish_preflight %}
-    <div class="status-card">
-      <div class="status-card-head">
-        <strong>{% if dashboard.publish_preflight.blocking_flags %}存在阻塞{% else %}可继续发布{% endif %}</strong>
-        <span class="pill pill-pending">{{ dashboard.publish_preflight.updated_at or "未刷新" }}</span>
-      </div>
-      {% if dashboard.publish_preflight.current_url %}
-      <p class="muted">当前页面：{{ dashboard.publish_preflight.current_url }}</p>
-      {% endif %}
-      {% if dashboard.publish_preflight.blocking_flags %}
-      <ul class="bullet-list risk-list">
-        {% for note in dashboard.publish_preflight.blocking_flags %}
-        <li>{{ note }}</li>
-        {% endfor %}
-      </ul>
-      {% endif %}
-      {% if dashboard.publish_preflight.warnings %}
-      <ul class="bullet-list">
-        {% for note in dashboard.publish_preflight.warnings %}
-        <li>{{ note }}</li>
-        {% endfor %}
-      </ul>
-      {% endif %}
-    </div>
-    {% else %}
-    <p class="empty">当前账号还没有发布预检结果。</p>
-    {% endif %}
-  </div>
+    function connect() {
+      if (source) {
+        source.close();
+      }
+      output.textContent = "正在连接日志流...\n";
+      const params = new URLSearchParams({ account: accountKey });
+      if (select.value) {
+        params.set("path", select.value);
+      }
+      source = new EventSource(`/api/logs/stream?${params.toString()}`);
+      source.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.content) {
+            output.textContent += payload.content;
+            output.scrollTop = output.scrollHeight;
+          }
+        } catch (error) {
+          output.textContent += `\n[日志解析失败] ${error}\n`;
+        }
+      };
+      source.addEventListener("error", (event) => {
+        output.textContent += "\n[日志流已断开，请稍后重试]\n";
+      });
+    }
 
-  <div class="panel">
-    <div class="panel-head">
-      <h3>最近批次</h3>
-      <p>点击进入当前账号审核与发布页</p>
-    </div>
-    {% if dashboard.runs %}
-    <div class="run-table">
-      {% for run in dashboard.runs %}
-      <a href="/runs/{{ run.name }}?account={{ account_key }}" class="run-row">
-        <div>
-          <strong>{{ run.selected_topic_title or run.name }}</strong>
-          <p>{{ run.created_at }} · {{ run.review_status }} · 综合 {{ run.overall_score }} · 校验 {{ run.validation_score }} · 发布 {{ run.publish_readiness_score }}</p>
-        </div>
-        <span class="pill pill-{{ run.review_status }}">{{ run.review_status }}</span>
-      </a>
-      {% endfor %}
-    </div>
-    {% else %}
-    <p class="empty">当前账号还没有归档批次。</p>
-    {% endif %}
-  </div>
-</section>
+    select.addEventListener("change", connect);
+    connect();
+  })();
+</script>
 {% endblock %}

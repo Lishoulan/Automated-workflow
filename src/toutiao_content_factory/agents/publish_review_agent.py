@@ -125,6 +125,8 @@ class PublishReviewAgent(BaseAgent):
         if warnings:
             publish_notes.extend(str(item) for item in warnings[:3])
             readiness -= min(8, len(warnings) * 2)
+        if any("敏感词" in str(item) or "违禁词" in str(item) for item in blockers):
+            readiness = 0
 
         if not publish_notes:
             publish_notes = [
@@ -137,6 +139,8 @@ class PublishReviewAgent(BaseAgent):
         if publish_risk_flags or readiness < 78:
             recommendation = "manual_review"
         if readiness < 68:
+            recommendation = "revise_before_publish"
+        if any("敏感词" in str(item) or "违禁词" in str(item) for item in publish_risk_flags):
             recommendation = "revise_before_publish"
 
         result = {

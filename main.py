@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from toutiao_content_factory.utils.runtime_status import refresh_heartbeat
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
@@ -26,6 +29,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Account key defined in config.yaml accounts section. Defaults to TOUTIAO_ACCOUNT or default.",
     )
+    parser.add_argument("--reset-account", action="store_true", help="Reset automation state files for the selected account.")
+    parser.add_argument("--audit-account-artifacts", action="store_true", help="Audit stale account artifact directories on disk.")
+    parser.add_argument("--cleanup-stale-account-artifacts", action="store_true", help="Move stale account artifact directories into a local cleanup trash folder.")
     parser.add_argument("--paste", type=str, default=None, help="Inline text to analyze.")
     parser.add_argument("--input-dir", type=str, default=None, help="Override the default input directory.")
     parser.add_argument("--output-dir", type=str, default=None, help="Override the default output directory.")
@@ -53,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--approve-latest", action="store_true", help="Approve the latest pending run.")
     parser.add_argument("--reject-run", action="store_true", help="Reject a run and save review notes.")
     parser.add_argument("--publish-run", action="store_true", help="Publish an approved run.")
+    parser.add_argument("--draft-only", action="store_true", help="Fill Toutiao publish form and save as draft instead of publishing.")
     parser.add_argument(
         "--refresh-publish-readiness",
         action="store_true",
@@ -89,6 +96,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Check whether the current persistent browser session can publish on Toutiao.",
     )
     parser.add_argument(
+        "--health-preflight",
+        action="store_true",
+        help="Run a unified platform session health preflight for Toutiao / WeChat / Douyin.",
+    )
+    parser.add_argument(
         "--init-publish-login",
         action="store_true",
         help="Initialize the persistent Toutiao browser login session.",
@@ -97,6 +109,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--init-wechat-login",
         action="store_true",
         help="Initialize the persistent WeChat Official Account browser login session.",
+    )
+    parser.add_argument(
+        "--init-douyin-login",
+        action="store_true",
+        help="Initialize the persistent Douyin creator browser login session.",
+    )
+    parser.add_argument(
+        "--prepare-douyin-run",
+        action="store_true",
+        help="Prepare Douyin title/caption/image payloads from an approved run.",
+    )
+    parser.add_argument(
+        "--publish-douyin-run",
+        action="store_true",
+        help="Publish a prepared approved run to Douyin using the saved browser session.",
     )
     parser.add_argument(
         "--prepare-wechat-launch-day",
@@ -207,11 +234,27 @@ def main() -> int:
         settings.output_dir = Path(args.output_dir).resolve()
 
     settings.ensure_directories()
+    refresh_heartbeat(settings.automation_dir / "scheduled_status.json")
     logger = configure_logging(settings.logs_dir, settings.logging_level)
     app_service = ContentFactoryAppService(settings, logger)
     exported_files: dict[str, str] = {}
 
     try:
+        if args.reset_account:
+            result = app_service.reset_account_state()
+            _print_export_summary("Account automation state reset.", result)
+            return 0
+
+        if args.audit_account_artifacts:
+            result = app_service.audit_account_artifacts()
+            _print_export_summary("Account artifact audit completed.", result)
+            return 0
+
+        if args.cleanup_stale_account_artifacts:
+            result = app_service.cleanup_stale_account_artifacts()
+            _print_export_summary("Stale account artifacts moved to cleanup trash.", result)
+            return 0
+
         if _is_review_or_publish_action(args):
             if args.init_publish_login:
                 init_result = app_service.initialize_publish_login()
@@ -221,6 +264,21 @@ def main() -> int:
             if args.init_wechat_login:
                 init_result = app_service.initialize_wechat_publish_login()
                 _print_export_summary("WeChat login session initialized.", init_result)
+                return 0
+
+            if args.init_douyin_login:
+                init_result = app_service.initialize_douyin_publish_login()
+                _print_export_summary("Douyin login session initialized.", init_result)
+                return 0
+
+            if args.prepare_douyin_run:
+                result = app_service.prepare_douyin_run(args.run_dir)
+                _print_export_summary("Douyin publish package prepared.", result)
+                return 0
+
+            if args.publish_douyin_run:
+                result = app_service.publish_douyin_run(args.run_dir)
+                _print_export_summary("Run submitted to Douyin.", result)
                 return 0
 
             if args.prepare_wechat_launch_day is not None:
@@ -289,6 +347,11 @@ def main() -> int:
                 _print_export_summary("Publish preflight collected.", preflight_exports)
                 return 0
 
+            if args.health_preflight:
+                health_exports = app_service.collect_platform_health()
+                _print_export_summary("Platform health preflight collected.", health_exports)
+                return 0
+
             if args.prepare_review:
                 review_exports = app_service.prepare_review(args.run_dir)
                 _print_export_summary("Review packet prepared.", review_exports)
@@ -316,7 +379,7 @@ def main() -> int:
                 return 0
 
             if args.publish_run:
-                publish_exports = app_service.publish_run(args.run_dir)
+                publish_exports = app_service.publish_run(args.run_dir, draft_only=args.draft_only)
                 _print_export_summary("Publish command completed.", publish_exports)
                 return 0
 
@@ -336,7 +399,7 @@ def main() -> int:
                 return 0
 
             if args.publish_latest_approved:
-                publish_exports = app_service.publish_latest_approved(unpublished_only=True)
+                publish_exports = app_service.publish_latest_approved(unpublished_only=True, draft_only=args.draft_only)
                 _print_export_summary("Latest approved unpublished run published.", publish_exports)
                 return 0
 
@@ -439,6 +502,7 @@ def main() -> int:
 
 
 def _configure_utf8_stdio() -> None:
+    os.environ.setdefault("PYTHONUTF8", "1")
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
         reconfigure = getattr(stream, "reconfigure", None)
@@ -467,8 +531,12 @@ def _is_review_or_publish_action(args: argparse.Namespace) -> bool:
             args.wechat_draft_latest_approved,
             args.wechat_publish_latest_approved,
             args.publish_preflight,
+            args.health_preflight,
             args.init_publish_login,
             args.init_wechat_login,
+            args.init_douyin_login,
+            args.prepare_douyin_run,
+            args.publish_douyin_run,
             args.prepare_wechat_launch_day is not None,
             args.prepare_wechat_launch_week,
             args.generate_images_run,

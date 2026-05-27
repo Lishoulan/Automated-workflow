@@ -9,7 +9,10 @@
     "default_style": "deep_industry_analysis",
     "title_count": 20,
     "recommended_title_count": 3,
-    "cache_similarity_threshold": 0.82
+    "cache_similarity_threshold": 0.82,
+    "kol_voice_enabled": false,
+    "kol_voice_name": "",
+    "kol_voice_style": "短段落、适度破折号、适度反问句、口语化转折"
   },
   "industry": {
     "brand_name": "手蓝数据笔记",
@@ -162,6 +165,12 @@
   },
   "automation": {
     "default_topic_rank": 1,
+    "daily_run_times": [
+      "08:00",
+      "12:00",
+      "18:30",
+      "22:00"
+    ],
     "archive_outputs": true,
     "archive_dirname": "runs",
     "selected_topic_basename": "selected_topic"
@@ -176,7 +185,49 @@
     "min_auto_publish_readiness_score": 70,
     "publish_dirname": "publish"
   },
+  "compliance": {
+    "aigc_declaration_enabled": true,
+    "max_daily_posts": 2,
+    "draft_only_mode": true,
+    "anti_ai_flavor": {
+      "banned_words": [
+        "综上所述", "不可否认", "双刃剑", "值得关注的是",
+        "换言之", "深入探讨", "如前所述", "值得注意的是",
+        "不难发现", "由此可见", "众所周知", "毋庸置疑",
+        "总而言之", "归根结底", "从某种程度上说"
+      ],
+      "style_rules": [
+        "使用短句和主动语态，避免大段学术化复杂长句",
+        "采用科技媒体记者的第一人称观察视角（如'笔者认为'、'在现场看到'）",
+        "穿插具体的、未经AI抽象化的原始数据（如'同比下滑14.2%'，而非'大幅下滑'）",
+        "每段不超过3个句子，段落之间用事实或数据衔接",
+        "避免使用排比句和对称结构"
+      ]
+    },
+    "proxy_server": "",
+    "account_login_interval_seconds": 300,
+    "account_switch_interval_seconds": 60
+  },
+  "douyin": {
+    "enabled": false,
+    "auto_publish": false,
+    "niche": "??",
+    "publish_mode": "browser",
+    "daily_post_target": 10,
+    "base_url": "https://creator.douyin.com/",
+    "publish_url": "https://creator.douyin.com/creator-micro/content/upload",
+    "user_data_dir": ".runtime/douyin_profile",
+    "channel": "msedge",
+    "executable_path": "",
+    "headless": false,
+    "wait_timeout_ms": 20000,
+    "history_filename": "douyin_publish_history.json",
+    "title_max_length": 30,
+    "caption_max_length": 220,
+    "max_images": 3
+  },
   "styles": {
+
     "deep_industry_analysis": {
       "label": "深度行业分析风",
       "tone": "冷静、专业、强调产业链兑现和环节分化。",

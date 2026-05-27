@@ -146,6 +146,7 @@ class ExportService:
             "style_label": result.style_label,
             "cache_status": result.cache_status,
             "model_used": result.model_used,
+            "estimated_cost": result.estimated_cost,
             "score_scale_note": "除 ai_generated_risk 外，其余分数越高越好；ai_generated_risk 越低越好。",
             "scores": {
                 "overall_score": score.overall_score,

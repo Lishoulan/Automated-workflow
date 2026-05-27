@@ -79,16 +79,21 @@ If you use an OpenAI-compatible relay for images:
 
 If you want auto-publish:
 
+- `TARGET_PLATFORM=all`
 - `TOUTIAO_PUBLISH_ENABLED=1`
 - `TOUTIAO_AUTO_PUBLISH=1`
+- `WECHAT_ENABLED=1`
+- `WECHAT_AUTO_PUBLISH=1`
+- `WECHAT_APP_ID`
+- `WECHAT_APP_SECRET`
 
 To let the daily workflow try multiple candidate topics before giving up:
 
 - `TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS=3`
 
-### 5. Initialize Toutiao Login
+### 5. Initialize Toutiao + WeChat Login
 
-This opens a persistent browser profile and lets you log in to Toutiao Creator Center once.
+This opens the persistent browser sessions used by the scheduled workflow and lets you log in to Toutiao Creator Center and WeChat Official Accounts once.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\init_publish_login.ps1
@@ -158,6 +163,9 @@ python .\main.py --account robot_notes --daily-run --refresh-cache
 - it auto-approves high-quality runs
 - it auto-publishes Toutiao when `TOUTIAO_AUTO_PUBLISH=1`
 - it also creates WeChat drafts, and submits them when `WECHAT_AUTO_PUBLISH=1`
+- set `TARGET_PLATFORM=all` if you want one scheduled workflow to handle every enabled platform together
+
+If Toutiao publish fails with `code=2010` / no publish permission, the browser session reached the platform but the logged-in account itself cannot publish from Creator Center. Re-run login initialization with the correct account and verify manual publishing works first.
 
 ### Publish The Latest Approved Run
 
@@ -337,3 +345,37 @@ git push -u origin main
 ```
 
 If this machine does not have `git`, install Git for Windows first, then run the commands above.
+
+
+## Douyin First Version
+
+A first Douyin workflow is now wired into the project for `??` positioning with browser-session based publishing prep.
+
+Current commands:
+
+```powershell
+python .\main.py --prepare-douyin-run --run-dir "D:\path	o\output
+uns\your_run_dir"
+python .\main.py --init-douyin-login
+```
+
+What it does today:
+
+- builds a Douyin-ready package from an approved run under `publish/douyin/`
+- exports `douyin_payload.json`, clipped title, caption, hashtags, and publish notes
+- reuses generated images so the same visual assets can feed Douyin??
+- stores a separate persistent browser profile for each account
+
+Current limitation:
+
+- the browser publish flow is now wired, but live creator selectors may still need one calibration pass against your own account session
+- `DOUYIN_DAILY_POST_TARGET=10` is supported as a planning target, but for new accounts a lower real publish frequency is still safer for distribution and risk control
+
+Recommended config baseline:
+
+- `DOUYIN_NICHE=??`
+- `DOUYIN_PUBLISH_MODE=browser`
+- `DOUYIN_DAILY_POST_TARGET=10`
+
+After you log in once with `--init-douyin-login`, we can do the next step: lock selectors from your actual creator page and finish the auto-publish loop.
+

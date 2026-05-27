@@ -174,7 +174,7 @@ class WechatLaunchService:
         result = self._write_run_package(plan, publish_date, payload)
         if not self.settings.skip_image_generation:
             try:
-                result.update(self.image_service.generate_for_run(result["run_dir"]))
+                result.update(self.image_service.generate_for_run(result["run_dir"], include_infographics=True))
             except Exception as exc:
                 self.logger.warning("Image generation failed for WeChat launch day %s: %s", day_index, exc)
         return result

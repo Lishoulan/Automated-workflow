@@ -26,6 +26,17 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency fallback
     sync_playwright = None
 
 
+class SessionExpiredException(RuntimeError):
+    pass
+
+
+class WechatIpWhitelistBlockedException(RuntimeError):
+    def __init__(self, message: str, *, ip_address: str = "", payload: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.ip_address = ip_address
+        self.payload = payload or {}
+
+
 class WechatPublishService:
     def __init__(self, settings: AppSettings, logger: logging.Logger) -> None:
         self.settings = settings
@@ -113,6 +124,7 @@ class WechatPublishService:
             "submit_requested": submit or self.settings.wechat.auto_publish,
             "publish_response": publish_response,
             "external_url": str(publish_response.get("publish_url", "")).strip() if publish_response else "",
+            "original_declared": bool(publish_response.get("original_declared", False)) if publish_response else False,
             "title": title,
         }
         result_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -697,7 +709,19 @@ class WechatPublishService:
         )
         url = f"{wechat.api_base_url.rstrip('/')}/cgi-bin/token?{query}"
         request = Request(url)
-        payload = self._read_json_response(request)
+        try:
+            payload = self._read_json_response(request)
+        except RuntimeError as exc:
+            payload_text = str(exc)
+            if "40164" in payload_text and "invalid ip" in payload_text.lower():
+                ip_address = self._extract_invalid_ip(payload_text)
+                message = (
+                    f"[WeChat] 微信公众号 API 调用被白名单拦截，当前本机出口 IP: {ip_address or 'unknown'}。"
+                    "请前往微信公众平台后台更新接口白名单。"
+                )
+                self.logger.warning(message)
+                raise WechatIpWhitelistBlockedException(message, ip_address=ip_address) from exc
+            raise
         token = str(payload.get("access_token", "")).strip()
         expires_in = int(payload.get("expires_in", 7200) or 7200)
         if not token:
@@ -705,6 +729,10 @@ class WechatPublishService:
         self._access_token = token
         self._access_token_expires_at = now + max(300, expires_in - 120)
         return token
+
+    def _extract_invalid_ip(self, message: str) -> str:
+        match = re.search(r"invalid ip\s+([0-9\.]+)", str(message), flags=re.IGNORECASE)
+        return match.group(1).strip() if match else ""
 
     def _build_api_url(self, endpoint: str, *, access_token: str) -> str:
         base = self.settings.wechat.api_base_url.rstrip("/")
@@ -770,7 +798,7 @@ class WechatPublishService:
                 self._open_wechat_draft_box(page)
                 self._open_wechat_draft_by_title(page, title)
                 self._click_publish_button_on_wechat_page(page)
-                self._confirm_wechat_publish_dialog(page)
+                original_declared = self._confirm_wechat_publish_dialog(page)
                 self._wait_for_wechat_publish_success(page)
                 result = {
                     "status": "submitted",
@@ -778,8 +806,11 @@ class WechatPublishService:
                     "draft_media_id": draft_media_id,
                     "title": title,
                     "publish_url": page.url,
+                    "original_declared": original_declared,
                 }
                 return result
+            except SessionExpiredException:
+                raise
             except Exception as exc:
                 debug_dir = self._capture_browser_debug_artifacts(page, {"draft_media_id": draft_media_id, "title": title})
                 raise RuntimeError(
@@ -795,20 +826,29 @@ class WechatPublishService:
             timeout=max(self.settings.publishing.wait_timeout_ms, 20000),
         )
         page.wait_for_timeout(2500)
+        self._raise_if_session_expired(page)
 
     def _open_wechat_draft_box(self, page) -> None:
         candidate_texts = ("草稿箱", "Drafts", "草稿")
         deadline = time.time() + 60
         while time.time() < deadline:
+            self._raise_if_session_expired(page)
             for text in candidate_texts:
                 with suppress(Exception):
                     locator = page.get_by_text(text, exact=False).first
                     if locator.is_visible(timeout=500):
                         locator.click(force=True, timeout=1500)
                         page.wait_for_timeout(3000)
+                        self._raise_if_session_expired(page)
                         return
             page.wait_for_timeout(1000)
-        raise RuntimeError("Could not open WeChat draft box from the current session.")
+        debug_dir = self._capture_browser_debug_artifacts(page, {"step": "open_draft_box"})
+        self.logger.error(
+            "Could not open WeChat draft box from the current session. Debug files saved to: %s. "
+            "Please inspect the screenshot/HTML to confirm whether the backend DOM changed or the session expired.",
+            debug_dir,
+        )
+        raise RuntimeError(f"Could not open WeChat draft box from the current session. Debug files saved to: {debug_dir}")
 
     def _open_wechat_draft_by_title(self, page, title: str) -> None:
         locator = page.get_by_text(title, exact=False).first
@@ -821,7 +861,7 @@ class WechatPublishService:
                     return
             search_inputs = [
                 "input[placeholder*='搜索']",
-                "input[placeholder*='查找']",
+                "input[placeholder*='标题']",
                 "input[type='search']",
             ]
             for selector in search_inputs:
@@ -837,9 +877,9 @@ class WechatPublishService:
 
     def _click_publish_button_on_wechat_page(self, page) -> None:
         button_texts = (
-            "发表",
             "发布",
             "群发",
+            "发表",
             "提交",
             "确认发布",
         )
@@ -862,35 +902,125 @@ class WechatPublishService:
             page.wait_for_timeout(1000)
         raise RuntimeError("Could not find a publish button on the WeChat draft page.")
 
-    def _confirm_wechat_publish_dialog(self, page) -> None:
+    def _confirm_wechat_publish_dialog(self, page) -> bool:
         confirm_texts = (
-            "发表",
-            "确认",
             "确定",
-            "群发",
-            "继续",
+            "确认",
+            "继续发布",
+            "确认发布",
             "我知道了",
+            "发布",
         )
         page.wait_for_timeout(1500)
+        original_declared = self._ensure_original_declaration(page)
         for _ in range(20):
+            if self._ensure_original_declaration(page):
+                original_declared = True
             for text in confirm_texts:
                 with suppress(Exception):
                     locator = page.get_by_role("button", name=text).first
                     if locator.is_visible(timeout=500):
                         locator.click(force=True, timeout=1500)
                         page.wait_for_timeout(2000)
-                        return
+                        return original_declared
             for text in confirm_texts:
                 with suppress(Exception):
                     locator = page.get_by_text(text, exact=False).first
                     if locator.is_visible(timeout=500):
                         locator.click(force=True, timeout=1500)
                         page.wait_for_timeout(2000)
-                        return
+                        return original_declared
             page.wait_for_timeout(1000)
+        return original_declared
+
+    def _ensure_original_declaration(self, page) -> bool:
+        selectors = [
+            "label:has-text('原创')",
+            "label:has-text('声明原创')",
+            "label:has-text('原创声明')",
+            ".weui-desktop-form__check-label:has-text('原创')",
+            "[role='checkbox']:has-text('原创')",
+            "text=原创",
+        ]
+        for selector in selectors:
+            with suppress(Exception):
+                locator = page.locator(selector).first
+                if not locator.is_visible(timeout=400):
+                    continue
+                if not self._is_custom_control_selected(locator):
+                    self._click_custom_control(locator)
+                    page.wait_for_timeout(300)
+                if self._is_custom_control_selected(locator):
+                    self.logger.info("WeChat original declaration enabled via selector: %s", selector)
+                    return True
+        return False
+
+    def _is_custom_control_selected(self, locator) -> bool:
+        try:
+            return bool(
+                locator.evaluate(
+                    """(node) => {
+                        const input = node.querySelector('input');
+                        if (input && typeof input.checked === 'boolean' && input.checked) {
+                            return true;
+                        }
+                        if (node.classList.contains('selected')) {
+                            return true;
+                        }
+                        if (node.classList.contains('checked')) {
+                            return true;
+                        }
+                        if (node.classList.contains('is-checked')) {
+                            return true;
+                        }
+                        if (node.classList.contains('weui-desktop-form__check-label_selected')) {
+                            return true;
+                        }
+                        if (node.classList.contains('byte-checkbox-checked')) {
+                            return true;
+                        }
+                        if (node.getAttribute('aria-checked') === 'true') {
+                            return true;
+                        }
+                        return !!node.querySelector('.checked, .is-checked, .byte-checkbox-checked, .weui-desktop-icon-checkbox-selected');
+                    }"""
+                )
+            )
+        except Exception:
+            try:
+                input = locator.locator("input").first
+                return bool(input.count() and input.is_checked())
+            except Exception:
+                return False
+
+    def _click_custom_control(self, locator) -> bool:
+        try:
+            locator.click(force=True, timeout=1200)
+            return True
+        except Exception:
+            pass
+
+        try:
+            locator.evaluate(
+                """(node) => {
+                    const target =
+                        node.querySelector('input') ||
+                        node.querySelector('[role="checkbox"]') ||
+                        node.querySelector('.weui-desktop-form__check-label') ||
+                        node;
+                    target.dispatchEvent(new MouseEvent('click', {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                    }));
+                }"""
+            )
+            return True
+        except Exception:
+            return False
 
     def _wait_for_wechat_publish_success(self, page) -> None:
-        success_markers = ("发布成功", "提交成功", "群发成功", "已群发", "发布完成")
+        success_markers = ("发表成功", "发布成功", "群发成功", "已发送", "发布完成")
         deadline = time.time() + 90
         while time.time() < deadline:
             current_text = ""
@@ -904,12 +1034,39 @@ class WechatPublishService:
         raise RuntimeError("WeChat publish did not reach a success state within the timeout.")
 
     def _browser_session_ready(self, page) -> bool:
-        ready_markers = ("草稿箱", "公众号后台", "新建群发", "发表", "发布")
+        if self._is_login_page(page):
+            return False
+        ready_markers = ("草稿箱", "新建图文", "素材管理", "发表记录", "首页")
         with suppress(Exception):
             body_text = page.locator("body").inner_text(timeout=1000)
             if any(marker in body_text for marker in ready_markers):
                 return True
         return any(marker in page.url for marker in ("mp.weixin.qq.com", "appmsg"))
+
+    def _is_login_page(self, page) -> bool:
+        url = str(getattr(page, "url", "") or "")
+        if "/cgi-bin/loginpage" in url or "/cgi-bin/home?t=home/login" in url:
+            return True
+        login_selectors = [
+            'img[src*="/cgi-bin/verifyqrcode"]',
+            'input[name="account"]',
+            'input[type="password"]',
+            "text=微信公众平台",
+            "text=扫码登录",
+        ]
+        for selector in login_selectors:
+            with suppress(Exception):
+                if page.locator(selector).first.is_visible(timeout=400):
+                    return True
+        return False
+
+    def _raise_if_session_expired(self, page) -> None:
+        if self._is_login_page(page):
+            debug_dir = self._capture_browser_debug_artifacts(page, {"step": "session_check"})
+            raise SessionExpiredException(
+                "微信公众号登录态已失效，请重新运行初始化登录脚本。"
+                f" 调试文件已保存到: {debug_dir}"
+            )
 
     def _capture_browser_debug_artifacts(self, page, extra_payload: dict[str, Any] | None = None) -> Path:
         timestamp = time.strftime("%Y%m%d-%H%M%S")

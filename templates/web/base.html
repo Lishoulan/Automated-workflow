@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}?????????{% endblock %}</title>
+  <title>{% block title %}手蓝内容工厂{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -11,8 +11,8 @@
     <aside class="sidebar">
       <div class="brand">
         <p class="eyebrow">SHOULAN MATRIX</p>
-        <h1>???????</h1>
-        <p class="subtle">???????????</p>
+        <h1>手蓝内容工厂</h1>
+        <p class="subtle">多账号内容生成、审核、发布与状态管理后台</p>
       </div>
 
       <div class="sidebar-card">
@@ -32,10 +32,11 @@
       </div>
 
       <nav class="nav">
-        <a href="/?{{ account_query }}" class="nav-link">账号管理</a>
-        <a href="/topics?{{ account_query }}" class="nav-link">热点池</a>
-        <a href="/runs?{{ account_query }}" class="nav-link">归档批次</a>
-        <a href="/published?{{ account_query }}" class="nav-link">已发布预览</a>
+        <a href="/?{{ account_query }}" class="nav-link{% if current_path == '/' %} active{% endif %}">账号管理</a>
+        <a href="/dashboard?{{ account_query }}" class="nav-link{% if current_path == '/dashboard' %} active{% endif %}">单账号看板</a>
+        <a href="/topics?{{ account_query }}" class="nav-link{% if current_path == '/topics' %} active{% endif %}">热点池</a>
+        <a href="/runs?{{ account_query }}" class="nav-link{% if current_path == '/runs' %} active{% endif %}">归档批次</a>
+        <a href="/published?{{ account_query }}" class="nav-link{% if current_path == '/published' %} active{% endif %}">已发布预览</a>
       </nav>
 
       <div class="sidebar-card">
@@ -53,5 +54,6 @@
       {% block content %}{% endblock %}
     </main>
   </div>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -10,6 +10,7 @@ from pathlib import Path
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import TopicCandidate, WorkflowResult
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.schema_guard_service import SchemaGuardService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.publish_service import PublishService
 from toutiao_content_factory.agents.base import BaseAgent
@@ -206,6 +207,7 @@ class ReviewWorkflowService:
         experiment_tags_path = publish_dir / "experiment_tags.json"
         experiment_tags_path.write_text(json.dumps(experiment_tags, ensure_ascii=False, indent=2), encoding="utf-8")
         meta_payload["experiment_tags"] = experiment_tags
+        SchemaGuardService.validate_publish_meta(meta_payload)
         meta_path.write_text(json.dumps(meta_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         status.update(
@@ -280,8 +282,8 @@ class ReviewWorkflowService:
         self.logger.info("Review skipped by automation: %s", run_dir)
         return {"review_status": status_path}
 
-    def publish_run(self, run_dir: Path) -> dict[str, Path]:
-        return self.publish_service.publish_run(run_dir)
+    def publish_run(self, run_dir: Path, *, declare_first_release: bool = True) -> dict[str, Path]:
+        return self.publish_service.publish_run(run_dir, declare_first_release=declare_first_release)
 
     def _load_published_run_dirs(self) -> set[str]:
         history_path = self.settings.output_dir / self.settings.publishing.history_filename

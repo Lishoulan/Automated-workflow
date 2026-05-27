@@ -1,0 +1,384 @@
+from __future__ import annotations
+
+import json
+import logging
+from contextlib import suppress
+from typing import Any
+
+from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
+
+try:
+    from playwright.sync_api import sync_playwright
+except ModuleNotFoundError:  # pragma: no cover - optional dependency fallback
+    sync_playwright = None
+
+
+class PlatformHealthService:
+    def __init__(
+        self,
+        settings: AppSettings,
+        logger: logging.Logger,
+        *,
+        toutiao_publish_service,
+        wechat_publish_service,
+        douyin_publish_service,
+    ) -> None:
+        self.settings = settings
+        self.logger = logger
+        self.toutiao_publish_service = toutiao_publish_service
+        self.wechat_publish_service = wechat_publish_service
+        self.douyin_publish_service = douyin_publish_service
+
+    def collect(self) -> dict[str, Any]:
+        payload = {
+            "generated_at": self._now(),
+            "account_key": self.settings.account_key,
+            "account_slug": self.settings.account_slug,
+            "platforms": {
+                "toutiao": self._collect_toutiao(),
+                "wechat": self._collect_wechat(),
+                "douyin": self._collect_douyin(),
+            },
+        }
+        payload["blocking_flags"] = self._collect_global_blockers(payload["platforms"])
+        path = self.settings.automation_dir / "platform_health.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"platform_health": str(path), "blocking_flags": payload["blocking_flags"], "platforms": payload["platforms"]}
+
+    def ensure_publish_ready(self) -> dict[str, Any]:
+        health = self.collect()
+        blocking_platforms = self._collect_required_auth_failures(health.get("platforms", {}))
+        health["blocking_platforms"] = blocking_platforms
+        return health
+
+    def _collect_toutiao(self) -> dict[str, Any]:
+        if not self.settings.publishing.enabled:
+            return {"enabled": False, "required": False, "status": "disabled", "blocking_flags": [], "warnings": []}
+        summary = self.toutiao_publish_service.collect_preflight_summary()
+        session_payload = self._probe_toutiao_login_state()
+        blockers = self._unique_texts(
+            list(session_payload.get("blocking_flags", [])) + list(summary.get("blocking_flags", []))
+        )
+        warnings = self._unique_texts(
+            list(session_payload.get("warnings", [])) + list(summary.get("warnings", []))
+        )
+        payload = {
+            "enabled": True,
+            "required": bool(self.settings.publishing.auto_publish),
+            "status": "blocked" if blockers else "ready",
+            **summary,
+        }
+        payload["blocking_flags"] = blockers
+        payload["warnings"] = warnings
+        payload["diagnostics"] = {
+            **dict(session_payload.get("diagnostics", {})),
+            **dict(summary.get("diagnostics", {})),
+        }
+        return payload
+
+    def _collect_wechat(self) -> dict[str, Any]:
+        if not self.settings.wechat.enabled:
+            return {"enabled": False, "required": False, "status": "disabled", "blocking_flags": [], "warnings": []}
+
+        blockers: list[str] = []
+        warnings: list[str] = []
+        diagnostics: dict[str, Any] = {}
+
+        try:
+            token = self.wechat_publish_service._get_access_token()
+            diagnostics["access_token_ready"] = bool(token)
+        except Exception as exc:
+            if exc.__class__.__name__ == "WechatIpWhitelistBlockedException":
+                diagnostics["blocked_reason"] = "BLOCKED_BY_IP"
+                diagnostics["invalid_ip"] = str(getattr(exc, "ip_address", "")).strip()
+                blockers.append(str(exc))
+            else:
+                blockers.append(f"WeChat access token check failed: {exc}")
+
+        session_payload = self._probe_wechat_login_state()
+        blockers.extend(session_payload.get("blocking_flags", []))
+        warnings.extend(session_payload.get("warnings", []))
+        diagnostics.update(session_payload.get("diagnostics", {}))
+
+        return {
+            "enabled": True,
+            "required": True,
+            "status": "blocked" if blockers else "ready",
+            "blocking_flags": self._unique_texts(blockers),
+            "warnings": self._unique_texts(warnings),
+            "diagnostics": diagnostics,
+        }
+
+    def _collect_douyin(self) -> dict[str, Any]:
+        if not self.settings.douyin.enabled:
+            return {"enabled": False, "required": False, "status": "disabled", "blocking_flags": [], "warnings": []}
+        preflight_path = self.settings.automation_dir / "douyin_publish_preflight.json"
+        payload: dict[str, Any] = {
+            "enabled": True,
+            "required": bool(self.settings.douyin.auto_publish),
+            "status": "ready",
+            "blocking_flags": [],
+            "warnings": [],
+            "diagnostics": {},
+        }
+        if preflight_path.exists():
+            try:
+                cached = json.loads(preflight_path.read_text(encoding="utf-8"))
+                payload.update(cached if isinstance(cached, dict) else {})
+                payload["status"] = "blocked" if payload.get("blocking_flags") else "ready"
+            except Exception:
+                payload["warnings"].append("Douyin preflight file exists but could not be parsed.")
+        else:
+            payload["warnings"].append("Douyin preflight file not found. Re-run --init-douyin-login if auto publish is needed.")
+        payload["blocking_flags"] = self._unique_texts(list(payload.get("blocking_flags", [])))
+        payload["warnings"] = self._unique_texts(list(payload.get("warnings", [])))
+        return payload
+
+    def _probe_wechat_login_state(self) -> dict[str, Any]:
+        profile_dir = self.wechat_publish_service._resolve_browser_profile_dir()
+        diagnostics: dict[str, Any] = {
+            "profile_dir": str(profile_dir),
+        }
+        warnings: list[str] = []
+        blockers: list[str] = []
+        preflight_path = self.settings.automation_dir / "wechat_publish_preflight.json"
+
+        if not profile_dir.exists():
+            warnings.append(f"WeChat browser profile not found: {profile_dir}")
+        if sync_playwright is None:
+            blockers.append("Playwright is not installed.")
+            return {
+                "blocking_flags": blockers,
+                "warnings": warnings,
+                "diagnostics": diagnostics,
+            }
+
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        page = None
+        browser = None
+        try:
+            prepare_browser_profile(
+                profile_dir=profile_dir,
+                project_root=self.settings.project_root,
+                logger=self.logger,
+                label="platform-health:wechat",
+                extra_paths=[self.settings.account_runtime_dir],
+            )
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=False,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                )
+                page = browser.pages[0] if browser.pages else browser.new_page()
+                self.wechat_publish_service._open_wechat_backend(page)
+                page.wait_for_timeout(1500)
+
+                diagnostics["current_url"] = str(getattr(page, "url", "") or "")
+                diagnostics["login_page_detected"] = bool(self.wechat_publish_service._is_login_page(page))
+                diagnostics["session_ready"] = bool(self.wechat_publish_service._browser_session_ready(page))
+                diagnostics["visible_markers"] = self._extract_wechat_visible_markers(page)
+
+                if diagnostics["login_page_detected"]:
+                    blockers.append("微信公众号后台需要重新登录，检测到扫码/登录页。")
+                elif not diagnostics["session_ready"]:
+                    blockers.append("微信公众号后台未检测到可用登录态，未发现头像/草稿箱/素材管理等后台标识。")
+
+                snapshot = {
+                    "generated_at": self._now(),
+                    "current_url": diagnostics["current_url"],
+                    "state": "ready" if not blockers else "login_required",
+                    "blocking_flags": blockers,
+                    "warnings": warnings,
+                    "diagnostics": diagnostics,
+                }
+                preflight_path.parent.mkdir(parents=True, exist_ok=True)
+                preflight_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+                diagnostics["browser_preflight_path"] = str(preflight_path)
+        except Exception as exc:
+            blockers.append(f"WeChat browser login preflight failed: {exc}")
+        finally:
+            with suppress(Exception):
+                if browser is not None:
+                    browser.close()
+
+        if preflight_path.exists():
+            try:
+                diagnostics["last_browser_preflight"] = json.loads(preflight_path.read_text(encoding="utf-8"))
+            except Exception:
+                warnings.append("WeChat browser preflight file exists but could not be parsed.")
+        else:
+            warnings.append("WeChat browser preflight file not found. Re-run --init-wechat-login if browser publish is needed.")
+
+        return {
+            "blocking_flags": blockers,
+            "warnings": warnings,
+            "diagnostics": diagnostics,
+        }
+
+    def _probe_toutiao_login_state(self) -> dict[str, Any]:
+        diagnostics: dict[str, Any] = {
+            "profile_dir": str(self.toutiao_publish_service._resolve_profile_dir()),
+        }
+        warnings: list[str] = []
+        blockers: list[str] = []
+
+        if sync_playwright is None:
+            blockers.append("Playwright is not installed.")
+            return {
+                "blocking_flags": blockers,
+                "warnings": warnings,
+                "diagnostics": diagnostics,
+            }
+
+        profile_dir = self.toutiao_publish_service._resolve_profile_dir()
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        browser = None
+        try:
+            prepare_browser_profile(
+                profile_dir=profile_dir,
+                project_root=self.settings.project_root,
+                logger=self.logger,
+                label="platform-health:toutiao",
+                extra_paths=[self.settings.account_runtime_dir],
+            )
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=False,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                )
+                page = browser.pages[0] if browser.pages else browser.new_page()
+                homepage_url = self.settings.publishing.base_url or "https://mp.toutiao.com/"
+                self.toutiao_publish_service._goto_publish_page(page, homepage_url)
+                page.wait_for_timeout(1500)
+
+                diagnostics["current_url"] = str(getattr(page, "url", "") or "")
+                diagnostics["visible_markers"] = self._extract_toutiao_visible_markers(page)
+                diagnostics["login_page_detected"] = self._toutiao_login_page_detected(page)
+                diagnostics["session_ready"] = self._toutiao_session_ready(page)
+
+                if diagnostics["login_page_detected"]:
+                    blockers.append("Toutiao creator center requires re-login; login page or timeout dialog detected.")
+                elif not diagnostics["session_ready"]:
+                    blockers.append("Toutiao creator center did not expose expected logged-in markers such as avatar or creator workspace navigation.")
+        except Exception as exc:
+            blockers.append(f"Toutiao browser login preflight failed: {exc}")
+        finally:
+            with suppress(Exception):
+                if browser is not None:
+                    browser.close()
+
+        return {
+            "blocking_flags": blockers,
+            "warnings": warnings,
+            "diagnostics": diagnostics,
+        }
+
+    def _extract_wechat_visible_markers(self, page) -> list[str]:
+        markers = {
+            "头像": [
+                "img[src*='wx.qlogo.cn']",
+                ".weui-desktop-account__thumb img",
+                ".weui-desktop-layout__side .avatar img",
+            ],
+            "草稿箱": ["text=草稿箱"],
+            "素材管理": ["text=素材管理"],
+            "发表记录": ["text=发表记录"],
+            "首页": ["text=首页"],
+            "登录超时": ["text=登录超时", "text=重新登录", "text=扫码登录", "text=微信公众平台"],
+        }
+        visible: list[str] = []
+        for label, selectors in markers.items():
+            for selector in selectors:
+                with suppress(Exception):
+                    if page.locator(selector).first.is_visible(timeout=400):
+                        visible.append(label)
+                        break
+        return self._unique_texts(visible)
+
+    def _extract_toutiao_visible_markers(self, page) -> list[str]:
+        markers = {
+            "avatar": [
+                "img[class*='avatar']",
+                "img[src*='toutiaoimg.com']",
+                "[class*='user-avatar'] img",
+            ],
+            "creator_center": [
+                "text=创作中心",
+                "text=工作台",
+                "text=数据中心",
+            ],
+            "publish_entry": [
+                "text=发文",
+                "text=写文章",
+                "text=发布",
+            ],
+            "login_timeout": [
+                "text=登录超时",
+                "text=登录失效",
+                "text=立即登录",
+                "text=重新登录",
+            ],
+        }
+        visible: list[str] = []
+        for label, selectors in markers.items():
+            for selector in selectors:
+                with suppress(Exception):
+                    if page.locator(selector).first.is_visible(timeout=400):
+                        visible.append(label)
+                        break
+        return self._unique_texts(visible)
+
+    def _toutiao_login_page_detected(self, page) -> bool:
+        current_url = str(getattr(page, "url", "") or "").lower()
+        if any(token in current_url for token in ("passport", "login", "sso.toutiao.com")):
+            return True
+        visible_markers = set(self._extract_toutiao_visible_markers(page))
+        return "login_timeout" in visible_markers
+
+    def _toutiao_session_ready(self, page) -> bool:
+        visible_markers = set(self._extract_toutiao_visible_markers(page))
+        if "avatar" in visible_markers:
+            return True
+        return "creator_center" in visible_markers and "publish_entry" in visible_markers
+
+    def _collect_required_auth_failures(self, platforms: dict[str, Any]) -> list[str]:
+        blocking_platforms: list[str] = []
+        for name, payload in platforms.items():
+            if not isinstance(payload, dict):
+                continue
+            if not payload.get("enabled") or not payload.get("required"):
+                continue
+            if payload.get("blocking_flags"):
+                blocking_platforms.append(str(name))
+        return blocking_platforms
+
+    def _collect_global_blockers(self, platforms: dict[str, Any]) -> list[str]:
+        blockers: list[str] = []
+        for name, payload in platforms.items():
+            if not isinstance(payload, dict) or not payload.get("enabled"):
+                continue
+            for item in payload.get("blocking_flags", []):
+                blockers.append(f"{name}: {item}")
+        return self._unique_texts(blockers)
+
+    def _unique_texts(self, items: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+        return result
+
+    def _now(self) -> str:
+        from datetime import datetime
+
+        return datetime.now().isoformat(timespec="seconds")

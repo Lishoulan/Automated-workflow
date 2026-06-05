@@ -25,11 +25,10 @@ concurrency:
   group: daily-run-${{ github.ref }}
   cancel-in-progress: true
 
-timeout-minutes: 30
-
 jobs:
   daily-run:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     env:
       # ---- 敏感配置（从 GitHub Secrets 读取） ----

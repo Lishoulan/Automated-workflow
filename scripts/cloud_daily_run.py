@@ -95,6 +95,35 @@ def _manual_load_dotenv(env_path: Path) -> None:
             os.environ[key] = value
 
 
+def _check_and_disable_browser_platform(platform_prefix: str, profile_dir: str) -> None:
+    """检查浏览器 profile 是否存在，如果不存在则禁用该平台的浏览器发布。
+
+    云端环境没有浏览器登录 session 时，发布预检查会失败导致整个流程中断。
+    只有当 profile 目录存在且包含有效数据时才允许启用浏览器发布。
+    """
+    enabled_key = f"{platform_prefix}_ENABLED"
+    auto_publish_key = f"{platform_prefix}_AUTO_PUBLISH"
+    profile_path = PROJECT_ROOT / profile_dir
+
+    # 检查 profile 目录是否存在且非空
+    has_profile = profile_path.exists() and any(profile_path.iterdir()) if profile_path.exists() else False
+
+    if has_profile:
+        _logger.info("  %s: 浏览器 profile 存在 (%s)，保持启用状态", platform_prefix, profile_dir)
+        return
+
+    # 没有 profile，强制禁用
+    if os.environ.get(enabled_key, "0") == "1":
+        _logger.warning(
+            "  %s: 浏览器 profile 不存在 (%s)，强制禁用该平台发布（无登录 session）",
+            platform_prefix, profile_dir,
+        )
+        os.environ[enabled_key] = "0"
+        os.environ[auto_publish_key] = "0"
+    else:
+        _logger.info("  %s: 已禁用（无浏览器 profile）", platform_prefix)
+
+
 def _configure_cloud_env(account_key: str) -> None:
     """设置云端运行所需的环境变量。"""
     is_linux = platform.system() == "Linux"
@@ -123,10 +152,15 @@ def _configure_cloud_env(account_key: str) -> None:
     # --- 发布配置 ---
     os.environ.setdefault("TOUTIAO_PUBLISH_ENABLED", "1")
     os.environ.setdefault("TOUTIAO_AUTO_PUBLISH", "0")  # 云端默认不自动发布，改为草稿模式
-    os.environ.setdefault("WECHAT_ENABLED", "0")        # 云端默认关闭微信发布
-    os.environ.setdefault("WECHAT_AUTO_PUBLISH", "0")
-    os.environ.setdefault("DOUYIN_ENABLED", "0")
-    os.environ.setdefault("DOUYIN_AUTO_PUBLISH", "0")
+
+    # 云端浏览器登录 session 管理：
+    # GitHub Actions 通过 cache 持久化 .runtime/ 目录来保持登录状态。
+    # 如果 .runtime/ 下没有对应平台的 profile，说明首次运行，没有登录 session，
+    # 此时必须禁用该平台的浏览器发布，否则 PlatformAuthError 会中断整个流程。
+    # 用户可以通过手动上传 profile 缓存来启用浏览器发布。
+    _check_and_disable_browser_platform("WECHAT", ".runtime/wechat_profile")
+    _check_and_disable_browser_platform("TOUTIAO", ".runtime/toutiao_profile")
+    _check_and_disable_browser_platform("DOUYIN", ".runtime/douyin_profile")
 
     # --- 账号 ---
     os.environ.setdefault("TOUTIAO_ACCOUNT", account_key)

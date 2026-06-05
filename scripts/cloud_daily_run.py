@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""云端定时执行入口脚本 — 适配 Linux 环境（GitHub Actions / PythonAnywhere）。
+
+用法:
+    python scripts/cloud_daily_run.py
+    python scripts/cloud_daily_run.py --account politics_notes
+    python scripts/cloud_daily_run.py --dry-run
+    python scripts/cloud_daily_run.py --account default --dry-run
+
+关键适配:
+    - Playwright channel 使用 "chromium" 而非 "msedge"
+    - TOUTIAO_PUBLISH_HEADLESS=1 强制无头模式
+    - 浏览器 profile 持久化到 .runtime/ 目录
+    - 不依赖 Windows 特有模块（msvcrt 等）
+    - 不执行 Windows 特有命令（taskkill 等）
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import platform
+import subprocess
+import sys
+import traceback
+from datetime import datetime
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# 路径常量
+# ---------------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SRC_DIR = PROJECT_ROOT / "src"
+RUNTIME_DIR = PROJECT_ROOT / ".runtime"
+ENV_FILE = PROJECT_ROOT / ".env"
+
+# ---------------------------------------------------------------------------
+# 日志配置
+# ---------------------------------------------------------------------------
+LOG_DIR = PROJECT_ROOT / "logs" / "scheduled"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+_logger = logging.getLogger("cloud_daily_run")
+
+
+def _setup_logging(account_key: str) -> None:
+    """配置日志输出到 stdout 和文件。"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = LOG_DIR / f"cloud_{account_key}_{timestamp}.log"
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(str(log_file), encoding="utf-8"),
+        ],
+    )
+    _logger.info("日志文件: %s", log_file)
+
+
+# ---------------------------------------------------------------------------
+# 环境变量配置
+# ---------------------------------------------------------------------------
+def _load_dotenv() -> None:
+    """从 .env 文件加载环境变量（使用 python-dotenv 或手动解析）。"""
+    if not ENV_FILE.exists():
+        _logger.warning(".env 文件不存在: %s", ENV_FILE)
+        return
+
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(ENV_FILE, override=False)
+        _logger.info("已通过 python-dotenv 加载 .env")
+    except ImportError:
+        _logger.info("python-dotenv 不可用，使用手动解析 .env")
+        _manual_load_dotenv(ENV_FILE)
+
+
+def _manual_load_dotenv(env_path: Path) -> None:
+    """手动解析 .env 文件，不依赖 python-dotenv。"""
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        # 不覆盖已有的环境变量
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def _configure_cloud_env(account_key: str) -> None:
+    """设置云端运行所需的环境变量。"""
+    is_linux = platform.system() == "Linux"
+
+    # --- 浏览器配置 ---
+    # Linux 上使用 chromium 而非 msedge
+    browser_channel = "chromium" if is_linux else os.environ.get("TOUTIAO_PUBLISH_CHANNEL", "msedge")
+    os.environ.setdefault("TOUTIAO_PUBLISH_CHANNEL", browser_channel)
+    os.environ.setdefault("TOUTIAO_PUBLISH_HEADLESS", "1")
+    os.environ.setdefault("TOUTIAO_BROWSER_EXECUTABLE", "")
+
+    # 抖音浏览器同样适配
+    douyin_channel = "chromium" if is_linux else os.environ.get("DOUYIN_PUBLISH_CHANNEL", "msedge")
+    os.environ.setdefault("DOUYIN_PUBLISH_CHANNEL", douyin_channel)
+    os.environ.setdefault("DOUYIN_PUBLISH_HEADLESS", "1")
+    os.environ.setdefault("DOUYIN_BROWSER_EXECUTABLE", "")
+
+    # --- 浏览器 profile 持久化到 .runtime/ ---
+    os.environ.setdefault("TOUTIAO_BROWSER_PROFILE_DIR", ".runtime/toutiao_profile")
+    os.environ.setdefault("DOUYIN_BROWSER_PROFILE_DIR", ".runtime/douyin_profile")
+    os.environ.setdefault("WECHAT_EDITOR_135_PROFILE_DIR", ".runtime/editor_135_profile")
+
+    # 确保 .runtime 目录存在
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+
+    # --- 发布配置 ---
+    os.environ.setdefault("TOUTIAO_PUBLISH_ENABLED", "1")
+    os.environ.setdefault("TOUTIAO_AUTO_PUBLISH", "0")  # 云端默认不自动发布，改为草稿模式
+    os.environ.setdefault("WECHAT_ENABLED", "0")        # 云端默认关闭微信发布
+    os.environ.setdefault("WECHAT_AUTO_PUBLISH", "0")
+    os.environ.setdefault("DOUYIN_ENABLED", "0")
+    os.environ.setdefault("DOUYIN_AUTO_PUBLISH", "0")
+
+    # --- 账号 ---
+    os.environ.setdefault("TOUTIAO_ACCOUNT", account_key)
+
+    # --- PYTHONUTF8 ---
+    os.environ.setdefault("PYTHONUTF8", "1")
+
+    _logger.info("云端环境变量已配置:")
+    _logger.info("  TOUTIAO_PUBLISH_CHANNEL = %s", os.environ.get("TOUTIAO_PUBLISH_CHANNEL"))
+    _logger.info("  TOUTIAO_PUBLISH_HEADLESS = %s", os.environ.get("TOUTIAO_PUBLISH_HEADLESS"))
+    _logger.info("  TOUTIAO_BROWSER_PROFILE_DIR = %s", os.environ.get("TOUTIAO_BROWSER_PROFILE_DIR"))
+    _logger.info("  DOUYIN_PUBLISH_CHANNEL = %s", os.environ.get("DOUYIN_PUBLISH_CHANNEL"))
+    _logger.info("  TOUTIAO_ACCOUNT = %s", os.environ.get("TOUTIAO_ACCOUNT"))
+
+
+# ---------------------------------------------------------------------------
+# PYTHONPATH 配置
+# ---------------------------------------------------------------------------
+def _configure_pythonpath() -> None:
+    """确保 PYTHONPATH 包含 src 目录。"""
+    src_str = str(SRC_DIR)
+    existing = os.environ.get("PYTHONPATH", "")
+    if src_str not in existing.split(os.pathsep):
+        os.environ["PYTHONPATH"] = f"{src_str}{os.pathsep}{existing}" if existing else src_str
+    if src_str not in sys.path:
+        sys.path.insert(0, src_str)
+    _logger.info("PYTHONPATH 已包含: %s", src_str)
+
+
+# ---------------------------------------------------------------------------
+# Playwright 浏览器预检
+# ---------------------------------------------------------------------------
+def _ensure_playwright_browsers() -> bool:
+    """检查并安装 Playwright 浏览器（如果需要）。"""
+    try:
+        import playwright  # noqa: F401
+        _logger.info("playwright 包已安装")
+    except ImportError:
+        _logger.error("playwright 包未安装，请运行: pip install playwright && playwright install chromium")
+        return False
+
+    # 检查 chromium 是否已安装（通过检查 playwright driver 路径）
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        # playwright install 如果已安装会快速返回
+        _logger.info("Playwright chromium 浏览器已就绪")
+        return True
+    except subprocess.TimeoutExpired:
+        _logger.error("Playwright chromium 安装超时")
+        return False
+    except Exception as exc:
+        _logger.error("Playwright chromium 安装异常: %s", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# 主流程
+# ---------------------------------------------------------------------------
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="云端定时执行入口脚本（适配 Linux / GitHub Actions / PythonAnywhere）",
+    )
+    parser.add_argument(
+        "--account",
+        type=str,
+        default=None,
+        help="账号 key（对应 config.yaml 中的 accounts 配置），默认使用 TOUTIAO_ACCOUNT 或 default",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="试运行模式，不实际调用模型和发布",
+    )
+    parser.add_argument(
+        "--skip-browser-check",
+        action="store_true",
+        help="跳过 Playwright 浏览器安装检查（已确认浏览器就绪时使用）",
+    )
+    parser.add_argument(
+        "--fast-mode",
+        action="store_true",
+        help="快速模式，跳过部分非必要步骤",
+    )
+    return parser
+
+
+def main() -> int:
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    account_key = args.account or os.environ.get("TOUTIAO_ACCOUNT", "default")
+
+    # 1. 配置日志
+    _setup_logging(account_key)
+
+    _logger.info("=" * 60)
+    _logger.info("云端定时执行开始")
+    _logger.info("  时间: %s", datetime.now().isoformat())
+    _logger.info("  平台: %s / %s", platform.system(), platform.machine())
+    _logger.info("  Python: %s", sys.version.split()[0])
+    _logger.info("  项目根目录: %s", PROJECT_ROOT)
+    _logger.info("  账号: %s", account_key)
+    _logger.info("  试运行: %s", args.dry_run)
+    _logger.info("=" * 60)
+
+    # 2. 加载 .env
+    _load_dotenv()
+
+    # 3. 配置云端环境变量
+    _configure_cloud_env(account_key)
+
+    # 4. 配置 PYTHONPATH
+    _configure_pythonpath()
+
+    # 5. Playwright 浏览器预检
+    if not args.skip_browser_check:
+        if not _ensure_playwright_browsers():
+            _logger.warning("Playwright 浏览器未就绪，继续执行（发布步骤可能会失败）")
+
+    # 6. 构建 main.py 命令参数
+    cmd = [
+        sys.executable,
+        str(PROJECT_ROOT / "main.py"),
+        "--daily-run",
+    ]
+    if account_key and account_key != "default":
+        cmd.extend(["--account", account_key])
+    if args.dry_run:
+        cmd.append("--dry-run")
+    if args.fast_mode:
+        cmd.append("--fast-mode")
+
+    _logger.info("执行命令: %s", " ".join(cmd))
+
+    # 7. 执行
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            env=os.environ.copy(),
+            timeout=1800,  # 30 分钟超时
+        )
+        exit_code = result.returncode
+        if exit_code == 0:
+            _logger.info("云端定时执行成功完成 (exit_code=%d)", exit_code)
+        else:
+            _logger.error("云端定时执行失败 (exit_code=%d)", exit_code)
+        return exit_code
+    except subprocess.TimeoutExpired:
+        _logger.error("云端定时执行超时（30 分钟）")
+        return 1
+    except KeyboardInterrupt:
+        _logger.warning("用户中断执行")
+        return 130
+    except Exception as exc:
+        _logger.error("云端定时执行异常: %s", exc)
+        _logger.error(traceback.format_exc())
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

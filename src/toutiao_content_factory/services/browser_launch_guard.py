@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,17 @@ LOCK_FILENAMES = (
     "SingletonCookie",
     "SingletonSocket",
 )
-TARGET_PROCESS_NAMES = {"python.exe", "msedge.exe"}
+TARGET_PROCESS_NAMES = {"python.exe", "msedge.exe", "python", "chromium", "chromium-browser", "chrome", "google-chrome"}
+PROCESS_WHITELIST_MARKERS = (
+    "webapp.py",
+    "uvicorn",
+    "fastapi",
+    "flask",
+    "gunicorn",
+    "django",
+    "streamlit",
+    "gradio",
+)
 
 
 def prepare_browser_profile(
@@ -59,12 +70,24 @@ def _find_related_processes(tracked_paths: list[Path]) -> list[dict[str, Any]]:
     if psutil is None:
         return []
 
+    current_pid = os.getpid()
+    protected_pids = {current_pid}
+    try:
+        proc = psutil.Process(current_pid)
+        for parent in proc.parents():
+            protected_pids.add(parent.pid)
+    except (psutil.Error, OSError):
+        pass
+
     normalized_paths = [str(path).lower() for path in tracked_paths if str(path).strip()]
     candidates: dict[int, dict[str, Any]] = {}
     direct_matches: set[int] = set()
 
     for proc in psutil.process_iter(["pid", "ppid", "name", "cmdline", "cwd"]):
         try:
+            pid = proc.info.get("pid") or proc.pid
+            if pid in protected_pids:
+                continue
             name = str(proc.info.get("name") or "").strip().lower()
             if name not in TARGET_PROCESS_NAMES:
                 continue
@@ -118,8 +141,10 @@ def _stop_processes(
     if psutil is None or not matched_processes:
         return {"terminated_processes": [], "killed_processes": []}
 
+    filtered_processes = _filter_whitelisted_processes(matched_processes, logger=logger)
+
     process_handles: list[Any] = []
-    for item in matched_processes:
+    for item in filtered_processes:
         try:
             process_handles.append(psutil.Process(int(item["pid"])))
         except (psutil.Error, OSError, ValueError):
@@ -153,6 +178,33 @@ def _stop_processes(
     return {"terminated_processes": terminated, "killed_processes": killed}
 
 
+def _filter_whitelisted_processes(
+    processes: list[dict[str, Any]],
+    *,
+    logger: logging.Logger,
+) -> list[dict[str, Any]]:
+    kept: list[dict[str, Any]] = []
+    for proc in processes:
+        name = str(proc.get("name", "")).strip().lower()
+        cmdline = proc.get("cmdline", [])
+        if isinstance(cmdline, list):
+            cmdline_str = " ".join(str(item) for item in cmdline).lower()
+        else:
+            cmdline_str = str(cmdline).lower()
+
+        python_names = {"python.exe", "python", "python3"}
+        if name in python_names and any(marker in cmdline_str for marker in PROCESS_WHITELIST_MARKERS):
+            logger.info(
+                "Browser launch guard: skipping whitelisted web service process pid=%s cmdline=%s",
+                proc.get("pid"),
+                cmdline_str[:120],
+            )
+            continue
+
+        kept.append(proc)
+    return kept
+
+
 def _delete_stale_locks(profile_dir: Path) -> list[str]:
     deleted: list[str] = []
     for filename in LOCK_FILENAMES:
@@ -164,3 +216,48 @@ def _delete_stale_locks(profile_dir: Path) -> list[str]:
         except OSError:
             continue
     return deleted
+
+
+def check_cookie_health(profile_dir: Path, *, max_age_hours: float = 72.0) -> dict[str, Any]:
+    resolved = profile_dir.resolve(strict=False)
+    if not resolved.exists():
+        return {
+            "healthy": False,
+            "reason": "profile_dir_not_found",
+            "profile_dir": str(resolved),
+        }
+
+    cookie_files = (
+        list(resolved.glob("Cookies")) + list(resolved.glob("Cookies-journal"))
+        + list(resolved.glob("Default/Network/Cookies")) + list(resolved.glob("Default/Network/Cookies-journal"))
+    )
+    if not cookie_files:
+        return {
+            "healthy": False,
+            "reason": "no_cookie_files",
+            "profile_dir": str(resolved),
+        }
+
+    newest_mtime = max(f.stat().st_mtime for f in cookie_files if f.exists())
+    age_hours = (time.time() - newest_mtime) / 3600.0
+
+    if age_hours > max_age_hours:
+        return {
+            "healthy": False,
+            "reason": "cookie_stale",
+            "age_hours": round(age_hours, 1),
+            "max_age_hours": max_age_hours,
+            "profile_dir": str(resolved),
+        }
+
+    local_storage = resolved / "Local Storage" / "leveldb"
+    has_local_storage = local_storage.exists() and any(local_storage.iterdir())
+
+    return {
+        "healthy": True,
+        "reason": "ok",
+        "age_hours": round(age_hours, 1),
+        "cookie_files": [f.name for f in cookie_files],
+        "has_local_storage": has_local_storage,
+        "profile_dir": str(resolved),
+    }

@@ -166,33 +166,83 @@ def _merge_artifact_to_output(artifact_dir: Path, output_dir: Path) -> bool:
 
 def _run_publish(toutiao: bool, wechat: bool, dry_run: bool) -> int:
     """运行本地发布。"""
-    cmd = [sys.executable, str(PROJECT_ROOT / "main.py")]
-
-    if toutiao:
-        cmd.append("--publish-latest-approved")
-    if wechat:
-        cmd.append("--wechat-publish-latest-approved")
-
-    if not toutiao and not wechat:
-        # 默认发布头条
-        cmd.extend(["--publish-latest-approved"])
-
     if dry_run:
+        # dry-run 模式用命令行参数
+        cmd = [sys.executable, str(PROJECT_ROOT / "main.py")]
+        if toutiao:
+            cmd.append("--publish-latest-approved")
+        if wechat:
+            cmd.append("--wechat-publish-latest-approved")
         cmd.append("--dry-run")
+        _logger.info("执行发布命令(dry-run): %s", " ".join(cmd))
+        env = os.environ.copy()
+        env["TOUTIAO_PUBLISH_HEADLESS"] = "1"
+        result = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=env, timeout=600)
+        return result.returncode
 
-    _logger.info("执行发布命令: %s", " ".join(cmd))
+    # 正常模式：直接调用 Python API，跳过 today_only 限制
+    script = f"""import sys
+sys.path.insert(0, r"{SRC_DIR}")
+from pathlib import Path
+from toutiao_content_factory.config import load_settings
+from toutiao_content_factory.services.app_service import ContentFactoryAppService
+from toutiao_content_factory.utils.logging_utils import configure_logging
+import os
+os.environ["TOUTIAO_PUBLISH_HEADLESS"] = "1"
+PROJECT_ROOT = Path(r"{PROJECT_ROOT}")
+settings = load_settings(PROJECT_ROOT, account_key="robot_notes")
+logger = configure_logging(settings.logs_dir, settings.logging_level, logger_name="local_publish.publish")
+app = ContentFactoryAppService(settings, logger)
+results = []
+if {str(toutiao).lower()}:
+    try:
+        r = app.publish_latest_approved(unpublished_only=True, today_only=False, draft_only=False)
+        logger.info("头条发布完成: %%s", list(r.keys()))
+        results.append("toutiao_ok")
+    except FileNotFoundError as exc:
+        logger.warning("没有找到可发布的头条run: %%s", exc)
+        results.append("toutiao_skip")
+    except Exception as exc:
+        logger.error("头条发布失败: %%s", exc)
+        results.append("toutiao_fail")
+if {str(wechat).lower()}:
+    try:
+        r = app.publish_wechat_latest_approved(unpublished_only=False, submit=True)
+        logger.info("微信发布完成: %%s", list(r.keys()))
+        results.append("wechat_ok")
+    except FileNotFoundError as exc:
+        logger.warning("没有找到可发布的微信run: %%s", exc)
+        results.append("wechat_skip")
+    except Exception as exc:
+        logger.error("微信发布失败: %%s", exc)
+        results.append("wechat_fail")
+print("RESULTS:", ",".join(results))
+"""
 
-    env = os.environ.copy()
-    # 确保使用 headless 模式，不弹窗
-    env["TOUTIAO_PUBLISH_HEADLESS"] = "1"
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", prefix="local_publish_run_", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(script)
+        script_path = f.name
 
-    result = subprocess.run(
-        cmd,
-        cwd=str(PROJECT_ROOT),
-        env=env,
-        timeout=600,  # 10 分钟超时
-    )
-    return result.returncode
+    try:
+        _logger.info("执行本地发布（today_only=False）...")
+        env = os.environ.copy()
+        env["TOUTIAO_PUBLISH_HEADLESS"] = "1"
+        result = subprocess.run(
+            [sys.executable, script_path],
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        _logger.info("发布输出: %s", result.stdout)
+        if result.stderr:
+            _logger.warning("发布stderr: %s", result.stderr[-500:])
+        return result.returncode
+    finally:
+        Path(script_path).unlink(missing_ok=True)
 
 
 def _run_collect_performance() -> int:

@@ -189,16 +189,27 @@ jobs:
               NEED_SEED=true
               break
             fi
+            # Check if Cookies file is older than 7 days
+            COOKIE_FILE=$(find ".runtime/$profile" -name "Cookies" -type f 2>/dev/null | head -1)
+            if [ -n "$COOKIE_FILE" ]; then
+              COOKIE_AGE_DAYS=$(( ($(date +%s) - $(stat -c %Y "$COOKIE_FILE" 2>/dev/null || echo 0)) / 86400 ))
+              if [ "$COOKIE_AGE_DAYS" -gt 7 ]; then
+                echo "Profile $profile: Cookies file is ${COOKIE_AGE_DAYS} days old, refreshing from seed."
+                NEED_SEED=true
+                break
+              fi
+            fi
           done
           if [ "$NEED_SEED" = "true" ]; then
             echo "Downloading seed from release..."
+            rm -rf .runtime/toutiao_profile .runtime/wechat_profile
             gh release download browser-profiles-v1 --repo Lishoulan/Automated-workflow --pattern "browser_profiles_seed.tar.gz" --dir /tmp/
             mkdir -p .runtime
             tar xzf /tmp/browser_profiles_seed.tar.gz -C .runtime/
             echo "Browser profiles seeded successfully."
             ls -la .runtime/
           else
-            echo "All browser profiles found in cache, skipping seed."
+            echo "All browser profiles found in cache and cookies are fresh, skipping seed."
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

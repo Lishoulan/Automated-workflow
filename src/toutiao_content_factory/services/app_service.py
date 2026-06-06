@@ -584,21 +584,13 @@ class ContentFactoryAppService:
         except Exception as exc:
             self.logger.warning("Self-benchmark refresh skipped for daily run: %s", exc)
 
-        try:
-            auth_health = self.platform_health_service.ensure_publish_ready()
-        except PlatformAuthError as exc:
-            blocking_platforms = list(getattr(exc, "blocking_platforms", []))
-            self.logger.warning(
-                "Publish preflight failed, degrading to draft mode: %s",
-                ", ".join(blocking_platforms),
-            )
-            self._degrade_blocked_platforms_to_draft(blocking_platforms)
-            auth_health = {"blocking_platforms": blocking_platforms, "platform_health": ""}
+        auth_health = self.platform_health_service.ensure_publish_ready()
         platform_health_path = str(auth_health.get("platform_health", "")).strip()
         if platform_health_path:
             exported_files["platform_health"] = platform_health_path
         blocking_platforms = [str(item) for item in auth_health.get("blocking_platforms", []) if str(item).strip()]
         if blocking_platforms:
+            self._degrade_blocked_platforms_to_draft(blocking_platforms)
             message = (
                 "Publish login precheck failed, degraded to draft mode. "
                 f"blocked_platforms={', '.join(blocking_platforms)}; "
@@ -1806,20 +1798,29 @@ class ContentFactoryAppService:
         return {"workflow_report": str(report_path)}
 
     def _degrade_blocked_platforms_to_draft(self, blocking_platforms: list[str]) -> None:
-        """将登录失败的平台降级为草稿模式（auto_publish=False），不中断整个流程。"""
+        """将登录失败的平台降级为草稿模式（auto_publish=False, enabled=False），不中断整个流程。"""
         degraded = []
-        if "toutiao" in blocking_platforms and self.settings.publishing.auto_publish:
-            self.settings.publishing.auto_publish = False
+        if "toutiao" in blocking_platforms:
+            if self.settings.publishing.auto_publish:
+                self.settings.publishing.auto_publish = False
+            if self.settings.publishing.enabled:
+                self.settings.publishing.enabled = False
             degraded.append("toutiao")
-        if "wechat" in blocking_platforms and self.settings.wechat.auto_publish:
-            self.settings.wechat.auto_publish = False
+        if "wechat" in blocking_platforms:
+            if self.settings.wechat.auto_publish:
+                self.settings.wechat.auto_publish = False
+            if self.settings.wechat.enabled:
+                self.settings.wechat.enabled = False
             degraded.append("wechat")
-        if "douyin" in blocking_platforms and self.settings.douyin.auto_publish:
-            self.settings.douyin.auto_publish = False
+        if "douyin" in blocking_platforms:
+            if self.settings.douyin.auto_publish:
+                self.settings.douyin.auto_publish = False
+            if self.settings.douyin.enabled:
+                self.settings.douyin.enabled = False
             degraded.append("douyin")
         if degraded:
             self.logger.warning(
-                "已将以下平台降级为草稿模式（不自动发布）: %s",
+                "已将以下平台降级（禁用发布）: %s",
                 ", ".join(degraded),
             )
 

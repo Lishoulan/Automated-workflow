@@ -1802,21 +1802,21 @@ class ContentFactoryAppService:
         degraded = []
         if "toutiao" in blocking_platforms:
             if self.settings.publishing.auto_publish:
-                self.settings.publishing.auto_publish = False
+                object.__setattr__(self.settings.publishing, "auto_publish", False)
             if self.settings.publishing.enabled:
-                self.settings.publishing.enabled = False
+                object.__setattr__(self.settings.publishing, "enabled", False)
             degraded.append("toutiao")
         if "wechat" in blocking_platforms:
             if self.settings.wechat.auto_publish:
-                self.settings.wechat.auto_publish = False
+                object.__setattr__(self.settings.wechat, "auto_publish", False)
             if self.settings.wechat.enabled:
-                self.settings.wechat.enabled = False
+                object.__setattr__(self.settings.wechat, "enabled", False)
             degraded.append("wechat")
         if "douyin" in blocking_platforms:
             if self.settings.douyin.auto_publish:
-                self.settings.douyin.auto_publish = False
+                object.__setattr__(self.settings.douyin, "auto_publish", False)
             if self.settings.douyin.enabled:
-                self.settings.douyin.enabled = False
+                object.__setattr__(self.settings.douyin, "enabled", False)
             degraded.append("douyin")
         if degraded:
             self.logger.warning(

@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import suppress
+from datetime import datetime
 from typing import Any
 
 from toutiao_content_factory.config import AppSettings
-from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
+from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile, check_cookie_health
+from toutiao_content_factory.utils.browser_utils import apply_stealth, BrowserTimeout  # noqa: E501
 
 try:
     from playwright.sync_api import sync_playwright
@@ -23,12 +25,14 @@ class PlatformHealthService:
         toutiao_publish_service,
         wechat_publish_service,
         douyin_publish_service,
+        notification_service=None,
     ) -> None:
         self.settings = settings
         self.logger = logger
         self.toutiao_publish_service = toutiao_publish_service
         self.wechat_publish_service = wechat_publish_service
         self.douyin_publish_service = douyin_publish_service
+        self.notification_service = notification_service
 
     def collect(self) -> dict[str, Any]:
         payload = {
@@ -52,6 +56,127 @@ class PlatformHealthService:
         blocking_platforms = self._collect_required_auth_failures(health.get("platforms", {}))
         health["blocking_platforms"] = blocking_platforms
         return health
+
+    def quick_health_check(self) -> dict[str, Any]:
+        """轻量级健康检查：仅检查 Cookie 和配置状态，不启动浏览器。
+
+        适用于 auto_run 等场景的前置检查，避免因浏览器启动导致延迟。
+        返回 dict 包含 blocking_platforms 列表和各平台状态摘要。
+        """
+        platforms: dict[str, Any] = {
+            "toutiao": self._quick_check_toutiao(),
+            "wechat": self._quick_check_wechat(),
+            "douyin": self._quick_check_douyin(),
+        }
+        blocking_platforms = self._collect_required_auth_failures(platforms)
+        blocking_flags = self._collect_global_blockers(platforms)
+        return {
+            "platforms": platforms,
+            "blocking_platforms": blocking_platforms,
+            "blocking_flags": blocking_flags,
+        }
+
+    def _quick_check_toutiao(self) -> dict[str, Any]:
+        if not self.settings.publishing.enabled:
+            return {"enabled": False, "required": False, "status": "disabled", "blocking_flags": [], "warnings": []}
+        blockers: list[str] = []
+        warnings: list[str] = []
+        cookie_health = check_cookie_health(self.toutiao_publish_service._resolve_profile_dir())
+        if not cookie_health.get("healthy"):
+            warnings.append(
+                f"Toutiao cookie health check: {cookie_health.get('reason', 'unknown')} "
+                f"(age: {cookie_health.get('age_hours', 'N/A')}h)"
+            )
+            if self.settings.publishing.auto_publish:
+                blockers.append("Toutiao cookie 已过期或不存在，自动发布将失败。")
+        return {
+            "enabled": True,
+            "required": bool(self.settings.publishing.auto_publish),
+            "status": "blocked" if blockers else "ready",
+            "blocking_flags": self._unique_texts(blockers),
+            "warnings": self._unique_texts(warnings),
+        }
+
+    def _quick_check_wechat(self) -> dict[str, Any]:
+        if not self.settings.wechat.enabled:
+            return {"enabled": False, "required": False, "status": "disabled", "blocking_flags": [], "warnings": []}
+        blockers: list[str] = []
+        warnings: list[str] = []
+
+        # 当135编辑器启用时，优先检查135编辑器登录态，跳过微信后台检查
+        if self.settings.wechat.editor_135_enabled:
+            editor_135_preflight = self.settings.automation_dir / "editor_135_login_preflight.json"
+            if editor_135_preflight.exists():
+                try:
+                    cached = json.loads(editor_135_preflight.read_text(encoding="utf-8"))
+                    if isinstance(cached, dict) and cached.get("state") == "ready":
+                        return {
+                            "enabled": True,
+                            "required": True,
+                            "status": "ready",
+                            "blocking_flags": [],
+                            "warnings": ["Using 135 Editor for WeChat publishing (bypassing WeChat backend login)."],
+                        }
+                except Exception:
+                    pass
+            warnings.append("135 Editor login preflight not found. Run --init-135editor-login if WeChat publishing is needed.")
+            return {
+                "enabled": True,
+                "required": True,
+                "status": "ready",
+                "blocking_flags": [],
+                "warnings": warnings,
+            }
+
+        has_api_credentials = bool(self.settings.wechat.app_id and self.settings.wechat.app_secret)
+        if has_api_credentials:
+            try:
+                token = self.wechat_publish_service._get_access_token()
+                if not token:
+                    blockers.append("WeChat access token 获取失败。")
+            except Exception as exc:
+                if exc.__class__.__name__ == "WechatIpWhitelistBlockedException":
+                    blockers.append(f"WeChat IP 白名单拦截: {exc}")
+                else:
+                    blockers.append(f"WeChat access token check failed: {exc}")
+        else:
+            warnings.append("WeChat API credentials (app_id/app_secret) not configured. Falling back to browser-only mode.")
+        cookie_health = check_cookie_health(self.wechat_publish_service._resolve_browser_profile_dir())
+        if not cookie_health.get("healthy"):
+            warnings.append(
+                f"WeChat cookie health check: {cookie_health.get('reason', 'unknown')} "
+                f"(age: {cookie_health.get('age_hours', 'N/A')}h)"
+            )
+        return {
+            "enabled": True,
+            "required": True,
+            "status": "blocked" if blockers else "ready",
+            "blocking_flags": self._unique_texts(blockers),
+            "warnings": self._unique_texts(warnings),
+        }
+
+    def _quick_check_douyin(self) -> dict[str, Any]:
+        if not self.settings.douyin.enabled:
+            return {"enabled": False, "required": False, "status": "disabled", "blocking_flags": [], "warnings": []}
+        blockers: list[str] = []
+        warnings: list[str] = []
+        preflight_path = self.settings.automation_dir / "douyin_publish_preflight.json"
+        if preflight_path.exists():
+            try:
+                cached = json.loads(preflight_path.read_text(encoding="utf-8"))
+                if isinstance(cached, dict) and cached.get("blocking_flags"):
+                    blockers.extend(cached.get("blocking_flags", []))
+            except Exception:
+                warnings.append("Douyin preflight file exists but could not be parsed.")
+        else:
+            warnings.append("Douyin preflight file not found.")
+        return {
+            "enabled": True,
+            "required": bool(self.settings.douyin.auto_publish),
+            "status": "blocked" if blockers else "ready",
+            "blocking_flags": self._unique_texts(blockers),
+            "warnings": self._unique_texts(warnings),
+        }
 
     def _collect_toutiao(self) -> dict[str, Any]:
         if not self.settings.publishing.enabled:
@@ -86,16 +211,50 @@ class PlatformHealthService:
         warnings: list[str] = []
         diagnostics: dict[str, Any] = {}
 
-        try:
-            token = self.wechat_publish_service._get_access_token()
-            diagnostics["access_token_ready"] = bool(token)
-        except Exception as exc:
-            if exc.__class__.__name__ == "WechatIpWhitelistBlockedException":
-                diagnostics["blocked_reason"] = "BLOCKED_BY_IP"
-                diagnostics["invalid_ip"] = str(getattr(exc, "ip_address", "")).strip()
-                blockers.append(str(exc))
-            else:
-                blockers.append(f"WeChat access token check failed: {exc}")
+        # 当135编辑器启用时，检查135编辑器登录态而非微信后台
+        if self.settings.wechat.editor_135_enabled:
+            editor_135_preflight = self.settings.automation_dir / "editor_135_login_preflight.json"
+            diagnostics["publish_mode"] = "editor_135"
+            if editor_135_preflight.exists():
+                try:
+                    cached = json.loads(editor_135_preflight.read_text(encoding="utf-8"))
+                    diagnostics["editor_135_preflight"] = cached
+                    if isinstance(cached, dict) and cached.get("state") == "ready":
+                        return {
+                            "enabled": True,
+                            "required": True,
+                            "status": "ready",
+                            "blocking_flags": [],
+                            "warnings": ["Using 135 Editor for WeChat publishing (bypassing WeChat backend login)."],
+                            "diagnostics": diagnostics,
+                        }
+                except Exception:
+                    pass
+            warnings.append("135 Editor login preflight not found. Run --init-135editor-login if WeChat publishing is needed.")
+            return {
+                "enabled": True,
+                "required": True,
+                "status": "ready",
+                "blocking_flags": [],
+                "warnings": warnings,
+                "diagnostics": diagnostics,
+            }
+
+        has_api_credentials = bool(self.settings.wechat.app_id and self.settings.wechat.app_secret)
+        if has_api_credentials:
+            try:
+                token = self.wechat_publish_service._get_access_token()
+                diagnostics["access_token_ready"] = bool(token)
+            except Exception as exc:
+                if exc.__class__.__name__ == "WechatIpWhitelistBlockedException":
+                    diagnostics["blocked_reason"] = "BLOCKED_BY_IP"
+                    diagnostics["invalid_ip"] = str(getattr(exc, "ip_address", "")).strip()
+                    blockers.append(str(exc))
+                else:
+                    blockers.append(f"WeChat access token check failed: {exc}")
+        else:
+            diagnostics["access_token_ready"] = False
+            warnings.append("WeChat API credentials (app_id/app_secret) not configured. Falling back to browser-only mode.")
 
         session_payload = self._probe_wechat_login_state()
         blockers.extend(session_payload.get("blocking_flags", []))
@@ -145,6 +304,14 @@ class PlatformHealthService:
         blockers: list[str] = []
         preflight_path = self.settings.automation_dir / "wechat_publish_preflight.json"
 
+        cookie_health = check_cookie_health(profile_dir)
+        diagnostics["cookie_health"] = cookie_health
+        if not cookie_health.get("healthy"):
+            warnings.append(
+                f"WeChat cookie health check: {cookie_health.get('reason', 'unknown')} "
+                f"(age: {cookie_health.get('age_hours', 'N/A')}h)"
+            )
+
         if not profile_dir.exists():
             warnings.append(f"WeChat browser profile not found: {profile_dir}")
         if sync_playwright is None:
@@ -166,10 +333,12 @@ class PlatformHealthService:
                 label="platform-health:wechat",
                 extra_paths=[self.settings.account_runtime_dir],
             )
+            # 云端 headless 环境下必须使用 headless=True，否则无显示器会失败
+            headless = bool(self.settings.wechat.headless) if hasattr(self.settings.wechat, 'headless') else bool(self.settings.publishing.headless)
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch_persistent_context(
                     user_data_dir=str(profile_dir),
-                    headless=False,
+                    headless=headless,
                     channel=self.settings.publishing.channel or None,
                     executable_path=self.settings.publishing.executable_path or None,
                 )
@@ -184,8 +353,10 @@ class PlatformHealthService:
 
                 if diagnostics["login_page_detected"]:
                     blockers.append("微信公众号后台需要重新登录，检测到扫码/登录页。")
+                    self._capture_and_notify_qrcode(page, "wechat")
                 elif not diagnostics["session_ready"]:
                     blockers.append("微信公众号后台未检测到可用登录态，未发现头像/草稿箱/素材管理等后台标识。")
+                    self._capture_and_notify_qrcode(page, "wechat")
 
                 snapshot = {
                     "generated_at": self._now(),
@@ -226,6 +397,14 @@ class PlatformHealthService:
         warnings: list[str] = []
         blockers: list[str] = []
 
+        cookie_health = check_cookie_health(self.toutiao_publish_service._resolve_profile_dir())
+        diagnostics["cookie_health"] = cookie_health
+        if not cookie_health.get("healthy"):
+            warnings.append(
+                f"Toutiao cookie health check: {cookie_health.get('reason', 'unknown')} "
+                f"(age: {cookie_health.get('age_hours', 'N/A')}h)"
+            )
+
         if sync_playwright is None:
             blockers.append("Playwright is not installed.")
             return {
@@ -245,27 +424,38 @@ class PlatformHealthService:
                 label="platform-health:toutiao",
                 extra_paths=[self.settings.account_runtime_dir],
             )
+            # 云端 headless 环境下必须使用 headless=True，否则无显示器会失败
+            headless = bool(self.settings.publishing.headless)
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch_persistent_context(
                     user_data_dir=str(profile_dir),
-                    headless=False,
+                    headless=headless,
                     channel=self.settings.publishing.channel or None,
                     executable_path=self.settings.publishing.executable_path or None,
                 )
                 page = browser.pages[0] if browser.pages else browser.new_page()
-                homepage_url = self.settings.publishing.base_url or "https://mp.toutiao.com/"
-                self.toutiao_publish_service._goto_publish_page(page, homepage_url)
-                page.wait_for_timeout(1500)
+                probe_url = (
+                    self.settings.publishing.publish_url
+                    or self.settings.publishing.base_url
+                    or "https://mp.toutiao.com/profile_v4/graphic/publish"
+                )
+                self.toutiao_publish_service._goto_publish_page(page, probe_url)
+                page.wait_for_timeout(2500)
 
                 diagnostics["current_url"] = str(getattr(page, "url", "") or "")
                 diagnostics["visible_markers"] = self._extract_toutiao_visible_markers(page)
                 diagnostics["login_page_detected"] = self._toutiao_login_page_detected(page)
                 diagnostics["session_ready"] = self._toutiao_session_ready(page)
 
+                # If we reached the publish page without a login redirect, consider the session valid
+                current_url = diagnostics["current_url"].lower()
+                on_publish_page = "graphic/publish" in current_url or "profile_v4" in current_url
                 if diagnostics["login_page_detected"]:
                     blockers.append("Toutiao creator center requires re-login; login page or timeout dialog detected.")
-                elif not diagnostics["session_ready"]:
+                    self._capture_and_notify_qrcode(page, "toutiao")
+                elif not diagnostics["session_ready"] and not on_publish_page:
                     blockers.append("Toutiao creator center did not expose expected logged-in markers such as avatar or creator workspace navigation.")
+                    self._capture_and_notify_qrcode(page, "toutiao")
         except Exception as exc:
             blockers.append(f"Toutiao browser login preflight failed: {exc}")
         finally:
@@ -347,6 +537,33 @@ class PlatformHealthService:
             return True
         return "creator_center" in visible_markers and "publish_entry" in visible_markers
 
+    def _capture_and_notify_qrcode(self, page, platform: str) -> None:
+        """Capture QR code screenshot and send notification."""
+        try:
+            debug_dir = self.settings.output_dir / "login_qrcodes"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            screenshot_path = debug_dir / f"{platform}_login_{ts}.png"
+            page.screenshot(path=str(screenshot_path), full_page=False)
+            self.logger.warning(
+                "Login page detected for %s. Screenshot saved: %s. "
+                "Please re-login manually.",
+                platform, screenshot_path,
+            )
+            # Try to send notification if available
+            if self.notification_service:
+                try:
+                    self.notification_service.send_notification(
+                        title=f"[{platform.upper()}] Login expired - QR code saved",
+                        message=f"Login page screenshot saved to: {screenshot_path}. "
+                                f"Please re-login at {self.settings.publishing.base_url or 'the platform backend'}.",
+                        notification_type="login_expired",
+                    )
+                except Exception:
+                    pass
+        except Exception as exc:
+            self.logger.warning("Failed to capture QR code for %s: %s", platform, exc)
+
     def _collect_required_auth_failures(self, platforms: dict[str, Any]) -> list[str]:
         blocking_platforms: list[str] = []
         for name, payload in platforms.items():
@@ -379,6 +596,4 @@ class PlatformHealthService:
         return result
 
     def _now(self) -> str:
-        from datetime import datetime
-
         return datetime.now().isoformat(timespec="seconds")

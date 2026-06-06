@@ -156,9 +156,9 @@ def _disable_blocking_platforms() -> None:
 
     try:
         tail_lines = app_log.read_text(encoding="utf-8", errors="ignore")[-4000:]
-        # 提取 blocked_platforms=wechat,toutiao 格式
+        # 提取 blocked_platforms=wechat,toutiao 或 blocked_platforms=toutiao, wechat 格式
         import re
-        match = re.search(r"blocked_platforms=([^\s;]+)", tail_lines)
+        match = re.search(r"blocked_platforms=([^\s;]+(?:,\s*[^\s;]+)*)", tail_lines)
         if match:
             blocked = match.group(1).split(",")
             for platform in blocked:

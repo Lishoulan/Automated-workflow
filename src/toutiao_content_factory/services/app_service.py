@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import time
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +30,7 @@ from toutiao_content_factory.services.topic_pool_service import TopicPoolService
 from toutiao_content_factory.services.platform_health_service import PlatformHealthService
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.notification_service import NotificationService
+from toutiao_content_factory.services.circuit_breaker import PlatformCircuitBreaker
 
 
 class ContentFactoryAppService:
@@ -43,14 +46,22 @@ class ContentFactoryAppService:
         self.growth_ops_service = GrowthOpsService(settings, logger)
         self.topic_pool_service = TopicPoolService(settings, logger)
         self.content_guard_service = ContentGuardService(settings, logger)
-        self.notification_service = NotificationService(dict(os.environ))
+        self.notification_service = NotificationService(dict(os.environ), fallback_log_dir=str(self.settings.output_dir / "automation"))
+        if not self.notification_service.is_configured:
+            self.logger.debug(
+                "No notification channels configured. Set at least one of: "
+                "BARK_URL, FEISHU_WEBHOOK_URL, DINGTALK_WEBHOOK_URL, WECOM_WEBHOOK_URL. "
+                "All notifications will be silently dropped."
+            )
         self.platform_health_service = PlatformHealthService(
             settings,
             logger,
             toutiao_publish_service=self.review_service.publish_service,
             wechat_publish_service=self.wechat_service,
             douyin_publish_service=self.douyin_service,
+            notification_service=self.notification_service,
         )
+        self.circuit_breaker = PlatformCircuitBreaker()
 
     def collect_topics(self) -> dict[str, str]:
         topic_collector = TopicCollectionService(self.settings, self.logger)
@@ -379,6 +390,31 @@ class ContentFactoryAppService:
         no_archive: bool = False,
         fast_mode: bool = False,
     ) -> dict[str, str]:
+        # 轻量级健康检查：blocking 时优雅退出，warnings 时继续执行
+        if not dry_run:
+            try:
+                health = self.platform_health_service.quick_health_check()
+            except Exception as exc:
+                self.logger.warning("auto_run quick_health_check failed (non-fatal): %s", exc)
+            else:
+                blocking_platforms = [str(p) for p in health.get("blocking_platforms", []) if str(p).strip()]
+                if blocking_platforms:
+                    self.logger.error(
+                        "auto_run blocked by platform health check: %s",
+                        ", ".join(blocking_platforms),
+                    )
+                    return {"status": "blocked", "blocking_platforms": ", ".join(blocking_platforms)}
+                warnings = health.get("blocking_flags", [])
+                if warnings:
+                    self.logger.warning(
+                        "auto_run health check warnings: %s",
+                        "; ".join(str(w) for w in warnings[:5]),
+                    )
+
+        # 前置健康检查：如果平台认证失败则通知并终止
+        if not dry_run:
+            self._preflight_health_check()
+
         exported_files: dict[str, str] = {}
         topics_path = self.settings.output_dir / "daily_topics.json"
         should_collect = force_collect or (collect_if_missing and not topics_path.exists())
@@ -401,6 +437,24 @@ class ContentFactoryAppService:
                 title_query=topic_title,
                 allow_generated_duplicates=refresh_cache or dry_run,
             )
+        if selection is None:
+            self.logger.warning("No eligible topics found. Attempting to recollect.")
+            if not should_collect:
+                exported_files.update(self.collect_topics())
+                selection = self.topic_automation.prepare_auto_run(
+                    rank=topic_rank,
+                    title_query=topic_title,
+                    allow_generated_duplicates=True,
+                )
+            if selection is None:
+                self.notification_service._broadcast(
+                    "【自动运行】无可用选题",
+                    f"账号: {self.settings.account_label}\n"
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                    f"原因: 话题池为空或所有话题已发布\n"
+                    f"建议: 检查话题源是否正常，或手动添加选题",
+                )
+                raise ValueError("No eligible topics available after re-collection.")
         guard_result = self.content_guard_service.evaluate_candidate_topic(
             topic_title=selection.topic.title,
             topic_url=selection.topic.url,
@@ -461,8 +515,60 @@ class ContentFactoryAppService:
         topic_title: str | None = None,
         no_archive: bool = False,
         fast_mode: bool = False,
+        skip_wait: bool = False,
     ) -> dict[str, str]:
+        if not self._acquire_daily_run_lock():
+            self.logger.warning("Another daily_run is already in progress. Skipping this invocation.")
+            return {"status": "skipped", "reason": "another_daily_run_in_progress"}
+        try:
+            return self._daily_run_impl(
+                style_override=style_override,
+                dry_run=dry_run,
+                refresh_cache=refresh_cache,
+                topic_rank=topic_rank,
+                topic_title=topic_title,
+                no_archive=no_archive,
+                fast_mode=fast_mode,
+                skip_wait=skip_wait,
+            )
+        finally:
+            self._release_daily_run_lock()
+
+    def _daily_run_impl(
+        self,
+        style_override: str | None = None,
+        dry_run: bool = False,
+        refresh_cache: bool = False,
+        topic_rank: int | None = None,
+        topic_title: str | None = None,
+        no_archive: bool = False,
+        fast_mode: bool = False,
+        skip_wait: bool = False,
+    ) -> dict[str, str]:
+        # 轻量级健康检查：blocking 时优雅退出，warnings 时继续执行
+        if not dry_run:
+            try:
+                health = self.platform_health_service.quick_health_check()
+            except Exception as exc:
+                self.logger.warning("daily_run quick_health_check failed (non-fatal): %s", exc)
+            else:
+                blocking_platforms = [str(p) for p in health.get("blocking_platforms", []) if str(p).strip()]
+                if blocking_platforms:
+                    self.logger.error(
+                        "daily_run blocked by platform health check: %s",
+                        ", ".join(blocking_platforms),
+                    )
+                    return {"status": "blocked", "blocking_platforms": ", ".join(blocking_platforms)}
+                warnings = health.get("blocking_flags", [])
+                if warnings:
+                    self.logger.warning(
+                        "daily_run health check warnings: %s",
+                        "; ".join(str(w) for w in warnings[:5]),
+                    )
+
+        self._cleanup_stale_runs()
         exported_files = self.collect_topics()
+        self._heartbeat_daily_run_lock()
         benchmark_refresh_exports: dict[str, str] = {}
         try:
             topic_report = self.topic_automation._load_daily_topics()
@@ -478,28 +584,32 @@ class ContentFactoryAppService:
         except Exception as exc:
             self.logger.warning("Self-benchmark refresh skipped for daily run: %s", exc)
 
-        auth_health = self.platform_health_service.ensure_publish_ready()
+        try:
+            auth_health = self.platform_health_service.ensure_publish_ready()
+        except PlatformAuthError as exc:
+            blocking_platforms = list(getattr(exc, "blocking_platforms", []))
+            self.logger.warning(
+                "Publish preflight failed, degrading to draft mode: %s",
+                ", ".join(blocking_platforms),
+            )
+            self._degrade_blocked_platforms_to_draft(blocking_platforms)
+            auth_health = {"blocking_platforms": blocking_platforms, "platform_health": ""}
         platform_health_path = str(auth_health.get("platform_health", "")).strip()
         if platform_health_path:
             exported_files["platform_health"] = platform_health_path
         blocking_platforms = [str(item) for item in auth_health.get("blocking_platforms", []) if str(item).strip()]
         if blocking_platforms:
             message = (
-                "Publish login precheck failed before daily_run model generation. "
+                "Publish login precheck failed, degraded to draft mode. "
                 f"blocked_platforms={', '.join(blocking_platforms)}; "
                 f"account={self.settings.account_key}; "
                 f"platform_health={platform_health_path or 'N/A'}"
             )
-            self.logger.error(message)
+            self.logger.warning(message)
             self._notify_platform_auth_failure(
                 blocking_platforms=blocking_platforms,
                 platform_health_path=platform_health_path,
                 auth_health=auth_health,
-            )
-            raise PlatformAuthError(
-                message,
-                blocking_platforms=blocking_platforms,
-                platform_health_path=platform_health_path,
             )
 
         candidate_specs = self._build_daily_candidate_specs(
@@ -508,9 +618,33 @@ class ContentFactoryAppService:
             refresh_cache=refresh_cache,
             dry_run=dry_run,
         )
+        self._heartbeat_daily_run_lock()
 
         if not candidate_specs:
-            raise ValueError("No unpublished topics are available for today.")
+            self.logger.info("No unpublished topics available. Attempting to refresh topic pool.")
+            try:
+                self.collect_topics()
+                candidate_specs = self._build_daily_candidate_specs(
+                    topic_rank=topic_rank,
+                    topic_title=topic_title,
+                    refresh_cache=True,
+                    dry_run=dry_run,
+                )
+            except Exception as exc:
+                self.logger.warning("Topic re-collection also failed: %s", exc)
+
+            if not candidate_specs:
+                self.notification_service._broadcast(
+                    "【定时任务】今日无可用选题",
+                    f"账号: {self.settings.account_label}\n"
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                    f"原因: 话题池为空或所有话题已发布\n"
+                    f"建议: 检查话题源是否正常，或手动添加选题",
+                )
+                return {
+                    "status": "no_topics",
+                    "message": "No eligible topics available. Will retry at next scheduled time.",
+                }
 
         losing_attempts: list[dict[str, object]] = []
         best_attempt: dict[str, object] | None = None
@@ -598,7 +732,9 @@ class ContentFactoryAppService:
                 platform_exports, platform_results, platform_errors = self._run_daily_platform_automation(
                     run_dir,
                     dry_run=dry_run,
+                    skip_wait=skip_wait,
                 )
+                self._heartbeat_daily_run_lock()
                 workflow_status = self._summarize_platform_workflow_status(platform_results, platform_errors)
                 attempt_exports.update(platform_exports)
                 exported_files.update(platform_exports)
@@ -833,6 +969,10 @@ class ContentFactoryAppService:
 
     def initialize_wechat_publish_login(self) -> dict[str, str]:
         result = self.wechat_service.initialize_login_session()
+        return {name: str(value) for name, value in result.items()}
+
+    def initialize_135editor_login(self) -> dict[str, str]:
+        result = self.wechat_service.initialize_135editor_login_session()
         return {name: str(value) for name, value in result.items()}
 
     def initialize_douyin_publish_login(self) -> dict[str, str]:
@@ -1190,15 +1330,30 @@ class ContentFactoryAppService:
             return {}
         payload = json.loads(score_path.read_text(encoding="utf-8"))
         raw_scores = payload.get("scores", {}) if isinstance(payload, dict) else {}
-        return {
+        snapshot = {
             "overall_score": int(raw_scores.get("overall_score", 0)),
             "ai_generated_risk": int(raw_scores.get("ai_generated_risk", 100)),
             "validation_score": int(raw_scores.get("validation_score", 0)),
             "publish_readiness_score": int(raw_scores.get("publish_readiness_score", 0)),
         }
+        article_path = run_dir / "publish" / "article.md"
+        if not article_path.exists():
+            article_path = run_dir / "article.md"
+        if article_path.exists():
+            article_text = article_path.read_text(encoding="utf-8").replace("\n", "").replace(" ", "")
+            snapshot["article_char_count"] = len(article_text)
+        return snapshot
 
     def _qualifies_for_auto_approval(self, score_snapshot: dict[str, int]) -> bool:
         if not score_snapshot:
+            return False
+        article_chars = int(score_snapshot.get("article_char_count", 0))
+        if 0 < article_chars < 800:
+            self.logger.warning(
+                "Article has only %d chars, below 800-char minimum for auto-approval. "
+                "Marking as review_required.",
+                article_chars,
+            )
             return False
         return self.settings.review.qualifies_for_auto_publish(
             overall_score=int(score_snapshot.get("overall_score", 0)),
@@ -1231,6 +1386,7 @@ class ContentFactoryAppService:
         run_dir: Path,
         *,
         dry_run: bool,
+        skip_wait: bool = False,
     ) -> tuple[dict[str, str], dict[str, dict[str, object]], list[str]]:
         if dry_run:
             return {}, {}, []
@@ -1264,73 +1420,132 @@ class ContentFactoryAppService:
             )
 
         wechat_completed = False
+        wechat_blocked_by_ip = False
         if self.settings.wechat.enabled:
-            try:
-                wechat_exports = self.publish_wechat_run(str(run_dir), submit=True)
-                exported_files.update(wechat_exports)
-                platform_results["wechat"] = self._load_wechat_publish_snapshot(run_dir)
-                snapshot_path = self._write_latest_wechat_automation_snapshot(run_dir)
-                exported_files["wechat_automation_result"] = str(snapshot_path)
-                wechat_completed = self._wechat_publish_succeeded(platform_results["wechat"])
-                if not wechat_completed:
-                    message = (
-                        "WeChat publish did not reach a submitted state. "
-                        "Toutiao publish is blocked to preserve WeChat first-release priority."
-                    )
+            if self.circuit_breaker.is_open("wechat"):
+                self.logger.warning("WeChat publish skipped: circuit breaker is open for wechat.")
+                platform_results["wechat"] = {"status": "circuit_open", "error": "Circuit breaker is open for wechat"}
+            else:
+                try:
+                    wechat_exports = self.publish_wechat_run(str(run_dir), submit=True)
+                    exported_files.update(wechat_exports)
+                    platform_results["wechat"] = self._load_wechat_publish_snapshot(run_dir)
+                    snapshot_path = self._write_latest_wechat_automation_snapshot(run_dir)
+                    exported_files["wechat_automation_result"] = str(snapshot_path)
+                    wechat_completed = self._wechat_publish_succeeded(platform_results["wechat"])
+                    if wechat_completed:
+                        self.circuit_breaker.record_success("wechat")
+                        self.notification_service.notify_success(
+                            platform="WeChat",
+                            article_title=self._load_selected_title(run_dir),
+                            run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        )
+                    else:
+                        self.circuit_breaker.record_failure("wechat")
+                        message = (
+                            "WeChat publish did not reach a submitted state. "
+                            "Toutiao publish is blocked to preserve WeChat first-release priority."
+                        )
+                        platform_errors.append(message)
+                        self.logger.warning(message)
+                except WechatIpWhitelistBlockedException as exc:
+                    self.circuit_breaker.record_failure("wechat")
+                    message = f"WeChat publish blocked by IP whitelist: {exc}"
                     platform_errors.append(message)
+                    wechat_blocked_by_ip = True
+                    platform_results["wechat"] = {
+                        "status": "blocked_by_ip",
+                        "error": str(exc),
+                        "invalid_ip": str(getattr(exc, "ip_address", "")).strip(),
+                    }
                     self.logger.warning(message)
-            except WechatIpWhitelistBlockedException as exc:
-                message = f"WeChat publish blocked by IP whitelist: {exc}"
-                platform_errors.append(message)
-                platform_results["wechat"] = {
-                    "status": "blocked_by_ip",
-                    "error": str(exc),
-                    "invalid_ip": str(getattr(exc, "ip_address", "")).strip(),
-                }
-                self.logger.warning(message)
-            except Exception as exc:
-                message = f"WeChat publish failed: {exc}"
-                platform_errors.append(message)
-                platform_results["wechat"] = {"status": "failed", "error": str(exc)}
-                self.logger.exception(message)
+                except Exception as exc:
+                    self.circuit_breaker.record_failure("wechat")
+                    message = f"WeChat publish failed: {exc}"
+                    platform_errors.append(message)
+                    platform_results["wechat"] = {"status": "failed", "error": str(exc)}
+                    self.logger.exception(message)
+                    self.notification_service.notify_failure(
+                        platform="WeChat",
+                        stage="browser_publish",
+                        error_msg=str(exc),
+                        run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    )
+                    if self._is_session_expired_error(exc):
+                        self._notify_session_expired("WeChat", exc)
 
         if self.settings.publishing.enabled and self.settings.publishing.auto_publish:
-            if self.settings.wechat.enabled and not wechat_completed:
-                platform_results.setdefault(
-                    "toutiao",
-                    {
-                        "status": "blocked_waiting_for_wechat",
-                        "error": "WeChat publish did not complete successfully before Toutiao distribution.",
-                    },
-                )
+            if self.circuit_breaker.is_open("toutiao"):
+                self.logger.warning("Toutiao publish skipped: circuit breaker is open for toutiao.")
+                platform_results["toutiao"] = {"status": "circuit_open", "error": "Circuit breaker is open for toutiao"}
             else:
+                wechat_blocks_toutiao = (
+                    self.settings.wechat.enabled
+                    and not wechat_completed
+                    and not wechat_blocked_by_ip
+                )
+                if wechat_blocks_toutiao:
+                    self.logger.warning(
+                        "WeChat publish did not complete, but proceeding with Toutiao publish independently."
+                    )
                 delay_seconds = self._get_wechat_toutiao_sync_delay_seconds()
-                if delay_seconds > 0 and self.settings.wechat.enabled:
+                if not wechat_completed:
+                    delay_seconds = 0
+                if skip_wait and delay_seconds > 0:
+                    delay_seconds = 5
+                    self.logger.info("--skip-wait enabled: shortening WeChat→Toutiao delay to %d seconds.", delay_seconds)
+                if delay_seconds > 0 and wechat_completed and self.settings.wechat.enabled:
                     self.logger.info(
                         "Waiting %s seconds after successful WeChat publish before Toutiao distribution.",
                         delay_seconds,
                     )
                     time.sleep(delay_seconds)
                 try:
-                    toutiao_exports = self.publish_run(str(run_dir), declare_first_release=False)
+                    toutiao_declare_first = not wechat_completed
+                    if toutiao_declare_first:
+                        self.logger.info("WeChat did not publish successfully, declaring Toutiao first-release.")
+                    toutiao_exports = self.publish_run(str(run_dir), declare_first_release=toutiao_declare_first)
                     exported_files.update(toutiao_exports)
                     platform_results["toutiao"] = self._load_toutiao_publish_snapshot(run_dir)
+                    self.circuit_breaker.record_success("toutiao")
+                    self.notification_service.notify_success(
+                        platform="Toutiao",
+                        article_title=self._load_selected_title(run_dir),
+                        run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    )
                 except Exception as exc:
+                    self.circuit_breaker.record_failure("toutiao")
                     message = f"Toutiao publish failed: {exc}"
                     platform_errors.append(message)
                     platform_results["toutiao"] = {"status": "failed", "error": str(exc)}
                     self.logger.exception(message)
+                    self.notification_service.notify_failure(
+                        platform="Toutiao",
+                        stage="browser_publish",
+                        error_msg=str(exc),
+                        run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    )
+                    if self._is_session_expired_error(exc):
+                        self._notify_session_expired("Toutiao", exc)
 
         if self.settings.douyin.enabled and self.settings.douyin.auto_publish:
-            try:
-                douyin_exports = self.publish_douyin_run(str(run_dir))
-                exported_files.update(douyin_exports)
-                platform_results["douyin"] = self._load_douyin_publish_snapshot(run_dir)
-            except Exception as exc:
-                message = f"Douyin publish failed: {exc}"
-                platform_errors.append(message)
-                platform_results["douyin"] = {"status": "failed", "error": str(exc)}
-                self.logger.exception(message)
+            if self.circuit_breaker.is_open("douyin"):
+                self.logger.warning("Douyin publish skipped: circuit breaker is open for douyin.")
+                platform_results["douyin"] = {"status": "circuit_open", "error": "Circuit breaker is open for douyin"}
+            else:
+                try:
+                    douyin_exports = self.publish_douyin_run(str(run_dir))
+                    exported_files.update(douyin_exports)
+                    platform_results["douyin"] = self._load_douyin_publish_snapshot(run_dir)
+                    self.circuit_breaker.record_success("douyin")
+                except Exception as exc:
+                    self.circuit_breaker.record_failure("douyin")
+                    message = f"Douyin publish failed: {exc}"
+                    platform_errors.append(message)
+                    platform_results["douyin"] = {"status": "failed", "error": str(exc)}
+                    self.logger.exception(message)
+                    if self._is_session_expired_error(exc):
+                        self._notify_session_expired("Douyin", exc)
 
         return exported_files, platform_results, platform_errors
 
@@ -1590,6 +1805,24 @@ class ContentFactoryAppService:
         report_path.write_text(json.dumps(report_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"workflow_report": str(report_path)}
 
+    def _degrade_blocked_platforms_to_draft(self, blocking_platforms: list[str]) -> None:
+        """将登录失败的平台降级为草稿模式（auto_publish=False），不中断整个流程。"""
+        degraded = []
+        if "toutiao" in blocking_platforms and self.settings.publishing.auto_publish:
+            self.settings.publishing.auto_publish = False
+            degraded.append("toutiao")
+        if "wechat" in blocking_platforms and self.settings.wechat.auto_publish:
+            self.settings.wechat.auto_publish = False
+            degraded.append("wechat")
+        if "douyin" in blocking_platforms and self.settings.douyin.auto_publish:
+            self.settings.douyin.auto_publish = False
+            degraded.append("douyin")
+        if degraded:
+            self.logger.warning(
+                "已将以下平台降级为草稿模式（不自动发布）: %s",
+                ", ".join(degraded),
+            )
+
     def _notify_platform_auth_failure(
         self,
         *,
@@ -1627,6 +1860,39 @@ class ContentFactoryAppService:
         except Exception as exc:
             self.logger.warning("Failed to send urgent platform auth notification: %s", exc)
 
+    @staticmethod
+    def _is_session_expired_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        session_keywords = [
+            "session expired",
+            "not logged in",
+            "login form detected",
+            "session may have expired",
+            "passport",
+            "sso.toutiao.com",
+            "auth/login",
+            "cookie expired",
+            "登录已过期",
+            "登录态失效",
+            "需要重新登录",
+        ]
+        return any(kw in msg for kw in session_keywords)
+
+    def _notify_session_expired(self, platform: str, exc: Exception) -> None:
+        run_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+        message = (
+            f"{run_time} {platform} session expired during publish.\n"
+            f"account: {self.settings.account_key}\n"
+            f"error: {exc}\n"
+            "Action required: re-run the login initialization script to restore the session."
+        )
+        try:
+            self.notification_service.notify_urgent(
+                f"[URGENT] {platform} session expired", message
+            )
+        except Exception as notify_exc:
+            self.logger.warning("Failed to send session expiry notification: %s", notify_exc)
+
     def _load_selected_title(self, run_dir: Path | None) -> str:
         if run_dir is None:
             return ""
@@ -1636,6 +1902,83 @@ class ContentFactoryAppService:
         payload = json.loads(status_path.read_text(encoding="utf-8"))
         return str(payload.get("selected_title", "")).strip()
 
+    _STALE_RUN_MAX_AGE_DAYS = 30
+
+    def _cleanup_stale_runs(self) -> None:
+        runs_dir = self.settings.runs_dir
+        if not runs_dir.exists():
+            return
+        now_ts = time.time()
+        cutoff = self._STALE_RUN_MAX_AGE_DAYS * 86400
+        removed = 0
+        for item in runs_dir.iterdir():
+            if not item.is_dir():
+                continue
+            try:
+                age = now_ts - item.stat().st_mtime
+                if age > cutoff:
+                    shutil.rmtree(item, ignore_errors=True)
+                    removed += 1
+            except OSError:
+                pass
+        if removed:
+            self.logger.info("已清理 %d 个超过 %d 天的旧运行目录。", removed, self._STALE_RUN_MAX_AGE_DAYS)
+
+    _DAILY_RUN_LOCK_TIMEOUT_SECONDS = 1800
+    _DAILY_RUN_HEARTBEAT_TIMEOUT_SECONDS = 600
+
+    def _acquire_daily_run_lock(self) -> bool:
+        lock_path = self.settings.automation_dir / "daily_run.lock"
+        if lock_path.exists():
+            try:
+                payload = json.loads(lock_path.read_text(encoding="utf-8"))
+                # 优先检查心跳超时
+                last_heartbeat_ts = float(payload.get("last_heartbeat_ts", 0))
+                if last_heartbeat_ts > 0 and time.time() - last_heartbeat_ts > self._DAILY_RUN_HEARTBEAT_TIMEOUT_SECONDS:
+                    self.logger.warning(
+                        "Dead daily_run lock detected (heartbeat age > %ds). Removing.",
+                        self._DAILY_RUN_HEARTBEAT_TIMEOUT_SECONDS,
+                    )
+                else:
+                    started_at = float(payload.get("started_at_ts", 0))
+                    if time.time() - started_at < self._DAILY_RUN_LOCK_TIMEOUT_SECONDS:
+                        self.logger.info(
+                            "daily_run lock held by PID %s since %s. Skipping.",
+                            payload.get("pid"), payload.get("started_at"),
+                        )
+                        return False
+                    self.logger.warning("Stale daily_run lock detected (age > %ds). Removing.", self._DAILY_RUN_LOCK_TIMEOUT_SECONDS)
+            except Exception:
+                self.logger.warning("Corrupted daily_run lock file. Removing.")
+            with suppress(Exception):
+                lock_path.unlink()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        now_ts = time.time()
+        lock_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "started_at_ts": now_ts,
+            "last_heartbeat_ts": now_ts,
+        }), encoding="utf-8")
+        return True
+
+    def _heartbeat_daily_run_lock(self) -> None:
+        lock_path = self.settings.automation_dir / "daily_run.lock"
+        if not lock_path.exists():
+            return
+        try:
+            payload = json.loads(lock_path.read_text(encoding="utf-8"))
+            payload["last_heartbeat_ts"] = time.time()
+            lock_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _release_daily_run_lock(self) -> None:
+        lock_path = self.settings.automation_dir / "daily_run.lock"
+        with suppress(Exception):
+            if lock_path.exists():
+                lock_path.unlink()
+
     def _path_or_none(self, raw_path: object) -> Path | None:
         if not raw_path:
             return None
@@ -1643,3 +1986,39 @@ class ContentFactoryAppService:
         if candidate.exists():
             return candidate
         return None
+
+    def _preflight_health_check(self) -> None:
+        """执行轻量级平台健康检查，如果必须的平台认证失败则通知并抛出异常。"""
+        try:
+            health = self.platform_health_service.quick_health_check()
+        except Exception as exc:
+            self.logger.warning("Platform health check failed (non-fatal): %s", exc)
+            return
+
+        blocking_platforms = health.get("blocking_platforms", [])
+        if not blocking_platforms:
+            return
+
+        blocking_flags = health.get("blocking_flags", [])
+        platform_labels = {
+            "toutiao": "Toutiao",
+            "wechat": "WeChat OA",
+            "douyin": "Douyin",
+        }
+        readable_platforms = [platform_labels.get(p, p) for p in blocking_platforms]
+        message = (
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M')} auto_run 前置健康检查失败。\n"
+            f"账号: {self.settings.account_key}\n"
+            f"阻塞平台: {', '.join(readable_platforms)}\n"
+            f"原因: {'; '.join(str(f) for f in blocking_flags[:5]) if blocking_flags else '认证状态异常'}\n"
+            "本次运行已终止，请先修复平台认证问题。"
+        )
+        try:
+            self.notification_service.notify_urgent("[URGENT] auto_run 健康检查失败", message)
+        except Exception as notify_exc:
+            self.logger.warning("健康检查通知发送失败: %s", notify_exc)
+
+        raise PlatformAuthError(
+            f"Platform health check blocked: {', '.join(readable_platforms)}",
+            blocking_platforms=blocking_platforms,
+        )

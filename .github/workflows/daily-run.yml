@@ -181,17 +181,24 @@ jobs:
             browser-profile-${{ github.ref_name }}-
 
       - name: Seed browser profiles from release
-        if: steps.cache-output.outputs.cache-hit != 'true'
         run: |
-          if [ ! -d ".runtime/toutiao_profile" ] || [ -z "$(ls -A .runtime/toutiao_profile 2>/dev/null)" ]; then
-            echo "No cached profile found, downloading seed from release..."
+          NEED_SEED=false
+          for profile in toutiao_profile wechat_profile; do
+            if [ ! -d ".runtime/$profile" ] || [ -z "$(ls -A .runtime/$profile 2>/dev/null)" ]; then
+              echo "Profile $profile is missing or empty, need seed."
+              NEED_SEED=true
+              break
+            fi
+          done
+          if [ "$NEED_SEED" = "true" ]; then
+            echo "Downloading seed from release..."
             gh release download browser-profiles-v1 --repo Lishoulan/Automated-workflow --pattern "browser_profiles_seed.tar.gz" --dir /tmp/
             mkdir -p .runtime
             tar xzf /tmp/browser_profiles_seed.tar.gz -C .runtime/
             echo "Browser profiles seeded successfully."
             ls -la .runtime/
           else
-            echo "Cached browser profiles found, skipping seed."
+            echo "All browser profiles found in cache, skipping seed."
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

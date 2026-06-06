@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""本地发布脚本 — 从 GitHub Actions 下载云端生成的内容，本地 headless 发布。
+"""本地发布+采集脚本 — 从 GitHub Actions 下载云端生成的内容，本地 headless 发布和采集。
 
 用法:
-    python scripts/local_publish.py
-    python scripts/local_publish.py --toutiao-only
-    python scripts/local_publish.py --wechat-only
-    python scripts/local_publish.py --dry-run
+    python scripts/local_publish.py                  # 下载+发布+采集
+    python scripts/local_publish.py --toutiao-only   # 只发布头条
+    python scripts/local_publish.py --wechat-only    # 只发布微信
+    python scripts/local_publish.py --collect-only   # 只采集数据
+    python scripts/local_publish.py --skip-collect   # 跳过采集
+    python scripts/local_publish.py --dry-run        # 试运行模式
 
 工作流程:
     1. 从 GitHub Actions 最新成功的运行下载 artifact
     2. 解压到本地 output 目录（合并，不覆盖本地已有文件）
     3. 用本地浏览器 profile（有效 cookie）headless 发布到头条/微信
+    4. 采集头条/微信后台数据（阅读量、点赞等）
 
 优势:
     - 云端负责内容生成（AI 调用等），不占用本地电脑
-    - 本地只做发布步骤（1-2 分钟），headless 模式不弹窗
+    - 本地只做发布和采集（1-3 分钟），headless 模式不弹窗
     - 使用本地 IP 和浏览器 profile，cookie 不会因 IP 变化失效
 """
 
@@ -171,7 +174,7 @@ def _run_publish(toutiao: bool, wechat: bool, dry_run: bool) -> int:
         cmd.append("--wechat-publish-latest-approved")
 
     if not toutiao and not wechat:
-        # 默认两个都发布
+        # 默认发布头条
         cmd.extend(["--publish-latest-approved"])
 
     if dry_run:
@@ -192,10 +195,48 @@ def _run_publish(toutiao: bool, wechat: bool, dry_run: bool) -> int:
     return result.returncode
 
 
+def _run_collect_performance() -> int:
+    """运行本地数据采集（头条/微信后台阅读量等）。"""
+    _logger.info("执行数据采集...")
+
+    script = f"""import sys
+sys.path.insert(0, r"{SRC_DIR}")
+from toutiao_content_factory.config import load_settings
+from toutiao_content_factory.services.performance_service import collect_performance_data
+from toutiao_content_factory.utils.logging_utils import configure_logging
+settings = load_settings(r"{PROJECT_ROOT}", account_key="robot_notes")
+logger = configure_logging(settings.logs_dir, settings.logging_level, logger_name="local_publish.collect")
+payload = collect_performance_data(settings, logger)
+records = len(payload.get("records", []))
+print(f"采集完成: {records} 条记录")
+"""
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", prefix="collect_perf_", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(script)
+        script_path = f.name
+
+    try:
+        env = os.environ.copy()
+        env["TOUTIAO_PUBLISH_HEADLESS"] = "1"
+        result = subprocess.run(
+            [sys.executable, script_path],
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            timeout=300,
+        )
+        return result.returncode
+    finally:
+        Path(script_path).unlink(missing_ok=True)
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="本地发布脚本：从云端下载内容，本地 headless 发布")
+    parser = argparse.ArgumentParser(description="本地发布+采集脚本：从云端下载内容，本地 headless 发布和采集")
     parser.add_argument("--toutiao-only", action="store_true", help="只发布头条")
     parser.add_argument("--wechat-only", action="store_true", help="只发布微信")
+    parser.add_argument("--collect-only", action="store_true", help="只采集数据，不发布")
+    parser.add_argument("--skip-collect", action="store_true", help="跳过数据采集")
     parser.add_argument("--dry-run", action="store_true", help="试运行模式")
     parser.add_argument("--skip-download", action="store_true", help="跳过下载，使用本地已有的 output 目录")
     args = parser.parse_args()
@@ -205,17 +246,17 @@ def main() -> int:
     _configure_pythonpath()
 
     _logger.info("=" * 60)
-    _logger.info("本地发布开始")
+    _logger.info("本地发布+采集开始")
     _logger.info("  时间: %s", datetime.now().isoformat())
-    _logger.info("  头条: %s", "是" if not args.wechat_only else "否")
-    _logger.info("  微信: %s", "是" if not args.toutiao_only else "否")
+    _logger.info("  模式: %s", "仅采集" if args.collect_only else "发布" + ("+采集" if not args.skip_collect else ""))
     _logger.info("=" * 60)
 
     toutiao = not args.wechat_only
     wechat = not args.toutiao_only
+    exit_code = 0
 
-    # 1. 下载云端 artifact
-    if not args.skip_download:
+    # 1. 下载云端 artifact（采集模式不需要）
+    if not args.collect_only and not args.skip_download:
         with tempfile.TemporaryDirectory(prefix="daily_artifact_") as tmp_dir:
             artifact_dir = Path(tmp_dir)
             if not _download_latest_artifact(artifact_dir):
@@ -228,12 +269,25 @@ def main() -> int:
                 _logger.error("合并 artifact 失败，退出")
                 return 1
 
-    # 3. 本地 headless 发布
-    exit_code = _run_publish(toutiao=toutiao, wechat=wechat, dry_run=args.dry_run)
-    if exit_code == 0:
-        _logger.info("本地发布成功完成")
-    else:
-        _logger.error("本地发布失败 (exit_code=%d)", exit_code)
+    # 3. 本地 headless 发布（采集模式跳过）
+    if not args.collect_only:
+        pub_code = _run_publish(toutiao=toutiao, wechat=wechat, dry_run=args.dry_run)
+        if pub_code == 0:
+            _logger.info("本地发布成功完成")
+        else:
+            _logger.error("本地发布失败 (exit_code=%d)", pub_code)
+            exit_code = pub_code
+
+    # 4. 数据采集
+    if not args.skip_collect:
+        collect_code = _run_collect_performance()
+        if collect_code == 0:
+            _logger.info("数据采集成功完成")
+        else:
+            _logger.error("数据采集失败 (exit_code=%d)", collect_code)
+            if exit_code == 0:
+                exit_code = collect_code
+
     return exit_code
 
 

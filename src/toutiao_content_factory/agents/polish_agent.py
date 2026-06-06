@@ -1,24 +1,19 @@
 from __future__ import annotations
 
 import re
+import logging
 
 from toutiao_content_factory.agents.base import BaseAgent
-from toutiao_content_factory.config import StyleProfile
+from toutiao_content_factory.config import AppSettings, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, TrendReport
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
 from toutiao_content_factory.services.compliance_service import is_aigc_declaration_enabled
+from toutiao_content_factory.services.prompt_repository import PromptRepository
+from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 
 class PolishAgent(BaseAgent):
     agent_name = "PolishAgent"
-    SPORTS_TOKENS = ("体育", "足球", "篮球", "网球", "世界杯", "奥运", "英超", "西甲", "法网", "world cup", "football", "tennis", "french open", "grand slam")
-    INTERNATIONAL_TOKENS = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金", "仲裁", "白宫")
-
-    COMPANY_SUFFIX_RE = re.compile(
-        r"[\u4e00-\u9fffA-Za-z0-9]{2,12}(?:科技|能源|汽车|股份|集团|电气|智能|机器人|半导体|电子|时代|精工|制造|材料|电池|重工|工业|光伏|储能|动力|机电|控股|装备|技术)"
-    )
-    INVALID_COMPANY_MARKERS = {"这家公司", "某公司", "相关公司", "头部企业", "企业", "公司", "厂商", "供应商", "项目方", "客户"}
-    INVALID_COMPANY_FRAGMENTS = {"更像", "再落到", "再拆", "资本", "开始", "真正", "故事", "机会", "验证", "订单", "交付", "利润", "估值", "背后"}
     AI_CLICHE_PHRASES = {
         "在当今快节奏的社会中": "",
         "不可否认的是": "",
@@ -50,25 +45,25 @@ class PolishAgent(BaseAgent):
         "其次": "",
         "最后": "",
     }
-    ORDER_ANCHOR_TOKENS = ("订单", "中标", "客户", "定点", "签约", "项目", "交付", "量产", "验收", "采购")
-    SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?])")
-    NUMERIC_TOKEN_RE = re.compile(
-        r"\d+(?:\.\d+)?(?:%|倍|亿元|亿|万元|万亿元|万千瓦|万台|万套|GW|GWh|MWh|kWh|MW|W|年|月|季度|Q[1-4])?"
-    )
+
 
     ANTI_AI_FLAVOR_APPENDIX = (
         "\n\n[反AI味约束 - 必须遵守]\n"
         "1. 禁止使用以下词汇：综上所述、不可否认、双刃剑、值得关注的是、换言之、深入探讨、"
         "如前所述、值得注意的是、不难发现、由此可见、众所周知、毋庸置疑、总而言之、归根结底、"
         "从某种程度上说、令人瞩目的是、引人深思、一方面、另一方面、首先、其次、最后。\n"
-        "2. 句子平均长度控制在20字以内，超过35字的句子必须拆分。\n"
-        "3. 采用科技媒体记者的第一人称观察视角（如'笔者认为'、'在现场看到'）。\n"
-        "4. 穿插具体的、未经AI抽象化的原始数据（如'同比下滑14.2%'，而非'大幅下滑'）。\n"
-        "5. 每段不超过3个句子，段落之间用事实或数据衔接。\n"
-        "6. 避免使用排比句和对称结构。\n"
-        "7. 开头3句内必须出现至少1个具体数据或事实。\n"
-        "8. 全文'据'/'数据显示'/'财报显示'等事实锚点不少于3处。\n"
-        "9. 结尾避免总结式收束，改用一个具体判断或前瞻性观察结束。"
+        "2. 禁止使用以下AI句式模板：'从XX的视角来看'、'这一趋势并非孤立事件'、'值得持续关注'、"
+        "'需要持续观察'、'将直接影响'、'这些因素都可能影响'、'数据口径以公开材料为准'、"
+        "'后续需关注最新财报更新'、'关键变量的边际变化'、'市场预期可能需要重新校准'、"
+        "'保持对核心指标的动态跟踪'、'区分短期波动与长期趋势'。\n"
+        "3. 句子平均长度控制在20字以内，超过35字的句子必须拆分。\n"
+        "4. 采用科技媒体记者的第一人称观察视角（如'笔者认为'、'在现场看到'）。\n"
+        "5. 穿插具体的、未经AI抽象化的原始数据（如'同比下滑14.2%'，而非'大幅下滑'）。\n"
+        "6. 每段不超过3个句子，段落之间用事实或数据衔接。\n"
+        "7. 避免使用排比句和对称结构。\n"
+        "8. 开头3句内必须出现至少1个具体数据或事实。\n"
+        "9. 全文'据'/'数据显示'/'财报显示'等事实锚点不少于3处。\n"
+        "10. 结尾避免总结式收束，改用一个具体判断或前瞻性观察结束。"
     )
 
     def run(
@@ -98,7 +93,8 @@ class PolishAgent(BaseAgent):
         if payload:
             polished = str(payload.get("polished_article", "")).strip()
             if polished:
-                article = self._finalize_article(polished, data_report, trend_report, revision_focus=revision_focus)
+                original_chars = len(content.article.replace("\n", "").replace(" ", ""))
+                article = self._finalize_article(polished, data_report, trend_report, revision_focus=revision_focus, original_char_count=original_chars)
                 validation_notes, validation_score = self._validate_article(article, data_report, trend_report)
                 model_notes = self._clean_list(payload.get("validation_notes"), 8)
                 return {
@@ -129,6 +125,7 @@ class PolishAgent(BaseAgent):
         data_report: DataReport,
         trend_report: TrendReport,
         revision_focus: list[str] | None = None,
+        original_char_count: int = 0,
     ) -> str:
         content_mode = self._content_mode(data_report)
         cleaned = self.strip_prompt_leakage(article)
@@ -154,10 +151,19 @@ class PolishAgent(BaseAgent):
                     paragraphs.insert(1 if len(paragraphs) > 1 else 0, source_anchor)
 
         paragraphs = self._rebalance_paragraphs(paragraphs)
-        article_text = "\n\n".join(paragraphs[:7]).strip()
+        article_text = "\n\n".join(paragraphs[:12]).strip()
         unsupported_tokens = self._unsupported_numeric_tokens(article_text, data_report)
         if self._should_rebuild_cautious(article_text, data_report, unsupported_tokens):
             return self._rebuild_cautious_article(data_report, trend_report)
+        if original_char_count > 0:
+            polished_chars = len(article_text.replace("\n", "").replace(" ", ""))
+            if polished_chars < original_char_count * 0.6:
+                self.logger.warning(
+                    "Polished article has only %d chars (original: %d, 60%% threshold: %d). "
+                    "Polish was too aggressive, keeping original article.",
+                    polished_chars, original_char_count, int(original_char_count * 0.6),
+                )
+                return article
         return article_text
 
     def _validate_article(
@@ -325,57 +331,7 @@ class PolishAgent(BaseAgent):
             return True
         return len(unsupported_tokens) >= 4 and not self._has_source_anchor(article)
 
-    def _unsupported_numeric_tokens(self, article: str, data_report: DataReport) -> list[str]:
-        article_tokens = self._extract_numeric_tokens(article)
-        if not article_tokens:
-            return []
-        allowed = self._evidence_numeric_tokens(data_report)
-        unsupported: list[str] = []
-        for token in article_tokens:
-            if token in allowed:
-                continue
-            if token not in unsupported:
-                unsupported.append(token)
-        return unsupported
 
-    def _extract_numeric_tokens(self, text: str) -> list[str]:
-        tokens: list[str] = []
-        for match in self.NUMERIC_TOKEN_RE.findall(str(text or "")):
-            token = str(match).strip()
-            if not self._is_significant_numeric_token(token):
-                continue
-            normalized = token.replace(" ", "")
-            if normalized not in tokens:
-                tokens.append(normalized)
-        return tokens
-
-    def _evidence_numeric_tokens(self, data_report: DataReport) -> set[str]:
-        texts = [
-            data_report.topic_title,
-            *data_report.growth_numbers,
-            *data_report.core_data,
-            *data_report.industry_trends,
-            *data_report.key_points,
-            *data_report.watch_metrics,
-            *data_report.evidence_notes,
-            *data_report.risk_flags,
-        ]
-        allowed: set[str] = set()
-        for text in texts:
-            for token in self._extract_numeric_tokens(text):
-                allowed.add(token)
-        return allowed
-
-    def _is_significant_numeric_token(self, token: str) -> bool:
-        cleaned = str(token or "").strip()
-        if not cleaned:
-            return False
-        suffixes = ("%", "倍", "亿元", "亿", "万元", "万亿元", "万千瓦", "万台", "万套", "GW", "GWh", "MWh", "kWh", "MW", "W", "年", "月", "季度")
-        if cleaned.startswith("Q") and len(cleaned) == 2:
-            return True
-        if any(marker in cleaned for marker in suffixes):
-            return True
-        return len(re.sub(r"\D", "", cleaned)) >= 4
 
     def _rebuild_cautious_article(self, data_report: DataReport, trend_report: TrendReport) -> str:
         content_mode = self._content_mode(data_report)
@@ -450,113 +406,8 @@ class PolishAgent(BaseAgent):
             return "你觉得接下来最值得盯的是谁会先让步、谁会继续施压，还是市场会先给出反应？"
         return f"您更看重{primary}后续先落地订单、交付，还是毛利率改善？"
 
-    def _company_candidates(self, data_report: DataReport) -> list[str]:
-        candidates = self.clean_publish_list(data_report.focus_companies + data_report.companies)
-        return [item for item in candidates if self._is_valid_company_name(item)]
 
-    def _is_valid_company_name(self, text: str) -> bool:
-        candidate = self.clean_publish_text(text)
-        if not candidate or len(candidate) < 2 or len(candidate) > 12:
-            return False
-        if candidate in self.INVALID_COMPANY_MARKERS:
-            return False
-        if any(marker in candidate for marker in ("：", "，", "。", "？", "！", "、", "数据", "趋势", "摘要")):
-            return False
-        if any(marker in candidate for marker in self.INVALID_COMPANY_FRAGMENTS):
-            return False
-        if candidate.startswith(("这家", "该", "某", "相关", "头部", "龙头", "重点", "当前", "后续", "行业", "赛道")):
-            return False
-        has_suffix = bool(self.COMPANY_SUFFIX_RE.fullmatch(candidate))
-        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", candidate))
-        return has_suffix or (has_cjk and len(candidate) <= 8 and candidate not in {"公司", "企业", "客户"})
 
-    def _build_company_or_order_anchor(self, data_report: DataReport) -> str:
-        companies = self._company_candidates(data_report)[:2]
-        metrics = self.clean_publish_list(data_report.watch_metrics[:4], limit=4)
-        follow_up = [item for item in re.split(r"[、，,；;]", data_report.follow_up_focus) if str(item).strip()]
-        follow_points = self.clean_publish_list(follow_up, limit=4)
-        primary = self.clean_publish_text(
-            data_report.focus_industry or (data_report.focus_keywords[0] if data_report.focus_keywords else "相关赛道")
-        )
-        nodes = self.clean_publish_list(data_report.focus_keywords[1:] + data_report.supply_chain_keywords[1:], limit=3)
-
-        if companies:
-            company_text = "、".join(companies)
-            metric_text = "、".join(follow_points or metrics or ["客户验证", "订单节奏", "交付兑现"])
-            node_text = "、".join(nodes) if nodes else primary
-            return (
-                f"真正需要盯住的，是{company_text}这类主体能不能把{node_text}上的订单和交付兑现出来。"
-                f"如果后续还能持续给出{metric_text}的明确信号，这类公司才可能从题材受益者走向业绩兑现者。"
-            )
-
-        metric_text = "、".join(follow_points or metrics or ["客户验证", "项目交付", "毛利变化"])
-        node_text = "、".join(nodes) if nodes else primary
-        return (
-            f"即便标题里没有直接点名公司，执行层主体其实已经很清楚：上游看{node_text}，下游看客户验证、量产节奏和海外交付。"
-            f"谁能先把{metric_text}做实，谁才更可能先兑现利润。"
-        )
-
-    def _has_concrete_anchor(self, article: str, data_report: DataReport) -> bool:
-        article_lower = article.lower()
-        company_hits = sum(1 for item in self._company_candidates(data_report)[:4] if item.lower() in article_lower)
-        order_hits = sum(1 for token in self.ORDER_ANCHOR_TOKENS if token in article)
-        return company_hits >= 1 or order_hits >= 3
-
-    def _rebalance_paragraphs(self, paragraphs: list[str]) -> list[str]:
-        blocks = [block.strip() for block in paragraphs if block.strip()]
-        expanded: list[str] = []
-        for block in blocks:
-            if len(block) > 160:
-                expanded.extend(self._split_long_paragraph(block))
-            else:
-                expanded.append(block)
-
-        while len(expanded) < 5:
-            longest_index = max(range(len(expanded)), key=lambda idx: len(expanded[idx]))
-            split_blocks = self._split_long_paragraph(expanded[longest_index], force=True)
-            if len(split_blocks) <= 1:
-                break
-            expanded = expanded[:longest_index] + split_blocks + expanded[longest_index + 1 :]
-
-        while len(expanded) > 7:
-            shortest_index = min(range(1, len(expanded)), key=lambda idx: len(expanded[idx]))
-            expanded[shortest_index - 1] = f"{expanded[shortest_index - 1]} {expanded[shortest_index]}".strip()
-            del expanded[shortest_index]
-
-        return [block for block in expanded if block]
-
-    def _split_long_paragraph(self, paragraph: str, force: bool = False) -> list[str]:
-        sentences = [item.strip() for item in self.SENTENCE_SPLIT_RE.split(paragraph) if item.strip()]
-        if len(sentences) <= 1 and not force:
-            return [paragraph]
-        if len(sentences) <= 1 and force:
-            parts = [item.strip() for item in re.split(r"(?<=[，；;])", paragraph) if item.strip()]
-            return parts if len(parts) > 1 else [paragraph]
-
-        result: list[str] = []
-        current = ""
-        count = 0
-        for sentence in sentences:
-            candidate = f"{current}{sentence}" if current else sentence
-            if current and (len(candidate) > 118 or count >= 2):
-                result.append(current.strip())
-                current = sentence
-                count = 1
-            else:
-                current = candidate
-                count += 1
-        if current.strip():
-            result.append(current.strip())
-        return result or [paragraph]
-
-    def _normalize_paragraph(self, text: str) -> str:
-        cleaned = self.strip_prompt_leakage(text).strip()
-        cleaned = cleaned.replace("**", "").replace("__", "")
-        cleaned = re.sub(r"^#{1,6}\s*", "", cleaned)
-        cleaned = re.sub(r"^\d+\.\s*", "", cleaned)
-        cleaned = re.sub(r"^\-\s+", "", cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        return cleaned
 
     def _build_source_anchor(self, data_report: DataReport) -> str:
         for note in data_report.evidence_notes:
@@ -577,35 +428,6 @@ class PolishAgent(BaseAgent):
         if not revision_focus:
             return "默认提升证据感、段落节奏和主体锚点。"
         return "\n".join(f"- {item}" for item in revision_focus[:6])
-
-    def _count_hits(self, article_text: str, candidates: list[str]) -> int:
-        hits = 0
-        for item in candidates:
-            token = str(item).strip().lower()
-            if token and token in article_text:
-                hits += 1
-        return hits
-
-    def _content_mode(self, data_report: DataReport) -> str:
-        text = " ".join(
-            item
-            for item in (
-                data_report.focus_industry,
-                data_report.topic_title,
-                data_report.selection_reason,
-                data_report.suggested_angle,
-                data_report.writing_brief,
-                data_report.format_brief,
-                " ".join(data_report.focus_keywords[:6]),
-                " ".join(data_report.supply_chain_keywords[:6]),
-            )
-            if item
-        ).lower()
-        if any(token in text for token in self.SPORTS_TOKENS):
-            return "sports"
-        if any(token in text for token in self.INTERNATIONAL_TOKENS):
-            return "international"
-        return "generic"
 
     def _build_mode_fallback_anchor(self, data_report: DataReport, trend_report: TrendReport) -> str:
         mode = self._content_mode(data_report)
@@ -644,19 +466,3 @@ class PolishAgent(BaseAgent):
             f"风险边界也要保留：{risks}。{self._build_closing_question(data_report)}",
         ]
         return "\n\n".join(self._rebalance_paragraphs(paragraphs)[:7]).strip()
-
-    def _has_source_anchor(self, article: str) -> bool:
-        markers = ("据", "数据显示", "公开材料", "财报", "公告", "机构统计", "报告")
-        return any(marker in article for marker in markers)
-
-    def _clean_list(self, payload: object, limit: int) -> list[str]:
-        if not isinstance(payload, list):
-            return []
-        return self.unique([str(item).strip() for item in payload if str(item).strip()])[:limit]
-
-    def _bound_score(self, value: object) -> int:
-        try:
-            score = int(value)
-        except (TypeError, ValueError):
-            score = 0
-        return max(0, min(100, score))

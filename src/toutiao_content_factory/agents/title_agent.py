@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+import logging
 
 from toutiao_content_factory.agents.base import BaseAgent
-from toutiao_content_factory.config import StyleProfile
+from toutiao_content_factory.config import AppSettings, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, TrendReport
-from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
+from toutiao_content_factory.services.prompt_repository import PromptRepository
+from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 
 class TitleAgent(BaseAgent):
@@ -18,10 +20,6 @@ class TitleAgent(BaseAgent):
     PROFIT_TOKENS = ("利润", "毛利", "盈利", "兑现", "估值", "份额", "红利", "毛利率")
     VALIDATION_TOKENS = ("订单", "交付", "验证", "客户", "量产", "出货", "签约", "开工")
     DEPTH_TOKENS = ("产业链", "卡位", "环节", "壁垒", "拐点", "分化", "重估", "节奏")
-    SCENE_TOKENS = ("机场", "电厂", "电站", "港口", "车间", "仓库", "园区", "工厂", "基地", "物流中心", "示范项目")
-    BENEFIT_SHIFT_TOKENS = ("系统集成", "零部件", "整机", "运维", "回款", "议价", "利润", "毛利", "份额")
-    INTERNATIONAL_TOKENS = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金")
-    SPORTS_TOKENS = ("体育", "足球", "篮球", "国足", "男篮", "女篮", "欧冠", "英超", "西甲", "中超", "NBA", "世界杯", "奥运", "乒乓", "羽毛球")
     TEMPLATEY_TOKENS = (
         "看懂",
         "这条线",
@@ -50,9 +48,37 @@ class TitleAgent(BaseAgent):
 
     MODE_NOISE_TOKENS = ("产业链", "订单", "交付", "毛利", "利润", "兑现", "科技制造", "融资")
 
-    def __init__(self, settings, prompt_repository, openai_service, logger) -> None:
+    # 高频同质化模式词组：当标题同时包含同一组内的多个词时，说明结构雷同
+    HOMOGENEOUS_PATTERNS = (
+        ("利润", "兑现"),
+        ("利润", "分化"),
+        ("利润", "交付"),
+        ("利润", "零部件"),
+        ("兑现", "交付"),
+        ("兑现", "零部件"),
+        ("兑现", "量产"),
+        ("分化", "零部件"),
+        ("分化", "交付"),
+        ("利润", "集中"),
+        ("利润", "迁移"),
+        ("利润", "转移"),
+    )
+
+    # 语义骨架提取用的替换词（标题去重时忽略这些词的具体差异）
+    SKELETON_FILLERS = (
+        "人形机器人", "机器人", "AI芯片", "芯片", "半导体", "储能", "光伏",
+        "新能源", "零部件", "整机", "执行器", "减速器", "传感器", "大脑",
+        "核心件", "产业链", "环节",
+    )
+
+    def __init__(
+        self,
+        settings: AppSettings,
+        prompt_repository: PromptRepository,
+        openai_service: OpenAIContentService,
+        logger: logging.Logger,
+    ) -> None:
         super().__init__(settings, prompt_repository, openai_service, logger)
-        self.growth_ops_service = GrowthOpsService(settings, logger)
 
     def validate_title_compliance(self, title: str) -> bool:
         if len(title) > 30:
@@ -145,7 +171,7 @@ class TitleAgent(BaseAgent):
         keyword = self._primary_topic_label(data_report)
         secondary = "关键环节"
         for candidate in self.clean_publish_list(data_report.focus_keywords[1:] + data_report.supply_chain_keywords[1:]):
-            if candidate and candidate != keyword:
+            if candidate and candidate != keyword and candidate not in keyword and keyword not in candidate:
                 secondary = candidate
                 break
 
@@ -158,38 +184,56 @@ class TitleAgent(BaseAgent):
         if playbook_context:
             templates.extend(self._adapt_playbook_titles(playbook_context, data_report))
 
+        # 利润/兑现类（控制在 4 条以内）
         templates.extend(
             [
-            f"{scene or keyword}背后，谁先吃到{keyword}红利",
-            f"{keyword}不是都能赚钱，先看{secondary}",
             f"{keyword}热起来后，利润先向哪一环转移",
-            f"{keyword}走到兑现期，谁在重写分工",
-            f"{keyword}升温之后，先突围的不是热门公司",
-            f"{scene or keyword}把{keyword}带到了哪一步",
-            f"{keyword}这轮重估，先拉开差距的是谁",
-            f"{keyword}热度之外，谁在拿走真正订单",
-            f"{keyword}景气抬升后，谁先把回款做实",
-            f"{keyword}不是比概念，是真在比交付",
             f"{number}之后，{keyword}开始重排利润",
-            f"{keyword}爆单之前，谁先卡住{secondary}",
-            f"{keyword}走到验证期，谁会先掉队",
+            f"{keyword}景气抬升后，谁先把回款做实",
             f"{keyword}真正的胜负手，不在整机",
+            ]
+        )
+        # 技术突破/产品迭代类
+        templates.extend(
+            [
+            f"{keyword}技术路线之争，谁选对了方向",
+            f"{keyword}迭代加速，旧方案正在被淘汰",
+            f"{keyword}下一代方案已定型，谁在领跑",
+            f"{keyword}技术拐点到了，窗口期有多长",
+            ]
+        )
+        # 竞争格局/公司博弈类
+        templates.extend(
+            [
+            f"{keyword}升温之后，先突围的不是热门公司",
+            f"{keyword}这轮重估，先拉开差距的是谁",
+            f"{keyword}不是比概念，是比谁先跑通",
+            f"{keyword}走到验证期，谁会先掉队",
+            ]
+        )
+        # 市场/需求/政策类
+        templates.extend(
+            [
+            f"{keyword}需求端变了，供给还没跟上",
+            f"{scene or keyword}把{keyword}带到了哪一步",
+            f"{keyword}热度之外，谁在拿走真正订单",
+            f"{keyword}爆单之前，谁先卡住{secondary if secondary not in keyword else '关键环节'}",
             ]
         )
         if company:
             templates.extend(
                 [
-                    f"{company}之后，{keyword}利润流向变了",
-                    f"{company}背后，谁在重写{keyword}分工",
-                    f"{company}拿单后，{keyword}谁最先受益",
+                    f"{company}之后，{keyword}格局变了",
+                    f"{company}入场，{keyword}谁最紧张",
+                    f"{company}押注{secondary if secondary not in company else '新路线'}，赌对了吗",
                 ]
             )
         if scene:
             templates.extend(
                 [
                     f"{scene}成了{keyword}新试验场",
-                    f"{scene}落地后，{keyword}谁先兑现",
-                    f"{scene}订单背后，{keyword}谁在抢跑",
+                    f"{scene}落地后，{keyword}谁先跑通",
+                    f"{scene}背后，{keyword}谁在抢跑",
                 ]
             )
         if angle and len(angle) <= 26:
@@ -198,20 +242,20 @@ class TitleAgent(BaseAgent):
         if style.key == "finance_report":
             templates[:3] = [
                 f"{keyword}重估先落在哪一环",
-                f"{number}之后，{keyword}利润先给谁",
-                f"{keyword}验证期里，谁更容易兑现",
+                f"{number}之后，{keyword}谁先拿到真金白银",
+                f"{keyword}验证期里，谁更容易跑出来",
             ]
         elif style.key == "viral_science":
             templates[:3] = [
-                f"{keyword}很热，但先赚钱的未必是热门公司",
+                f"{keyword}很热，但先跑出来的未必是热门公司",
                 f"{number}背后，{keyword}谁才是真赢家",
-                f"{keyword}看着热，关键却在交付",
+                f"{keyword}看着热，关键却在{secondary}",
             ]
         elif style.key == "tech_media":
             templates[:3] = [
                 f"{keyword}热度回升，真正变化发生在哪",
                 f"{keyword}走到验证期，市场开始重选公司",
-                f"{keyword}背后，谁在吃交付红利",
+                f"{keyword}背后，谁在改写竞争规则",
             ]
 
         return self._dedupe_titles(templates, cache_context)
@@ -275,8 +319,14 @@ class TitleAgent(BaseAgent):
         normalized = self.clean_publish_text(text)
         if any(token in normalized for token in ("机器人", "人形", "具身", "减速器", "灵巧手", "关节", "伺服")):
             return "AI机器人"
+        if any(token in normalized for token in ("芯片", "半导体", "封测", "晶圆", "EDA", "光刻", "代工", "封测")):
+            return "半导体芯片"
         if any(token in normalized for token in ("储能", "光伏", "锂电", "电池", "逆变器", "PCS", "风电", "充电")):
             return "新能源储能"
+        if any(token in normalized for token in ("AI应用", "大模型", "LLM", "GPT", "AI搜索", "AI助手", "AI体检", "AI教育", "AI医疗")):
+            return "AI应用"
+        if any(token in normalized for token in ("智能制造", "工业自动化", "PLC", "MES", "数控", "工业互联网", "工控")):
+            return "工业自动化"
         if any(token in normalized for token in self.INTERNATIONAL_TOKENS):
             return "国际热点"
         if any(token in normalized for token in self.SPORTS_TOKENS):
@@ -299,10 +349,22 @@ class TitleAgent(BaseAgent):
             if "机器人" in focus_industry or "具身" in focus_industry:
                 return focus_industry
             return "人形机器人"
+        if track == "半导体芯片":
+            if "芯片" in focus_industry or "半导体" in focus_industry:
+                return focus_industry
+            return "半导体"
         if track == "新能源储能":
             if "储能" in focus_industry or "新能源" in focus_industry or "光伏" in focus_industry:
                 return focus_industry
             return "储能"
+        if track == "AI应用":
+            if "AI" in focus_industry or "大模型" in focus_industry:
+                return focus_industry
+            return "AI应用"
+        if track == "工业自动化":
+            if "自动化" in focus_industry or "制造" in focus_industry:
+                return focus_industry
+            return "工业自动化"
         if track == "国际热点":
             if "国际" in focus_industry or "地缘" in focus_industry:
                 return focus_industry
@@ -327,10 +389,21 @@ class TitleAgent(BaseAgent):
             if keyword and keyword not in {"人形机器人", "机器人"}:
                 adapted = adapted.replace("人形机器人", keyword)
                 adapted = adapted.replace("机器人", keyword)
+        elif track == "半导体芯片":
+            if keyword and keyword not in {"半导体", "芯片"}:
+                adapted = adapted.replace("半导体", keyword)
+                adapted = adapted.replace("芯片", keyword)
         elif track == "新能源储能":
             if keyword and keyword not in {"储能", "储能项目"}:
                 adapted = adapted.replace("储能项目", keyword)
                 adapted = adapted.replace("储能", keyword)
+        elif track == "AI应用":
+            if keyword and keyword not in {"AI应用", "AI"}:
+                adapted = adapted.replace("AI应用", keyword)
+        elif track == "工业自动化":
+            if keyword and keyword not in {"工业自动化", "智能制造"}:
+                adapted = adapted.replace("工业自动化", keyword)
+                adapted = adapted.replace("智能制造", keyword)
         elif track == "国际热点":
             if keyword and keyword not in {"国际局势", "国际热点"}:
                 adapted = adapted.replace("国际局势", keyword)
@@ -414,12 +487,17 @@ class TitleAgent(BaseAgent):
     def _pick_recommended_titles(self, titles: list[str], data_report: DataReport) -> list[str]:
         selected: list[str] = []
         seen_buckets: set[str] = set()
+        seen_skeletons: set[str] = set()
         for title in titles:
             bucket = self._title_bucket(title, data_report)
+            skeleton = self._title_skeleton(title)
             if bucket in seen_buckets:
+                continue
+            if skeleton in seen_skeletons:
                 continue
             selected.append(title)
             seen_buckets.add(bucket)
+            seen_skeletons.add(skeleton)
             if len(selected) >= self.settings.recommended_title_count:
                 return selected
 
@@ -460,16 +538,16 @@ class TitleAgent(BaseAgent):
             discussion_score += 4
 
         if any(token in title for token in self.PROFIT_TOKENS):
-            save_score += 10
-            brand_fit_score += 8
+            save_score += 6
+            brand_fit_score += 5
 
         if any(token in title for token in self.VALIDATION_TOKENS):
-            save_score += 8
-            brand_fit_score += 6
+            save_score += 5
+            brand_fit_score += 4
 
         if any(token in title for token in self.DEPTH_TOKENS):
-            save_score += 5
-            brand_fit_score += 7
+            save_score += 4
+            brand_fit_score += 5
 
         if any(token in title for token in self.SCENE_TOKENS):
             click_score += 8
@@ -524,6 +602,20 @@ class TitleAgent(BaseAgent):
             click_score -= 16
             brand_fit_score -= 20
 
+        # 同质化模式惩罚：标题同时包含高频同质词组时大幅降分
+        homogeneous_hits = sum(
+            1 for pair in self.HOMOGENEOUS_PATTERNS
+            if pair[0] in title and pair[1] in title
+        )
+        if homogeneous_hits >= 2:
+            click_score -= 14
+            save_score -= 12
+            brand_fit_score -= 16
+        elif homogeneous_hits == 1:
+            click_score -= 6
+            save_score -= 5
+            brand_fit_score -= 7
+
         total = round(
             click_score * 0.36
             + save_score * 0.30
@@ -532,10 +624,14 @@ class TitleAgent(BaseAgent):
         )
         return max(1, total)
 
+    TECH_TOKENS = ("技术", "迭代", "方案", "路线", "架构", "突破", "拐点", "下一代", "换代", "升级")
+
     def _title_bucket(self, title: str, data_report: DataReport) -> str:
         companies = self.clean_publish_list(data_report.focus_companies + data_report.companies)
         if any(company and company in title for company in companies[:5]):
             return "company"
+        if any(token in title for token in self.TECH_TOKENS):
+            return "tech"
         if any(token in title for token in self.PROFIT_TOKENS):
             return "profit"
         if any(token in title for token in self.VALIDATION_TOKENS):
@@ -553,6 +649,7 @@ class TitleAgent(BaseAgent):
         normalized_avoid = {self.normalize_title(item) for item in cache_context.avoid_titles}
         result: list[str] = []
         seen: set[str] = set()
+        seen_skeletons: set[str] = set()
         for title in raw_titles:
             cleaned_title = self._sanitize_title(title)
             normalized = self.normalize_title(cleaned_title)
@@ -562,9 +659,28 @@ class TitleAgent(BaseAgent):
                 continue
             if any(token in cleaned_title for token in self.TEMPLATEY_TOKENS):
                 continue
+            skeleton = self._title_skeleton(cleaned_title)
+            if skeleton in seen_skeletons:
+                continue
             seen.add(normalized)
+            seen_skeletons.add(skeleton)
             result.append(cleaned_title)
         return result
+
+    def _title_skeleton(self, title: str) -> str:
+        """提取标题语义骨架：将具体行业/产品词替换为占位符，保留结构模式。
+
+        例如 "人形机器人利润向零部件集中" 和 "AI芯片利润向核心件集中"
+        都会变成 "{SUBJ}利润向{SUBJ}集中"，视为同一骨架。
+        """
+        skeleton = title
+        for filler in self.SKELETON_FILLERS:
+            if filler in skeleton:
+                skeleton = skeleton.replace(filler, "{S}")
+        # 压缩连续占位符
+        while "{S}{S}" in skeleton:
+            skeleton = skeleton.replace("{S}{S}", "{S}")
+        return skeleton
 
     def _sanitize_title(self, title: str) -> str:
         cleaned = self.strip_prompt_leakage(self.clean_publish_text(title))
@@ -632,30 +748,13 @@ class TitleAgent(BaseAgent):
                 index = text.find(token)
                 start = max(0, index - 8)
                 snippet = text[start : index + len(token)]
-                snippet = re.sub(r"[，。；：:、\s]+", "", snippet)
+                snippet = re.sub(r"[（()）\[\]【】，。；：:、\s]+", "", snippet)
                 if 2 <= len(snippet) <= 14:
                     return snippet
                 return token
         return ""
 
-    def _content_mode(self, data_report: DataReport) -> str:
-        combined = " ".join(
-            str(item)
-            for item in (
-                data_report.focus_industry,
-                data_report.topic_title,
-                data_report.selection_reason,
-                data_report.writing_brief,
-                " ".join(data_report.focus_keywords[:4]),
-                " ".join(data_report.supply_chain_keywords[:4]),
-            )
-            if str(item).strip()
-        ).lower()
-        if any(token in combined for token in ("体育", "足球", "篮球", "网球", "world cup", "football", "tennis", "french open")):
-            return "sports"
-        if any(token in combined for token in ("国际", "美国", "欧洲", "关税", "外交", "white house", "tariff")):
-            return "international"
-        return "generic"
+
 
     def _sports_fallback_titles(
         self,
@@ -702,29 +801,28 @@ class TitleAgent(BaseAgent):
         return self._dedupe_titles(templates, cache_context)
 
     def _sports_subject_label(self, data_report: DataReport) -> str:
-        text = " ".join(
-            [
-                self.clean_publish_text(data_report.topic_title),
-                *self.clean_publish_list(data_report.focus_keywords + data_report.supply_chain_keywords, limit=6),
-            ]
-        ).lower()
-        if "world cup" in text or "世界杯" in text:
+        text = self._build_combined_text(data_report)
+        if any(token in text for token in ("world cup", "世界杯")):
             return "世界杯"
-        if "football" in text or "足球" in text:
+        if any(token in text for token in ("football", "足球")):
             return "这份名单"
-        if "tennis" in text or "法网" in text:
+        if any(token in text for token in ("tennis", "法网")):
             return "这次签表"
         return "这场比赛"
 
     def _international_subject_label(self, data_report: DataReport) -> str:
-        text = " ".join(
+        text = self._build_combined_text(data_report)
+        if any(token in text for token in ("tariff", "关税")):
+            return "关税风向"
+        if any(token in text for token in ("white house", "美国")):
+            return "美国表态"
+        return "这条国际消息"
+    
+    def _build_combined_text(self, data_report: DataReport) -> str:
+        """构建用于模式匹配的组合文本"""
+        return " ".join(
             [
                 self.clean_publish_text(data_report.topic_title),
                 *self.clean_publish_list(data_report.focus_keywords + data_report.supply_chain_keywords, limit=6),
             ]
         ).lower()
-        if "tariff" in text or "关税" in text:
-            return "关税风向"
-        if "white house" in text or "美国" in text:
-            return "美国表态"
-        return "这条国际消息"

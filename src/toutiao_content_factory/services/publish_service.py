@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import time
@@ -14,8 +15,10 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.constants.selectors import TOUTIAO_EDITOR_PAGE
 from toutiao_content_factory.models import PublishRecord
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 
@@ -30,6 +33,17 @@ try:
     import msvcrt
 except ModuleNotFoundError:  # pragma: no cover - fallback for non-Windows environments
     msvcrt = None
+
+
+class PlatformUIUpdateException(RuntimeError):
+    """Raised when a platform UI change is detected during browser automation."""
+    def __init__(self, platform: str, element_desc: str = "", message: str = "",
+                 debug_screenshot: str = "", debug_dom_path: str = ""):
+        self.platform = platform
+        self.element_desc = element_desc
+        self.debug_screenshot = debug_screenshot
+        self.debug_dom_path = debug_dom_path
+        super().__init__(message or f"UI change detected on {platform}: {element_desc}")
 
 
 class PublishService:
@@ -62,57 +76,10 @@ class PublishService:
     )
 
     DEFAULT_PUBLISH_URL = "https://mp.toutiao.com/profile_v4/graphic/publish"
-    DEFAULT_TITLE_SELECTORS = [
-        ".left-column .publish-editor-title-wrapper textarea",
-        ".publish-editor-title-wrapper textarea",
-        ".assistant-title .title-wrapper textarea",
-        ".publish-editor-title textarea",
-        ".editor-title textarea",
-        "textarea[autocomplete='off'][placeholder]",
-        "textarea[placeholder*='标题']",
-        "textarea",
-        "input[placeholder*='标题']",
-        "input[type='text']",
-    ]
-    DEFAULT_EDITOR_SELECTORS = [
-        ".left-column div.ProseMirror",
-        ".syl-editor-wrap div.ProseMirror",
-        ".syl-editor .ProseMirror",
-        "div.ProseMirror",
-        "div[contenteditable='true'][role='textbox']",
-        "div[contenteditable='true'][data-placeholder*='正文']",
-        "div[contenteditable='true']",
-    ]
-    DEFAULT_DRAFT_STATUS_SELECTORS = [
-        ".publish-footer .footer-tip-save",
-        ".footer-draft-save .footer-tip-save",
-        ".footer-tip-save",
-    ]
-    DEFAULT_ARTICLE_IMAGE_TRIGGER_SELECTORS = [
-        ".publish-editor .syl-editor-toolbar.visible.inline .syl-toolbar-tool.image button.syl-toolbar-button",
-        ".publish-editor .syl-editor-toolbar.visible.inline .syl-toolbar-tool.image button",
-        ".publish-editor .syl-editor-toolbar.visible.inline .syl-toolbar-tool.image",
-        ".syl-editor-toolbar.visible.inline .syl-toolbar-tool.image button.syl-toolbar-button",
-        ".syl-editor-toolbar.visible.inline .syl-toolbar-tool.image button",
-        ".syl-editor-toolbar.visible.inline .syl-toolbar-tool.image",
-        ".syl-editor-toolbar.visible .syl-toolbar-tool.image button.syl-toolbar-button",
-        ".syl-editor-toolbar.visible .syl-toolbar-tool.image button",
-        ".syl-toolbar-tool.image .syl-toolbar-button",
-        ".syl-toolbar-tool.image button",
-        ".syl-toolbar-tool.image",
-        "[data-e2e='insertImage-btn']",
-        "[data-e2e='editorInsertImage-btn']",
-        ".syl-toolbar button[aria-label*='Image']",
-        ".syl-toolbar button[aria-label*='image']",
-        ".syl-toolbar button[aria-label*='图片']",
-        ".editor-toolbar button[aria-label*='Image']",
-        ".editor-toolbar button[aria-label*='image']",
-        ".editor-toolbar button[aria-label*='图片']",
-        "button[aria-label*='Image']",
-        "button[aria-label*='image']",
-        "button[aria-label*='图片']",
-        "button:has-text('图片')",
-    ]
+    DEFAULT_TITLE_SELECTORS = TOUTIAO_EDITOR_PAGE.get("title_input")
+    DEFAULT_EDITOR_SELECTORS = TOUTIAO_EDITOR_PAGE.get("article_editor")
+    DEFAULT_DRAFT_STATUS_SELECTORS = TOUTIAO_EDITOR_PAGE.get("draft_status")
+    DEFAULT_ARTICLE_IMAGE_TRIGGER_SELECTORS = TOUTIAO_EDITOR_PAGE.get("image_insert_button")
     INLINE_IMAGE_DATA_TOKENS = (
         "数据",
         "装机",
@@ -140,17 +107,8 @@ class PublishService:
         "逆变器",
         "电池",
     )
-    AI_DRAWER_MASK_SELECTORS = [
-        "div.byte-drawer-mask",
-        "div.byte-drawer-wrapper.ai-assistant-drawer div.byte-drawer-mask",
-    ]
-    AI_DRAWER_CLOSE_SELECTORS = [
-        ".ai-assistant-drawer button[aria-label='关闭']",
-        ".ai-assistant-drawer .close-btn",
-        ".ai-assistant-drawer .byte-drawer-close",
-        ".ai-assistant-drawer button:has-text('关闭')",
-        ".ai-assistant-drawer [class*='close']",
-    ]
+    AI_DRAWER_MASK_SELECTORS = TOUTIAO_EDITOR_PAGE.get("ai_drawer_mask")
+    AI_DRAWER_CLOSE_SELECTORS = TOUTIAO_EDITOR_PAGE.get("ai_drawer_close")
     PUBLISH_EVENT_PATTERNS = (
         "/mp/agw/article/publish",
         "/mp/agw/draft/save_ugc_draft",
@@ -244,6 +202,15 @@ class PublishService:
 
         title = self._clip_title(str(publish_meta.get("selected_title", "")).strip())
         article = self._sanitize_article_for_publish(self._read_text(publish_dir / "article.md").strip())
+        article_char_count = len(article.replace("\n", "").replace(" ", ""))
+        if article_char_count < 1500:
+            self.logger.warning(
+                "Article has only %d chars after sanitization (minimum 1500 for Toutiao first-release incentive). "
+                "Proceeding with publish but quality check will flag this.",
+                article_char_count,
+            )
+            declare_first_release = False
+            notes_warning = f"质量检查：字数不足1500字（当前{article_char_count}字），自动取消头条首发声明"
         preflight_summary = self._collect_preflight_summary_locked()
         content_guard_report = self.content_guard_service.build_publish_guard_report(run_dir)
         preflight_summary = self._merge_content_guard_summary(preflight_summary, content_guard_report)
@@ -257,25 +224,44 @@ class PublishService:
                 " | ".join(str(item) for item in blocking_flags),
             )
 
-        try:
-            result_payload = self._publish_to_toutiao(
-                title=title,
-                article=article,
-                draft_only=bool(self.settings.publishing.draft_only),
-                run_dir=run_dir,
-                declare_first_release=declare_first_release,
-            )
-        except Exception as exc:
-            self._write_failed_publish_result(
-                publish_dir=publish_dir,
-                run_dir=run_dir,
-                title=title,
-                topic_title=topic_title,
-                topic_url=topic_url,
-                error=str(exc),
-                preflight_summary=preflight_summary,
-            )
-            raise
+        max_publish_retries = 2
+        last_publish_exc: Exception | None = None
+        for attempt in range(1 + max_publish_retries):
+            try:
+                result_payload = self._publish_to_toutiao(
+                    title=title,
+                    article=article,
+                    draft_only=bool(self.settings.publishing.draft_only),
+                    run_dir=run_dir,
+                    declare_first_release=declare_first_release,
+                )
+                break
+            except Exception as exc:
+                last_publish_exc = exc
+                exc_msg = str(exc).lower()
+                non_retryable = any(
+                    kw in exc_msg
+                    for kw in ("session expired", "not logged in", "login form detected", "session may have expired")
+                )
+                if non_retryable or attempt >= max_publish_retries:
+                    self._write_failed_publish_result(
+                        publish_dir=publish_dir,
+                        run_dir=run_dir,
+                        title=title,
+                        topic_title=topic_title,
+                        topic_url=topic_url,
+                        error=str(exc),
+                        preflight_summary=preflight_summary,
+                    )
+                    raise
+                self.logger.warning(
+                    "Toutiao publish attempt %d/%d failed: %s. Retrying in 5s...",
+                    attempt + 1, 1 + max_publish_retries, exc,
+                )
+                time.sleep(5)
+        else:
+            if last_publish_exc is not None:
+                raise last_publish_exc
 
         record = PublishRecord(
             published_at=datetime.now().isoformat(timespec="seconds"),
@@ -288,6 +274,26 @@ class PublishService:
             notes=[str(item) for item in result_payload.get("notes", [])],
             external_url=str(result_payload.get("external_url", "")),
         )
+        if not result_payload.get("publish_verified", True):
+            backend_summary = result_payload.get("backend_response_summary", {})
+            backend_success = (
+                isinstance(backend_summary, dict)
+                and backend_summary.get("err_no") in {0, "0"}
+                and bool(backend_summary.get("pgc_id"))
+            )
+            if backend_success and result_payload.get("status") == "submitted_for_review":
+                self.logger.info(
+                    "发布验证未通过但后端确认提交成功(pgc_id=%s)，保持 submitted_for_review。title=%s",
+                    backend_summary.get("pgc_id"),
+                    title[:30],
+                )
+            else:
+                result_payload["status"] = "publish_uncertain"
+                record.status = "publish_uncertain"
+                self.logger.warning(
+                    "发布验证未通过，状态标记为 publish_uncertain，请人工确认。title=%s",
+                    title[:30],
+                )
         history = self._load_history()
         history.append(record)
         self._save_history(history)
@@ -332,12 +338,22 @@ class PublishService:
         profile_dir.mkdir(parents=True, exist_ok=True)
         target_url = self.settings.publishing.publish_url or self.DEFAULT_PUBLISH_URL
 
+        prepare_browser_profile(
+            profile_dir=profile_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            label="publish:init-session",
+            extra_paths=[self.settings.account_runtime_dir],
+        )
+
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile_dir),
                 headless=False,
                 channel=self.settings.publishing.channel or None,
                 executable_path=self.settings.publishing.executable_path or None,
+                viewport={"width": 1920, "height": 1080},
+                screen={"width": 1920, "height": 1080},
             )
             try:
                 page = browser.pages[0] if browser.pages else browser.new_page()
@@ -437,12 +453,22 @@ class PublishService:
         profile_dir.mkdir(parents=True, exist_ok=True)
         publish_url = self.settings.publishing.publish_url or self.DEFAULT_PUBLISH_URL
 
+        prepare_browser_profile(
+            profile_dir=profile_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            label="publish:preflight",
+            extra_paths=[self.settings.account_runtime_dir],
+        )
+
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile_dir),
                 headless=self.settings.publishing.headless,
                 channel=self.settings.publishing.channel or None,
                 executable_path=self.settings.publishing.executable_path or None,
+                viewport={"width": 1920, "height": 1080},
+                screen={"width": 1920, "height": 1080},
             )
             try:
                 page = browser.pages[0] if browser.pages else browser.new_page()
@@ -453,6 +479,7 @@ class PublishService:
                 notes: list[str] = []
                 self._dismiss_ai_assistant_drawer(page, notes)
                 self._wait_for_publish_editor_ready(page)
+                self._permanently_hide_ai_assistant(page, notes)
                 diagnostics = self._build_publish_diagnostics(diagnostic_events)
                 summary = self._build_preflight_summary_from_diagnostics(page.url, diagnostics)
                 if summary.get("blocking_flags") and self._page_looks_publish_capable(page):
@@ -543,12 +570,22 @@ class PublishService:
         selectors = self.settings.publishing.selectors
         notes: list[str] = []
 
+        prepare_browser_profile(
+            profile_dir=profile_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            label="publish:run",
+            extra_paths=[self.settings.account_runtime_dir],
+        )
+
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile_dir),
                 headless=self.settings.publishing.headless,
                 channel=self.settings.publishing.channel or None,
                 executable_path=self.settings.publishing.executable_path or None,
+                viewport={"width": 1920, "height": 1080},
+                screen={"width": 1920, "height": 1080},
             )
             try:
                 page = browser.pages[0] if browser.pages else browser.new_page()
@@ -559,6 +596,8 @@ class PublishService:
 
                 self._goto_publish_page(page, publish_url)
                 page.wait_for_timeout(1500)
+
+                self._check_toutiao_login(page, notes)
 
                 if self.settings.publishing.base_url not in page.url:
                     notes.append(f"Current page redirected to: {page.url}")
@@ -572,6 +611,7 @@ class PublishService:
 
                 self._dismiss_ai_assistant_drawer(page, notes)
                 self._wait_for_publish_editor_ready(page)
+                self._permanently_hide_ai_assistant(page, notes)
                 title_selector = self._resolve_editor_selector(
                     page,
                     selectors.get("title_input", []),
@@ -587,7 +627,6 @@ class PublishService:
                     notes.append("Editor selectors not found on current page. Retrying publish URL directly.")
                     self._goto_publish_page(page, publish_editor_url)
                     page.wait_for_timeout(1500)
-                    self._dismiss_ai_assistant_drawer(page, notes)
                     self._wait_for_publish_editor_ready(page)
                     title_selector = self._resolve_editor_selector(
                         page,
@@ -615,16 +654,20 @@ class PublishService:
                     )
 
                 draft_watch_start = len(publish_events)
-                self._dismiss_ai_assistant_drawer(page, notes)
                 title_locator = page.locator(title_selector).first
                 editor_locator = page.locator(editor_selector).first
-                self._set_title_content(page, title_locator, title, notes)
-                self._dismiss_ai_assistant_drawer(page, notes)
-                self._set_editor_content(page, editor_selector, article, notes)
+                self._retry_playwright_action(
+                    lambda: self._set_editor_content(page, editor_selector, article, notes),
+                    description="set_editor_content",
+                )
+                self._retry_playwright_action(
+                    lambda: self._set_title_content(page, title_locator, title, notes),
+                    description="set_title_content",
+                )
+                self._nudge_editor_to_trigger_autosave(page, editor_selector, notes)
                 self._apply_default_work_declarations(page, notes)
                 self._apply_safe_publish_options(page, notes, declare_first_release=declare_first_release)
                 self._finalize_editor_state(page, title_locator, editor_selector, title, notes)
-                self._dismiss_ai_assistant_drawer(page, notes)
                 cover_path = self._resolve_toutiao_cover_asset(run_dir, notes)
                 cover_mode = self._resolve_cover_mode(cover_path) if cover_path is not None else "none"
                 if cover_mode == "single" and cover_path is not None:
@@ -638,11 +681,16 @@ class PublishService:
                 if preflight_blockers:
                     notes.append(f"Publish preflight: {preflight_blockers.strip()}")
 
+                if not draft_only:
+                    self._install_save_mode_override(page, notes)
+                    self._nudge_editor_to_trigger_autosave(page, editor_selector, notes)
+
                 if not self._wait_for_draft_save(
                     page,
                     publish_events,
                     notes,
                     start_index=draft_watch_start,
+                    expect_save_mode_1=not draft_only,
                 ):
                     notes.append("Draft autosave was not confirmed. Continuing with a direct publish attempt.")
 
@@ -662,16 +710,53 @@ class PublishService:
                         },
                     }
 
+                submitted_event = self._latest_publish_event(
+                    publish_events,
+                    start_index=draft_watch_start,
+                    save_mode=1,
+                    success_only=False,
+                )
+                if submitted_event:
+                    response_json = submitted_event.get("response_json") or {}
+                    pgc_id = str((response_json.get("data") or {}).get("pgc_id", "0") or "0")
+                    if pgc_id != "0":
+                        self._disable_save_mode_override(page, notes)
+                        notes.append("Draft save auto-submitted article for review on Toutiao. Skipping manual publish click.")
+                        publish_verified = self._verify_toutiao_publish_success(page, title, notes)
+                        return {
+                            "status": "submitted_for_review",
+                            "published_at": datetime.now().isoformat(timespec="seconds"),
+                            "external_url": page.url,
+                            "notes": self._finalize_notes(notes),
+                            "cover_mode": cover_mode,
+                            "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
+                            "backend_response_summary": self._compact_backend_response(response_json),
+                            "publish_request_summary": {
+                                "url": str(submitted_event.get("url", page.url)),
+                                "save_mode": "draft_auto_submitted",
+                                "pgc_id": pgc_id,
+                            },
+                            "publish_verified": publish_verified,
+                        }
+
                 self._dismiss_ai_assistant_drawer(page, notes)
                 page.wait_for_timeout(700)
+                try:
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    page.wait_for_timeout(500)
+                except Exception:
+                    pass
                 notes.append("Waited briefly before clicking the primary publish action.")
+                debug_dir = self._capture_debug_artifacts(page, extra_payload={"notes": notes})
+                notes.append(f"Debug snapshot saved to {debug_dir}")
                 preview_start_index = len(publish_events)
                 if not self._click_immediate_publish_button(
                     page,
                     selectors.get("publish_button", []),
                     notes,
                 ):
-                    raise RuntimeError("Publish button not found. Update selectors in config.yaml.")
+                    debug_dir2 = self._capture_debug_artifacts(page, extra_payload={"notes": notes, "button_click_notes": notes[-20:]})
+                    raise RuntimeError(f"Publish button not found. Update selectors in config.yaml. Debug: {debug_dir2}")
 
                 page.wait_for_timeout(600)
                 publish_start_index = self._complete_publish_confirmation_flow(
@@ -707,6 +792,8 @@ class PublishService:
                 else:
                     notes.append("Backend accepted the publish request, but no explicit success toast was detected.")
 
+                publish_verified = self._verify_toutiao_publish_success(page, title, notes)
+
                 return {
                     "status": "submitted_for_review",
                     "published_at": datetime.now().isoformat(timespec="seconds"),
@@ -719,9 +806,40 @@ class PublishService:
                         "url": str(publish_event.get("url", "")),
                         "save_mode": publish_event.get("save_mode"),
                     },
+                    "publish_verified": publish_verified,
                 }
+            except PlatformUIUpdateException as pue:
+                self.logger.error(
+                    "PlatformUIUpdateException: %s - %s",
+                    pue.element_desc, pue.message
+                )
+                debug_url = pue.debug_screenshot or pue.debug_dom_path or ""
+                self._notify_ui_alert(
+                    f"[URGENT] UI Change - {pue.platform}",
+                    f"Element: {pue.element_desc}\n"
+                    f"Attempts: {len(pue.attempted_selectors)} strategies failed"
+                )
+                raise
             finally:
                 browser.close()
+
+    def _retry_playwright_action(self, action_fn, description: str, max_retries: int = 2) -> None:
+        last_exc: Exception | None = None
+        for attempt in range(1 + max_retries):
+            try:
+                action_fn()
+                return
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= max_retries:
+                    break
+                self.logger.warning(
+                    "Playwright action '%s' attempt %d/%d failed: %s. Retrying in 2s...",
+                    description, attempt + 1, 1 + max_retries, exc,
+                )
+                time.sleep(2)
+        if last_exc is not None:
+            raise last_exc
 
     def _resolve_profile_dir(self) -> Path:
         path = Path(self.settings.publishing.user_data_dir)
@@ -752,16 +870,11 @@ class PublishService:
         if isinstance(backend_priority, list):
             for item in backend_priority:
                 candidate = str(item).strip().lower()
-                if candidate and candidate not in {"renderer", "local", "local_renderer"}:
+                if candidate and candidate not in {"renderer", "local", "local_renderer", "pillow"}:
                     effective_remote_backend = candidate
                     break
-        if not effective_remote_backend and backend not in {"", "renderer", "local", "local_renderer"}:
+        if not effective_remote_backend and backend not in {"", "renderer", "local_renderer"}:
             effective_remote_backend = backend
-        if not effective_remote_backend:
-            notes.append(
-                f"Skipped Toutiao cover upload because no successful remote image backend was recorded (`{backend or 'unknown'}`)."
-            )
-            return None
 
         cover_path = self._resolve_existing_publish_asset(
             run_dir=run_dir,
@@ -770,6 +883,17 @@ class PublishService:
         )
         if cover_path is None:
             notes.append("Skipped Toutiao cover upload because the generated cover file was not found.")
+            return None
+
+        if not effective_remote_backend:
+            if cover_path.exists():
+                notes.append(
+                    f"Cover image exists locally (backend={backend}), will upload directly."
+                )
+                return cover_path
+            notes.append(
+                f"No remote image backend (backend={backend or 'unknown'}), will use no-cover mode."
+            )
             return None
 
         notes.append(
@@ -807,6 +931,52 @@ class PublishService:
                 page.wait_for_timeout(1200 * attempt)
         if last_error is not None:
             raise last_error
+
+    def _check_toutiao_login(self, page, notes: list[str]) -> None:
+        current_url = str(page.url or "")
+        login_indicators = [
+            "/login",
+            "/passport",
+            "/auth/login",
+            "sso.toutiao.com",
+        ]
+        for indicator in login_indicators:
+            if indicator in current_url:
+                debug_dir = self._capture_debug_artifacts(page, {"step": "login_check"})
+                raise RuntimeError(
+                    f"Toutiao session expired or not logged in. Current URL: {current_url}. "
+                    f"Please re-run the login initialization script. Debug files saved to: {debug_dir}"
+                )
+        is_login_page = page.evaluate("""() => {
+            const selectors = [
+                'input[name="account"]',
+                'input[type="password"]',
+                '.login-container',
+                '[class*="login-form"]',
+            ];
+            for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                if (el) {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width > 0 && rect.height > 0) return true;
+                }
+            }
+            // 单独检查登录按钮文本（不能用 :has-text 伪选择器）
+            const buttons = document.querySelectorAll('button');
+            for (const btn of buttons) {
+                if (btn.textContent.trim() === '登录') {
+                    const rect = btn.getBoundingClientRect();
+                    if (rect.width > 0 && rect.height > 0) return true;
+                }
+            }
+            return false;
+        }""")
+        if is_login_page:
+            debug_dir = self._capture_debug_artifacts(page, {"step": "login_check"})
+            raise RuntimeError(
+                f"Toutiao login form detected on page. Session may have expired. "
+                f"Please re-run the login initialization script. Debug files saved to: {debug_dir}"
+            )
 
     def _load_json(self, path: Path) -> dict[str, Any]:
         if not path.exists():
@@ -856,6 +1026,10 @@ class PublishService:
         if brand:
             cleaned = cleaned.replace(brand, "")
         cleaned = re.sub(r"(我们账号|本账号|本号|本栏目|本文作者|笔者认为|作者认为)[:：]?", "", cleaned)
+        cleaned = re.sub(r"对标账号高热内容[：:]?", "", cleaned)
+        cleaned = re.sub(r"对标热点/[^\s，。！？；：]*", "", cleaned)
+        cleaned = re.sub(r"36氪头条号[：:]?", "", cleaned)
+        cleaned = re.sub(r"benchmark_hotspot", "", cleaned)
         cleaned = re.sub(r"\s{2,}", " ", cleaned)
         cleaned = re.sub(r"^[，。；：:、\-\s]+", "", cleaned)
         cleaned = re.sub(r"[，。；：:、\-\s]+$", "", cleaned)
@@ -909,6 +1083,30 @@ class PublishService:
             if self._first_visible_selector(page, editor_shell_selectors, strict=False):
                 return
             page.wait_for_timeout(300)
+
+    def _permanently_hide_ai_assistant(self, page, notes: list[str]) -> None:
+        try:
+            page.evaluate("""() => {
+                const style = document.createElement('style');
+                style.id = 'ai-assistant-blocker';
+                style.textContent = `
+                    .byte-drawer-wrapper.ai-assistant-drawer,
+                    .byte-drawer-mask,
+                    [class*="ai-assistant-drawer"],
+                    [class*="ai-assistant-modal"],
+                    [class*="ai-writer-sidebar"] {
+                        display: none !important;
+                        visibility: hidden !important;
+                        pointer-events: none !important;
+                    }
+                `;
+                if (!document.getElementById('ai-assistant-blocker')) {
+                    document.head.appendChild(style);
+                }
+            }""")
+            notes.append("AI assistant drawer permanently hidden via CSS injection.")
+        except Exception as exc:
+            self.logger.debug("Failed to inject AI assistant CSS: %s", exc)
 
     def _dismiss_ai_assistant_drawer(self, page, notes: list[str]) -> None:
         dismissed = False
@@ -1992,6 +2190,19 @@ class PublishService:
             "Inline article image verification did not observe the expected count before publish. Continuing without blocking publish."
         )
 
+    def _nudge_editor_to_trigger_autosave(self, page, editor_selector: str, notes: list[str]) -> None:
+        try:
+            editor = page.locator(editor_selector).first
+            editor.click(timeout=2000)
+            page.keyboard.press("End")
+            page.keyboard.type(" ", delay=30)
+            page.wait_for_timeout(200)
+            page.keyboard.press("Backspace")
+            page.wait_for_timeout(500)
+            notes.append("Nudged editor to trigger autosave after title was set.")
+        except Exception as exc:
+            notes.append(f"Editor nudge for autosave failed (non-fatal): {exc}")
+
     def _set_title_content(self, page, locator, title: str, notes: list[str]) -> None:
         locator.wait_for(state="visible", timeout=self.settings.publishing.wait_timeout_ms)
         observed = ""
@@ -2215,7 +2426,20 @@ class PublishService:
 
     def _click_custom_control(self, locator) -> bool:
         try:
+            locator.click(timeout=2000)
+            return True
+        except Exception:
+            pass
+
+        try:
             locator.click(force=True, timeout=1200)
+            return True
+        except Exception:
+            pass
+
+        try:
+            input_el = locator.locator("input").first
+            input_el.click(timeout=1200)
             return True
         except Exception:
             pass
@@ -2223,10 +2447,14 @@ class PublishService:
         try:
             locator.evaluate(
                 """(node) => {
+                    const input = node.querySelector('input');
+                    if (input) {
+                        input.click();
+                        return;
+                    }
                     const target =
                         node.querySelector('.byte-checkbox-wrapper') ||
                         node.querySelector('.byte-radio-inner') ||
-                        node.querySelector('input') ||
                         node;
                     target.dispatchEvent(new MouseEvent('click', {
                         bubbles: true,
@@ -2244,106 +2472,305 @@ class PublishService:
         self._ensure_single_cover_mode(page)
         self._clear_existing_cover(page, notes)
 
-        trigger_locator = self._resolve_cover_trigger(page)
-        if trigger_locator is None:
-            raise RuntimeError("Could not locate the Toutiao cover upload trigger.")
+        cover_applied = self._upload_cover_via_file_chooser(page, cover_path, notes)
+        if not cover_applied:
+            cover_applied = self._upload_cover_via_direct_input(page, cover_path, notes)
+        if not cover_applied:
+            self.logger.warning("All cover upload strategies failed. Falling back to no-cover mode.")
+            self._ensure_no_cover_mode(page, notes)
+            return
 
+        notes.append(f"Applied cover image: {cover_path.name}")
+
+    def _upload_cover_via_file_chooser(self, page, cover_path: Path, notes: list[str]) -> bool:
         try:
-            existing_input_count = page.locator("input[type='file']").count()
-        except Exception:
-            existing_input_count = 0
+            trigger_locator = self._resolve_cover_trigger(page)
+            if trigger_locator is None:
+                notes.append("Cover upload trigger not found for file-chooser strategy.")
+                return False
 
-        file_chooser = self._open_cover_file_chooser(page, trigger_locator)
-        if file_chooser is not None:
-            file_chooser.set_files(str(cover_path))
-        else:
-            self._click_cover_trigger(trigger_locator)
-            upload_input = self._wait_for_cover_upload_input(page, existing_input_count)
-            if upload_input is None:
-                page.wait_for_timeout(600)
+            try:
+                with page.expect_file_chooser(timeout=10000) as fc_info:
+                    trigger_locator.click(force=True, timeout=5000)
+                file_chooser = fc_info.value
+                file_chooser.set_files(str(cover_path))
+                self.logger.info("Cover uploaded via file-chooser triggered by cover area click.")
+            except Exception:
+                upload_btn = page.evaluate("""() => {
+                    const btns = document.querySelectorAll('button, a, span, div');
+                    for (const btn of btns) {
+                        const text = (btn.textContent || '').trim();
+                        if (text === '上传图片' || text === '上传' || text === '本地上传' || text === '选择图片') {
+                            const rect = btn.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) return true;
+                        }
+                    }
+                    return false;
+                }""")
+                if upload_btn:
+                    try:
+                        with page.expect_file_chooser(timeout=10000) as fc_info:
+                            page.evaluate("""() => {
+                                const btns = document.querySelectorAll('button, a, span, div');
+                                for (const btn of btns) {
+                                    const text = (btn.textContent || '').trim();
+                                    if (text === '上传图片' || text === '上传' || text === '本地上传' || text === '选择图片') {
+                                        const rect = btn.getBoundingClientRect();
+                                        if (rect.width > 0 && rect.height > 0) { btn.click(); return; }
+                                    }
+                                }
+                            }""")
+                        file_chooser = fc_info.value
+                        file_chooser.set_files(str(cover_path))
+                        self.logger.info("Cover uploaded via file-chooser triggered by text button.")
+                    except Exception as exc:
+                        self.logger.warning("File-chooser via text button failed: %s", exc)
+                        return False
+                else:
+                    return False
+
+            page.wait_for_timeout(3000)
+
+            if self._is_cover_upload_panel_hidden(page):
+                notes.append("Cover image auto-applied (upload panel closed after file upload).")
+                return self._verify_cover_applied(page)
+
+            self._select_uploaded_image_in_panel(page, notes)
+
+            confirm_clicked = self._click_confirm_in_upload_panel(page, notes)
+
+            if not confirm_clicked:
+                try:
+                    page.keyboard.press("Enter")
+                    page.wait_for_timeout(800)
+                except Exception:
+                    pass
+
+            timeout_ms = max(self.settings.publishing.wait_timeout_ms, 20000)
+            deadline = datetime.now().timestamp() + (timeout_ms / 1000)
+            while datetime.now().timestamp() < deadline:
+                if self._is_cover_applied(page):
+                    break
+                if self._is_cover_upload_panel_hidden(page):
+                    page.wait_for_timeout(400)
+                else:
+                    self._try_close_cover_upload_panel(page, notes)
+                    page.wait_for_timeout(800)
+
+            return self._verify_cover_applied(page)
+        except Exception as exc:
+            self.logger.warning("File-chooser cover upload strategy failed: %s", exc)
+            return False
+
+    def _upload_cover_via_direct_input(self, page, cover_path: Path, notes: list[str]) -> bool:
+        try:
+            trigger_locator = self._resolve_cover_trigger(page)
+            if trigger_locator is None:
+                notes.append("Cover upload trigger not found for direct-input strategy.")
+                return False
+
+            try:
+                existing_input_count = page.locator("input[type='file']").count()
+            except Exception:
+                existing_input_count = 0
+
+            file_chooser = self._open_cover_file_chooser(page, trigger_locator)
+            if file_chooser is not None:
+                file_chooser.set_files(str(cover_path))
+            else:
                 self._click_cover_trigger(trigger_locator)
                 upload_input = self._wait_for_cover_upload_input(page, existing_input_count)
-            if upload_input is None:
-                debug_dir = self._capture_debug_artifacts(
-                    page,
-                    extra_payload={"cover_path": str(cover_path)},
-                )
-                raise RuntimeError(
-                    "Cover upload panel did not open or no file input was exposed. "
-                    f"Debug files saved to: {debug_dir}"
-                )
+                if upload_input is None:
+                    page.wait_for_timeout(600)
+                    self._click_cover_trigger(trigger_locator)
+                    upload_input = self._wait_for_cover_upload_input(page, existing_input_count)
+                if upload_input is None:
+                    notes.append("Direct-input strategy: no file input found.")
+                    return False
+                upload_input.set_input_files(str(cover_path), timeout=max(self.settings.publishing.wait_timeout_ms, 60000))
 
-            upload_input.set_input_files(str(cover_path), timeout=max(self.settings.publishing.wait_timeout_ms, 60000))
+            page.wait_for_timeout(3000)
 
-        wrapper = page.locator(".upload-image-wrapper").first
-        wrapper.wait_for(state="visible", timeout=max(self.settings.publishing.wait_timeout_ms, 20000))
-        try:
-            page.locator(".pic-select-image-item").first.wait_for(
-                state="visible",
-                timeout=max(self.settings.publishing.wait_timeout_ms, 20000),
-            )
+            if self._is_cover_upload_panel_hidden(page):
+                notes.append("Cover image auto-applied via direct input (panel closed).")
+                return self._verify_cover_applied(page)
+
+            self._select_uploaded_image_in_panel(page, notes)
+
+            confirm_selectors = [
+                "[data-e2e='imageUploadConfirm-btn']",
+                ".upload-image-panel .footer .byte-btn-primary",
+                ".upload-image-panel button:has-text('确定')",
+                ".byte-modal__footer button.byte-btn-primary",
+                "button.byte-btn-primary:has-text('确定')",
+                ".upload-image-panel .footer button",
+                ".byte-modal__footer button",
+                "button:has-text('确定')",
+                "button:has-text('完成')",
+                "button:has-text('确认')",
+                "[class*='upload'] button[class*='primary']",
+                "[class*='image'] button[class*='primary']",
+            ]
+            confirm_clicked = self._maybe_click(page, confirm_selectors, required=False)
+            if not confirm_clicked:
+                page.wait_for_timeout(1500)
+                confirm_clicked = self._maybe_click(page, confirm_selectors, required=False)
+            if not confirm_clicked:
+                try:
+                    page.keyboard.press("Enter")
+                    page.wait_for_timeout(800)
+                except Exception:
+                    pass
+
+            timeout_ms = max(self.settings.publishing.wait_timeout_ms, 20000)
+            deadline = datetime.now().timestamp() + (timeout_ms / 1000)
+            while datetime.now().timestamp() < deadline:
+                if self._is_cover_applied(page):
+                    break
+                if self._is_cover_upload_panel_hidden(page):
+                    page.wait_for_timeout(400)
+                else:
+                    self._try_close_cover_upload_panel(page, notes)
+                    page.wait_for_timeout(800)
+
+            return self._verify_cover_applied(page)
         except Exception as exc:
-            debug_dir = self._capture_debug_artifacts(page)
-            raise RuntimeError(
-                "Cover upload succeeded but the uploaded image list never became selectable. "
-                f"Debug files saved to: {debug_dir}"
-            ) from exc
+            self.logger.warning("Direct-input cover upload strategy failed: %s", exc)
+            return False
 
-        selected = False
+    def _select_uploaded_image_in_panel(self, page, notes: list[str]) -> None:
+        if self._is_cover_upload_panel_hidden(page):
+            return
         for selector in [
             ".pic-select-image-item",
             ".pic-select-image-item-wrap",
             ".upload-image-wrapper img",
             ".upload-image-wrapper li",
+            ".upload-image-panel li.image-item",
+            ".upload-image-panel .image-list li",
+            ".upload-image-panel img",
         ]:
             try:
-                candidate = page.locator(selector).first
-                candidate.click(force=True, timeout=1500)
-                selected = True
-                page.wait_for_timeout(600)
-                break
+                candidates = page.locator(selector)
+                count = candidates.count()
+                for index in range(count - 1, -1, -1):
+                    candidate = candidates.nth(index)
+                    try:
+                        if not candidate.is_visible(timeout=300):
+                            continue
+                    except Exception:
+                        continue
+                    try:
+                        candidate_text = self._clean_visible_text(candidate.text_content(timeout=300) or "")
+                    except Exception:
+                        candidate_text = ""
+                    if "更多" in candidate_text:
+                        continue
+                    candidate.click(force=True, timeout=1500)
+                    page.wait_for_timeout(600)
+                    return
             except Exception:
                 continue
+        notes.append("Could not manually select cover image in picker; proceeding to confirm step.")
 
-        if not selected:
-            raise RuntimeError("Uploaded cover image could not be selected in the Toutiao picker.")
-
+    def _click_confirm_in_upload_panel(self, page, notes: list[str]) -> bool:
         confirm_selectors = [
             "[data-e2e='imageUploadConfirm-btn']",
             ".upload-image-panel .footer .byte-btn-primary",
             ".upload-image-panel button:has-text('确定')",
+            ".byte-modal__footer button.byte-btn-primary",
+            "button.byte-btn-primary:has-text('确定')",
+            ".upload-image-panel .footer button",
+            ".byte-modal__footer button",
+            "button:has-text('确定')",
+            "button:has-text('完成')",
+            "button:has-text('确认')",
+            "[class*='upload'] button[class*='primary']",
+            "[class*='image'] button[class*='primary']",
         ]
-        if not self._maybe_click(page, confirm_selectors, required=False):
-            raise RuntimeError("Cover upload confirm button was not available.")
+        confirm_clicked = self._maybe_click(page, confirm_selectors, required=False)
+        if not confirm_clicked:
+            page.wait_for_timeout(1500)
+            confirm_clicked = self._maybe_click(page, confirm_selectors, required=False)
+        if not confirm_clicked:
+            notes.append("Cover upload confirm button not available; tried keyboard Enter as fallback.")
+        return confirm_clicked
 
-        timeout_ms = max(self.settings.publishing.wait_timeout_ms, 20000)
-        deadline = datetime.now().timestamp() + (timeout_ms / 1000)
-        panel_closed = False
-        cover_applied = False
+    def _verify_cover_applied(self, page) -> bool:
+        if self._is_cover_applied(page):
+            self._save_cover_verification_screenshot(page)
+            return True
+        try:
+            has_img = page.evaluate("""() => {
+                const coverImg = document.querySelector('.article-cover-img-wrap img');
+                if (coverImg) return true;
+                const coverArea = document.querySelector('.article-cover');
+                if (coverArea) {
+                    const imgs = coverArea.querySelectorAll('img');
+                    for (const img of imgs) {
+                        const rect = img.getBoundingClientRect();
+                        if (rect.width > 10 && rect.height > 10) return true;
+                    }
+                }
+                return false;
+            }""")
+            result = bool(has_img)
+            if result:
+                self._save_cover_verification_screenshot(page)
+            return result
+        except Exception:
+            return False
 
-        while datetime.now().timestamp() < deadline:
-            panel_closed = self._is_cover_upload_panel_hidden(page)
-            cover_applied = self._is_cover_applied(page)
-            if cover_applied:
-                break
-            if panel_closed:
-                page.wait_for_timeout(400)
+    def _save_cover_verification_screenshot(self, page) -> None:
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            screenshot_dir = self.settings.output_dir / "cover_verification"
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
+            screenshot_path = screenshot_dir / f"cover_applied_{timestamp}.png"
+            page.screenshot(path=str(screenshot_path), full_page=False)
+            self.logger.info("Cover verification screenshot saved: %s", screenshot_path)
+        except Exception as exc:
+            self.logger.debug("Failed to save cover verification screenshot: %s", exc)
+
+    def _verify_toutiao_publish_success(self, page, title: str, notes: list[str]) -> bool:
+        try:
+            content_mgmt_url = "https://mp.toutiao.com/profile_v4/graphic/publish"
+            page.goto(content_mgmt_url, wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_timeout(3000)
+
+            title_snippet = title[:20] if len(title) > 20 else title
+            found = page.evaluate("""(titleSnippet) => {
+                const containers = document.querySelectorAll(
+                    '[class*="article-item"], [class*="content-item"], ' +
+                    '[class*="article-list"] a, [class*="pgc-item"], ' +
+                    '.article-card, .content-card'
+                );
+                for (const el of containers) {
+                    const text = (el.textContent || '').trim();
+                    if (text.includes(titleSnippet)) return true;
+                }
+                return false;
+            }""", title_snippet)
+
+            if found:
+                notes.append("Publish verified: article found in content management list.")
+                self.logger.info("Toutiao publish verified: article '%s' found in content management.", title_snippet)
+                return True
             else:
-                self._try_close_cover_upload_panel(page, notes)
-                page.wait_for_timeout(800)
-
-        if not cover_applied:
-            debug_dir = self._capture_debug_artifacts(page)
-            raise RuntimeError(
-                "Cover image was uploaded but never appeared in the article cover area. "
-                f"Debug files saved to: {debug_dir}"
-            )
-
-        if not panel_closed:
-            self._try_close_cover_upload_panel(page, notes)
-            page.wait_for_timeout(500)
-
-        notes.append(f"Applied cover image: {cover_path.name}")
+                notes.append("Publish verification: article not found in content list. May need manual check.")
+                self.logger.warning("Toutiao publish verification: article '%s' not found in content management list.", title_snippet)
+                try:
+                    verify_dir = self.settings.output_dir / "publish_verification"
+                    verify_dir.mkdir(parents=True, exist_ok=True)
+                    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    page.screenshot(path=str(verify_dir / f"verify_fail_{ts}.png"), full_page=False)
+                except Exception:
+                    pass
+                return False
+        except Exception as exc:
+            notes.append(f"Publish verification skipped (navigation failed): {exc}")
+            self.logger.warning("Toutiao publish verification failed: %s", exc)
+            return False
 
     def _clear_existing_cover(self, page, notes: list[str]) -> None:
         if not self._is_cover_applied(page):
@@ -2483,18 +2910,134 @@ class PublishService:
 
     def _ensure_no_cover_mode(self, page, notes: list[str]) -> None:
         self._dismiss_ai_assistant_drawer(page, notes)
-        changed = self._ensure_radio_state(
-            page,
-            [
-                ".article-cover-radio-group label.byte-radio:has(input[value='1'])",
-                "label.byte-radio:has-text('无封面')",
-                "label.byte-radio:has-text('无图')",
-            ],
-        )
-        if changed:
-            notes.append("Switched publish cover mode to no-cover.")
-        else:
-            notes.append("No-cover mode was already active or selector was not changeable.")
+
+        no_cover_selectors = [
+            ".article-cover-radio-group label.byte-radio:has(input[value='1'])",
+            "label.byte-radio:has-text('无封面')",
+            "label.byte-radio:has-text('无图')",
+            ".article-cover-radio-group label:last-child",
+        ]
+        for selector in no_cover_selectors:
+            try:
+                locator = page.locator(selector).first
+                if locator.is_visible(timeout=2000):
+                    locator.click(timeout=2000)
+                    page.wait_for_timeout(500)
+                    cover_type = page.evaluate("""() => {
+                        const radios = document.querySelectorAll('.article-cover-radio-group input[type="radio"]');
+                        for (const input of radios) {
+                            if (input.checked) return input.value;
+                        }
+                        return null;
+                    }""")
+                    if cover_type == "1":
+                        notes.append(f"Switched to no-cover mode via click on: {selector}")
+                        return
+            except Exception:
+                continue
+
+        try:
+            js_result = page.evaluate("""() => {
+                const radios = document.querySelectorAll('.article-cover-radio-group input[type="radio"]');
+                let targetInput = null;
+                for (const input of radios) {
+                    if (input.value === '1') {
+                        targetInput = input;
+                        break;
+                    }
+                }
+                if (!targetInput) {
+                    for (const input of radios) {
+                        const label = input.closest('label');
+                        if (label && (label.textContent.includes('无封面') || label.textContent.includes('无图'))) {
+                            targetInput = input;
+                            break;
+                        }
+                    }
+                }
+                if (!targetInput && radios.length > 0) {
+                    targetInput = radios[radios.length - 1];
+                }
+                if (!targetInput) return 'no radio found';
+
+                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'checked'
+                ).set;
+                nativeInputValueSetter.call(targetInput, true);
+
+                for (const input of radios) {
+                    if (input !== targetInput) {
+                        nativeInputValueSetter.call(input, false);
+                    }
+                }
+
+                targetInput.dispatchEvent(new Event('change', { bubbles: true }));
+                targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+                targetInput.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+                const label = targetInput.closest('label');
+                if (label) {
+                    label.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                }
+
+                return 'set checked + events on value=' + targetInput.value;
+            }""")
+            notes.append(f"JS set no-cover radio: {js_result}")
+        except Exception as exc:
+            notes.append(f"JS set no-cover radio error: {exc}")
+
+        page.wait_for_timeout(800)
+
+        try:
+            cover_type = page.evaluate("""() => {
+                const radios = document.querySelectorAll('.article-cover-radio-group input[type="radio"]');
+                for (const input of radios) {
+                    if (input.checked) return input.value;
+                }
+                return null;
+            }""")
+            notes.append(f"Cover radio state after set: value={cover_type}")
+        except Exception:
+            notes.append("Could not verify cover radio state after set.")
+
+    def _install_save_mode_override(self, page, notes: list[str]) -> None:
+        try:
+            save_override_consumed = [False]
+            self._save_override_applied_at = [None]
+
+            def handle_route(route):
+                try:
+                    post_data = route.request.post_data
+                    if post_data:
+                        modified = False
+                        has_pgc_id = "pgc_id=" in post_data and "pgc_id=0" not in post_data
+                        if "save=0" in post_data and not save_override_consumed[0] and not has_pgc_id:
+                            post_data = post_data.replace("save=0", "save=1")
+                            save_override_consumed[0] = True
+                            self._save_override_applied_at[0] = datetime.now().isoformat(timespec="milliseconds")
+                            modified = True
+                        if "coverType%22%3A2" in post_data or '"coverType":2' in post_data:
+                            post_data = post_data.replace("coverType%22%3A2", "coverType%22%3A1")
+                            post_data = post_data.replace('"coverType":2', '"coverType":1')
+                            modified = True
+                        if modified:
+                            route.continue_(post_data=post_data)
+                            return
+                except Exception:
+                    pass
+                route.continue_()
+
+            page.route("**/mp/agw/article/publish**", handle_route)
+            notes.append("Installed save=1 + coverType=1 override route handler.")
+        except Exception as exc:
+            notes.append(f"Failed to install save mode override: {exc}")
+
+    def _disable_save_mode_override(self, page, notes: list[str]) -> None:
+        try:
+            page.unroute("**/mp/agw/article/publish**")
+            notes.append("Removed save=1 override route handler to prevent duplicate publishes.")
+        except Exception as exc:
+            notes.append(f"Failed to remove save mode override route (non-fatal): {exc}")
 
     def _ensure_single_cover_mode(self, page) -> None:
         self._ensure_radio_state(
@@ -2758,13 +3301,24 @@ class PublishService:
 
             request = response.request
             post_data = request.post_data or ""
+            save_mode = self._extract_save_mode(post_data)
+            override_ts = getattr(self, "_save_override_applied_at", [None])[0]
+            if save_mode == 0 and override_ts is not None and response.status == 200:
+                try:
+                    text = response.text()
+                    rj = json.loads(text) if text else {}
+                    if rj.get("err_no") == 0 and "pgc_id" in str(rj.get("data", {})):
+                        save_mode = 1
+                except Exception:
+                    pass
+
             payload: dict[str, Any] = {
                 "captured_at": datetime.now().isoformat(timespec="seconds"),
                 "url": response.url,
                 "method": request.method,
                 "status": response.status,
                 "post_data": post_data,
-                "save_mode": self._extract_save_mode(post_data),
+                "save_mode": save_mode,
             }
             try:
                 text = response.text()
@@ -2820,11 +3374,12 @@ class PublishService:
 
         page.on("response", handle_response)
 
-    def _wait_for_draft_save(self, page, publish_events: list[dict[str, Any]], notes: list[str]) -> bool:
+    def _wait_for_draft_save(self, page, publish_events: list[dict[str, Any]], notes: list[str], expect_save_mode_1: bool = False) -> bool:
         start_index = len(publish_events)
         timeout_ms = max(self.settings.publishing.wait_timeout_ms, 20000)
         deadline = datetime.now().timestamp() + (timeout_ms / 1000)
         last_footer_text = ""
+        override_disabled = False
 
         while datetime.now().timestamp() < deadline:
             successful_autosave = self._latest_publish_event(
@@ -2838,13 +3393,19 @@ class PublishService:
             footer_saved = self._draft_status_indicates_saved(footer_text)
 
             if successful_autosave is not None and not footer_saving:
+                if not override_disabled:
+                    self._disable_save_mode_override(page, notes)
+                    override_disabled = True
                 if footer_text:
                     notes.append(f"Draft autosave completed: {footer_text}")
                 else:
                     notes.append("Draft autosave completed and no footer status text remained visible.")
                 return True
 
-            if footer_saved:
+            if footer_saved and not expect_save_mode_1:
+                if not override_disabled:
+                    self._disable_save_mode_override(page, notes)
+                    override_disabled = True
                 notes.append(f"Draft footer reported saved state: {footer_text}")
                 return True
 
@@ -3308,16 +3869,29 @@ class PublishService:
     def _load_history(self) -> list[PublishRecord]:
         if not self.history_path.exists():
             return []
-        payload = json.loads(self.history_path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(self.history_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            self.logger.warning("publish_history.json 损坏或无法读取，将使用空历史记录。")
+            return []
         if not isinstance(payload, list):
             return []
         return [PublishRecord.from_dict(item) for item in payload if isinstance(item, dict)]
 
     def _save_history(self, records: list[PublishRecord]) -> None:
-        self.history_path.write_text(
-            json.dumps([asdict(item) for item in records], ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        content = json.dumps([asdict(item) for item in records], ensure_ascii=False, indent=2)
+        tmp_path = self.history_path.with_suffix(".tmp")
+        try:
+            tmp_path.write_text(content, encoding="utf-8")
+            os.replace(str(tmp_path), str(self.history_path))
+        except OSError:
+            # 原子替换失败时回退到直接写入
+            self.logger.warning("原子写入 publish_history 失败，回退到直接写入。")
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self.history_path.write_text(content, encoding="utf-8")
 
     def _was_topic_published(self, topic_title: str, topic_url: str) -> bool:
         normalized_title = self._normalize(topic_title)
@@ -3385,12 +3959,54 @@ class PublishService:
 
     def _click_immediate_publish_button(self, page, configured_selectors: list[str], notes: list[str]) -> bool:
         try:
-            semantic_button = page.get_by_role("button", name=re.compile(r"^(发布|立即发布)$")).first
-            if self._locator_is_visible(semantic_button) and self._click_button_candidate(semantic_button):
+            semantic_button = page.get_by_role("button", name=re.compile(r"(发布|立即发布|预览并发布)")).first
+            vis = self._locator_is_visible(semantic_button)
+            notes.append(f"Semantic button visible={vis}")
+            if vis and self._click_button_candidate(semantic_button):
                 notes.append("Clicked primary publish button via semantic role selector.")
                 return True
-        except Exception:
-            pass
+            if not vis:
+                notes.append("Semantic button not visible, trying scroll + mouse.click anyway.")
+                try:
+                    semantic_button.scroll_into_view_if_needed(timeout=2000)
+                    page.wait_for_timeout(500)
+                except Exception:
+                    pass
+                try:
+                    box = semantic_button.bounding_box(timeout=2000)
+                    if box:
+                        page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                        notes.append("Clicked primary publish button via semantic role + mouse.click.")
+                        return True
+                except Exception as exc2:
+                    notes.append(f"Semantic button mouse.click error: {exc2}")
+        except Exception as exc:
+            notes.append(f"Semantic button error: {exc}")
+
+        try:
+            text_button = page.locator("button:has-text('预览并发布')").first
+            vis = self._locator_is_visible(text_button)
+            notes.append(f"Text button '预览并发布' visible={vis}")
+            if vis and self._click_button_candidate(text_button):
+                notes.append("Clicked primary publish button via text selector '预览并发布'.")
+                return True
+            if not vis:
+                notes.append("Text button not visible, trying scroll + mouse.click anyway.")
+                try:
+                    text_button.scroll_into_view_if_needed(timeout=2000)
+                    page.wait_for_timeout(500)
+                except Exception:
+                    pass
+                try:
+                    box = text_button.bounding_box(timeout=2000)
+                    if box:
+                        page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                        notes.append("Clicked primary publish button via text selector + mouse.click.")
+                        return True
+                except Exception as exc2:
+                    notes.append(f"Text button mouse.click error: {exc2}")
+        except Exception as exc:
+            notes.append(f"Text button error: {exc}")
 
         preferred_selectors: list[str] = [
             ".publish-footer-content button.byte-btn-primary.publish-btn-last",
@@ -3414,11 +4030,11 @@ class PublishService:
                 count = min(locator.count(), 6)
             except Exception:
                 count = 0
+            if count > 0:
+                notes.append(f"Selector `{selector}` found {count} element(s)")
 
             for index in range(count):
                 candidate = locator.nth(index)
-                if not self._locator_is_visible(candidate):
-                    continue
                 button_text = self._read_button_text(candidate)
                 normalized_text = self._normalize_button_text(button_text)
                 if self._is_timed_publish_button_text(normalized_text):
@@ -3440,30 +4056,68 @@ class PublishService:
             footer_count = min(footer_locator.count(), 12)
         except Exception:
             footer_count = 0
-
+        notes.append(f"Footer scan found {footer_count} button(s)")
         for index in range(footer_count):
             candidate = footer_locator.nth(index)
-            if not self._locator_is_visible(candidate):
-                continue
+            is_vis = self._locator_is_visible(candidate)
             button_text = self._read_button_text(candidate)
             score = self._score_publish_button_candidate(candidate, button_text)
+            notes.append(f"Footer button[{index}] visible={is_vis} text=`{button_text}` score={score}")
+            if not is_vis and score <= 0:
+                continue
             if score > best_score:
                 best_candidate = candidate
                 best_text = button_text
                 best_score = score
 
-        if best_candidate is not None and best_score > 0 and self._click_button_candidate(best_candidate):
-            notes.append(
-                "Clicked primary publish button via footer scan"
-                + (f" with text `{best_text}`." if best_text else ".")
-            )
-            return True
+        if best_candidate is not None and best_score > 0:
+            try:
+                best_candidate.scroll_into_view_if_needed(timeout=2000)
+                page.wait_for_timeout(300)
+            except Exception:
+                pass
+            try:
+                best_candidate.click(timeout=2000)
+                notes.append(
+                    "Clicked primary publish button via footer scan"
+                    + (f" with text `{best_text}`." if best_text else ".")
+                )
+                return True
+            except Exception:
+                pass
+            try:
+                best_candidate.evaluate("el => el.click()", timeout=2000)
+                notes.append(
+                    "Clicked primary publish button via footer scan (JS)"
+                    + (f" with text `{best_text}`." if best_text else ".")
+                )
+                return True
+            except Exception as exc:
+                notes.append(f"Footer scan JS click failed: {exc}")
+
+        try:
+            js_result = page.evaluate("""() => {
+                const buttons = document.querySelectorAll('.publish-footer-content button, .publish-footer button');
+                for (const btn of buttons) {
+                    if (btn.textContent.includes('预览并发布') || btn.textContent.includes('发布')) {
+                        btn.click();
+                        return btn.textContent.trim();
+                    }
+                }
+                return null;
+            }""")
+            if js_result:
+                notes.append(f"Clicked publish button via JS DOM click (fallback): text=`{js_result}`")
+                return True
+        except Exception as exc:
+            notes.append(f"JS DOM click error: {exc}")
 
         return False
 
     def _locator_is_visible(self, locator) -> bool:
         try:
-            return locator.is_visible(timeout=500)
+            box = locator.bounding_box(timeout=500)
+            return box is not None and box["width"] > 0 and box["height"] > 0
         except Exception:
             return False
 
@@ -3525,8 +4179,13 @@ class PublishService:
             pass
 
         try:
-            locator.click(force=True, timeout=1500)
-            return True
+            box = locator.bounding_box(timeout=1000)
+            if box:
+                page = locator.page
+                cx = box["x"] + box["width"] / 2
+                cy = box["y"] + box["height"] / 2
+                page.mouse.click(cx, cy)
+                return True
         except Exception:
             pass
 
@@ -3542,7 +4201,13 @@ class PublishService:
             )
             return True
         except Exception:
-            return False
+            pass
+
+        try:
+            locator.click(force=True, timeout=1500)
+            return True
+        except Exception:
+            pass
 
     def _complete_publish_confirmation_flow(
         self,
@@ -3556,6 +4221,19 @@ class PublishService:
         deadline = datetime.now().timestamp() + 20
 
         while datetime.now().timestamp() < deadline:
+            direct_submit = self._latest_submit_event(
+                publish_events,
+                start_index=fallback_start_index,
+            )
+            if direct_submit is not None and self._publish_response_is_success(
+                direct_submit.get("response_json")
+            ):
+                notes.append(
+                    "Detected a successful publish submission directly (save=1 mode). "
+                    "Skipping confirmation modal flow."
+                )
+                return fallback_start_index
+
             self._confirm_publish_modal(page, notes)
 
             preview_event = self._latest_preview_event(
@@ -3761,6 +4439,7 @@ class PublishService:
         publish_events: list[dict[str, Any]],
         notes: list[str],
         start_index: int = 0,
+        expect_save_mode_1: bool = False,
     ) -> bool:
         timeout_ms = max(self.settings.publishing.wait_timeout_ms, 18000)
         deadline = datetime.now().timestamp() + (timeout_ms / 1000)
@@ -3796,6 +4475,7 @@ class PublishService:
                     last_footer_text = footer_text
                     page.wait_for_timeout(600)
                     continue
+                self._disable_save_mode_override(page, notes)
                 if footer_text:
                     notes.append(f"Draft autosave completed: {footer_text}")
                     return True
@@ -3803,12 +4483,16 @@ class PublishService:
                     notes.append("Draft autosave completed and the publish form stayed idle.")
                     return True
 
-            if footer_saved:
+            if footer_saved and not expect_save_mode_1:
                 notes.append(f"Draft footer reported saved state: {footer_text}")
                 return True
 
             if latest_autosave is not None and not self._publish_response_is_success(latest_autosave.get("response_json")):
                 code, message = self._extract_publish_error(latest_autosave.get("response_json"))
+                if code in (4029, 4017):
+                    page.wait_for_timeout(600)
+                    last_footer_text = footer_text
+                    continue
                 debug_dir = self._capture_debug_artifacts(
                     page,
                     extra_payload={

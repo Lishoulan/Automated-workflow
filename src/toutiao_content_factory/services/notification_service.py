@@ -2,10 +2,14 @@
 import json
 import logging
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Any
 from pathlib import Path
 
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 
 logger = logging.getLogger(__name__)
@@ -27,6 +31,9 @@ class BarkNotifier(NotificationChannel):
         self.bark_url = bark_url.rstrip("/")
 
     def send(self, title: str, message: str, extra: dict[str, Any] | None = None) -> bool:
+        if httpx is None:
+            logger.warning("httpx未安装，跳过Bark通知")
+            return False
         try:
             url = f"{self.bark_url}/{title}/{message}"
             if extra:
@@ -45,6 +52,9 @@ class FeishuWebhookNotifier(NotificationChannel):
         self.webhook_url = webhook_url
 
     def send(self, title: str, message: str, extra: dict[str, Any] | None = None) -> bool:
+        if httpx is None:
+            logger.warning("httpx未安装，跳过飞书通知")
+            return False
         try:
             payload = {
                 "msg_type": "text",
@@ -65,6 +75,9 @@ class DingtalkWebhookNotifier(NotificationChannel):
         self.webhook_url = webhook_url
 
     def send(self, title: str, message: str, extra: dict[str, Any] | None = None) -> bool:
+        if httpx is None:
+            logger.warning("httpx未安装，跳过钉钉通知")
+            return False
         try:
             payload = {
                 "msgtype": "text",
@@ -85,6 +98,9 @@ class WeComWebhookNotifier(NotificationChannel):
         self.webhook_url = webhook_url
 
     def send(self, title: str, message: str, extra: dict[str, Any] | None = None) -> bool:
+        if httpx is None:
+            logger.warning("httpx未安装，跳过企业微信通知")
+            return False
         try:
             payload = {
                 "msgtype": "text",
@@ -101,8 +117,11 @@ class WeComWebhookNotifier(NotificationChannel):
 class NotificationService:
     """统一的通知服务"""
 
-    def __init__(self, config: dict[str, Any]):
+    def __init__(self, config: dict[str, Any], fallback_log_dir: str | None = None):
         self.channels: list[NotificationChannel] = []
+        self.fallback_log_path: Path | None = None
+        if fallback_log_dir:
+            self.fallback_log_path = Path(fallback_log_dir) / "notification_log.jsonl"
 
         if bark_url := config.get("BARK_URL"):
             self.channels.append(BarkNotifier(bark_url))
@@ -115,6 +134,17 @@ class NotificationService:
 
         if wecom_webhook := config.get("WECOM_WEBHOOK_URL"):
             self.channels.append(WeComWebhookNotifier(wecom_webhook))
+
+        if not self.channels:
+            logger.debug(
+                "No notification channels configured. Set at least one of: "
+                "BARK_URL, FEISHU_WEBHOOK_URL, DINGTALK_WEBHOOK_URL, WECOM_WEBHOOK_URL. "
+                "All notifications will be silently dropped."
+            )
+
+    @property
+    def is_configured(self) -> bool:
+        return len(self.channels) > 0
 
     def notify_success(self, platform: str, article_title: str, run_time: str) -> None:
         """发送成功通知"""
@@ -148,8 +178,23 @@ class NotificationService:
 
     def _broadcast(self, title: str, message: str) -> None:
         """向所有渠道广播"""
+        sent = False
         for channel in self.channels:
             try:
-                channel.send(title, message)
+                if channel.send(title, message):
+                    sent = True
             except Exception as e:
                 logger.warning(f"通知发送失败: {e}")
+        # 兜底：写入本地日志
+        if not sent and self.fallback_log_path:
+            try:
+                self.fallback_log_path.parent.mkdir(parents=True, exist_ok=True)
+                entry = {
+                    "timestamp": datetime.now().isoformat(),
+                    "title": title,
+                    "message": message,
+                }
+                with open(self.fallback_log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            except Exception as e:
+                logger.debug(f"通知日志写入失败: {e}")

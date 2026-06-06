@@ -1,59 +1,30 @@
 from __future__ import annotations
 
+import logging
+import random
 import re
 from pathlib import Path
 
 import yaml
 
 from toutiao_content_factory.agents.base import BaseAgent
-from toutiao_content_factory.config import StyleProfile
+from toutiao_content_factory.config import AppSettings, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, TrendReport
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.prompt_repository import PromptRepository
+from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 
 class WriterAgent(BaseAgent):
     agent_name = "WriterAgent"
     REQUIRED_HEADING_COUNT = (3, 4)
 
-    COMPANY_SUFFIX_RE = re.compile(
-        r"[\u4e00-\u9fffA-Za-z0-9]{2,12}(?:科技|能源|汽车|股份|集团|电气|智能|机器人|半导体|电子|时代|精工|制造|材料|电池|重工|工业|光伏|储能|动力|机电|控股|装备|技术)"
-    )
-    INVALID_COMPANY_MARKERS = {
-        "这家公司",
-        "某公司",
-        "相关公司",
-        "龙头公司",
-        "头部企业",
-        "企业",
-        "公司",
-        "厂商",
-        "供应商",
-        "项目方",
-        "客户",
-        "车企",
-    }
-    INVALID_COMPANY_FRAGMENTS = {
-        "更像",
-        "再落到",
-        "再拆",
-        "资本",
-        "开始",
-        "真正",
-        "故事",
-        "机会",
-        "验证",
-        "订单",
-        "交付",
-        "利润",
-        "估值",
-        "背后",
-    }
     INVALID_ANGLE_FRAGMENTS = (
         "这不只是",
         "更像",
         "提前卡位",
         "估值故事",
-        "订单能否接上",
+        "订单能不能接上",
         "融资新闻",
         "宏观",
         "资金向",
@@ -61,17 +32,8 @@ class WriterAgent(BaseAgent):
         "出口数据翻倍",
         "验证节点",
     )
-    ORDER_ANCHOR_TOKENS = ("订单", "中标", "客户", "定点", "签约", "项目", "交付", "量产", "验收", "采购")
-    SCENE_TOKENS = ("机场", "电厂", "电站", "港口", "车间", "仓库", "园区", "工厂", "基地", "物流中心", "示范项目", "生产线")
-    CROSS_BORDER_TOKENS = ("中国", "日本", "美国", "欧洲", "德国", "东京", "海外", "出海", "国际", "日韩")
-    BENEFIT_SHIFT_TOKENS = ("利润", "毛利", "份额", "议价", "红利", "系统集成", "零部件", "整机", "运维", "服务", "回款")
-    SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?])")
 
     MODE_NOISE_TOKENS = ("产业链", "订单", "交付", "毛利", "利润", "兑现", "融资", "客户验证", "科技制造", "项目落地")
-
-    MODE_NOISE_TOKENS = ("产业链", "订单", "交付", "毛利", "利润", "兑现", "融资", "客户验证", "科技制造", "项目落地")
-    SPORTS_MODE_TOKENS = ("体育", "足球", "篮球", "网球", "world cup", "football", "tennis", "french open", "grand slam")
-    INTERNATIONAL_MODE_TOKENS = ("国际", "美国", "欧洲", "关税", "外交", "地缘", "国际热点", "white house", "tariff")
 
     def run(
         self,
@@ -106,6 +68,7 @@ class WriterAgent(BaseAgent):
             trend_json=self.json_text(trend_report.__dict__),
             data_json=self.json_text(data_report.__dict__),
             article_word_target=str(data_report.word_target or self.settings.article_word_target),
+            min_word_target=str(max(1500, int(data_report.word_target or self.settings.article_word_target) // 2)),
             content_format_label=data_report.content_format_label or "深度分析",
             format_brief=data_report.format_brief or "写成完整产业分析稿。",
             paragraph_instruction=data_report.paragraph_instruction or "5到7段，每段2到3句。",
@@ -432,9 +395,8 @@ class WriterAgent(BaseAgent):
             f"{scene_anchor or number or default}背后的逻辑值得我们探究。",
             f"{scene_anchor or number or default}正在改变行业的走向。",
             f"{scene_anchor or number or default}为我们提供了新的视角。",
-            f"{scene_anchor or number or default}背后的趋势值得关注。",
+            f"{scene_anchor or number or default}的利润会如何变化？",
         ]
-        import random
         return random.choice(options)
 
     def _build_data_paragraph(self, primary: str, core_data: list[str], evidence: str) -> str:
@@ -623,7 +585,7 @@ class WriterAgent(BaseAgent):
                 cleaned = "\n\n".join(rebuilt)
         else:
             cleaned = clean_article_text(cleaned)
-        paragraphs = [self._normalize_paragraph_text(block) for block in cleaned.split("\n\n") if block.strip()]
+        paragraphs = [self._normalize_paragraph(block) for block in cleaned.split("\n\n") if block.strip()]
         paragraphs = [block for block in paragraphs if block]
 
         if not paragraphs:
@@ -655,7 +617,7 @@ class WriterAgent(BaseAgent):
                 )
             else:
                 paragraphs = [
-                    self._normalize_paragraph_text(
+                    self._normalize_paragraph(
                         " ".join(
                             self._build_opening_lines(
                                 trend_report,
@@ -676,7 +638,9 @@ class WriterAgent(BaseAgent):
                 insert_at = 3 if len(paragraphs) >= 3 else len(paragraphs)
                 paragraphs.insert(insert_at, anchor)
 
-        paragraphs = self._rebalance_paragraphs(paragraphs, data_report.content_format or "deep_analysis")
+        content_format = data_report.content_format or "deep_analysis"
+        min_paras, max_paras = self._paragraph_bounds(content_format)
+        paragraphs = self._rebalance_paragraphs(paragraphs, min_paragraphs=min_paras, max_paragraphs=max_paras, max_block_length=165)
         if content_mode == "generic":
             paragraphs = self._apply_self_benchmark_structure(
                 paragraphs,
@@ -687,7 +651,9 @@ class WriterAgent(BaseAgent):
             paragraphs = self._ensure_structured_headings(paragraphs, trend_report, data_report)
         paragraphs = self._ensure_closing_question(paragraphs, comment_prompt or self._default_comment_prompt(data_report))
         _min_paragraphs, max_paragraphs = self._paragraph_bounds(data_report.content_format or "deep_analysis")
-        article_text = "\n\n".join(paragraphs[:max_paragraphs]).strip()
+        paragraphs = paragraphs[:max_paragraphs]
+        paragraphs = self._ensure_min_char_count(paragraphs, data_report)
+        article_text = "\n\n".join(paragraphs).strip()
         if content_mode == "sports":
             article_text = self._localize_sports_text(article_text)
             article_text = re.sub(r"\bThe joy and despair of\b", "", article_text, flags=re.I)
@@ -712,8 +678,24 @@ class WriterAgent(BaseAgent):
             " 开头前两句必须出现悬念、反差数据或反直觉判断中的至少一种。"
             " 正文必须包含 3 到 4 个以 ### 开头的小标题。"
             " 小标题必须有对仗感或冲突感。"
-            " 结尾必须给出一个具体的开放式互动问题，不能只写“你怎么看”。"
-            " 禁止使用“今天我们来探讨”“不可否认”“值得注意的是”“综上所述”等套话。"
+            "每个段落至少120字，全文正文不少于1500字。"
+            " 你必须进行深度长文拓展，字数严格不少于1500字。"
+            " 请通过增加[具体案例分析]、[产业链上下游影响]、[未来趋势预测]三个维度来扩充字数。"
+            " 如果正文不足1500字，必须补充更多产业链拆解、数据锚定或风险讨论内容，直到达到字数要求。"
+            " 禁止重复使用同一组数据或同一句话。每个数据点（如收入、出货量、增速）在全文中最多出现一次，第二次提及必须用不同角度或新信息包装，不能原样复述。"
+            " 禁止在不同段落中重复相同的观点或措辞。如果需要回扣前文，必须用新论据或新视角推进，而非简单重述。"
+            ' 结尾必须给出一个具体的开放式互动问题，不能只写“你怎么看”。'
+            ' 禁止使用“今天我们来探讨”“不可否认”“值得注意的是”“综上所述”等套话。' ' 禁止使用“不难发现”“众所周知”“由此可见”“显而易见”“不言而喻”“毋庸置疑”等模板化过渡词。' ' 段落之间用具体事实或数据衔接，不要用空洞的转折词。'
+            ' 禁止在正文中写入来源标记，如"对标账号高热内容""对标热点""36氪头条号""benchmark_hotspot"等。'
+            ' 引用数据时只需写“公开报道”或“公开材料”，不要写具体媒体名称或账号名称作为来源标签。'
+            " 【去AI味硬规则】每段必须包含至少一个具体场景锚点（如：某工厂产线、某园区并网现场、某公司发布会），不能用抽象描述代替。"
+            " 禁止连续3句以上使用相同句式结构，必须打散句式。"
+            " 禁止使用首先其次最后或一方面另一方面等模板化列举结构，改用具体事实自然过渡。"
+            " 每段至少插入一个短句（10字以内）制造节奏顿挫感。"
+            " 禁止在段首使用在某背景下、随着某的发展、从某来看等AI高频开头模式。"
+            " 【段落开头多样性】每个段落的开头前8个字必须各不相同。禁止两个以上段落以相同词语或句式开头。段落开头必须多样化：有的用数据开头，有的用公司名开头，有的用短句判断开头，有的用具体事件开头。"
+            " 【禁止营销腔】禁止使用值得关注、需要强调、关键在于、究其原因、放眼未来、展望未来、未来可期、前景广阔、大有可为、方兴未艾、如火如荼、蓬勃发展等AI高频营销词。用具体事实和数字替代空洞评价。"
+            " 【感叹号控制】全文感叹号不超过2个。用句号和问号替代感叹号，保持冷静克制的分析语调。"
             f" 当前风格语气：{style.tone}"
         )
 
@@ -843,7 +825,6 @@ class WriterAgent(BaseAgent):
             "如果是你，会如何调整接下来的策略？",
             "你觉得最值得关注的是哪个方面？",
         ]
-        import random
         return random.choice(options)
 
     def _varied_international_comment_prompt(self) -> str:
@@ -854,7 +835,6 @@ class WriterAgent(BaseAgent):
             "如果是你，会关注哪些变化？",
             "你觉得最关键的变量是什么？",
         ]
-        import random
         return random.choice(options)
 
     def _varied_data_comment_prompt(self, primary: str) -> str:
@@ -865,7 +845,6 @@ class WriterAgent(BaseAgent):
             f"你更看好{primary}的哪个发展方向？",
             f"{primary}接下来需要关注哪些指标？",
         ]
-        import random
         return random.choice(options)
 
     def _varied_project_comment_prompt(self, primary: str) -> str:
@@ -876,7 +855,6 @@ class WriterAgent(BaseAgent):
             f"你更关注{primary}的哪个环节？",
             f"{primary}里哪些项目值得期待？",
         ]
-        import random
         return random.choice(options)
 
     def _varied_quick_comment_prompt(self, primary: str) -> str:
@@ -887,7 +865,6 @@ class WriterAgent(BaseAgent):
             f"你觉得{primary}的毛利会有改善吗？",
             f"{primary}接下来会如何发展？",
         ]
-        import random
         return random.choice(options)
 
     def _varied_default_comment_prompt(self, primary: str) -> str:
@@ -901,7 +878,6 @@ class WriterAgent(BaseAgent):
             f"{primary}的利润会如何变化？",
             f"你觉得{primary}的核心竞争力在哪里？",
         ]
-        import random
         return random.choice(options)
 
     def _finalize_opening_lines(
@@ -1038,31 +1014,7 @@ class WriterAgent(BaseAgent):
         primary = self._primary_keyword(data_report)
         return f"{primary}真正要看的，是订单、交付与毛利谁先兑现"
 
-    def _content_mode(self, data_report: DataReport | None) -> str:
-        if data_report is None:
-            return "generic"
-        combined = " ".join(
-            str(item)
-            for item in (
-                data_report.focus_industry,
-                data_report.topic_title,
-                data_report.selection_reason,
-                data_report.writing_brief,
-                data_report.format_brief,
-                " ".join(data_report.focus_keywords[:4]),
-                " ".join(data_report.supply_chain_keywords[:4]),
-            )
-            if str(item).strip()
-        ).lower()
-        if any(token in combined for token in self.SPORTS_MODE_TOKENS):
-            return "sports"
-        if any(token in combined for token in self.INTERNATIONAL_MODE_TOKENS):
-            return "international"
-        if any(token in combined for token in ("体育", "足球", "篮球", "网球", "world cup", "football", "tennis", "french open", "grand slam")):
-            return "sports"
-        if any(token in combined for token in ("国际", "美国", "欧洲", "关税", "外交", "地缘", "国际热点", "white house", "tariff")):
-            return "international"
-        return "generic"
+
 
     def _sports_summary_bits(self, data_report: DataReport) -> str:
         items = self._mode_clean_items(
@@ -1403,63 +1355,144 @@ class WriterAgent(BaseAgent):
         order_hits = sum(1 for token in self.ORDER_ANCHOR_TOKENS if token in article)
         return company_hits >= 1 or order_hits >= 3
 
-    def _rebalance_paragraphs(self, paragraphs: list[str], content_format: str = "deep_analysis") -> list[str]:
-        blocks = [block.strip() for block in paragraphs if block.strip()]
-        expanded: list[str] = []
-        for block in blocks:
-            if len(block) > 165:
-                expanded.extend(self._split_long_paragraph(block))
+
+
+    _short_article_warned = False
+
+    def _ensure_min_char_count(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 0) -> list[str]:
+        # 动态获取最小字数：优先 data_report.word_target，其次 settings.article_word_target，最后 1500
+        if min_chars <= 0:
+            word_target = getattr(data_report, "word_target", 0) or 0
+            if word_target > 0:
+                min_chars = max(1500, int(word_target * 0.8))
             else:
-                expanded.append(block)
-
-        min_paragraphs, max_paragraphs = self._paragraph_bounds(content_format)
-
-        while len(expanded) < min_paragraphs:
-            longest_index = max(range(len(expanded)), key=lambda idx: len(expanded[idx]))
-            split_blocks = self._split_long_paragraph(expanded[longest_index], force=True)
-            if len(split_blocks) <= 1:
+                min_chars = max(1500, int(getattr(self.settings, "article_word_target", 2000) * 0.8))
+        # 快讯点评体裁允许更短的文章
+        content_format = getattr(data_report, "content_format", "") or ""
+        if content_format in ("quick_commentary", "short_comment", "news_flash") and min_chars > 900:
+            min_chars = 900
+        logger = logging.getLogger(__name__)
+        current_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in paragraphs)
+        if current_chars >= min_chars:
+            return paragraphs
+        if not WriterAgent._short_article_warned:
+            logger.warning(
+                "Article has only %d chars (minimum %d). Appending supplementary paragraphs from data_report.",
+                current_chars,
+                min_chars,
+            )
+            WriterAgent._short_article_warned = True
+        result = list(paragraphs)
+        supplements = self._build_supplementary_paragraphs(data_report, existing_paragraphs=result)
+        for sup in supplements:
+            result.insert(-1, sup)
+            total = sum(len(p.replace("\n", "").replace(" ", "")) for p in result)
+            if total >= min_chars:
                 break
-            expanded = expanded[:longest_index] + split_blocks + expanded[longest_index + 1 :]
+        final_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in result)
+        if final_chars < min_chars:
+            logger.info("Template supplements brought article to %d chars, still below %d. Attempting LLM expansion.", final_chars, min_chars)
+            result = self._expand_article_via_llm(result, data_report, min_chars)
+            final_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in result)
+        if final_chars < min_chars:
+            logger.warning(
+                "After expansion article still has only %d chars (minimum %d). "
+                "Model-generated content is too short; consider using a larger model or disabling fast_mode.",
+                final_chars,
+                min_chars,
+            )
+        return result
 
-        while len(expanded) > max_paragraphs:
-            shortest_index = min(range(1, len(expanded)), key=lambda idx: len(expanded[idx]))
-            expanded[shortest_index - 1] = f"{expanded[shortest_index - 1]} {expanded[shortest_index]}".strip()
-            del expanded[shortest_index]
+    def _expand_article_via_llm(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 1200) -> list[str]:
+        logger = logging.getLogger(__name__)
+        current_text = "\n\n".join(paragraphs)
+        current_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in paragraphs)
+        deficit = min_chars - current_chars
+        if deficit <= 0:
+            return paragraphs
 
-        return [block.strip() for block in expanded if block.strip()]
+        data_summary_parts = []
+        if data_report.watch_metrics:
+            data_summary_parts.append("跟踪变量：" + "、".join(str(m) for m in data_report.watch_metrics[:5]))
+        if data_report.risk_flags:
+            data_summary_parts.append("风险因素：" + "、".join(str(r) for r in data_report.risk_flags[:3]))
+        if data_report.growth_numbers:
+            data_summary_parts.append("关键数字：" + "、".join(str(g) for g in data_report.growth_numbers[:3]))
+        data_summary = "\n".join(data_summary_parts) if data_summary_parts else "无额外数据"
 
-    def _paragraph_bounds(self, content_format: str) -> tuple[int, int]:
-        if content_format == "quick_commentary":
-            return 4, 5
-        if content_format == "data_recap":
-            return 4, 5
-        if content_format == "project_breakdown":
-            return 5, 6
-        return 5, 7
+        system_prompt = (
+            "你是文章扩展助手。你必须在现有文章基础上，补充三个维度的深度内容："
+            "1. [具体案例分析]：补充1-2个具体公司或项目的案例，说明产业链中某环节的实际表现，每段不少于150字。"
+            "2. [产业链上下游影响]：分析上游供应和下游需求对当前主题的影响，每段不少于150字。"
+            "3. [未来趋势预测]：基于现有数据给出1-2个可验证的趋势判断，每段不少于150字。"
+            "禁止使用'值得注意的是''不可否认''综上所述'等套话。"
+            "禁止重复现有文章中已经出现过的数据、观点或措辞。补充内容必须提供新信息或新视角。"
+            "你必须以JSON格式输出，格式为：{\"paragraphs\": [\"段落1\", \"段落2\", ...]}"
+        )
+        user_prompt = (
+            f"当前文章已有{current_chars}字，需要再补充约{deficit}字。\n\n"
+            f"现有文章内容：\n{current_text[:2000]}\n\n"
+            f"可用数据：\n{data_summary}\n\n"
+            f"请输出JSON格式的补充段落，每个段落不少于150字。"
+        )
 
-    def _split_long_paragraph(self, paragraph: str, force: bool = False) -> list[str]:
-        sentences = [item.strip() for item in self.SENTENCE_SPLIT_RE.split(paragraph) if item.strip()]
-        if len(sentences) <= 1 and not force:
-            return [paragraph]
-        if len(sentences) <= 1 and force:
-            parts = [item.strip() for item in re.split(r"(?<=[，；;])", paragraph) if item.strip()]
-            return parts if len(parts) > 1 else [paragraph]
-
-        result: list[str] = []
-        current = ""
-        current_count = 0
-        for sentence in sentences:
-            candidate = f"{current}{sentence}" if current else sentence
-            if current and (len(candidate) > 118 or current_count >= 2):
-                result.append(current.strip())
-                current = sentence
-                current_count = 1
+        try:
+            result_data = self.openai_service.create_json_completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+            # 从 JSON 中提取段落列表
+            expansion_paragraphs = result_data.get("paragraphs", [])
+            if isinstance(expansion_paragraphs, list) and expansion_paragraphs:
+                expansion_text = "\n\n".join(str(p) for p in expansion_paragraphs if isinstance(p, str) and p.strip())
             else:
-                current = candidate
-                current_count += 1
-        if current.strip():
-            result.append(current.strip())
-        return result or [paragraph]
+                # 兼容：如果 JSON 结构不是预期的，尝试从 content/expansion 字段提取
+                expansion_text = str(result_data.get("content", "") or result_data.get("expansion", "") or "").strip()
+            if not expansion_text:
+                raw = str(result_data).strip()
+                if len(raw) > 50:
+                    expansion_text = raw
+            if expansion_text:
+                new_paragraphs = [p.strip() for p in expansion_text.split("\n\n") if p.strip()]
+                result = list(paragraphs)
+                insert_pos = max(1, len(result) - 1)
+                for i, para in enumerate(new_paragraphs):
+                    result.insert(insert_pos + i, para)
+                new_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in result)
+                logger.info("LLM expansion added %d paragraphs, article now %d chars (was %d).", len(new_paragraphs), new_chars, current_chars)
+                return result
+        except Exception as exc:
+            logger.warning("LLM expansion failed: %s", exc)
+
+        return paragraphs
+
+    def _build_supplementary_paragraphs(self, data_report: "DataReport", existing_paragraphs: list[str] | None = None) -> list[str]:
+        existing_text = "\n".join(existing_paragraphs) if existing_paragraphs else ""
+        paragraphs = []
+        if data_report.watch_metrics:
+            items = data_report.watch_metrics[:5]
+            if items:
+                text = "后续需要持续跟踪的变量包括：" + "、".join(str(m) for m in items) + "。这些指标的变化将直接影响产业链各环节的盈利节奏和估值切换时机。"
+                # 跳过与已有段落高度重复的内容
+                if text[:30] not in existing_text:
+                    paragraphs.append(text)
+        if data_report.risk_flags:
+            items = data_report.risk_flags[:3]
+            if items:
+                text = "风险方面，" + "；".join(str(r) for r in items) + "。这些因素都可能影响量产兑现节奏，需要持续观察。"
+                if text[:30] not in existing_text:
+                    paragraphs.append(text)
+        if data_report.evidence_notes:
+            items = data_report.evidence_notes[:3]
+            if items:
+                text = "从已有证据看，" + "；".join(str(e) for e in items) + "。数据口径以公开材料为准，后续需关注最新财报更新。"
+                if text[:30] not in existing_text:
+                    paragraphs.append(text)
+        if data_report.growth_numbers and len(data_report.growth_numbers) >= 2:
+            text = f"关键数字锚点：{data_report.growth_numbers[0]}和{data_report.growth_numbers[1]}是判断赛道兑现进度的核心参照。后续如果这两个指标出现明显变化，产业链利润分配逻辑可能需要重新评估。"
+            if text[:30] not in existing_text:
+                paragraphs.append(text)
+        return paragraphs
 
     def _ensure_closing_question(self, paragraphs: list[str], comment_prompt: str) -> list[str]:
         if not paragraphs:
@@ -1478,13 +1511,6 @@ class WriterAgent(BaseAgent):
             return paragraphs
         paragraphs.append(question)
         return paragraphs
-
-    def _normalize_paragraph_text(self, text: str) -> str:
-        normalized = self.strip_prompt_leakage(text).strip()
-        normalized = normalized.replace("**", "").replace("__", "")
-        normalized = re.sub(r"^#{1,6}\s*", "", normalized)
-        normalized = re.sub(r"\s+", " ", normalized).strip()
-        return normalized
 
     def _mode_clean_items(self, items: list[str], limit: int, blocked: tuple[str, ...]) -> list[str]:
         result: list[str] = []

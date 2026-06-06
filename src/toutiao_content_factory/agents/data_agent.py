@@ -1,20 +1,28 @@
 from __future__ import annotations
 
 import re
+import logging
 
 from toutiao_content_factory.agents.base import BaseAgent
-from toutiao_content_factory.config import StyleProfile
+from toutiao_content_factory.config import AppSettings, StyleProfile
 from toutiao_content_factory.models import DataReport, ExtractionResult, TrendReport
+from toutiao_content_factory.services.prompt_repository import PromptRepository
+from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 
 class DataAgent(BaseAgent):
     agent_name = "DataAgent"
+    PROMPT_INJECTION_PATTERNS = (
+        re.compile(r"请忽略以上.{0,10}指令", re.IGNORECASE),
+        re.compile(r"忽略之前的.{0,10}(指令|要求|规则)", re.IGNORECASE),
+        re.compile(r"你现在是", re.IGNORECASE),
+        re.compile(r"从现在起", re.IGNORECASE),
+        re.compile(r"SYSTEM\s*:", re.IGNORECASE),
+        re.compile(r"IMPORTANT\s*:", re.IGNORECASE),
+        re.compile(r"\[SYSTEM\]", re.IGNORECASE),
+        re.compile(r"忽略以上所有", re.IGNORECASE),
+    )
     MODE_NOISE_TOKENS = ("产业链", "订单", "交付", "毛利", "利润", "兑现", "融资", "客户验证", "科技制造", "项目落地")
-    SPORTS_TOKENS = ("体育", "足球", "篮球", "网球", "世界杯", "奥运", "英超", "西甲", "法网", "world cup", "football", "tennis", "french open", "grand slam")
-    INTERNATIONAL_TOKENS = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金", "仲裁", "白宫")
-    MODE_NOISE_TOKENS = ("产业链", "订单", "交付", "毛利", "利润", "兑现", "融资", "客户验证", "科技制造", "项目落地")
-    SPORTS_TOKENS = ("体育", "足球", "篮球", "网球", "世界杯", "奥运", "英超", "西甲", "法网", "world cup", "football", "tennis", "french open", "grand slam")
-    INTERNATIONAL_TOKENS = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金", "仲裁", "白宫")
     TOPIC_TYPE_LABELS = {
         "data_recap": "数据复盘",
         "project_progress": "项目进展",
@@ -31,53 +39,18 @@ class DataAgent(BaseAgent):
         "data_recap": "数据复盘",
     }
 
-    COMPANY_SUFFIX_RE = re.compile(
-        r"[\u4e00-\u9fffA-Za-z0-9]{2,12}(?:科技|能源|汽车|股份|集团|电气|智能|机器人|半导体|电子|时代|精工|制造|材料|电池|重工|工业|光伏|储能|动力|机电|控股|装备|技术)"
-    )
-    INVALID_COMPANY_MARKERS = (
-        "这家公司",
-        "某公司",
-        "相关公司",
-        "龙头公司",
-        "头部企业",
-        "企业",
-        "公司",
-        "厂商",
-        "供应商",
-        "项目方",
-        "客户",
-        "车企",
-        "资本",
-        "行业",
-        "赛道",
-        "产业链",
-        "订单",
-        "交付",
-        "验证",
-    )
-    INVALID_COMPANY_FRAGMENTS = (
-        "更像",
-        "再落到",
-        "再拆",
-        "资本",
-        "开始",
-        "真正",
-        "故事",
-        "机会",
-        "验证",
-        "订单",
-        "交付",
-        "利润",
-        "估值",
-        "背后",
-    )
-
     def run(
         self,
         extraction: ExtractionResult,
         trend_report: TrendReport,
         style: StyleProfile,
     ) -> DataReport:
+        # 清洗用户输入，防止 Prompt 注入
+        extraction.topic_title = self._sanitize_prompt_input(extraction.topic_title)
+        extraction.writing_brief = self._sanitize_prompt_input(extraction.writing_brief)
+        extraction.selection_reason = self._sanitize_prompt_input(extraction.selection_reason)
+        extraction.suggested_angle = self._sanitize_prompt_input(extraction.suggested_angle)
+
         benchmark_digest = self.benchmark_strategy_digest(
             purpose="data",
             track_hint=extraction.focus_industry or trend_report.recommended_angle,
@@ -101,6 +74,14 @@ class DataAgent(BaseAgent):
         if payload:
             return self._build_from_payload(payload, extraction, trend_report)
         return self._fallback(extraction, trend_report)
+
+    @staticmethod
+    def _sanitize_prompt_input(text: str) -> str:
+        if not text:
+            return text
+        for pattern in DataAgent.PROMPT_INJECTION_PATTERNS:
+            text = pattern.sub("", text)
+        return text.strip()
 
     def _build_from_payload(
         self,
@@ -550,22 +531,6 @@ class DataAgent(BaseAgent):
                 results.append(candidate)
         return self.unique(results)[:8]
 
-    def _is_valid_company_name(self, text: str) -> bool:
-        candidate = self.clean_publish_text(text)
-        if not candidate or len(candidate) < 2 or len(candidate) > 12:
-            return False
-        if any(marker == candidate for marker in self.INVALID_COMPANY_MARKERS):
-            return False
-        if any(marker in candidate for marker in ("：", "，", "。", "？", "！", "、", "数据", "趋势", "标题", "摘要")):
-            return False
-        if any(marker in candidate for marker in self.INVALID_COMPANY_FRAGMENTS):
-            return False
-        if candidate.startswith(("这家", "该", "某", "相关", "头部", "龙头", "重点", "当前", "后续", "行业", "赛道")):
-            return False
-        has_suffix = bool(self.COMPANY_SUFFIX_RE.fullmatch(candidate))
-        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", candidate))
-        return has_suffix or (has_cjk and len(candidate) <= 8 and candidate not in {"公司", "企业", "客户"})
-
     def _build_watch_metrics(self, primary: str, secondary: str, follow_up_focus: str) -> list[str]:
         if follow_up_focus.strip():
             items = [self.clean_publish_text(item) for item in re.split(r"[、，,；;]", follow_up_focus) if item.strip()]
@@ -573,9 +538,10 @@ class DataAgent(BaseAgent):
             if items:
                 return self.unique(items)[:5]
 
-        if self._text_mode(f"{primary} {secondary}") == "sports":
+        text = f"{primary} {secondary}".lower()
+        if any(token in text for token in self.SPORTS_TOKENS):
             return self.unique(["阵容变化", "赛程难度", "关键人物状态", "舆论争议是否继续发酵"])[:5]
-        if self._text_mode(f"{primary} {secondary}") == "international":
+        if any(token in text for token in self.INTERNATIONAL_TOKENS):
             return self.unique(["政策表态", "谈判进展", "相关国家是否跟进动作", "市场反馈"])[:5]
 
         delivery_metric = "样机转量产速度" if any(token in primary for token in ("机器人", "装备")) else "项目交付节奏"
@@ -786,7 +752,7 @@ class DataAgent(BaseAgent):
             "后续政策变化、谈判进展和市场反馈，会决定事件的下一阶段走向。",
         ]
 
-    def _sports_evidence_notes(self, extraction: ExtractionResult) -> list[str]:
+    def _extract_preview_evidence(self, extraction: ExtractionResult) -> list[str]:
         notes: list[str] = []
         if extraction.source_summaries:
             source = str(extraction.source_summaries[0].get("source_type", "")).strip().lower()
@@ -798,17 +764,11 @@ class DataAgent(BaseAgent):
                 notes.append(preview)
         return notes
 
+    def _sports_evidence_notes(self, extraction: ExtractionResult) -> list[str]:
+        return self._extract_preview_evidence(extraction)
+
     def _international_evidence_notes(self, extraction: ExtractionResult) -> list[str]:
-        notes: list[str] = []
-        if extraction.source_summaries:
-            source = str(extraction.source_summaries[0].get("source_type", "")).strip().lower()
-            if source == "paste":
-                return notes
-            preview = self.clean_publish_text(str(extraction.source_summaries[0].get("preview", "")).strip())
-            title = self.clean_publish_text(extraction.topic_title).strip()
-            if preview and preview != title and "http" not in preview.lower():
-                notes.append(preview)
-        return notes
+        return self._extract_preview_evidence(extraction)
 
     def _sports_subject_label(self, extraction: ExtractionResult) -> str:
         text = f"{extraction.topic_title} {extraction.selection_reason} {extraction.suggested_angle}".lower()
@@ -848,7 +808,10 @@ class DataAgent(BaseAgent):
         trend_report: TrendReport,
         keywords: list[str],
     ) -> list[str]:
-        mode = self._text_mode(" ".join([primary, secondary, trend_report.recommended_angle, *keywords]))
+        text = " ".join([primary, secondary, trend_report.recommended_angle, *keywords]).lower()
+        mode = "sports" if any(token in text for token in self.SPORTS_TOKENS) \
+            else "international" if any(token in text for token in self.INTERNATIONAL_TOKENS) \
+            else "generic"
         if mode == "sports":
             risks = [
                 f"{primary}热度升高，不等于后续走势已经被提前锁定。",
@@ -890,14 +853,10 @@ class DataAgent(BaseAgent):
                 " ".join(extraction.supply_chain_keywords[:6]),
             )
             if item
-        )
-        return self._text_mode(text)
-
-    def _text_mode(self, text: str) -> str:
-        lowered = str(text or "").lower()
-        if any(token in lowered for token in self.SPORTS_TOKENS):
+        ).lower()
+        if any(token in text for token in self.SPORTS_TOKENS):
             return "sports"
-        if any(token in lowered for token in self.INTERNATIONAL_TOKENS):
+        if any(token in text for token in self.INTERNATIONAL_TOKENS):
             return "international"
         return "generic"
 

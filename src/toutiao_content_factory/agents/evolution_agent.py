@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from toutiao_content_factory.agents.base import BaseAgent
+from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.services.prompt_repository import PromptRepository
+from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 
 class EvolutionAgent(BaseAgent):
@@ -15,7 +19,8 @@ class EvolutionAgent(BaseAgent):
     def run(self) -> dict[str, Any]:
         metrics_path = self._resolve_metrics_path()
         if metrics_path is None:
-            self.logger.info("EvolutionAgent skipped: %s not found.", self.METRICS_FILENAME)
+            self.logger.debug("EvolutionAgent skipped: %s not found.", self.METRICS_FILENAME)
+            self._ensure_seed_metrics()
             return {"status": "missing_metrics"}
 
         records = self._load_records(metrics_path)
@@ -50,6 +55,14 @@ class EvolutionAgent(BaseAgent):
             if candidate.exists():
                 return candidate
         return None
+
+    def _ensure_seed_metrics(self) -> None:
+        """Create an empty seed metrics file so future runs can find and append to it."""
+        seed_path = self.settings.automation_dir / self.METRICS_FILENAME
+        seed_path.parent.mkdir(parents=True, exist_ok=True)
+        if not seed_path.exists():
+            seed_path.write_text('{"articles": []}', encoding="utf-8")
+            self.logger.info("EvolutionAgent created seed metrics file at %s", seed_path)
 
     def _load_records(self, path: Path) -> list[dict[str, Any]]:
         try:

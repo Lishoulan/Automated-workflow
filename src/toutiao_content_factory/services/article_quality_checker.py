@@ -11,9 +11,10 @@ class QualityCheckResult:
     total_score: int
     issues: list[str]
     suggestions: list[str]
-    compliance_score: int  # 首发激励合规性评分
-    originality_score: int  # 原创性评分
-    readability_score: int  # 可读性评分
+    compliance_score: int
+    originality_score: int
+    readability_score: int
+    depth_score: int
 
 
 class ArticleQualityChecker:
@@ -24,7 +25,7 @@ class ArticleQualityChecker:
         "首发时效": ["第一时间", "及时", "最新", "刚刚", "刚刚发布", "最新消息", "今日", "昨日"],
         "原创深度": ["观点", "视角", "思考", "判断", "分析", "见解", "洞察"],
         "信息增量": ["原因", "影响", "意义", "背后", "深层", "实质", "核心"],
-        "创作规范": ["根据", "基于", "来源", "数据", "统计", "显示", "表明"],
+        "创作规范": ["根据", "基于", "数据", "显示", "统计", "来源"],
         "用户价值": ["共鸣", "连接", "触动", "启发", "收获", "价值", "意义"]
     }
 
@@ -39,6 +40,8 @@ class ArticleQualityChecker:
         r"可以看出.*",
         r"从中可以.*"
     ]
+    # 预编译模板正则表达式
+    _TEMPLATE_PATTERNS_COMPILED = [re.compile(pattern) for pattern in TEMPLATE_PATTERNS]
 
     # 违规风险词汇
     RISKY_WORDS = [
@@ -59,6 +62,8 @@ class ArticleQualityChecker:
         r"必须.*",
         r"一定要.*"
     ]
+    # 预编译标题党正则表达式
+    _CLICKBAIT_PATTERNS_COMPILED = [re.compile(pattern) for pattern in CLICKBAIT_PATTERNS]
 
     AI_CLICHE_PHRASES = [
         "正如我们所知",
@@ -67,11 +72,45 @@ class ArticleQualityChecker:
         "需要指出的是",
         "不言而喻",
         "众所周知的事实",
-        "显而易见的是"
+        "显而易见的是",
+        "不难发现",
+        "众所周知",
+        "由此可见",
+        "显而易见",
+        "毋庸置疑",
     ]
 
+    SOURCE_MARKER_PATTERNS = [
+        r"对标账号高热内容",
+        r"对标热点",
+        r"36氪头条号",
+        r"benchmark_hotspot",
+    ]
+    # 预编译来源标记正则表达式
+    _SOURCE_MARKER_PATTERNS_COMPILED = [re.compile(pattern) for pattern in SOURCE_MARKER_PATTERNS]
+    
+    # 预编译数字百分比模式
+    _NUMBER_PATTERN_COMPILED = re.compile(r"\d+\.?\d*%")
+    
+    # 数据关键词列表（用于合规性检查）
+    _DATA_KEYWORDS = ["数据", "统计", "调查", "报告", "研究", "显示", "表明"]
+    # 来源表达关键词列表（用于合规性检查）
+    _SOURCE_KEYWORDS = ["根据", "基于", "来源", "引自", "报道", "指出", "透露"]
+    # 观点表达关键词列表（用于原创性检查）
+    _OPINION_WORDS = ["认为", "觉得", "看来", "判断", "观点", "视角"]
+    # 独特观点词汇列表
+    _UNIQUE_VIEW_WORDS = ["与众不同", "独特", "创新", "突破", "另辟蹊径", "新视角", "新思路"]
+    # 分析洞察词汇列表
+    _ANALYSIS_WORDS = ["分析", "洞察", "剖析", "解读", "探讨", "研究"]
+    # 因果分析词汇列表
+    _CAUSAL_WORDS = ["因此", "所以", "导致", "造成", "因为", "由于", "结果"]
+    # 行业术语列表
+    _INDUSTRY_TERMS = ["产业链", "上游", "下游", "产能", "毛利率", "营收", "净利润", "市占率", "渗透率"]
+    # 深度因果词汇列表
+    _DEPTH_CAUSAL_WORDS = ["根本原因", "核心驱动", "关键变量", "底层逻辑", "边际变化", "拐点"]
+
     def __init__(self):
-        self.min_word_count = 800
+        self.min_word_count = 1500
         self.max_template_usage = 3
 
     def check_article(
@@ -93,9 +132,12 @@ class ArticleQualityChecker:
         """
         issues = []
         suggestions = []
+        content_lower = content.lower()  # 预计算一次，避免重复
+        # 预计算段落和字数，避免重复计算
+        paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
+        word_count = len(content.replace(" ", "").replace("\n", ""))
 
         # 1. 基本检查
-        word_count = len(content.replace(" ", "").replace("\n", ""))
         if word_count < self.min_word_count:
             issues.append(f"字数不足{self.min_word_count}字")
         elif word_count < 300:
@@ -112,45 +154,54 @@ class ArticleQualityChecker:
         # 3. 首发激励合规性检查
         compliance_score = 0
         if check_first_publish:
-            compliance_result = self._check_compliance(content)
+            compliance_result = self._check_compliance(content, content_lower)
             compliance_score = compliance_result["score"]
             issues.extend(compliance_result["issues"])
             suggestions.extend(compliance_result["suggestions"])
 
-            if word_count < 800:
-                issues.append("首发激励要求文章字数不少于800字")
-            data_keywords = ["数据", "统计", "调查", "报告", "研究", "显示", "表明"]
-            has_data_ref = any(kw in content for kw in data_keywords)
+            if word_count < 1500:
+                issues.append("首发激励要求文章字数不少于1500字")
+            has_data_ref = self._has_any_keyword(content_lower, self._DATA_KEYWORDS)
             if not has_data_ref:
                 suggestions.append("建议增加数据引用以提升首发激励合规性")
-            source_keywords = ["根据", "来源", "引自", "报道", "指出", "透露"]
-            has_source_expr = any(kw in content for kw in source_keywords)
+            has_source_expr = self._has_any_keyword(content_lower, self._SOURCE_KEYWORDS)
             if not has_source_expr:
                 suggestions.append("建议增加来源感表达以提升首发激励合规性")
 
         # 4. 原创性检查
-        originality_score = self._check_originality(content, title)
+        originality_score = self._check_originality(content, title, content_lower, paragraphs)
 
         # 5. 可读性检查
-        readability_score = self._check_readability(content)
+        readability_score = self._check_readability(content, paragraphs)
 
-        # 6. 标题检查
+        # 6. 深度检查
+        depth_score = self._check_depth(content)
+
+        # 7. 标题检查
         title_issues = self._check_title(title)
         issues.extend(title_issues["issues"])
         suggestions.extend(title_issues["suggestions"])
 
-        # 7. 风险词汇检查
-        risk_issues = self._check_risky_words(content)
+        # 8. 风险词汇检查
+        risk_issues = self._check_risky_words(content_lower)
         issues.extend(risk_issues)
+
+        # 9. 来源标记泄露检查
+        source_marker_issues = self._check_source_markers(content)
+        issues.extend(source_marker_issues)
 
         # 计算总分
         total_score = (
-            (30 if word_count >= self.min_word_count else 0) +
-            (20 if template_count <= self.max_template_usage else 0) +
+            (25 if word_count >= self.min_word_count else 0) +
+            (15 if template_count <= self.max_template_usage else 0) +
             compliance_score +
             originality_score +
-            readability_score
+            readability_score +
+            depth_score
         )
+
+        if source_marker_issues:
+            total_score = max(0, total_score - 20)
 
         is_passed = len([i for i in issues if "建议" not in i]) <= 2
 
@@ -161,24 +212,23 @@ class ArticleQualityChecker:
             suggestions=suggestions,
             compliance_score=compliance_score,
             originality_score=originality_score,
-            readability_score=readability_score
+            readability_score=readability_score,
+            depth_score=depth_score,
         )
 
     def _count_templates(self, content: str) -> int:
         """统计模板化表达使用次数"""
         count = 0
-        for pattern in self.TEMPLATE_PATTERNS:
-            matches = re.findall(pattern, content)
+        for pattern in self._TEMPLATE_PATTERNS_COMPILED:
+            matches = pattern.findall(content)
             count += len(matches)
         return count
 
-    def _check_compliance(self, content: str) -> dict:
+    def _check_compliance(self, content: str, content_lower: str) -> dict:
         """检查首发激励合规性"""
         issues = []
         suggestions = []
         score = 0
-
-        content_lower = content.lower()
 
         # 检查五大质量标准覆盖情况
         standards_covered = 0
@@ -200,15 +250,14 @@ class ArticleQualityChecker:
             suggestions.append("需要在首发时效、原创深度、信息增量、创作规范、用户价值等方面全面提升")
 
         # 检查信息来源
-        has_source = any(kw in content_lower for kw in ["根据", "基于", "数据", "显示", "统计", "来源"])
+        has_source = any(kw in content_lower for kw in self._DATA_KEYWORDS)
         if has_source:
             score += 10
         else:
             suggestions.append("建议增加数据来源支撑，提高内容权威性")
 
         # 检查原创表达
-        opinion_words = ["认为", "觉得", "看来", "判断", "观点", "视角"]
-        has_opinion = any(kw in content_lower for kw in opinion_words)
+        has_opinion = any(kw in content_lower for kw in self._OPINION_WORDS)
         if has_opinion:
             score += 10
         else:
@@ -220,28 +269,23 @@ class ArticleQualityChecker:
             "suggestions": suggestions
         }
 
-    def _check_originality(self, content: str, title: str) -> int:
+    def _check_originality(self, content: str, title: str, content_lower: str, paragraphs: list[str]) -> int:
         """检查原创性"""
         score = 0
-        content_lower = content.lower()
 
         # 检查是否有独特观点
-        unique_views = ["与众不同", "独特", "创新", "突破", "另辟蹊径", "新视角", "新思路"]
-        if any(phrase in content_lower for phrase in unique_views):
+        if self._has_any_keyword(content_lower, self._UNIQUE_VIEW_WORDS):
             score += 10
 
         # 检查是否有分析洞察
-        analysis_words = ["分析", "洞察", "剖析", "解读", "探讨", "研究"]
-        if any(word in content_lower for word in analysis_words):
+        if self._has_any_keyword(content_lower, self._ANALYSIS_WORDS):
             score += 15
 
         # 检查是否有因果分析
-        causal_words = ["因此", "所以", "导致", "造成", "因为", "由于", "结果"]
-        if any(word in content_lower for word in causal_words):
+        if self._has_any_keyword(content_lower, self._CAUSAL_WORDS):
             score += 10
 
-        # 检查段落数量
-        paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
+        # 检查段落数量（使用预计算的 paragraphs）
         if len(paragraphs) >= 5:
             score += 15
         elif len(paragraphs) >= 3:
@@ -251,12 +295,11 @@ class ArticleQualityChecker:
 
         return min(50, score)
 
-    def _check_readability(self, content: str) -> int:
+    def _check_readability(self, content: str, paragraphs: list[str]) -> int:
         """检查可读性"""
         score = 0
 
-        # 检查段落长度
-        paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
+        # 检查段落长度（使用预计算的 paragraphs）
         avg_length = sum(len(p) for p in paragraphs) / len(paragraphs) if paragraphs else 0
 
         if avg_length <= 150:
@@ -295,8 +338,8 @@ class ArticleQualityChecker:
         title_lower = title.lower()
 
         # 检查标题党
-        for pattern in self.CLICKBAIT_PATTERNS:
-            if re.search(pattern, title_lower):
+        for pattern in self._CLICKBAIT_PATTERNS_COMPILED:
+            if pattern.search(title_lower):
                 issues.append("标题存在标题党嫌疑")
                 break
 
@@ -315,16 +358,47 @@ class ArticleQualityChecker:
 
         return {"issues": issues, "suggestions": suggestions}
 
-    def _check_risky_words(self, content: str) -> list:
+    def _check_risky_words(self, content_lower: str) -> list:
         """检查违规风险词汇"""
         issues = []
-        content_lower = content.lower()
 
         for word in self.RISKY_WORDS:
             if word in content_lower:
                 issues.append(f"存在绝对化表述：'{word}'")
                 break
 
+        return issues
+
+    def _check_depth(self, content: str) -> int:
+        score = 0
+        number_matches = self._NUMBER_PATTERN_COMPILED.findall(content)
+        if len(number_matches) >= 3:
+            score += 10
+        elif len(number_matches) >= 1:
+            score += 5
+
+        industry_count = sum(1 for term in self._INDUSTRY_TERMS if term in content)
+        if industry_count >= 4:
+            score += 10
+        elif industry_count >= 2:
+            score += 5
+
+        if any(term in content for term in self._DEPTH_CAUSAL_WORDS):
+            score += 5
+
+        return min(25, score)
+    
+    @staticmethod
+    def _has_any_keyword(text_lower: str, keywords: list[str]) -> bool:
+        """检查文本中是否包含任意关键词的辅助函数"""
+        return any(kw in text_lower for kw in keywords)
+
+    def _check_source_markers(self, content: str) -> list[str]:
+        issues = []
+        for pattern in self._SOURCE_MARKER_PATTERNS_COMPILED:
+            matches = pattern.findall(content)
+            if matches:
+                issues.append(f"正文包含来源标记泄露：'{matches[0]}'，需在发布前清除")
         return issues
 
     @staticmethod
@@ -340,6 +414,7 @@ class ArticleQualityChecker:
         report.append(f"  - 首发合规性: {result.compliance_score}/50")
         report.append(f"  - 原创性: {result.originality_score}/50")
         report.append(f"  - 可读性: {result.readability_score}/40")
+        report.append(f"  - 深度: {result.depth_score}/25")
         report.append("")
 
         if result.issues:

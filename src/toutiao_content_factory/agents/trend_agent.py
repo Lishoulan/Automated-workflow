@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import logging
+
 from toutiao_content_factory.agents.base import BaseAgent
-from toutiao_content_factory.config import StyleProfile
+from toutiao_content_factory.config import AppSettings, StyleProfile
 from toutiao_content_factory.models import CacheContext, ExtractionResult, TrendReport
+from toutiao_content_factory.services.prompt_repository import PromptRepository
+from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 
 class TrendAgent(BaseAgent):
     agent_name = "TrendAgent"
-    SPORTS_TOKENS = ("体育", "足球", "篮球", "网球", "世界杯", "奥运", "英超", "西甲", "法网", "world cup", "football", "tennis", "french open", "grand slam")
-    INTERNATIONAL_TOKENS = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金", "仲裁", "白宫")
 
     ANGLE_NOISE_PREFIXES = (
         "材料里最强的增长信号包括",

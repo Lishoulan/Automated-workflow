@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import re
+import logging
 
 from toutiao_content_factory.agents.base import BaseAgent
-from toutiao_content_factory.config import StyleProfile
+from toutiao_content_factory.config import AppSettings, StyleProfile
 from toutiao_content_factory.models import ContentScore, DataReport, GeneratedContent
+from toutiao_content_factory.services.prompt_repository import PromptRepository
+from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 
 class PublishReviewAgent(BaseAgent):
@@ -157,10 +160,7 @@ class PublishReviewAgent(BaseAgent):
             self_benchmark_context=self_benchmark_context,
         )
 
-    def _clean_list(self, payload: object, limit: int) -> list[str]:
-        if not isinstance(payload, list):
-            return []
-        return self.unique([str(item).strip() for item in payload if str(item).strip()])[:limit]
+
 
     def _apply_self_benchmark_adjustments(
         self,
@@ -225,15 +225,13 @@ class PublishReviewAgent(BaseAgent):
         paragraphs = self._paragraphs(article)
         first_paragraph = paragraphs[0] if paragraphs else article
         matched: list[str] = []
-        scene_tokens = ("机场", "电厂", "电站", "港口", "车间", "仓库", "园区", "工厂", "基地", "物流中心", "示范项目")
-        cross_border_tokens = ("中国", "日本", "美国", "欧洲", "德国", "东京", "海外", "出海", "国际", "日韩")
 
         for pattern in patterns:
             if pattern == "场景先行开头":
-                if any(token in first_paragraph or token in title for token in scene_tokens):
+                if any(token in first_paragraph or token in title for token in self.SCENE_TOKENS):
                     matched.append(pattern)
             elif pattern == "跨国对比冲突":
-                if sum(1 for token in cross_border_tokens if token in article) >= 2 and "不是" in article and "而是" in article:
+                if sum(1 for token in self.CROSS_BORDER_TOKENS if token in article) >= 2 and "不是" in article and "而是" in article:
                     matched.append(pattern)
             elif pattern == "利润迁移框架":
                 if any(token in article for token in ("利润", "毛利", "系统集成", "零部件", "整机", "运维", "服务", "回款")):

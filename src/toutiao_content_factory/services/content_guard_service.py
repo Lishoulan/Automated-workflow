@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 
 
 @dataclass(slots=True)
@@ -106,6 +107,26 @@ class ContentGuardService:
         "毋庸置疑",
         "不难发现",
         "这不禁让人思考",
+        "值得关注",
+        "需要注意",
+        "总体来看",
+        "从这个角度看",
+        "换句话说",
+        "尤为值得关注",
+        "需要强调的是",
+        "关键在于",
+        "核心问题在于",
+        "究其原因",
+        "深究其因",
+        "追根溯源",
+        "放眼未来",
+        "展望未来",
+        "未来可期",
+        "前景广阔",
+        "大有可为",
+        "方兴未艾",
+        "如火如荼",
+        "蓬勃发展",
     )
 
     def __init__(self, settings: AppSettings, logger) -> None:
@@ -116,6 +137,7 @@ class ContentGuardService:
         self._ensure_bad_words_file()
         self.bad_words = self._load_bad_words()
         self.bad_words_trie = SensitiveWordTrie(self.bad_words)
+        self.quality_checker = ArticleQualityChecker()
 
     def evaluate_candidate_topic(self, *, topic_title: str, topic_url: str = "") -> dict[str, Any]:
         corpus = self._load_recent_published_corpus()
@@ -174,20 +196,7 @@ class ContentGuardService:
 
     def evaluate_run(self, run_dir: Path) -> dict[str, Any]:
         run_dir = Path(run_dir)
-        publish_dir = run_dir / self.settings.review.publish_dirname
-        article_path = publish_dir / "article.md"
-        title_path = publish_dir / "title.txt"
-        if not article_path.exists():
-            article_path = run_dir / "article.md"
-        if not title_path.exists():
-            title_path = run_dir / "titles.txt"
-
-        title = ""
-        article = ""
-        if title_path.exists():
-            title = title_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[0].strip()
-        if article_path.exists():
-            article = article_path.read_text(encoding="utf-8", errors="replace")
+        title, article = self._load_title_and_article(run_dir)
 
         raw_text = "\n".join(part for part in (title, article) if part)
         target_text = self._normalize_text(raw_text)
@@ -227,6 +236,9 @@ class ContentGuardService:
         blocked = bool(best_match and best_score >= self.RUN_SIMILARITY_THRESHOLD)
         warnings = self._build_similarity_warnings(best_match, best_score, self.RUN_SIMILARITY_THRESHOLD)
         warnings.extend(self._build_ai_risk_warnings(ai_risk))
+        # 数据引用校验
+        number_warnings = self._check_number_attribution(article, run_dir)
+        warnings.extend(number_warnings)
         review_required = bool(best_score >= self.HUMAN_REVIEW_THRESHOLD or ai_risk >= self.HUMAN_REVIEW_THRESHOLD)
         payload = {
             "generated_at": self._now(),
@@ -257,6 +269,18 @@ class ContentGuardService:
             else []
         )
         blockers: list[str] = []
+        title, article = self._load_title_and_article(run_dir)
+        quality_result = None
+        if title and article:
+            quality_result = self.quality_checker.check_article(title, article)
+        if quality_result is not None:
+            warnings.extend(
+                f"质量检查：{issue}" for issue in quality_result.issues[:5]
+            )
+            if quality_result.total_score < 60:
+                warnings.append(
+                    f"内容深度评分 {quality_result.total_score}/100，建议补充数据引用或深度分析"
+                )
         if bool(report.get("bad_words_blocked")):
             matched_words = ", ".join(report.get("matched_bad_words", [])[:10])
             blockers.append(f"命中本地敏感词/违禁词，已强制拦截自动发布：{matched_words}")
@@ -270,6 +294,16 @@ class ContentGuardService:
             "warnings": self._unique_texts(warnings),
             "recommendations": self._unique_texts(recommendations),
             "review_status_override": self._review_override_payload(report) if blockers else {},
+            "quality_check": {
+                "is_passed": quality_result.is_passed if quality_result else None,
+                "total_score": quality_result.total_score if quality_result else None,
+                "compliance_score": quality_result.compliance_score if quality_result else None,
+                "originality_score": quality_result.originality_score if quality_result else None,
+                "readability_score": quality_result.readability_score if quality_result else None,
+                "depth_score": quality_result.depth_score if quality_result else None,
+                "issues": quality_result.issues if quality_result else [],
+                "suggestions": quality_result.suggestions if quality_result else [],
+            } if quality_result else {},
         }
 
     def scan_text(self, text: str) -> dict[str, Any]:
@@ -427,15 +461,15 @@ class ContentGuardService:
         if not compact:
             return []
         tokens: list[str] = []
-        ascii_tokens = re.findall(r"[a-z0-9%]{2,}", compact)
+        ascii_tokens = self._ASCII_TOKEN_PATTERN.findall(compact)
         tokens.extend(ascii_tokens)
-        chinese_only = re.sub(r"[a-z0-9%]+", "", compact)
+        chinese_only = self._NON_WORD_REPLACE_PATTERN.sub("", compact)
         tokens.extend(chinese_only[index : index + 2] for index in range(max(0, len(chinese_only) - 1)))
         return [token for token in tokens if token.strip()]
 
     def _normalize_text(self, text: str) -> str:
-        normalized = re.sub(r"\s+", "", str(text or "").lower())
-        normalized = re.sub(r"[^\w\u4e00-\u9fff%]", "", normalized)
+        normalized = self._WHITESPACE_PATTERN.sub("", str(text or "").lower())
+        normalized = self._INVALID_CHAR_PATTERN.sub("", normalized)
         return normalized[:12000]
 
     def _parse_run_time(self, name: str) -> datetime | None:
@@ -470,7 +504,7 @@ class ContentGuardService:
             ),
         )
         exclamation_ratio = min(text.count("！") / max(len(paragraphs), 1), 1.0)
-        number_ratio = min(len(re.findall(r"\d", full_text)) / max(len(normalized), 1) * 20, 1.0)
+        number_ratio = min(len(self._SINGLE_DIGIT_PATTERN.findall(full_text)) / max(len(normalized), 1) * 20, 1.0)
         quote_ratio = min((full_text.count("“") + full_text.count("\"")) / max(len(paragraphs), 1), 1.0)
         cliche_density = self._phrase_density(full_text, self.AI_CLICHE_PHRASES)
         risk = 0.34 * repeated_openers + 0.28 * marketing_phrases + 0.20 * exclamation_ratio
@@ -560,6 +594,44 @@ class ContentGuardService:
             result.append(text)
         return result
 
+    NUMBER_PATTERN = re.compile(
+        r"\d+(?:\.\d+)?(?:%|倍|年|亿元|亿美元|万元|万台|万辆|万套|万吨|GW|MW|kW|GWh|MWh|kWh)"
+    )
+    # 预编译 tokenize 相关的正则表达式
+    _ASCII_TOKEN_PATTERN = re.compile(r"[a-z0-9%]{2,}")
+    _NON_WORD_REPLACE_PATTERN = re.compile(r"[a-z0-9%]+")
+    # 预编译 normalize_text 相关的正则表达式
+    _WHITESPACE_PATTERN = re.compile(r"\s+")
+    _INVALID_CHAR_PATTERN = re.compile(r"[^\w\u4e00-\u9fff%]")
+    # 预编译数字模式
+    _SINGLE_DIGIT_PATTERN = re.compile(r"\d")
+
+    def _check_number_attribution(self, article_text: str, run_dir: Path) -> list[str]:
+        """检查文章中的数字是否在原始素材中有对应出处"""
+        warnings: list[str] = []
+        # 尝试读取原始选题/素材
+        source_path = run_dir / "selected_topic.json"
+        source_text = ""
+        if source_path.exists():
+            try:
+                data = json.loads(source_path.read_text(encoding="utf-8"))
+                topic = data.get("selected_topic", data)
+                source_text = " ".join([
+                    str(topic.get("title", "")),
+                    str(topic.get("snippet", "")),
+                    str(topic.get("summary", "")),
+                ])
+            except Exception:
+                pass
+        if not source_text:
+            return warnings
+        article_numbers = set(self.NUMBER_PATTERN.findall(article_text))
+        source_numbers = set(self.NUMBER_PATTERN.findall(source_text))
+        for num in article_numbers:
+            if num not in source_numbers:
+                warnings.append(f"数字'{num}'在原始素材中未找到对应出处，可能存在引用错误")
+        return warnings
+
     def _write_report(self, payload: dict[str, Any], *, run_dir: Path | None = None) -> None:
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
         self.report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -587,3 +659,31 @@ class ContentGuardService:
 
     def _now(self) -> str:
         return datetime.now().isoformat(timespec="seconds")
+    
+    def _load_title_and_article(self, run_dir: Path) -> tuple[str, str]:
+        """从运行目录中加载标题和文章内容"""
+        publish_dir = run_dir / self.settings.review.publish_dirname
+        article_path = publish_dir / "article.md"
+        title_path = publish_dir / "title.txt"
+        
+        if not article_path.exists():
+            article_path = run_dir / "article.md"
+        if not title_path.exists():
+            title_path = run_dir / "titles.txt"
+        
+        title = ""
+        article = ""
+        
+        if title_path.exists():
+            try:
+                title = title_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[0].strip()
+            except Exception:
+                pass
+        
+        if article_path.exists():
+            try:
+                article = article_path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+        
+        return title, article

@@ -1,3 +1,4 @@
+# EXPERIMENTAL: 抖音发布功能为实验性功能，可能不稳定
 from __future__ import annotations
 
 import json
@@ -10,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.constants.selectors import (
+    DOUYIN_ARTICLE_PAGE,
+    DOUYIN_LOGIN_MARKERS,
+    DOUYIN_PUBLISH_FAILURE_HINTS,
+)
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -26,36 +33,14 @@ class DouyinPublishService:
         "https://creator.douyin.com/creator-micro/content/post/article"
         "?default-tab=5&enter_from=publish_page&media_type=article&type=new"
     )
-    ARTICLE_START_BUTTON_CLASS = "button.container-drag-btn-hcUuRC"
-    ARTICLE_TITLE_SELECTORS = [
-        "input[placeholder*='文章标题']",
-        "input[placeholder*='请输入文章标题']",
-    ]
-    ARTICLE_SUMMARY_SELECTORS = [
-        "input[placeholder*='内容摘要']",
-        "input[placeholder*='精彩部分']",
-    ]
-    ARTICLE_EDITOR_SELECTORS = [
-        "div.tiptap.ProseMirror[contenteditable='true']",
-        "div[contenteditable='true'][role='textbox']",
-    ]
-    ARTICLE_HEAD_IMAGE_UPLOAD_SELECTORS = [
-        "div.uploadButton-B4xMQ2",
-        "div.emptyHeadImage-YXPBGr",
-    ]
-    ARTICLE_NO_HEAD_IMAGE_SELECTORS = [
-        "label:has-text('无文章头图')",
-        "span:has-text('无文章头图')",
-    ]
-    ARTICLE_PUBLISH_SELECTORS = [
-        "button.button-dhlUZE.primary-cECiOJ",
-        "button:has-text('发布')",
-    ]
-    ARTICLE_SUCCESS_TEXTS = [
-        "text=发布成功",
-        "text=已发布",
-        "text=发布完成",
-    ]
+    ARTICLE_START_BUTTON_CLASS = DOUYIN_ARTICLE_PAGE.first("start_button")
+    ARTICLE_TITLE_SELECTORS = DOUYIN_ARTICLE_PAGE.get("title_input")
+    ARTICLE_SUMMARY_SELECTORS = DOUYIN_ARTICLE_PAGE.get("summary_input")
+    ARTICLE_EDITOR_SELECTORS = DOUYIN_ARTICLE_PAGE.get("editor_area")
+    ARTICLE_HEAD_IMAGE_UPLOAD_SELECTORS = DOUYIN_ARTICLE_PAGE.get("head_image_upload")
+    ARTICLE_NO_HEAD_IMAGE_SELECTORS = DOUYIN_ARTICLE_PAGE.get("no_head_image_toggle")
+    ARTICLE_PUBLISH_SELECTORS = DOUYIN_ARTICLE_PAGE.get("publish_button")
+    ARTICLE_SUCCESS_TEXTS = DOUYIN_ARTICLE_PAGE.get("success_indicator")
 
     def __init__(self, settings: AppSettings, logger: logging.Logger) -> None:
         self.settings = settings
@@ -66,6 +51,14 @@ class DouyinPublishService:
         self._ensure_playwright()
         profile_dir = self._resolve_browser_profile_dir()
         profile_dir.mkdir(parents=True, exist_ok=True)
+
+        prepare_browser_profile(
+            profile_dir=profile_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            label="douyin:init-session",
+            extra_paths=[self.settings.account_runtime_dir],
+        )
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch_persistent_context(
@@ -174,9 +167,18 @@ class DouyinPublishService:
         result_dir.mkdir(parents=True, exist_ok=True)
         result_path = result_dir / "douyin_publish_result.json"
 
+        profile_dir = self._resolve_browser_profile_dir()
+        prepare_browser_profile(
+            profile_dir=profile_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            label="douyin:publish",
+            extra_paths=[self.settings.account_runtime_dir],
+        )
+
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(self._resolve_browser_profile_dir()),
+                user_data_dir=str(profile_dir),
                 headless=self.settings.douyin.headless,
                 channel=self.settings.douyin.channel or None,
                 executable_path=self.settings.douyin.executable_path or None,
@@ -475,22 +477,13 @@ class DouyinPublishService:
     def _looks_like_login_shell(self, page, body_text: str | None = None) -> bool:
         text = body_text if body_text is not None else self._extract_visible_body_text(page)
         normalized_url = page.url.lower()
-        login_markers = [
-            "创作者登录",
-            "登录或注册即代表同意",
-            "用户协议",
-            "隐私政策",
-            "千万创作者邀你同行",
-            "创作者登录 / 机构登录",
-            "创作者登录/机构登录",
-        ]
-        if any(marker in text for marker in login_markers):
+        if any(marker in text for marker in DOUYIN_LOGIN_MARKERS):
             if "creator-micro/content/post/article" not in normalized_url:
                 return True
             if not self._article_editor_ready(page):
                 return True
         with self._suppress_timeout():
-            if page.locator("div[class*='agreement']").count() > 0 and not self._article_editor_ready(page):
+            if page.locator(DOUYIN_ARTICLE_PAGE.first("agreement_dialog")).count() > 0 and not self._article_editor_ready(page):
                 return True
         return False
 
@@ -499,10 +492,7 @@ class DouyinPublishService:
         return "加载中" in body_text and not self._article_editor_ready(page)
 
     def _open_publish_menu(self, page) -> None:
-        for selector in [
-            "#douyin-creator-master-side-upload-wrap button",
-            "#douyin-creator-master-side-upload",
-        ]:
+        for selector in DOUYIN_ARTICLE_PAGE.get("publish_menu_button"):
             with self._suppress_timeout():
                 locator = page.locator(selector).first
                 if locator.count() == 0:
@@ -722,15 +712,7 @@ class DouyinPublishService:
     def _build_publish_failure_message(self, page) -> str:
         visible_text = self._extract_visible_body_text(page)
         hints: list[str] = []
-        for phrase in [
-            "请上传封面图",
-            "请上传图片",
-            "请填写文章标题",
-            "请填写文章正文",
-            "请完善",
-            "不能为空",
-            "发布失败",
-        ]:
+        for phrase in DOUYIN_PUBLISH_FAILURE_HINTS:
             if phrase in visible_text:
                 hints.append(phrase)
         if hints:

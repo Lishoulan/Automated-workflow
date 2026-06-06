@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -11,6 +12,14 @@ from toutiao_content_factory.models import CacheContext, WorkflowResult
 
 
 class CacheService:
+    # 常量定义
+    _MAX_FINGERPRINT_LENGTH = 2400
+    _MAX_NORMALIZED_LENGTH = 5000
+    CACHE_TTL_SECONDS = 6 * 3600  # 缓存有效期 6 小时
+    # 预编译正则表达式
+    _WHITESPACE_PATTERN = re.compile(r"\s+")
+    _INVALID_CHAR_PATTERN = re.compile(r"[^\w\u4e00-\u9fff%]")
+
     def __init__(self, cache_dir: Path, similarity_threshold: float, logger: logging.Logger) -> None:
         self.cache_dir = cache_dir
         self.index_path = cache_dir / "index.json"
@@ -30,6 +39,13 @@ class CacheService:
 
         exact_path = self._result_path(cache_key)
         if exact_path.exists():
+            if self._is_cache_expired(cache_key):
+                self.logger.info("缓存已过期（超过 %d 秒），视为 miss: %s", self.CACHE_TTL_SECONDS, cache_key)
+                return CacheContext(
+                    status="miss",
+                    cache_key=cache_key,
+                    note=f"缓存已过期（超过 {self.CACHE_TTL_SECONDS // 3600} 小时），将重新生成。",
+                )
             payload = json.loads(exact_path.read_text(encoding="utf-8"))
             cached_result = WorkflowResult.from_dict(payload)
             if cached_result.model_used == "local-draft":
@@ -82,7 +98,8 @@ class CacheService:
             "key": result.cache_key,
             "style_key": result.style_key,
             "created_at": result.created_at,
-            "fingerprint": normalized[:2400],
+            "created_at_ts": time.time(),
+            "fingerprint": normalized[:self._MAX_FINGERPRINT_LENGTH],
             "article_angle": result.content.article_angle,
             "titles": result.content.recommended_titles,
         }
@@ -97,19 +114,20 @@ class CacheService:
         right = self._normalize_text(right_text)
         if not left or not right:
             return 0.0
-        return SequenceMatcher(None, left[:2400], right[:2400]).ratio()
+        return SequenceMatcher(None, left[:self._MAX_FINGERPRINT_LENGTH], right[:self._MAX_FINGERPRINT_LENGTH]).ratio()
 
     def _find_similar_record(self, normalized: str, style_key: str, cache_key: str) -> dict | None:
         index = self._load_index()
         best_record: dict | None = None
         best_similarity = 0.0
+        normalized_truncated = normalized[:self._MAX_FINGERPRINT_LENGTH]
         for record in index:
             if record.get("style_key") != style_key or record.get("key") == cache_key:
                 continue
             fingerprint = str(record.get("fingerprint", ""))
             if not fingerprint:
                 continue
-            similarity = SequenceMatcher(None, normalized[:2400], fingerprint[:2400]).ratio()
+            similarity = SequenceMatcher(None, normalized_truncated, fingerprint[:self._MAX_FINGERPRINT_LENGTH]).ratio()
             if similarity > best_similarity:
                 best_similarity = similarity
                 best_record = record
@@ -129,6 +147,32 @@ class CacheService:
             return []
         return payload if isinstance(payload, list) else []
 
+    def _is_cache_expired(self, cache_key: str) -> bool:
+        index = self._load_index()
+        for record in index:
+            if record.get("key") == cache_key:
+                created_at_ts = record.get("created_at_ts")
+                if created_at_ts is not None:
+                    try:
+                        age = time.time() - float(created_at_ts)
+                        return age > self.CACHE_TTL_SECONDS
+                    except (TypeError, ValueError):
+                        pass
+                # fallback: 从 ISO 格式 created_at 解析
+                created_at_str = record.get("created_at", "")
+                if created_at_str:
+                    try:
+                        from datetime import datetime as _dt
+                        created_dt = _dt.fromisoformat(str(created_at_str))
+                        age = time.time() - created_dt.timestamp()
+                        return age > self.CACHE_TTL_SECONDS
+                    except (ValueError, TypeError):
+                        pass
+                # 无时间戳信息，视为未过期
+                return False
+        # index 中无记录，视为未过期（文件存在即可用）
+        return False
+
     def _result_path(self, cache_key: str) -> Path:
         return self.cache_dir / f"{cache_key}.json"
 
@@ -137,6 +181,6 @@ class CacheService:
         return digest[:16]
 
     def _normalize_text(self, text: str) -> str:
-        normalized = re.sub(r"\s+", "", text)
-        normalized = re.sub(r"[^\w\u4e00-\u9fff%]", "", normalized)
-        return normalized[:5000]
+        normalized = self._WHITESPACE_PATTERN.sub("", text)
+        normalized = self._INVALID_CHAR_PATTERN.sub("", normalized)
+        return normalized[:self._MAX_NORMALIZED_LENGTH]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -13,10 +14,38 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+try:
+    from urllib.request import ProxyHandler, build_opener
+except ImportError:
+    ProxyHandler = None
+    build_opener = None
+
 from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.constants.selectors import (
+    WECHAT_LOGIN_PAGE,
+    WECHAT_EDITOR_PAGE,
+    WECHAT_COVER_DIALOG,
+    WECHAT_PUBLISH_DIALOG,
+    WECHAT_DISMISS_DIALOG,
+    WECHAT_ORIGINAL_DECLARATION,
+    WECHAT_SESSION_READY_MARKERS,
+    WECHAT_LOGIN_URL_MARKERS,
+    WECHAT_DISMISS_KEYWORDS,
+    WECHAT_DISMISS_ACTIONS,
+    WECHAT_PUBLISH_CONFIRM_TEXTS,
+    WECHAT_PUBLISH_BUTTON_TEXTS,
+    WECHAT_SUCCESS_MARKERS,
+    WECHAT_DRAFT_LIST_PAGE,
+)
+from toutiao_content_factory.exceptions import SessionExpiredException
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.md2wechat_service import Md2WechatService
+from toutiao_content_factory.services.html_anything_service import HtmlAnythingService
+from toutiao_content_factory.services.wechat_layout_engine import MarkdownToWechatConverter
+from toutiao_content_factory.services.anti_ai_flavor import AntiAIFlavorPipeline
+from toutiao_content_factory.services.wechat_135editor_service import Editor135Service
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -24,10 +53,6 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - optional dependency fallback
     PlaywrightTimeoutError = Exception
     sync_playwright = None
-
-
-class SessionExpiredException(RuntimeError):
-    pass
 
 
 class WechatIpWhitelistBlockedException(RuntimeError):
@@ -43,9 +68,11 @@ class WechatPublishService:
         self.logger = logger
         self.history_path = settings.output_dir / settings.wechat.history_filename
         self.md2wechat_service = Md2WechatService(settings, logger)
+        self.html_anything_service = HtmlAnythingService(settings, logger)
         self.growth_ops_service = GrowthOpsService(settings, logger)
         self._access_token: str | None = None
         self._access_token_expires_at = 0.0
+        self._editor_135_service = Editor135Service(settings, logger)
 
     def publish_run(self, run_dir: Path, submit: bool = False) -> dict[str, Path]:
         self._ensure_enabled()
@@ -63,7 +90,24 @@ class WechatPublishService:
         title = self._clip_title(str(publish_meta.get("selected_title", "")).strip())
         summary = str(publish_meta.get("summary", "")).strip()
         article = self._read_text(publish_dir / "article.md")
-        cover_path, inline_image_paths = self._resolve_image_assets(publish_dir)
+
+        try:
+            pipeline = AntiAIFlavorPipeline()
+            result = pipeline.process(article)
+            density = result["density"]
+            article = result["processed_text"]
+            self.logger.info(
+                "WeChat compliance: density_score=%d, noun_ratio=%.3f, verb_ratio=%.3f, avg_sent_len=%.1f",
+                density["score"], density["noun_ratio"], density["verb_ratio"], density["avg_sentence_length"],
+            )
+            if density["score"] < 50:
+                self.logger.warning(
+                    "WeChat info density borderline (%d/100). Article may be flagged as low-value AIGC.",
+                    density["score"],
+                )
+        except Exception as exc:
+            self.logger.warning("WeChat compliance check error (non-blocking): %s", exc)
+        cover_path, inline_image_paths = self._resolve_image_assets(publish_dir, title=title)
 
         html_dir = publish_dir / "wechat"
         html_dir.mkdir(parents=True, exist_ok=True)
@@ -72,41 +116,102 @@ class WechatPublishService:
         article_html_path = html_dir / "article.html"
         result_path = html_dir / "wechat_publish_result.json"
 
-        access_token = self._get_access_token()
-        thumb_media_id = self._upload_cover_material(access_token, cover_path)
-        inline_image_urls = [self._upload_inline_image(access_token, path) for path in inline_image_paths]
+        api_available = False
+        access_token = ""
+        thumb_media_id = ""
+        inline_image_urls: list[str] = []
+        draft_media_id = ""
+
+        try:
+            access_token = self._get_access_token()
+            thumb_media_id = self._upload_cover_material(access_token, cover_path)
+            inline_image_urls = [self._upload_inline_image(access_token, path) for path in inline_image_paths]
+            api_available = True
+            self.logger.info("WeChat API available, using API + browser hybrid mode.")
+        except WechatIpWhitelistBlockedException as exc:
+            self.logger.warning(
+                "WeChat API blocked by IP whitelist, falling back to browser-only mode: %s", exc
+            )
+        except Exception as exc:
+            self.logger.warning("WeChat API unavailable, falling back to browser-only mode: %s", exc)
+
         article_markdown = self._compose_article_markdown(article=article, inline_image_urls=inline_image_urls)
         article_markdown_path.write_text(article_markdown, encoding="utf-8")
-        article_html, layout_meta = self._render_article_html_via_backend(
-            title=title,
-            article=article,
-            article_markdown=article_markdown,
-            inline_image_urls=inline_image_urls,
-        )
+
+        if api_available:
+            article_html, layout_meta = self._render_article_html_via_backend(
+                title=title,
+                article=article,
+                article_markdown=article_markdown,
+                inline_image_urls=inline_image_urls,
+            )
+        else:
+            article_html, layout_meta = self._render_article_html_via_backend(
+                title=title,
+                article=article,
+                article_markdown=article_markdown,
+                inline_image_urls=[],
+            )
         article_html_path.write_text(article_html, encoding="utf-8")
 
-        payload = self._build_article_payload(
-            title=title,
-            summary=summary,
-            article_html=article_html,
-            thumb_media_id=thumb_media_id,
-        )
-        payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        if api_available:
+            payload = self._build_article_payload(
+                title=title,
+                summary=summary,
+                article_html=article_html,
+                thumb_media_id=thumb_media_id,
+            )
+            payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        draft_response = self._wechat_post_json(
-            "/cgi-bin/draft/add",
-            {"articles": [payload]},
-            access_token=access_token,
-        )
-        draft_media_id = str(draft_response.get("media_id", "")).strip()
-        if not draft_media_id:
-            raise RuntimeError(f"Draft creation did not return media_id: {draft_response}")
+            draft_response = self._wechat_post_json(
+                "/cgi-bin/draft/add",
+                {"articles": [payload]},
+                access_token=access_token,
+            )
+            draft_media_id = str(draft_response.get("media_id", "")).strip()
+            if not draft_media_id:
+                err_code = str(draft_response.get("ret", ""))
+                if err_code == "200002" or not thumb_media_id:
+                    self.logger.warning(
+                        "Draft creation failed (ret=%s, thumb_media_id=%s). Falling back to browser-only mode.",
+                        err_code,
+                        thumb_media_id[:20] if thumb_media_id else "(empty)",
+                    )
+                    api_available = False
+                    draft_media_id = ""
+                else:
+                    raise RuntimeError(f"Draft creation did not return media_id: {draft_response}")
 
         publish_response: dict[str, Any] = {}
         if submit or self.settings.wechat.auto_publish:
-            publish_response = self._submit_draft_via_browser(
-                draft_media_id=draft_media_id,
+            if api_available and draft_media_id:
+                publish_response = self._submit_draft_via_browser(
+                    draft_media_id=draft_media_id,
+                    title=title,
+                )
+            elif self.settings.wechat.editor_135_enabled:
+                self.logger.info("WeChat API unavailable, using 135 Editor for publishing.")
+                publish_response = self._publish_via_135editor(
+                    title=title,
+                    summary=summary,
+                    article_html=article_html,
+                    cover_path=cover_path,
+                )
+            else:
+                publish_response = self._publish_via_browser_only(
+                    title=title,
+                    summary=summary,
+                    article_html=article_html,
+                    cover_path=cover_path,
+                )
+        elif not api_available and self.settings.wechat.editor_135_enabled:
+            # 即使不自动发布，也通过135编辑器创建草稿
+            self.logger.info("WeChat API unavailable and auto_publish disabled, using 135 Editor to create draft.")
+            publish_response = self._publish_via_135editor(
                 title=title,
+                summary=summary,
+                article_html=article_html,
+                cover_path=cover_path,
             )
 
         result_payload = {
@@ -114,7 +219,7 @@ class WechatPublishService:
             "platform": "wechat",
             "run_dir": str(run_dir),
             "status": "submitted" if publish_response else "draft_created",
-            "draft_status": "created",
+            "draft_status": "created" if api_available else "browser_only",
             "submit_status": str(publish_response.get("status", "")).strip() if publish_response else "",
             "draft_media_id": draft_media_id,
             "thumb_media_id": thumb_media_id,
@@ -126,6 +231,7 @@ class WechatPublishService:
             "external_url": str(publish_response.get("publish_url", "")).strip() if publish_response else "",
             "original_declared": bool(publish_response.get("original_declared", False)) if publish_response else False,
             "title": title,
+            "api_available": api_available,
         }
         result_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         self._append_history(result_payload)
@@ -135,7 +241,7 @@ class WechatPublishService:
             result_path=result_path,
         )
 
-        self.logger.info("Wechat draft prepared for run: %s", run_dir)
+        self.logger.info("Wechat publish completed for run: %s (api=%s)", run_dir, api_available)
         return {
             "wechat_payload": payload_path,
             "wechat_article_markdown": article_markdown_path,
@@ -153,6 +259,14 @@ class WechatPublishService:
 
         profile_dir = self._resolve_browser_profile_dir()
         profile_dir.mkdir(parents=True, exist_ok=True)
+
+        prepare_browser_profile(
+            profile_dir=profile_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            label="wechat:init-session",
+            extra_paths=[self.settings.account_runtime_dir],
+        )
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch_persistent_context(
@@ -195,26 +309,15 @@ class WechatPublishService:
         if not wechat.enabled:
             raise RuntimeError("WeChat publishing is disabled. Set WECHAT_ENABLED=1 first.")
         if not wechat.app_id or not wechat.app_secret:
-            raise RuntimeError("WeChat AppID/AppSecret are missing. Set WECHAT_APP_ID and WECHAT_APP_SECRET.")
+            self.logger.warning("WeChat AppID/AppSecret are not configured. API features will be unavailable; falling back to browser-only mode.")
 
     def _resolve_browser_profile_dir(self) -> Path:
         return self.settings.account_runtime_dir / "wechat_profile"
 
-    def _resolve_image_assets(self, publish_dir: Path) -> tuple[Path, list[Path]]:
+    def _resolve_image_assets(self, publish_dir: Path, title: str = "") -> tuple[Path, list[Path]]:
         publish_images_dir = publish_dir / "images"
         run_images_dir = publish_dir.parent / "images"
         image_roots = [publish_images_dir, run_images_dir]
-
-        cover_path: Path | None = None
-        for root in image_roots:
-            candidate = root / "cover.png"
-            if candidate.exists():
-                cover_path = candidate
-                break
-        if cover_path is None:
-            raise FileNotFoundError(
-                f"Cover image not found under: {publish_images_dir} or {run_images_dir}"
-            )
 
         inline_image_paths: list[Path] = []
         for image_name in ("infographic_1.png", "infographic_2.png"):
@@ -223,7 +326,73 @@ class WechatPublishService:
                 if candidate.exists():
                     inline_image_paths.append(candidate)
                     break
+
+        strategy = self.settings.wechat.cover_strategy
+        cover_path: Path | None = None
+
+        if strategy == "first_inline" and inline_image_paths:
+            cover_path = inline_image_paths[0]
+            self.logger.info("WeChat cover strategy=first_inline, using: %s", cover_path.name)
+        else:
+            for root in image_roots:
+                candidate = root / "cover.png"
+                if candidate.exists():
+                    cover_path = candidate
+                    break
+            if cover_path and strategy == "first_inline":
+                self.logger.info(
+                    "WeChat cover strategy=first_inline but no inline images, falling back to: %s",
+                    cover_path.name,
+                )
+
+        if cover_path is None:
+            cover_path = self._generate_text_cover(publish_dir, title=title)
+            if cover_path is None:
+                raise FileNotFoundError(
+                    f"Cover image not found under: {publish_images_dir} or {run_images_dir}"
+                )
+
         return cover_path, inline_image_paths
+
+    def _generate_text_cover(self, publish_dir: Path, title: str = "") -> Path | None:
+        """当没有封面图时，自动生成一个简单的纯色文字封面。"""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+
+            cover_dir = publish_dir / "images"
+            cover_dir.mkdir(parents=True, exist_ok=True)
+            cover_path = cover_dir / "cover.png"
+
+            width, height = 900, 500
+            img = Image.new("RGB", (width, height), color=(30, 60, 120))
+            draw = ImageDraw.Draw(img)
+
+            font_size = 40
+            try:
+                font = ImageFont.truetype("msyh.ttc", font_size)
+            except Exception:
+                font = ImageFont.load_default()
+
+            display_title = title or "AI科技观察"
+            max_chars = 14
+            lines = [display_title[i:i + max_chars] for i in range(0, len(display_title), max_chars)]
+            line_height = font_size + 12
+            total_height = len(lines) * line_height
+            y_start = (height - total_height) // 2
+
+            for idx, line in enumerate(lines):
+                bbox = draw.textbbox((0, 0), line, font=font)
+                tw = bbox[2] - bbox[0]
+                x = (width - tw) // 2
+                y = y_start + idx * line_height
+                draw.text((x, y), line, fill=(255, 255, 255), font=font)
+
+            img.save(str(cover_path), "PNG")
+            self.logger.info("Generated text cover image: %s", cover_path)
+            return cover_path
+        except Exception as exc:
+            self.logger.warning("Failed to generate text cover image: %s", exc)
+            return None
 
     def _build_article_payload(
         self,
@@ -284,6 +453,7 @@ class WechatPublishService:
         article_markdown: str,
         inline_image_urls: list[str],
     ) -> tuple[str, dict[str, Any]]:
+        # 优先级1: md2wechat（外部 API/CLI 服务）
         if self.md2wechat_service.available:
             try:
                 payload = self.md2wechat_service.convert(article_markdown)
@@ -291,15 +461,35 @@ class WechatPublishService:
             except Exception as exc:
                 if not self.settings.wechat.md2wechat_fallback_to_builtin:
                     raise
-                self.logger.warning("md2wechat conversion failed, falling back to builtin renderer: %s", exc)
+                self.logger.warning("md2wechat conversion failed, falling back: %s", exc)
         elif self.md2wechat_service.enabled:
             self.logger.warning(
-                "md2wechat backend enabled but neither API key nor local CLI is available; falling back to builtin."
+                "md2wechat backend enabled but neither API key nor local CLI is available; falling back."
             )
 
+        # 优先级2: html-anything（本地 Agent 排版服务，75 套模板）
+        if self.html_anything_service.enabled:
+            try:
+                style = getattr(self.settings.writing, "default_style", "")
+                payload = self.html_anything_service.convert(article_markdown, style=style)
+                return str(payload.get("html", "")).strip(), payload
+            except Exception as exc:
+                self.logger.warning("html-anything conversion failed, falling back to builtin: %s", exc)
+
+        # 优先级3: 内置 WeChat layout engine
+        try:
+            converter = MarkdownToWechatConverter(
+                brand_name=self.settings.wechat.author_name or self.settings.wechat.account_name or self.settings.brand_name,
+            )
+            html = converter.convert(article_markdown)
+            return html, {"provider": "wechat_layout_engine"}
+        except Exception as exc:
+            self.logger.warning("WeChat layout engine failed, falling back to builtin renderer: %s", exc)
+
+        # 优先级4: 最基础 fallback
         return (
             self._render_article_html(title=title, article=article, inline_image_urls=inline_image_urls),
-            {"provider": "builtin"},
+            {"provider": "builtin_fallback"},
         )
 
     def _compose_article_markdown(self, *, article: str, inline_image_urls: list[str]) -> str:
@@ -621,16 +811,42 @@ class WechatPublishService:
         return targets[:image_count]
 
     def _upload_cover_material(self, access_token: str, cover_path: Path) -> str:
-        response = self._wechat_post_multipart(
-            "/cgi-bin/material/add_material",
-            access_token=access_token,
-            fields={"type": "image"},
-            files={"media": cover_path},
-        )
+        upload_path = self._ensure_rgb_image(cover_path)
+        try:
+            response = self._wechat_post_multipart(
+                "/cgi-bin/material/add_material",
+                access_token=access_token,
+                fields={"type": "image"},
+                files={"media": upload_path},
+            )
+        finally:
+            if upload_path is not cover_path and upload_path.exists():
+                with suppress(Exception):
+                    upload_path.unlink()
         media_id = str(response.get("media_id", "")).strip()
         if not media_id:
             raise RuntimeError(f"Cover material upload failed: {response}")
         return media_id
+
+    def _ensure_rgb_image(self, image_path: Path) -> Path:
+        try:
+            from PIL import Image as PILImage
+
+            img = PILImage.open(image_path)
+            if img.mode != "RGBA":
+                return image_path
+            rgb = PILImage.new("RGB", img.size, (255, 255, 255))
+            rgb.paste(img, mask=img.split()[3])
+            tmp = image_path.parent / f"_rgb_{image_path.name}"
+            rgb.save(tmp, format="PNG")
+            self.logger.info("Converted cover image RGBA→RGB for WeChat upload: %s", tmp.name)
+            return tmp
+        except ImportError:
+            self.logger.warning("Pillow not available, uploading cover as-is (may fail if RGBA).")
+            return image_path
+        except Exception as exc:
+            self.logger.warning("Cover RGBA→RGB conversion skipped: %s", exc)
+            return image_path
 
     def _upload_inline_image(self, access_token: str, image_path: Path) -> str:
         response = self._wechat_post_multipart(
@@ -680,8 +896,14 @@ class WechatPublishService:
         return self._read_json_response(request)
 
     def _read_json_response(self, request: Request) -> dict[str, Any]:
+        # Serv00 代理密钥
+        wechat = self.settings.wechat
+        if wechat.serv00_proxy_enabled and wechat.serv00_proxy_secret:
+            request.add_header("X-Proxy-Secret", wechat.serv00_proxy_secret)
+
+        opener = self._build_opener()
         try:
-            with urlopen(request, timeout=60) as response:
+            with opener.open(request, timeout=60) as response:
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
@@ -693,6 +915,15 @@ class WechatPublishService:
         if int(payload.get("errcode", 0) or 0) != 0:
             raise RuntimeError(f"WeChat API error: {payload}")
         return payload
+
+    def _build_opener(self):
+        proxy_url = getattr(self.settings.wechat, "api_proxy", "") or ""
+        if proxy_url and ProxyHandler is not None and build_opener is not None:
+            handler = ProxyHandler({"http": proxy_url, "https": proxy_url})
+            self.logger.info("WeChat API using proxy: %s", proxy_url[:30])
+            return build_opener(handler)
+        from urllib.request import build_opener as _build_opener
+        return _build_opener()
 
     def _get_access_token(self) -> str:
         now = time.time()
@@ -707,7 +938,12 @@ class WechatPublishService:
                 "secret": wechat.app_secret,
             }
         )
-        url = f"{wechat.api_base_url.rstrip('/')}/cgi-bin/token?{query}"
+        # Serv00 代理：token 请求也走代理
+        if wechat.serv00_proxy_enabled and wechat.serv00_proxy_url:
+            base = wechat.serv00_proxy_url.rstrip("/")
+        else:
+            base = wechat.api_base_url.rstrip("/")
+        url = f"{base}/cgi-bin/token?{query}"
         request = Request(url)
         try:
             payload = self._read_json_response(request)
@@ -721,6 +957,16 @@ class WechatPublishService:
                 )
                 self.logger.warning(message)
                 raise WechatIpWhitelistBlockedException(message, ip_address=ip_address) from exc
+            if "40125" in payload_text and "invalid appsecret" in payload_text.lower():
+                from toutiao_content_factory.exceptions import WechatAuthError
+                message = (
+                    "[WeChat] 微信公众号 AppSecret 验证失败 (errcode=40125)。"
+                    "请检查: 1) WECHAT_APP_ID 和 WECHAT_APP_SECRET 是否正确; "
+                    "2) 微信后台是否已重置 AppSecret; "
+                    "3) .env 文件中是否有拼写错误或多余空格。"
+                )
+                self.logger.error(message)
+                raise WechatAuthError(message) from exc
             raise
         token = str(payload.get("access_token", "")).strip()
         expires_in = int(payload.get("expires_in", 7200) or 7200)
@@ -735,7 +981,12 @@ class WechatPublishService:
         return match.group(1).strip() if match else ""
 
     def _build_api_url(self, endpoint: str, *, access_token: str) -> str:
-        base = self.settings.wechat.api_base_url.rstrip("/")
+        wechat = self.settings.wechat
+        if wechat.serv00_proxy_enabled and wechat.serv00_proxy_url:
+            base = wechat.serv00_proxy_url.rstrip("/")
+            self.logger.debug("Using Serv00 proxy: %s", base)
+        else:
+            base = wechat.api_base_url.rstrip("/")
         return f"{base}{endpoint}?access_token={access_token}"
 
     def _clip_title(self, title: str) -> str:
@@ -774,7 +1025,733 @@ class WechatPublishService:
         history.append(payload)
         self.history_path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _publish_via_135editor(
+        self,
+        *,
+        title: str,
+        summary: str,
+        article_html: str,
+        cover_path: Path,
+    ) -> dict[str, Any]:
+        """通过135编辑器发布文章到微信公众号草稿箱。"""
+        try:
+            result = self._editor_135_service.publish_via_135editor(
+                title=title,
+                article_html=article_html,
+                cover_path=cover_path,
+                summary=summary,
+            )
+            return result
+        except Exception as exc:
+            self.logger.error("135编辑器发布失败: %s", exc)
+            raise
+
+    def initialize_135editor_login_session(self) -> dict[str, str]:
+        """初始化135编辑器登录会话。"""
+        return self._editor_135_service.initialize_login_session()
+
+    def _publish_via_browser_only(
+        self,
+        *,
+        title: str,
+        summary: str,
+        article_html: str,
+        cover_path: Path,
+    ) -> dict[str, Any]:
+        if sync_playwright is None:
+            raise RuntimeError("Playwright is not installed.")
+
+        profile_dir = self._resolve_browser_profile_dir()
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        prepare_browser_profile(
+            profile_dir=profile_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            label="wechat:browser-only",
+            extra_paths=[self.settings.account_runtime_dir],
+        )
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(profile_dir),
+                headless=self.settings.publishing.headless,
+                channel=self.settings.publishing.channel or None,
+                executable_path=self.settings.publishing.executable_path or None,
+            )
+            page = None
+            try:
+                page = browser.pages[0] if browser.pages else browser.new_page()
+                self._open_wechat_backend(page)
+                self._raise_if_session_expired(page)
+                token = self._extract_token(page)
+
+                app_msg_id = self._browser_create_draft(
+                    page, token, title, summary, article_html, cover_path,
+                )
+
+                if not app_msg_id:
+                    self.logger.info("Falling back to editor-based draft creation.")
+                    app_msg_id = self._browser_create_draft_via_editor(
+                        page, token, title, summary, article_html, cover_path,
+                    )
+
+                if app_msg_id:
+                    self.logger.info("Draft saved with appMsgId=%s, skipping publish (draft-only mode).", app_msg_id)
+                else:
+                    self.logger.info("Draft saved (no appMsgId), skipping publish (draft-only mode).")
+
+                result = {
+                    "status": "draft_saved",
+                    "method": "browser_only",
+                    "title": title,
+                    "publish_url": page.url,
+                    "app_msg_id": app_msg_id or "",
+                }
+                return result
+            except SessionExpiredException:
+                self.logger.error("微信公众号 SessionExpiredException: 登录态已失效，需要重新登录")
+                raise
+            except Exception as exc:
+                debug_dir = self._capture_browser_debug_artifacts(page, {"title": title, "method": "browser_only"})
+                raise RuntimeError(
+                    f"WeChat browser-only publish failed: {self._clean_visible_text(exc)}. Debug files saved to: {debug_dir}"
+                ) from exc
+            finally:
+                browser.close()
+
+    def _extract_token(self, page) -> str:
+        token_match = re.search(r"token=(\d+)", page.url)
+        return token_match.group(1) if token_match else ""
+
+    def _browser_create_draft(
+        self,
+        page,
+        token: str,
+        title: str,
+        summary: str,
+        article_html: str,
+        cover_path: Path,
+    ) -> str | None:
+        self.logger.info("Creating draft via operate_appmsg API in browser context...")
+
+        # Navigate to editor page to ensure we're on mp.weixin.qq.com domain
+        # and can access the fingerprint from the page context
+        base = self.settings.wechat.base_url.rstrip("/")
+        editor_url = f"{base}/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=77&token={token}&lang=zh_CN"
+        with suppress(Exception):
+            page.goto(editor_url, wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_timeout(2000)
+
+        cover_file_id, cover_cdn_url = self._browser_upload_cover(page, token, cover_path)
+        if not cover_file_id:
+            self.logger.warning("Cover upload failed, draft may not be publishable.")
+            cover_file_id = ""
+            cover_cdn_url = ""
+
+        sq_file_id, sq_cdn_url = "", ""
+        if cover_file_id:
+            sq_file_id, sq_cdn_url = self._browser_upload_square_cover(page, token, cover_path)
+
+        # cdn_url 为空时 API 草稿创建会返回 200002 参数错误，直接走编辑器模式
+        if not cover_cdn_url:
+            self.logger.info("cdn_url is empty, skipping API draft creation, using editor mode directly.")
+            return ""
+
+        # Get fingerprint from the page (needed for operate_appmsg)
+        fingerprint = page.evaluate("""() => {
+            return window.cgiData?.fingerprint || window.pageController?.fingerprint || '';
+        }""")
+        if not fingerprint:
+            import hashlib as _hashlib
+            fingerprint = _hashlib.md5(f"{token}{time.time()}".encode()).hexdigest()
+
+        create_result = page.evaluate("""async (args) => {
+            const formData = new FormData();
+            formData.append('token', args.token);
+            formData.append('lang', 'zh_CN');
+            formData.append('f', 'json');
+            formData.append('ajax', '1');
+            formData.append('fingerprint', args.fingerprint);
+            formData.append('random', String(Math.random()));
+            formData.append('AppMsgId', '');
+            formData.append('count', '1');
+            formData.append('data_seq', '0');
+            formData.append('operate_from', 'Chrome');
+            formData.append('isnew', '0');
+            formData.append('save_type', '1');
+            formData.append('articlenum', '1');
+            formData.append('pre_timesend_set', '0');
+            formData.append('remind_flag', 'null');
+            formData.append('sub', 'create');
+            formData.append('type', '77');
+            formData.append('title0', args.title);
+            formData.append('content0', args.content);
+            formData.append('author0', args.author);
+            formData.append('fileid0', args.fileId);
+            formData.append('digest0', '');
+            formData.append('sourceurl0', '');
+            formData.append('need_open_comment0', '1');
+            formData.append('music_id0', '');
+            formData.append('video_id0', '');
+            formData.append('voteid0', '');
+            formData.append('voteismlt0', '');
+            formData.append('voteid20', '');
+            formData.append('show_cover_pic0', '1');
+            formData.append('shortvideofileid0', '');
+            formData.append('copyright_type0', '0');
+            formData.append('releasefirst0', '');
+            formData.append('pay_fee0', '0');
+            formData.append('fee0', '0');
+            formData.append('fee_type0', '');
+            formData.append('pay_album_info0', '');
+            formData.append('appmsg_album_info0', JSON.stringify({appmsg_album_infos:[]}));
+            formData.append('ori_white_list0', '');
+            formData.append('free_content0', '');
+            formData.append('free_content_length0', '');
+            formData.append('can_reward0', '0');
+            formData.append('related_video0', '');
+            formData.append('is_set_sync_to_finder0', '0');
+            formData.append('mediaapi_publish_status0', '0');
+            formData.append('cdns0', '');
+            formData.append('cdn_235_1_url0', args.cdnUrl);
+            formData.append('cdn_1_1_url0', args.sqCdnUrl);
+            formData.append('cdn_url0', args.cdnUrl);
+            formData.append('cover_check_info', JSON.stringify({err_format: '', err_idx: 0}));
+            formData.append('auto_gen_digest0', '1');
+            formData.append('auto_elect_comment0', '1');
+            formData.append('auto_elect_reply0', '1');
+            formData.append('option_version0', '5');
+            formData.append('style_type0', '3');
+            formData.append('is_auto_type_setting', '3');
+            formData.append('can_insert_ad0', '1');
+            formData.append('reply_flag0', '2');
+            formData.append('open_comment_ad0', '1');
+            formData.append('danmu_pub_type0', '0');
+            formData.append('app_cover_auto0', '0');
+            formData.append('multi_picture_cover0', '0');
+            formData.append('title_gen_type0', '0');
+            formData.append('writerid0', '0');
+            formData.append('finder_draft_id0', '0');
+            formData.append('import_to_finder0', '0');
+            formData.append('is_finder_video0', '0');
+            formData.append('is_video_recommend0', '-1');
+            formData.append('allow_fast_reprint0', '0');
+            formData.append('applyori0', '0');
+            formData.append('disable_recommend0', '0');
+            formData.append('not_pay_can_comment0', '0');
+            formData.append('only_fans_can_comment0', '0');
+            formData.append('only_fans_days_can_comment0', '0');
+            formData.append('open_fansmsg0', '0');
+            formData.append('open_keyword_ad0', '0');
+            formData.append('incontent_ad_count0', '0');
+            formData.append('new_pic_process0', '0');
+            formData.append('is_cartoon_copyright0', '0');
+            formData.append('is_pay_subscribe0', '0');
+            formData.append('is_share_copyright0', '0');
+            formData.append('is_user_no_claim_source0', '0');
+            formData.append('share_page_type0', '0');
+            formData.append('sticker_info0', JSON.stringify({is_stickers:0,common_stickers_num:0,union_stickers_num:0,sticker_id_list:[],has_invalid_sticker:0}));
+            formData.append('audio_info0', JSON.stringify({audio_infos:[]}));
+            formData.append('mp_video_info0', JSON.stringify({list:[]}));
+            formData.append('copyright_img_list0', JSON.stringify({max_width:586,img_list:[]}));
+            formData.append('compose_info0', JSON.stringify({list:[{blockIdx:1,imgList:[],text:""}]}));
+            formData.append('share_imageinfo0', JSON.stringify({list:[]}));
+            formData.append('categories_list0', '[]');
+            formData.append('dot0', '{}');
+            formData.append('crop_list0', '');
+            formData.append('last_choose_cover_from0', '0');
+            formData.append('claim_source_type0', '');
+            formData.append('original_article_type0', '');
+            formData.append('source_article_type0', '');
+            formData.append('reprint_permit_type0', '');
+            formData.append('guide_words0', '');
+            formData.append('hit_nickname0', '');
+            formData.append('is_user_title0', '');
+            formData.append('pay_desc0', '');
+            formData.append('pay_gifts_count0', '0');
+            formData.append('pay_preview_percent0', '');
+            formData.append('reward_reply_id0', '');
+            formData.append('super_vote_id0', '');
+            formData.append('supervoteid0', '');
+            formData.append('ad_id0', '');
+            formData.append('ad_video_transition0', '');
+            formData.append('platform0', '');
+            formData.append('appmsg_danmu_pub_type0', '');
+            formData.append('cdn_16_9_url0', '');
+            formData.append('cdn_3_4_url0', '');
+            formData.append('cdn_finder_url0', '');
+            formData.append('cdn_url_back0', '');
+            formData.append('cdn_video_url0', '');
+            formData.append('sync_to_finder_cover0', '');
+            formData.append('sync_to_finder_cover_source0', '');
+            formData.append('share_copyright_url0', '');
+            formData.append('share_finder_audio_exportid0', '');
+            formData.append('share_finder_audio_username0', '');
+            formData.append('share_video_id0', '');
+            formData.append('share_voice_id0', '');
+            formData.append('mmlistenitem_json_buf0', '');
+            formData.append('msg_index_id0', '');
+            formData.append('vid_type0', '');
+            formData.append('video_ori_status0', '');
+            formData.append('reprint_recommend_content0', '');
+            formData.append('reprint_recommend_title0', '');
+            formData.append('allow_reprint0', '');
+            formData.append('allow_reprint_modify0', '');
+            formData.append('convert_to_image_share_page0', '');
+            formData.append('convert_from_image_share_page0', '');
+            formData.append('isneedsave', '0');
+            try {
+                const resp = await fetch('/cgi-bin/operate_appmsg?t=ajax-response&sub=create&type=77&token=' + args.token, {
+                    method: 'POST',
+                    body: formData,
+                });
+                return await resp.text();
+            } catch(e) {
+                return 'ERROR: ' + e.message;
+            }
+        }""", {
+            "token": token,
+            "fingerprint": fingerprint,
+            "title": title,
+            "content": article_html,
+            "author": self.settings.wechat.author_name or self.settings.account_label,
+            "fileId": str(cover_file_id),
+            "cdnUrl": str(cover_cdn_url),
+            "sqCdnUrl": str(sq_cdn_url),
+        })
+
+        self.logger.info("Draft create result: %s", str(create_result)[:500])
+
+        app_msg_id = None
+        try:
+            data = json.loads(create_result)
+            app_msg_id = str(data.get("appMsgId", data.get("appmsgid", ""))).strip()
+            if not app_msg_id:
+                self.logger.warning("Draft create returned no appMsgId: %s", create_result[:300])
+        except (json.JSONDecodeError, TypeError):
+            self.logger.warning("Failed to parse draft create result: %s", str(create_result)[:300])
+
+        if app_msg_id and cover_file_id:
+            update_result = page.evaluate("""async (args) => {
+                const [token, appMsgId, fileId, cdnUrl, sqFileId, sqCdnUrl] = args;
+                const formData = new FormData();
+                formData.append('token', token);
+                formData.append('lang', 'zh_CN');
+                formData.append('f', 'json');
+                formData.append('ajax', '1');
+                formData.append('sub', 'update');
+                formData.append('type', '77');
+                formData.append('id', appMsgId);
+                formData.append('fileid0', fileId);
+                formData.append('cdn_235_1_url0', cdnUrl);
+                formData.append('cdn_1_1_url0', sqCdnUrl);
+                formData.append('cdn_url0', cdnUrl);
+                formData.append('cover_check_info', JSON.stringify({err_format: '', err_idx: 0}));
+                formData.append('save_type', '1');
+                try {
+                    const resp = await fetch('/cgi-bin/operate_appmsg?t=ajax-response&sub=update&token=' + token, {
+                        method: 'POST',
+                        body: formData,
+                    });
+                    return await resp.text();
+                } catch(e) {
+                    return 'ERROR: ' + e.message;
+                }
+            }""", [token, app_msg_id, str(cover_file_id), str(cover_cdn_url), str(sq_file_id), str(sq_cdn_url)])
+            self.logger.info("Draft cover update result: %s", str(update_result)[:300])
+
+        return app_msg_id
+
+    def _upload_image_via_http(self, page, token: str, image_path: Path, filename: str = "cover.png") -> tuple[str, str]:
+        """通过 Python urllib 直接发起 HTTP 请求上传图片，避免 fetch('file://') 的 CORS 限制。"""
+        cookies = page.context.cookies()
+        cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+
+        upload_url = f"https://mp.weixin.qq.com/cgi-bin/filetransfer?action=upload_material&scene=1&f=json&writetype=doublewrite&groupid=1&token={token}"
+        boundary = f"----WebKitFormBoundary{uuid.uuid4().hex[:16]}"
+
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            f"Content-Type: image/png\r\n\r\n"
+        ).encode()
+        body += image_path.read_bytes()
+        body += f"\r\n--{boundary}--\r\n".encode()
+
+        req = Request(
+            upload_url,
+            data=body,
+            headers={
+                "Cookie": cookie_str,
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Referer": page.url,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
+            },
+        )
+        try:
+            with urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read().decode("utf-8", "ignore"))
+        except Exception as exc:
+            self.logger.warning("HTTP upload failed: %s", exc)
+            return "", ""
+
+        if not isinstance(result, dict):
+            self.logger.warning("Upload returned non-dict: %s", str(result)[:200])
+            return "", ""
+
+        self.logger.info("Upload API full response: %s", json.dumps(result, ensure_ascii=False)[:500])
+
+        ret = int((result.get("base_resp") or {}).get("ret", -1))
+        if ret != 0:
+            self.logger.warning("Upload API returned error: %s", json.dumps(result, ensure_ascii=False)[:300])
+            return "", ""
+
+        file_id = str(result.get("content", "")).strip()
+        cdn_url = str(result.get("cdn_url", result.get("cdn_mid_url", ""))).strip()
+        self.logger.info("Image uploaded via HTTP: file_id=%s cdn_url=%s", file_id, cdn_url[:80])
+        return file_id, cdn_url
+
+    def _browser_upload_cover(self, page, token: str, cover_path: Path) -> tuple[str, str]:
+        upload_path = self._ensure_rgb_image(cover_path)
+        upload_path = Path(os.path.abspath(str(upload_path)))
+        if not upload_path.exists():
+            self.logger.error("Cover image file does not exist: %s", upload_path)
+            return "", ""
+        return self._upload_image_via_http(page, token, upload_path, "cover.png")
+
+    def _browser_upload_square_cover(self, page, token: str, cover_path: Path) -> tuple[str, str]:
+        try:
+            from PIL import Image as PILImage
+            img = PILImage.open(cover_path)
+            w, h = img.size
+            crop_size = min(w, h)
+            left = (w - crop_size) // 2
+            top = (h - crop_size) // 2
+            square_img = img.crop((left, top, left + crop_size, top + crop_size))
+            if square_img.mode == "RGBA":
+                bg = PILImage.new("RGB", square_img.size, (255, 255, 255))
+                bg.paste(square_img, mask=square_img.split()[3])
+                square_img = bg
+            elif square_img.mode != "RGB":
+                square_img = square_img.convert("RGB")
+            square_path = cover_path.parent / f"_sq_{cover_path.name}"
+            square_img.save(str(square_path), format="PNG")
+
+            result = self._upload_image_via_http(page, token, square_path, "cover_square.png")
+
+            with suppress(Exception):
+                if square_path is not cover_path and square_path.exists():
+                    square_path.unlink()
+
+            return result
+        except ImportError:
+            self.logger.warning("Pillow not available, skipping square cover upload.")
+            return "", ""
+        except Exception as exc:
+            self.logger.warning("Square cover upload failed: %s", exc)
+            return "", ""
+
+    def _browser_create_draft_via_editor(
+        self,
+        page,
+        token: str,
+        title: str,
+        summary: str,
+        article_html: str,
+        cover_path: Path,
+    ) -> str | None:
+        base = self.settings.wechat.base_url.rstrip("/")
+        new_url = f"{base}/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=77&token={token}&lang=zh_CN"
+        page.goto(new_url, wait_until="networkidle", timeout=30000)
+        page.wait_for_timeout(5000)
+
+        for _ in range(10):
+            self._dismiss_irrelevant_wechat_dialogs(page)
+            page.wait_for_timeout(500)
+
+        # Fill title — #title may be visibility:hidden (height:0) in the new editor,
+        # so Playwright fill() silently fails.  Use JS native setter instead.
+        title_filled = False
+
+        # Method 1: JS native value setter (works even when element is hidden)
+        with suppress(Exception):
+            js_title_result = page.evaluate("""(title) => {
+                const input = document.querySelector('#title');
+                if (!input) return 'no_input';
+                const nativeSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLTextAreaElement.prototype, 'value'
+                ).set;
+                nativeSetter.call(input, title);
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                return 'ok:' + input.value.substring(0, 30);
+            }""", title)
+            if js_title_result and js_title_result.startswith("ok:"):
+                title_filled = True
+                self.logger.info("Filled title via JS native setter: %s", js_title_result)
+
+        # Method 2: Playwright fill with force (fallback)
+        if not title_filled:
+            with suppress(Exception):
+                title_input = page.locator("#title")
+                title_input.fill(title, force=True, timeout=5000)
+                page.wait_for_timeout(500)
+                title_value = page.evaluate('() => document.querySelector("#title")?.value || ""')
+                if title_value.strip():
+                    title_filled = True
+                    self.logger.info("Filled title via Playwright force fill.")
+
+        if not title_filled:
+            self.logger.warning("Failed to fill title in editor.")
+
+        paste_result = page.evaluate("""(html) => {
+            const editor = document.querySelector('.ProseMirror') ||
+                          document.querySelector('[contenteditable="true"]');
+            if (!editor) return 'no editor';
+            editor.focus();
+            const dt = new DataTransfer();
+            dt.setData('text/html', html);
+            const pasteEvent = new ClipboardEvent('paste', {
+                clipboardData: dt,
+                bubbles: true,
+                cancelable: true,
+            });
+            editor.dispatchEvent(pasteEvent);
+            return 'pasted';
+        }""", article_html)
+        self.logger.info("Content paste result: %s", paste_result)
+        page.wait_for_timeout(2000)
+
+        cover_uploaded = False
+        upload_path = self._ensure_rgb_image(cover_path)
+        try:
+            cover_uploaded = self._upload_cover_via_image_library(page, upload_path)
+            if not cover_uploaded:
+                self.logger.warning("Cover upload via image library failed, trying direct file input.")
+                cover_result = page.evaluate("""() => {
+                    const selectors = [
+                        '.js_cover_btn_area input[type="file"]',
+                        '#js_cover_area input[type="file"]',
+                        '.select-cover__btn input[type="file"]',
+                        'input[type="file"][accept*="image"]',
+                    ];
+                    for (const sel of selectors) {
+                        const el = document.querySelector(sel);
+                        if (el) return sel;
+                    }
+                    return null;
+                }""")
+                if cover_result:
+                    locator = page.locator(cover_result).first
+                    locator.set_input_files(str(upload_path))
+                    page.wait_for_timeout(3000)
+                    self.logger.info("Uploaded cover image via direct selector: %s", cover_result)
+
+                    # After direct upload, a crop dialog may appear — confirm it
+                    self._confirm_cover_crop_dialog(page)
+                    page.wait_for_timeout(2000)
+
+                    # Verify cover was set
+                    has_cover = page.evaluate("""() => {
+                        const coverArea = document.querySelector('.js_cover_btn_area');
+                        return !!coverArea?.querySelector('img');
+                    }""")
+                    if has_cover:
+                        cover_uploaded = True
+                        self.logger.info("Cover image verified after direct upload + crop confirm.")
+                    else:
+                        self.logger.warning("Cover image still not visible after direct upload.")
+        finally:
+            if upload_path is not cover_path and upload_path.exists():
+                with suppress(Exception):
+                    upload_path.unlink()
+
+        page.wait_for_timeout(2000)
+        for _ in range(5):
+            self._dismiss_irrelevant_wechat_dialogs(page)
+            page.wait_for_timeout(500)
+
+        # If cover is still not uploaded, try one more approach: click the cover
+        # area to open the upload dialog, then use file chooser
+        if not cover_uploaded:
+            self.logger.info("Cover not yet set, trying file-chooser approach.")
+            cover_uploaded = self._upload_cover_via_file_chooser(page, upload_path)
+
+        if not cover_uploaded:
+            self.logger.warning("Cover image could not be set. Draft save may fail with '请选择封面' error.")
+
+        save_result = page.evaluate("""() => {
+            const btn = document.querySelector('#js_submit button');
+            if (btn) { btn.click(); return 'clicked'; }
+            return null;
+        }""")
+        if save_result:
+            self.logger.info("Saved draft via #js_submit.")
+            page.wait_for_timeout(8000)
+
+        app_msg_id = None
+        with suppress(Exception):
+            url_match = re.search(r"appmsgid=(\d+)", page.url)
+            if url_match:
+                app_msg_id = url_match.group(1)
+
+        if not app_msg_id:
+            app_msg_id = page.evaluate("""() => {
+                const app = document.querySelector('[data-v-app]') || document.querySelector('#vue_container');
+                if (app && app.__vue_app__) {
+                    const root = app.__vue_app__._instance;
+                    if (root && root.proxy && root.proxy.$data) {
+                        return String(root.proxy.$data.appMsgId || '');
+                    }
+                }
+                return '';
+            }""")
+
+        self.logger.info("Draft created via editor, appMsgId: %s", app_msg_id)
+        return app_msg_id
+
+    def _browser_click_send_and_confirm(self, page) -> None:
+        self.logger.info("Clicking #js_send (发表) button...")
+        page.locator("#js_send").click(timeout=10000)
+        page.wait_for_timeout(2000)
+
+        first_dialog = page.evaluate("""() => {
+            const allDialogs = document.querySelectorAll('.weui-desktop-dialog__wrp, div[role="dialog"], .weui-dialog');
+            for (const d of allDialogs) {
+                const style = window.getComputedStyle(d);
+                if (style.display !== 'none') {
+                    const dialog = d.querySelector('.weui-desktop-dialog') || d;
+                    const btns = dialog ? dialog.querySelectorAll('button') : [];
+                    const btnTexts = [];
+                    btns.forEach(b => {
+                        const t = (b.textContent || '').trim();
+                        if (t) btnTexts.push(t);
+                    });
+                    if ((btnTexts.includes('发表') && btnTexts.includes('取消')) || btnTexts.includes('确认群发')) {
+                        return {found: true, buttons: btnTexts};
+                    }
+                }
+            }
+            return {found: false};
+        }""")
+
+        if not first_dialog.get("found"):
+            self.logger.warning("First publish dialog not found after #js_send click, trying extended selectors.")
+            page.wait_for_timeout(2000)
+            first_dialog = page.evaluate("""() => {
+                const allBtns = document.querySelectorAll('button, [role="button"], a.btn');
+                for (const btn of allBtns) {
+                    const t = (btn.textContent || '').trim();
+                    if (t === '发表' || t === '确认群发' || t === '确认发表') {
+                        const style = window.getComputedStyle(btn);
+                        const rect = btn.getBoundingClientRect();
+                        if (style.display !== 'none' && rect.width > 0 && rect.height > 0) {
+                            return {found: true, buttons: [t], directClick: true};
+                        }
+                    }
+                }
+                return {found: false};
+            }""")
+            if first_dialog.get("directClick"):
+                self.logger.info("Found publish confirm button via extended search, clicking directly.")
+                page.evaluate("""() => {
+                    const allBtns = document.querySelectorAll('button, [role="button"], a.btn');
+                    for (const btn of allBtns) {
+                        const t = (btn.textContent || '').trim();
+                        if (t === '发表' || t === '确认群发' || t === '确认发表') {
+                            btn.click();
+                            return;
+                        }
+                    }
+                }""")
+                page.wait_for_timeout(5000)
+                return
+            return
+
+        self.logger.info("First dialog found with buttons: %s", first_dialog["buttons"])
+        publish_btn = page.locator(
+            '.weui-desktop-dialog__wrp .weui-desktop-dialog button:has-text("发表")'
+        ).first
+        publish_btn.click(timeout=10000)
+        self.logger.info("Clicked '发表' in first dialog.")
+        page.wait_for_timeout(8000)
+
+        second_dialog = page.evaluate("""() => {
+            const allDialogs = document.querySelectorAll('.weui-desktop-dialog__wrp');
+            for (const d of allDialogs) {
+                const style = window.getComputedStyle(d);
+                if (style.display !== 'none') {
+                    const dialog = d.querySelector('.weui-desktop-dialog');
+                    const btns = dialog ? dialog.querySelectorAll('button') : [];
+                    const btnTexts = [];
+                    btns.forEach(b => {
+                        const t = (b.textContent || '').trim();
+                        if (t) btnTexts.push(t);
+                    });
+                    if (btnTexts.includes('继续发表')) {
+                        return {found: true, buttons: btnTexts};
+                    }
+                }
+            }
+            return {found: false};
+        }""")
+
+        if second_dialog.get("found"):
+            self.logger.info("Second dialog found with buttons: %s", second_dialog["buttons"])
+            continue_btn = page.locator(
+                '.weui-desktop-dialog__wrp .weui-desktop-dialog button:has-text("继续发表")'
+            ).first
+            continue_btn.click(timeout=10000)
+            self.logger.info("Clicked '继续发表' in second dialog.")
+            page.wait_for_timeout(10000)
+        else:
+            self.logger.info("No second dialog with '继续发表', publish may have completed from first dialog.")
+            page.wait_for_timeout(5000)
+
+        self._verify_wechat_publish_success(page)
+
+    def _verify_wechat_publish_success(self, page) -> None:
+        try:
+            page.wait_for_timeout(3000)
+            current_url = str(page.url or "")
+            success_indicators = page.evaluate("""() => {
+                const indicators = [];
+                const allText = document.body ? document.body.innerText : '';
+                if (allText.includes('发表成功') || allText.includes('发布成功')) {
+                    indicators.push('success_text');
+                }
+                const toasts = document.querySelectorAll('.weui-desktop-toast, [class*="toast"], [class*="success"]');
+                for (const t of toasts) {
+                    const style = window.getComputedStyle(t);
+                    if (style.display !== 'none' && t.textContent.includes('成功')) {
+                        indicators.push('success_toast');
+                        break;
+                    }
+                }
+                return indicators;
+            }""")
+            if success_indicators:
+                self.logger.info("WeChat publish verified: %s", success_indicators)
+            elif "mp.weixin.qq.com" in current_url and "/cgi-bin/appmsg" not in current_url:
+                self.logger.info("WeChat publish likely succeeded: page navigated away from editor.")
+            else:
+                self.logger.warning("WeChat publish verification: no explicit success indicator detected.")
+        except Exception as exc:
+            self.logger.debug("WeChat publish verification failed: %s", exc)
+
     def _submit_draft_via_browser(self, *, draft_media_id: str, title: str) -> dict[str, Any]:
+        # 草稿模式：只保存到草稿箱，不发表（发表需要扫码确认）
+        self.logger.info("Draft-only mode: skipping publish for draft_media_id=%s title=%s", draft_media_id, title)
+        return {
+            "status": "draft_saved",
+            "method": "browser",
+            "draft_media_id": draft_media_id,
+            "title": title,
+            "original_declared": False,
+        }
+
+    def _submit_draft_via_browser_original(self, *, draft_media_id: str, title: str) -> dict[str, Any]:
         if sync_playwright is None:
             raise RuntimeError(
                 "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`."
@@ -784,10 +1761,18 @@ class WechatPublishService:
         profile_dir.mkdir(parents=True, exist_ok=True)
         debug_dir: Path | None = None
 
+        prepare_browser_profile(
+            profile_dir=profile_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            label="wechat:publish",
+            extra_paths=[self.settings.account_runtime_dir],
+        )
+
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile_dir),
-                headless=False,
+                headless=self.settings.publishing.headless,
                 channel=self.settings.publishing.channel or None,
                 executable_path=self.settings.publishing.executable_path or None,
             )
@@ -810,6 +1795,7 @@ class WechatPublishService:
                 }
                 return result
             except SessionExpiredException:
+                self.logger.error("微信公众号 SessionExpiredException: 登录态已失效，需要重新登录")
                 raise
             except Exception as exc:
                 debug_dir = self._capture_browser_debug_artifacts(page, {"draft_media_id": draft_media_id, "title": title})
@@ -829,6 +1815,28 @@ class WechatPublishService:
         self._raise_if_session_expired(page)
 
     def _open_wechat_draft_box(self, page) -> None:
+        draft_url_paths = [
+            "/cgi-bin/appmsg?begin=0&count=10&type=77&action=list_card",
+            "/cgi-bin/appmsg?t=media/appmsg_draft",
+        ]
+        current_url = page.url
+        base = self.settings.wechat.base_url.rstrip("/")
+        for path in draft_url_paths:
+            token_match = re.search(r"token=(\d+)", current_url)
+            sep = "&" if "?" in path else "?"
+            full_url = f"{base}{path}"
+            if token_match:
+                full_url += f"{sep}token={token_match.group(1)}"
+            try:
+                page.goto(full_url, wait_until="domcontentloaded", timeout=15000)
+                page.wait_for_timeout(3000)
+                self._raise_if_session_expired(page)
+                self.logger.info("Navigated directly to WeChat draft box: %s", path[:60])
+                return
+            except Exception as exc:
+                self.logger.warning("Direct navigation to draft box failed (%s), trying text click.", exc)
+                break
+
         candidate_texts = ("草稿箱", "Drafts", "草稿")
         deadline = time.time() + 60
         while time.time() < deadline:
@@ -851,19 +1859,39 @@ class WechatPublishService:
         raise RuntimeError(f"Could not open WeChat draft box from the current session. Debug files saved to: {debug_dir}")
 
     def _open_wechat_draft_by_title(self, page, title: str) -> None:
-        locator = page.get_by_text(title, exact=False).first
+        edit_url = self._find_draft_edit_url(title)
+        if edit_url:
+            base = self.settings.wechat.base_url.rstrip("/")
+            current_url = page.url
+            token_match = re.search(r"token=(\d+)", current_url)
+            sep = "&" if "?" in edit_url else "?"
+            full_url = f"{base}{edit_url}"
+            if token_match:
+                full_url += f"{sep}token={token_match.group(1)}"
+            try:
+                page.goto(full_url, wait_until="domcontentloaded", timeout=15000)
+                page.wait_for_timeout(3000)
+                self.logger.info("Navigated directly to draft edit page: %s", edit_url[:80])
+                return
+            except Exception as exc:
+                self.logger.warning("Direct navigation to draft edit page failed: %s", exc)
+
+        short_title = title[:15] if len(title) > 15 else title
+        locators = [
+            page.get_by_text(title, exact=False).first,
+            page.locator(f".weui-desktop-publish__cover__title:has-text('{short_title}')").first,
+            page.locator(WECHAT_DRAFT_LIST_PAGE.first("draft_title_link")).first,
+        ]
         deadline = time.time() + 60
         while time.time() < deadline:
-            with suppress(Exception):
-                if locator.is_visible(timeout=800):
-                    locator.click(force=True, timeout=2000)
-                    page.wait_for_timeout(2500)
-                    return
-            search_inputs = [
-                "input[placeholder*='搜索']",
-                "input[placeholder*='标题']",
-                "input[type='search']",
-            ]
+            for locator in locators:
+                with suppress(Exception):
+                    if locator.is_visible(timeout=800):
+                        locator.click(force=True, timeout=2000)
+                        page.wait_for_timeout(2500)
+                        self.logger.info("Opened WeChat draft by title: %s", title[:40])
+                        return
+            search_inputs = WECHAT_DRAFT_LIST_PAGE.get("search_input")
             for selector in search_inputs:
                 with suppress(Exception):
                     field = page.locator(selector).first
@@ -875,11 +1903,52 @@ class WechatPublishService:
             page.wait_for_timeout(1000)
         raise RuntimeError(f"Could not locate draft titled: {title}")
 
+    def _find_draft_edit_url(self, title: str) -> str | None:
+        try:
+            access_token = self._get_access_token()
+            url = self._build_api_url("/cgi-bin/draft/batchget", access_token=access_token)
+            payload = {"offset": 0, "count": 20, "no_content": 1}
+            response = self._wechat_post_json("/cgi-bin/draft/batchget", payload, access_token=access_token)
+            items = response.get("item", [])
+            for item in items:
+                content = item.get("content", {})
+                news_items = content.get("news_item", [])
+                for news in news_items:
+                    news_title = str(news.get("title", "")).strip()
+                    if news_title == title or title in news_title:
+                        media_id = str(item.get("media_id", "")).strip()
+                        if media_id:
+                            edit_url = f"/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=77&appmsgid={media_id}"
+                            self.logger.info("Found draft edit URL for title '%s': %s", title[:30], edit_url[:80])
+                            return edit_url
+            self.logger.warning("Draft with title '%s' not found in API draft list.", title[:30])
+        except Exception as exc:
+            self.logger.warning("Failed to find draft edit URL via API: %s", exc)
+        return None
+
     def _click_publish_button_on_wechat_page(self, page) -> None:
+        js_result = page.evaluate(
+            """(selectors) => {
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        el.click();
+                        return sel;
+                    }
+                }
+                return null;
+            }""",
+            WECHAT_EDITOR_PAGE.get("publish_button"),
+        )
+        if js_result:
+            page.wait_for_timeout(2000)
+            self.logger.info("Clicked publish button via JS on selector: %s", js_result)
+            return
+
         button_texts = (
+            "发表",
             "发布",
             "群发",
-            "发表",
             "提交",
             "确认发布",
         )
@@ -903,45 +1972,316 @@ class WechatPublishService:
         raise RuntimeError("Could not find a publish button on the WeChat draft page.")
 
     def _confirm_wechat_publish_dialog(self, page) -> bool:
-        confirm_texts = (
-            "确定",
-            "确认",
-            "继续发布",
-            "确认发布",
-            "我知道了",
-            "发布",
-        )
+        confirm_texts = WECHAT_PUBLISH_CONFIRM_TEXTS
         page.wait_for_timeout(1500)
         original_declared = self._ensure_original_declaration(page)
-        for _ in range(20):
+
+        self._dismiss_irrelevant_wechat_dialogs(page)
+
+        for attempt in range(30):
             if self._ensure_original_declaration(page):
                 original_declared = True
+
+            self._dismiss_irrelevant_wechat_dialogs(page)
+
+            js_clicked = page.evaluate("""(args) => {
+                const [confirmTexts, confirmSelectors] = args;
+                for (const sel of confirmSelectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        const style = window.getComputedStyle(el);
+                        if (style.display !== 'none' && style.visibility !== 'hidden') {
+                            el.click();
+                            return sel;
+                        }
+                    }
+                }
+                for (const text of confirmTexts) {
+                    const allBtns = document.querySelectorAll('button, a.btn, [role="button"]');
+                    for (const btn of allBtns) {
+                        const btnText = (btn.textContent || '').trim();
+                        if (btnText === text) {
+                            const style = window.getComputedStyle(btn);
+                            const rect = btn.getBoundingClientRect();
+                            if (style.display !== 'none' && rect.width > 0 && rect.height > 0) {
+                                const parentDialog = btn.closest('.weui-desktop-dialog');
+                                if (parentDialog) {
+                                    const dialogText = parentDialog.textContent || '';
+                                    if (dialogText.includes('退出') || dialogText.includes('实名') || dialogText.includes('切换账号')) {
+                                        continue;
+                                    }
+                                }
+                                btn.click();
+                                return 'text:' + text;
+                            }
+                        }
+                    }
+                }
+                return null;
+            }""", [list(confirm_texts), WECHAT_PUBLISH_DIALOG.get("confirm_publish_button")])
+            if js_clicked:
+                page.wait_for_timeout(2000)
+                self.logger.info("Confirmed publish dialog via JS: %s (attempt %d)", js_clicked, attempt)
+                return original_declared
+
             for text in confirm_texts:
                 with suppress(Exception):
                     locator = page.get_by_role("button", name=text).first
                     if locator.is_visible(timeout=500):
                         locator.click(force=True, timeout=1500)
                         page.wait_for_timeout(2000)
-                        return original_declared
-            for text in confirm_texts:
-                with suppress(Exception):
-                    locator = page.get_by_text(text, exact=False).first
-                    if locator.is_visible(timeout=500):
-                        locator.click(force=True, timeout=1500)
-                        page.wait_for_timeout(2000)
+                        self.logger.info("Confirmed publish dialog via Playwright button: %s", text)
                         return original_declared
             page.wait_for_timeout(1000)
         return original_declared
 
+    def _upload_cover_via_image_library(self, page, cover_path: Path) -> bool:
+        try:
+            for _ in range(3):
+                self._dismiss_irrelevant_wechat_dialogs(page)
+                page.wait_for_timeout(500)
+
+            page.evaluate("""() => {
+                const coverBtn = document.querySelector('.js_cover_btn_area');
+                if (coverBtn) coverBtn.click();
+            }""")
+            page.wait_for_timeout(1500)
+
+            self._dismiss_irrelevant_wechat_dialogs(page)
+            page.wait_for_timeout(500)
+
+            page.evaluate("""() => {
+                const link = document.querySelector('.js_imagedialog');
+                if (link) link.click();
+            }""")
+            page.wait_for_timeout(3000)
+
+            self._dismiss_irrelevant_wechat_dialogs(page)
+            page.wait_for_timeout(500)
+
+            has_dialog = page.evaluate("""() => {
+                const dialogs = document.querySelectorAll('.weui-desktop-dialog');
+                for (const d of dialogs) {
+                    const wrp = d.closest('.weui-desktop-dialog__wrp');
+                    const style = wrp ? window.getComputedStyle(wrp) : window.getComputedStyle(d);
+                    if (style.display !== 'none' && d.textContent.includes('选择图片')) {
+                        return true;
+                    }
+                }
+                return false;
+            }""")
+            if not has_dialog:
+                self.logger.warning("Image library dialog did not appear.")
+                return False
+
+            with page.expect_file_chooser(timeout=10000) as fc_info:
+                page.evaluate("""() => {
+                    const btns = document.querySelectorAll('a, button, span');
+                    for (const btn of btns) {
+                        const text = (btn.textContent || '').trim();
+                        if (text === '上传文件' || text === '上传图片' || text === '本地上传') {
+                            const style = window.getComputedStyle(btn);
+                            const rect = btn.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0 && style.display !== 'none') {
+                                btn.click();
+                                return;
+                            }
+                        }
+                    }
+                }""")
+            file_chooser = fc_info.value
+            file_chooser.set_files(str(cover_path))
+            self.logger.info("Cover image uploaded via file chooser in image library.")
+            page.wait_for_timeout(5000)
+
+            page.evaluate("""() => {
+                const images = document.querySelectorAll('.img_item, .image_item, .pic_item, [class*="img_item"]');
+                for (const img of images) {
+                    if (!img.classList.contains('selected')) {
+                        img.click();
+                        return;
+                    }
+                }
+            }""")
+            page.wait_for_timeout(1000)
+
+            page.evaluate("""() => {
+                const btns = document.querySelectorAll('button, a.btn');
+                for (const btn of btns) {
+                    if (btn.textContent.trim() === '确定') {
+                        btn.click();
+                        return;
+                    }
+                }
+            }""")
+            page.wait_for_timeout(3000)
+
+            has_cover = page.evaluate("""() => {
+                const coverArea = document.querySelector('.js_cover_btn_area');
+                return !!coverArea?.querySelector('img');
+            }""")
+            if has_cover:
+                self.logger.info("Cover image successfully set via image library.")
+                return True
+            else:
+                self.logger.warning("Cover image was not set after image library upload.")
+                return False
+        except Exception as exc:
+            self.logger.warning("Cover upload via image library failed: %s", exc)
+            return False
+
+    def _confirm_cover_crop_dialog(self, page) -> None:
+        """After uploading a cover image, a crop/confirm dialog may appear. Confirm it."""
+        for _ in range(5):
+            self._dismiss_irrelevant_wechat_dialogs(page)
+            page.wait_for_timeout(500)
+
+            clicked = page.evaluate("""() => {
+                // Look for crop confirm button
+                const selectors = [
+                    '.js_crop_confirm',
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        const style = window.getComputedStyle(el);
+                        if (style.display !== 'none' && style.visibility !== 'hidden') {
+                            el.click();
+                            return sel;
+                        }
+                    }
+                }
+                // Search buttons by text content
+                const allBtns = document.querySelectorAll('button');
+                const targetTexts = ['完成裁剪', '完成', '确定'];
+                for (const btn of allBtns) {
+                    const t = (btn.textContent || '').trim();
+                    if (targetTexts.includes(t)) {
+                        const style = window.getComputedStyle(btn);
+                        if (style.display !== 'none' && style.visibility !== 'hidden') {
+                            btn.click();
+                            return 'btn_text:' + t;
+                        }
+                    }
+                }
+                // Also check dialog buttons
+                const dialogs = document.querySelectorAll('.weui-desktop-dialog');
+                for (const d of dialogs) {
+                    const wrp = d.closest('.weui-desktop-dialog__wrp');
+                    const style = wrp ? window.getComputedStyle(wrp) : window.getComputedStyle(d);
+                    if (style.display === 'none') continue;
+                    const btns = d.querySelectorAll('button');
+                    for (const btn of btns) {
+                        const t = (btn.textContent || '').trim();
+                        if (t === '完成' || t === '确定' || t === '完成裁剪') {
+                            btn.click();
+                            return 'dialog_btn:' + t;
+                        }
+                    }
+                }
+                return null;
+            }""")
+            if clicked:
+                self.logger.info("Confirmed cover crop dialog via: %s", clicked)
+                page.wait_for_timeout(2000)
+                return
+            page.wait_for_timeout(1000)
+
+    def _upload_cover_via_file_chooser(self, page, cover_path: Path) -> bool:
+        """Upload cover by clicking the cover area to trigger a file chooser dialog."""
+        try:
+            # Click the cover area to trigger file chooser
+            with page.expect_file_chooser(timeout=10000) as fc_info:
+                # Try clicking the cover upload button/area
+                cover_click_result = page.evaluate("""() => {
+                    // Try the cover button area first
+                    const coverBtn = document.querySelector('.js_cover_btn_area');
+                    if (coverBtn) { coverBtn.click(); return 'cover_btn_area'; }
+                    // Try the "选择封面" text
+                    const els = document.querySelectorAll('span, a, div');
+                    for (const el of els) {
+                        if ((el.textContent || '').trim() === '选择封面' || (el.textContent || '').trim() === '拖拽或选择封面') {
+                            el.click();
+                            return 'cover_text:' + (el.textContent || '').trim();
+                        }
+                    }
+                    return null;
+                }""")
+                if not cover_click_result:
+                    self.logger.warning("Could not click cover area for file chooser.")
+                    return False
+
+            file_chooser = fc_info.value
+            file_chooser.set_files(str(cover_path))
+            self.logger.info("Cover uploaded via file chooser.")
+            page.wait_for_timeout(5000)
+
+            # Confirm any crop dialog
+            self._confirm_cover_crop_dialog(page)
+            page.wait_for_timeout(2000)
+
+            # Verify cover
+            has_cover = page.evaluate("""() => {
+                const coverArea = document.querySelector('.js_cover_btn_area');
+                return !!coverArea?.querySelector('img');
+            }""")
+            if has_cover:
+                self.logger.info("Cover image verified after file-chooser upload.")
+                return True
+            else:
+                self.logger.warning("Cover image not visible after file-chooser upload.")
+                return False
+        except Exception as exc:
+            self.logger.warning("Cover upload via file chooser failed: %s", exc)
+            return False
+
+    def _dismiss_irrelevant_wechat_dialogs(self, page) -> None:
+        irrelevant_keywords_js = json.dumps(list(WECHAT_DISMISS_KEYWORDS))
+        dismiss_actions_js = json.dumps(list(WECHAT_DISMISS_ACTIONS))
+        page.evaluate("""(args) => {
+            const [irrelevantKeywords, dismissActions] = args;
+            const dialogs = document.querySelectorAll('.weui-desktop-dialog');
+            dialogs.forEach(dialog => {
+                const text = (dialog.textContent || '').trim();
+                const isIrrelevant = irrelevantKeywords.some(kw => text.includes(kw));
+                if (!isIrrelevant) return;
+                for (const dismissText of dismissActions) {
+                    const btns = dialog.querySelectorAll('button, a, [role="button"]');
+                    for (const btn of btns) {
+                        if ((btn.textContent || '').trim() === dismissText) {
+                            btn.click();
+                            return;
+                        }
+                    }
+                }
+                const closeBtn = dialog.querySelector('.weui-desktop-dialog__close-btn');
+                if (closeBtn) closeBtn.click();
+            });
+            document.querySelectorAll('.weui-desktop-dialog__wrp').forEach(wrp => {
+                const dialog = wrp.querySelector('.weui-desktop-dialog');
+                if (dialog) {
+                    const text = (dialog.textContent || '').trim();
+                    const isIrrelevant = irrelevantKeywords.some(kw => text.includes(kw));
+                    if (isIrrelevant) {
+                        wrp.style.display = 'none';
+                    }
+                }
+                const picker = wrp.querySelector('.weui-desktop-dialog_img-picker');
+                if (picker) {
+                    const closeBtn = picker.querySelector('.weui-desktop-dialog__close-btn');
+                    if (closeBtn) closeBtn.click();
+                    wrp.style.display = 'none';
+                }
+            });
+            document.querySelectorAll('.weui-desktop-dialog_img-picker').forEach(picker => {
+                const closeBtn = picker.querySelector('.weui-desktop-dialog__close-btn');
+                if (closeBtn) closeBtn.click();
+                picker.style.display = 'none';
+            });
+        }""", [list(WECHAT_DISMISS_KEYWORDS), list(WECHAT_DISMISS_ACTIONS)])
+
     def _ensure_original_declaration(self, page) -> bool:
-        selectors = [
-            "label:has-text('原创')",
-            "label:has-text('声明原创')",
-            "label:has-text('原创声明')",
-            ".weui-desktop-form__check-label:has-text('原创')",
-            "[role='checkbox']:has-text('原创')",
-            "text=原创",
-        ]
+        selectors = WECHAT_ORIGINAL_DECLARATION.get("original_checkbox")
         for selector in selectors:
             with suppress(Exception):
                 locator = page.locator(selector).first
@@ -1020,15 +2360,28 @@ class WechatPublishService:
             return False
 
     def _wait_for_wechat_publish_success(self, page) -> None:
-        success_markers = ("发表成功", "发布成功", "群发成功", "已发送", "发布完成")
+        success_markers = WECHAT_SUCCESS_MARKERS
         deadline = time.time() + 90
         while time.time() < deadline:
-            current_text = ""
-            with suppress(Exception):
-                current_text = page.locator("body").inner_text(timeout=1000)
-            if any(marker in current_text for marker in success_markers):
-                return
-            if any(marker in page.url for marker in ("publish_done", "success", "msg")):
+            tip_result = page.evaluate("""() => {
+                const tips = document.querySelectorAll('.page_tips, .global_error, .toast');
+                for (const tip of tips) {
+                    const style = window.getComputedStyle(tip);
+                    if (style.display !== 'none' && tip.textContent.trim()) {
+                        return tip.textContent.trim().substring(0, 100);
+                    }
+                }
+                return null;
+            }""")
+            if tip_result:
+                if any(marker in tip_result for marker in success_markers):
+                    self.logger.info("WeChat publish success detected: %s", tip_result)
+                    return
+                if "失败" in tip_result or "错误" in tip_result or "error" in tip_result.lower():
+                    raise RuntimeError(f"WeChat publish failed with message: {tip_result}")
+            current_url = page.url
+            if "appmsgpublish" in current_url and "sub=list" in current_url:
+                self.logger.info("WeChat publish success detected via URL: %s", current_url[:80])
                 return
             page.wait_for_timeout(1500)
         raise RuntimeError("WeChat publish did not reach a success state within the timeout.")
@@ -1036,25 +2389,17 @@ class WechatPublishService:
     def _browser_session_ready(self, page) -> bool:
         if self._is_login_page(page):
             return False
-        ready_markers = ("草稿箱", "新建图文", "素材管理", "发表记录", "首页")
         with suppress(Exception):
             body_text = page.locator("body").inner_text(timeout=1000)
-            if any(marker in body_text for marker in ready_markers):
+            if any(marker in body_text for marker in WECHAT_SESSION_READY_MARKERS):
                 return True
         return any(marker in page.url for marker in ("mp.weixin.qq.com", "appmsg"))
 
     def _is_login_page(self, page) -> bool:
         url = str(getattr(page, "url", "") or "")
-        if "/cgi-bin/loginpage" in url or "/cgi-bin/home?t=home/login" in url:
+        if any(marker in url for marker in WECHAT_LOGIN_URL_MARKERS):
             return True
-        login_selectors = [
-            'img[src*="/cgi-bin/verifyqrcode"]',
-            'input[name="account"]',
-            'input[type="password"]',
-            "text=微信公众平台",
-            "text=扫码登录",
-        ]
-        for selector in login_selectors:
+        for selector in WECHAT_LOGIN_PAGE.get("qrcode_image") + WECHAT_LOGIN_PAGE.get("account_input") + WECHAT_LOGIN_PAGE.get("password_input_direct") + WECHAT_LOGIN_PAGE.get("login_page_text"):
             with suppress(Exception):
                 if page.locator(selector).first.is_visible(timeout=400):
                     return True
@@ -1062,7 +2407,17 @@ class WechatPublishService:
 
     def _raise_if_session_expired(self, page) -> None:
         if self._is_login_page(page):
+            # TODO: 发布前登录态健康检查 — 在此处加入主动探测逻辑：
+            #   1. 访问微信公众平台后台首页，检查是否被重定向到登录页
+            #   2. 尝试调用 /cgi-bin/searchbiz 接口验证 token 有效性
+            #   3. 若检测到即将过期，主动刷新 cookie 或通知用户续期
+            #   4. 将检查结果写入 preflight summary 供上层决策
             debug_dir = self._capture_browser_debug_artifacts(page, {"step": "session_check"})
+            self.logger.error(
+                "微信公众号登录态已失效，请重新运行初始化登录脚本。"
+                " 调试文件已保存到: %s",
+                debug_dir,
+            )
             raise SessionExpiredException(
                 "微信公众号登录态已失效，请重新运行初始化登录脚本。"
                 f" 调试文件已保存到: {debug_dir}"
@@ -1089,3 +2444,4 @@ class WechatPublishService:
     def _clean_visible_text(self, value: Any) -> str:
         text = str(value or "")
         return re.sub(r"\s+", " ", text).strip()
+

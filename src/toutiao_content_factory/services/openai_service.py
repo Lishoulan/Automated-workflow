@@ -3,7 +3,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import time
 from dataclasses import dataclass
+
+try:
+    from openai import APIStatusError, APITimeoutError, APIConnectionError, RateLimitError
+except Exception:
+    APIStatusError = None
+    APITimeoutError = None
+    APIConnectionError = None
+    RateLimitError = None
 
 try:
     from openai import OpenAI
@@ -23,12 +33,22 @@ class UsageCostSnapshot:
 
 
 class OpenAIContentService:
+    # 类常量定义
+    MAX_RETRIES = 4
+    BASE_DELAY = 2.0
+    MAX_DELAY = 30.0
+    RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
+
     def __init__(self, settings: AppSettings, logger: logging.Logger, force_mock: bool = False) -> None:
         self.settings = settings
         self.logger = logger
         self.force_mock = force_mock
         self.client = None
         self.usage_snapshot = UsageCostSnapshot()
+        
+        # 预计算模型类型以避免重复调用
+        self._is_deepseek_reasoner, self._is_deepseek = self._get_model_type()
+        
         self.prompt_token_rate = self._resolve_rate(
             "OPENAI_PROMPT_TOKEN_RATE",
             self._default_prompt_rate(),
@@ -61,8 +81,13 @@ class OpenAIContentService:
 
         try:
             payload = json.loads(content)
-        except json.JSONDecodeError as exc:  # pragma: no cover - malformed remote output
-            raise AIResponseFormatError("The model did not return valid JSON.") from exc
+        except json.JSONDecodeError:
+            # 尝试从 markdown 代码块中提取 JSON
+            fallback_payload = self._extract_json_from_markdown(content)
+            if fallback_payload is not None:
+                self.logger.warning("JSON 解析失败，但成功从 markdown 代码块中提取到有效 JSON。")
+                return fallback_payload
+            raise AIResponseFormatError("The model did not return valid JSON.") from None
 
         self.logger.info("Model response parsed as JSON successfully.")
         return payload
@@ -81,7 +106,7 @@ class OpenAIContentService:
 
     def _request_structured_json(self, system_prompt: str, user_prompt: str):
         try:
-            return self.client.chat.completions.create(
+            return self._call_with_retry(
                 model=self.settings.openai_model,
                 temperature=self.settings.temperature,
                 response_format={"type": "json_object"},
@@ -90,31 +115,83 @@ class OpenAIContentService:
                     {"role": "user", "content": user_prompt},
                 ],
             )
-        except Exception as exc:  # pragma: no cover - network call
+        except AIRequestError:
+            raise
+        except Exception as exc:
             self.logger.warning(
-                "Structured JSON response failed for model %s, retrying with prompt-only JSON mode: %s",
+                "Structured JSON mode failed for model %s after retries, trying prompt-only JSON mode: %s",
                 self.settings.openai_model,
                 exc,
             )
+            return self._call_with_retry(
+                model=self.settings.openai_model,
+                temperature=self.settings.temperature,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            f"{system_prompt}\n\n"
+                            "Return exactly one valid JSON object. "
+                            "Do not use markdown code fences. "
+                            "Do not add any explanation before or after the JSON."
+                        ),
+                    },
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+
+    def _call_with_retry(self, **kwargs):
+        last_exc: Exception | None = None
+        for attempt in range(1, self.MAX_RETRIES + 1):
             try:
-                return self.client.chat.completions.create(
-                    model=self.settings.openai_model,
-                    temperature=self.settings.temperature,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                f"{system_prompt}\n\n"
-                                "Return exactly one valid JSON object. "
-                                "Do not use markdown code fences. "
-                                "Do not add any explanation before or after the JSON."
-                            ),
-                        },
-                        {"role": "user", "content": user_prompt},
-                    ],
+                return self.client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                last_exc = exc
+                if not self._is_retryable_error(exc):
+                    raise AIRequestError(f"Model request failed (non-retryable): {exc}") from exc
+                if attempt >= self.MAX_RETRIES:
+                    break
+                delay = min(self.BASE_DELAY * (2 ** (attempt - 1)), self.MAX_DELAY)
+                self.logger.warning(
+                    "Model request attempt %d/%d failed (retryable): %s. Retrying in %.1fs.",
+                    attempt,
+                    self.MAX_RETRIES,
+                    exc,
+                    delay,
                 )
-            except Exception as retry_exc:  # pragma: no cover - network call
-                raise AIRequestError(f"Model request failed: {retry_exc}") from retry_exc
+                time.sleep(delay)
+        raise AIRequestError(
+            f"Model request failed after {self.MAX_RETRIES} attempts: {last_exc}"
+        ) from last_exc
+
+    def _is_retryable_error(self, exc: Exception) -> bool:
+        if APIStatusError is not None and isinstance(exc, APIStatusError):
+            return exc.status_code in self.RETRYABLE_HTTP_CODES
+        if RateLimitError is not None and isinstance(exc, RateLimitError):
+            return True
+        if APITimeoutError is not None and isinstance(exc, APITimeoutError):
+            return True
+        if APIConnectionError is not None and isinstance(exc, APIConnectionError):
+            return True
+        # Non-retryable: authentication and bad request errors
+        try:
+            from openai import AuthenticationError as _AuthErr
+            if isinstance(exc, _AuthErr):
+                return False
+        except ImportError:
+            pass
+        try:
+            from openai import BadRequestError as _BadReqErr
+            if isinstance(exc, _BadReqErr):
+                return False
+        except ImportError:
+            pass
+        msg = str(exc).lower()
+        if any(kw in msg for kw in ("rate limit", "too many requests", "请稍后重试", "请求失败")):
+            return True
+        if any(kw in msg for kw in ("timeout", "timed out", "connection", "连接")):
+            return True
+        return False
 
     def _accumulate_usage(self, response) -> None:
         usage = getattr(response, "usage", None)
@@ -153,20 +230,21 @@ class OpenAIContentService:
             self.logger.warning("Invalid token rate for %s=%s, fallback to %.6f", env_name, raw, default_value)
             return default_value
 
-    def _default_prompt_rate(self) -> float:
+    def _get_model_type(self) -> tuple[bool, bool]:
+        """获取模型类型，返回 (is_deepseek_reasoner, is_deepseek)"""
         model_name = str(self.settings.openai_model or "").lower()
-        if "deepseek-reasoner" in model_name:
+        is_deepseek_reasoner = "deepseek-reasoner" in model_name
+        is_deepseek = "deepseek" in model_name
+        return is_deepseek_reasoner, is_deepseek
+
+    def _default_prompt_rate(self) -> float:
+        if self._is_deepseek_reasoner:
             return 0.004
-        if "deepseek" in model_name:
-            return 0.001
         return 0.001
 
     def _default_completion_rate(self) -> float:
-        model_name = str(self.settings.openai_model or "").lower()
-        if "deepseek-reasoner" in model_name:
+        if self._is_deepseek_reasoner:
             return 0.016
-        if "deepseek" in model_name:
-            return 0.002
         return 0.002
 
     def _extract_message_content(self, response) -> str:
@@ -185,6 +263,19 @@ class OpenAIContentService:
                 content = content[4:].strip()
 
         return content or "{}"
+
+    _MARKDOWN_JSON_PATTERN = re.compile(r"```(?:json)?\s*([\s\S]*?)```")
+
+    def _extract_json_from_markdown(self, content: str) -> dict | None:
+        for match in self._MARKDOWN_JSON_PATTERN.finditer(content):
+            candidate = match.group(1).strip()
+            if candidate.lower().startswith("json"):
+                candidate = candidate[4:].strip()
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+        return None
 
     def close(self) -> None:
         close_method = getattr(self.client, "close", None)

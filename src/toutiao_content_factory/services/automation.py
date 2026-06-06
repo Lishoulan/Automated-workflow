@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from difflib import SequenceMatcher
 import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -236,7 +237,7 @@ class TopicAutomationService:
         rank: int | None = None,
         title_query: str | None = None,
         allow_generated_duplicates: bool = False,
-    ) -> TopicSelectionResult:
+    ) -> TopicSelectionResult | None:
         report = self._load_daily_topics()
         topic = self._select_topic(
             report,
@@ -244,6 +245,9 @@ class TopicAutomationService:
             title_query=title_query,
             allow_generated_duplicates=allow_generated_duplicates,
         )
+        if topic is None:
+            self.logger.warning("Auto topic selection failed: no eligible topics found.")
+            return None
         input_text = self._build_input_text(topic)
         exported_files = self._write_selection_snapshot(topic, report, input_text)
         self.logger.info("Auto topic selection complete: rank=%s title=%s", topic.rank, topic.title)
@@ -337,14 +341,21 @@ class TopicAutomationService:
                     self.settings.account_key,
                 )
         if not available_topics:
-            raise ValueError("No unpublished topics are available for today.")
+            self.logger.warning(
+                "[Topic Engine] No unpublished topics available for account=%s.",
+                self.settings.account_key,
+            )
+            return None
 
         if title_query:
             normalized_query = self._normalize_text(title_query)
             for topic in available_topics:
                 if normalized_query in self._normalize_text(topic.title):
                     return topic
-            raise ValueError(f"No unpublished topic matched title query: {title_query}")
+            self.logger.warning(
+                "[Topic Engine] No unpublished topic matched title query: %s. Falling back to rank selection.",
+                title_query,
+            )
 
         target_rank = rank or self.settings.automation.default_topic_rank
         if target_rank < 1:
@@ -751,30 +762,30 @@ class TopicAutomationService:
     def _build_paragraph_instruction(self, topic: TopicCandidate) -> str:
         topic_mode = self._topic_mode(topic)
         if topic_mode == "sports":
-            return "4到6段，每段2到3句，优先保证段落自然，图片应放在完整段落之间，不要切断句子。"
+            return "4到6段，每段3到5句，每段不少于120字，优先保证段落自然，图片应放在完整段落之间，不要切断句子。"
         if topic_mode == "international":
-            return "5到6段，每段2到3句，先事件、再博弈、再影响、再变量，结尾不要喊口号。"
+            return "5到6段，每段3到5句，每段不少于120字，先事件、再博弈、再影响、再变量，结尾不要喊口号。"
         if topic.recommended_format == "quick_commentary":
-            return "4到5段，每段2句，首段先下判断，结尾只留一个分歧问题。"
+            return "5到6段，每段3到4句，每段不少于120字，首段先下判断，结尾只留一个分歧问题。"
         if topic.recommended_format == "project_breakdown":
-            return "5到6段，每段2到3句，围绕项目主体、环节位置、交付路径、兑现风险展开。"
+            return "5到7段，每段3到5句，每段不少于120字，围绕项目主体、环节位置、交付路径、兑现风险展开。"
         if topic.recommended_format == "data_recap":
-            return "4到5段，每段2句，重点解释数字变化、受益环节和后续验证点。"
-        return "5到7段，每段2到3句，先判断、再数据、再产业链、再主体、再风险边界。"
+            return "5到6段，每段3到4句，每段不少于120字，重点解释数字变化、受益环节和后续验证点。"
+        return "5到7段，每段3到5句，每段不少于120字，先判断、再数据、再产业链、再主体、再风险边界。"
 
     def _build_word_target(self, topic: TopicCandidate) -> int:
         topic_mode = self._topic_mode(topic)
         if topic_mode == "sports":
-            return 900
+            return max(900, 800)
         if topic_mode == "international":
-            return 1000
+            return max(1000, 800)
         if topic.recommended_format == "quick_commentary":
-            return 800
+            return max(800, 800)
         if topic.recommended_format == "data_recap":
-            return 900
+            return max(900, 800)
         if topic.recommended_format == "project_breakdown":
-            return 1100
-        return 1200
+            return max(1100, 800)
+        return max(1200, 800)
 
     def _build_archive_root(self, selected_topic: TopicCandidate | None) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -853,6 +864,8 @@ class TopicAutomationService:
                 continue
             if normalized_title and normalized_title in cross_account_generated_keys["titles"]:
                 continue
+            if self._is_similar_to_generated(normalized_title, generated_keys["titles"], cross_account_generated_keys["titles"]):
+                continue
             available.append(topic)
         return available
 
@@ -885,6 +898,21 @@ class TopicAutomationService:
                 continue
             available.append(topic)
         return available
+
+    _SIMILARITY_THRESHOLD = 0.6
+
+    def _is_similar_to_generated(
+        self,
+        normalized_title: str | None,
+        *title_sets: set[str],
+    ) -> bool:
+        if not normalized_title:
+            return False
+        for title_set in title_sets:
+            for existing in title_set:
+                if SequenceMatcher(None, normalized_title, existing).ratio() >= self._SIMILARITY_THRESHOLD:
+                    return True
+        return False
 
     def _load_published_keys_for_today(self) -> dict[str, set[str]]:
         history_path = self.settings.output_dir / self.settings.publishing.history_filename
@@ -1015,9 +1043,9 @@ class TopicAutomationService:
     def _topic_matches_account_boundary(self, topic: TopicCandidate) -> bool:
         account_key = self.settings.account_key
         if account_key == "robot_notes":
-            return self._is_international_topic(topic)
+            return self._is_robot_topic(topic)
         if account_key == "energy_notes":
-            return self._is_sports_topic(topic)
+            return self._is_energy_topic(topic)
         if account_key == "default":
             return not self._is_reserved_for_specialist_account(topic)
         return True
@@ -1032,9 +1060,9 @@ class TopicAutomationService:
         energy_enabled = bool(self.settings.account_profiles.get("energy_notes")) and bool(
             self.settings.account_profiles["energy_notes"].enabled
         )
-        if robot_enabled and self._is_international_topic(topic):
+        if robot_enabled and self._is_robot_topic(topic):
             return True
-        if energy_enabled and self._is_sports_topic(topic):
+        if energy_enabled and self._is_energy_topic(topic):
             return True
         return False
 

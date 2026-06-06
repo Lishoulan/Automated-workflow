@@ -103,6 +103,22 @@ class TopicPoolService:
         ],
     }
 
+    # 类常量定义
+    DEFAULT_MAX_AGE_HOURS = 48
+    DEFAULT_PENDING_LIMIT = 24
+    DEFAULT_FALLBACK_LIMIT = 6
+    MAX_NUMBERS_EXTRACTED = 6
+    MIN_FRESHNESS_SCORE = 35
+    MAX_EVERGREEN_RANK = 12
+    DEFAULT_QUALITY_SCORE = 72
+    DEFAULT_HEAT_SCORE = 35
+    DEFAULT_READ_SCORE = 35
+    DEFAULT_SAVE_SCORE = 40
+    DEFAULT_DISCUSSION_SCORE = 28
+    DEFAULT_TOTAL_SCORE = 138
+    DEFAULT_TITLE_POTENTIAL_SCORE = 42
+    DEFAULT_EVIDENCE_STRENGTH = 60
+
     def __init__(self, settings: AppSettings, logger: logging.Logger) -> None:
         self.settings = settings
         self.logger = logger
@@ -248,7 +264,7 @@ class TopicPoolService:
                 reference = reference.astimezone().replace(tzinfo=None)
         except ValueError:
             return False
-        max_age_hours = int(getattr(self.settings.topic_collection, "max_topic_age_hours", 48) or 48)
+        max_age_hours = int(getattr(self.settings.topic_collection, "max_topic_age_hours", self.DEFAULT_MAX_AGE_HOURS) or self.DEFAULT_MAX_AGE_HOURS)
         return reference < (now - timedelta(hours=max(1, max_age_hours)))
 
     def _load_rows(self) -> list[dict[str, Any]]:
@@ -352,12 +368,12 @@ class TopicPoolService:
                     "matched_industries": payload.get("matched_industries", []),
                     "matched_keywords": payload.get("matched_keywords", []),
                     "extracted_numbers": payload.get("extracted_numbers", []),
-                    "heat_score": int(payload.get("heat_score", 35) or 35),
-                    "read_score": int(payload.get("read_score", 35) or 35),
-                    "save_score": int(payload.get("save_score", 40) or 40),
-                    "discussion_score": int(payload.get("discussion_score", 28) or 28),
-                    "total_score": int(payload.get("total_score", 138) or 138),
-                    "title_potential_score": int(payload.get("title_potential_score", 42) or 42),
+                    "heat_score": int(payload.get("heat_score", self.DEFAULT_HEAT_SCORE) or self.DEFAULT_HEAT_SCORE),
+                    "read_score": int(payload.get("read_score", self.DEFAULT_READ_SCORE) or self.DEFAULT_READ_SCORE),
+                    "save_score": int(payload.get("save_score", self.DEFAULT_SAVE_SCORE) or self.DEFAULT_SAVE_SCORE),
+                    "discussion_score": int(payload.get("discussion_score", self.DEFAULT_DISCUSSION_SCORE) or self.DEFAULT_DISCUSSION_SCORE),
+                    "total_score": int(payload.get("total_score", self.DEFAULT_TOTAL_SCORE) or self.DEFAULT_TOTAL_SCORE),
+                    "title_potential_score": int(payload.get("title_potential_score", self.DEFAULT_TITLE_POTENTIAL_SCORE) or self.DEFAULT_TITLE_POTENTIAL_SCORE),
                     "title_playbook_track": payload.get("title_playbook_track", ""),
                     "title_potential_reasons": payload.get("title_potential_reasons", ["Evergreen fallback topic."]),
                     "is_high_read": False,
@@ -365,8 +381,8 @@ class TopicPoolService:
                     "is_high_discussion": False,
                     "topic_type": payload.get("topic_type", "evergreen"),
                     "topic_type_label": payload.get("topic_type_label", "常青分析"),
-                    "evidence_strength": int(payload.get("evidence_strength", 60) or 60),
-                    "quality_score": int(payload.get("quality_score", 72) or 72),
+                    "evidence_strength": int(payload.get("evidence_strength", self.DEFAULT_EVIDENCE_STRENGTH) or self.DEFAULT_EVIDENCE_STRENGTH),
+                    "quality_score": int(payload.get("quality_score", self.DEFAULT_QUALITY_SCORE) or self.DEFAULT_QUALITY_SCORE),
                     "quality_flags": payload.get("quality_flags", ["evergreen_fallback"]),
                     "recommended_format": payload.get("recommended_format", "deep_analysis"),
                     "recommended_format_label": payload.get("recommended_format_label", "深度分析"),

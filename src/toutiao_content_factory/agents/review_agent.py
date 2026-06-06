@@ -1,22 +1,18 @@
 from __future__ import annotations
 
 import re
+import logging
 
 from toutiao_content_factory.agents.base import BaseAgent
-from toutiao_content_factory.config import StyleProfile
+from toutiao_content_factory.config import AppSettings, StyleProfile
 from toutiao_content_factory.models import CacheContext, ContentScore, DataReport, GeneratedContent
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.prompt_repository import PromptRepository
+from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 
 class ReviewAgent(BaseAgent):
     agent_name = "ReviewAgent"
-    SCENE_TOKENS = ("机场", "电厂", "电站", "港口", "车间", "仓库", "园区", "工厂", "基地", "物流中心", "示范项目")
-    CROSS_BORDER_TOKENS = ("中国", "日本", "美国", "欧洲", "德国", "东京", "海外", "出海", "国际", "日韩")
-    CONFLICT_TOKENS = ("不是", "而是", "背后", "分化", "改写", "重估", "转移", "迁移", "突围", "挤压", "洗牌")
-    BENEFIT_SHIFT_TOKENS = ("利润", "毛利", "份额", "议价", "回款", "系统集成", "零部件", "整机", "运维", "服务")
-    NUMERIC_TOKEN_RE = re.compile(
-        r"\d+(?:\.\d+)?(?:%|倍|亿元|亿|万元|万亿元|万千瓦|万台|万套|GW|GWh|MWh|kWh|MW|W|年|月|季度|Q[1-4])?"
-    )
 
     def run(
         self,
@@ -225,7 +221,7 @@ class ReviewAgent(BaseAgent):
             score += 6
         if any(token in title for token in ("真正", "背后", "为什么", "不是", "利润", "订单", "交付", "毛利")):
             score += 12
-        if any(token in title for token in self.SCENE_TOKENS):
+        if any(token in title for token in super().SCENE_TOKENS):
             score += 8
         if 16 <= len(title) <= min(28, self.settings.publishing.title_max_length):
             score += 10
@@ -394,14 +390,14 @@ class ReviewAgent(BaseAgent):
         title = content.recommended_titles[0] if content.recommended_titles else ""
         paragraphs = self._paragraphs(article)
         first_paragraph = paragraphs[0] if paragraphs else article
-        distinct_regions = [token for token in self.CROSS_BORDER_TOKENS if token in article]
+        distinct_regions = [token for token in super().CROSS_BORDER_TOKENS if token in article]
         companies = [item for item in data_report.companies[:4] if item and item in article]
         numbers = self._extract_numeric_tokens(article)
         matched: list[str] = []
 
         for pattern in targets:
             if pattern == "场景先行开头":
-                if any(token in first_paragraph or token in title for token in self.SCENE_TOKENS):
+                if any(token in first_paragraph or token in title for token in super().SCENE_TOKENS):
                     matched.append(pattern)
             elif pattern == "跨国对比冲突":
                 if len(distinct_regions) >= 2 and self._has_conflict_shape(article):
@@ -653,7 +649,8 @@ class ReviewAgent(BaseAgent):
 
     def _clean_article(self, content: GeneratedContent) -> str:
         article = content.polished_article or content.article
-        return clean_article_text(article, title_candidates=content.recommended_titles + content.titles)
+        # 文章已在 writer_agent._finalize_article 中清洗过，不再重复清洗以避免截断补充内容
+        return article
 
     def _paragraphs(self, article: str) -> list[str]:
         return [item.strip() for item in article.split("\n\n") if item.strip()]
@@ -715,81 +712,23 @@ class ReviewAgent(BaseAgent):
         return any(marker in article for marker in markers)
 
     def _has_scene_anchor(self, article: str) -> bool:
-        return any(token in article for token in self.SCENE_TOKENS)
+        return any(token in article for token in super().SCENE_TOKENS)
 
     def _has_conflict_shape(self, article: str) -> bool:
         if "不是" in article and "而是" in article:
             return True
-        return any(token in article for token in self.CONFLICT_TOKENS)
+        return any(token in article for token in super().CROSS_BORDER_TOKENS) or any(token in article for token in ("分化", "改写", "重估", "转移", "迁移", "突围", "挤压", "洗牌"))
 
     def _has_benefit_shift_signal(self, article: str) -> bool:
-        return any(token in article for token in self.BENEFIT_SHIFT_TOKENS)
+        return any(token in article for token in super().BENEFIT_SHIFT_TOKENS)
 
     def _unsupported_numeric_tokens(self, content: GeneratedContent, data_report: DataReport) -> list[str]:
         article = self._clean_article(content)
-        article_tokens = self._extract_numeric_tokens(article)
-        if not article_tokens:
-            return []
-        allowed = self._evidence_numeric_tokens(data_report)
-        unsupported: list[str] = []
-        for token in article_tokens:
-            if token in allowed:
-                continue
-            if token not in unsupported:
-                unsupported.append(token)
-        return unsupported
+        return super()._unsupported_numeric_tokens(article, data_report)
 
-    def _extract_numeric_tokens(self, text: str) -> list[str]:
-        tokens: list[str] = []
-        for match in self.NUMERIC_TOKEN_RE.findall(str(text or "")):
-            token = str(match).strip().replace(" ", "")
-            if not self._is_significant_numeric_token(token):
-                continue
-            if token not in tokens:
-                tokens.append(token)
-        return tokens
-
-    def _evidence_numeric_tokens(self, data_report: DataReport) -> set[str]:
-        texts = [
-            data_report.topic_title,
-            *data_report.growth_numbers,
-            *data_report.core_data,
-            *data_report.industry_trends,
-            *data_report.key_points,
-            *data_report.watch_metrics,
-            *data_report.evidence_notes,
-            *data_report.risk_flags,
-        ]
-        allowed: set[str] = set()
-        for text in texts:
-            for token in self._extract_numeric_tokens(text):
-                allowed.add(token)
-        return allowed
-
-    def _is_significant_numeric_token(self, token: str) -> bool:
-        if not token:
-            return False
-        suffixes = ("%", "倍", "亿元", "亿", "万元", "万亿元", "万千瓦", "万台", "万套", "GW", "GWh", "MWh", "kWh", "MW", "W", "年", "月", "季度")
-        if token.startswith("Q") and len(token) == 2:
-            return True
-        if any(marker in token for marker in suffixes):
-            return True
-        return len(re.sub(r"\D", "", token)) >= 4
-
-    def _bound_score(self, value: object) -> int:
-        try:
-            score = int(value)
-        except (TypeError, ValueError):
-            score = 0
-        return max(0, min(100, score))
 
     def _normalize_pass_status(self, value: object) -> str:
         normalized = str(value).strip()
         if normalized in {"ready", "ready_with_light_edit", "needs_revision"}:
             return normalized
         return "ready_with_light_edit"
-
-    def _clean_list(self, payload: object, limit: int) -> list[str]:
-        if not isinstance(payload, list):
-            return []
-        return self.unique([str(item).strip() for item in payload if str(item).strip()])[:limit]

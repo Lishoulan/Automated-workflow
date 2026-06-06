@@ -171,10 +171,12 @@ class WebViewService:
         )
         log_console = self._build_log_console_summary(scheduled_logs)
         retry_runs = [run for run in runs if getattr(run, "can_retry", False)]
+        today_stats = self._build_today_stats()
         return {
             "daily_topics": topics,
             "runs": runs,
             "retry_runs": retry_runs,
+            "today_stats": today_stats,
             "latest_score": latest_score,
             "latest_selected_topic": latest_selected_topic,
             "latest_workflow": latest_workflow,
@@ -200,6 +202,61 @@ class WebViewService:
             "pipeline_timeline": pipeline_timeline,
             "actionable_alerts": actionable_alerts,
             "log_console": log_console,
+        }
+
+    def _build_today_stats(self) -> dict[str, Any]:
+        """Build today's monitoring stats: collected, drafted, published, intercepted."""
+        today_prefix = datetime.now().strftime("%Y%m%d")
+        collected = 0
+        drafted = 0
+        published = 0
+        intercepted = 0
+
+        if self.runs_dir.exists():
+            for run_dir in self.runs_dir.iterdir():
+                if not run_dir.is_dir() or not run_dir.name.startswith(today_prefix):
+                    continue
+                collected += 1
+
+                # Check if content was generated (article.md exists)
+                article_path = run_dir / "article.md"
+                if article_path.exists():
+                    drafted += 1
+
+                # Check AI risk score from content_score.json
+                score_payload = self._load_json(run_dir / "content_score.json")
+                if isinstance(score_payload, dict):
+                    scores = score_payload.get("scores", {}) if isinstance(score_payload.get("scores"), dict) else {}
+                    ai_risk = int(scores.get("ai_generated_risk", 0) or 0)
+                    if ai_risk >= 70:
+                        intercepted += 1
+
+                # Check review_status for interception
+                review_payload = self._load_json(run_dir / "review_status.json")
+                if isinstance(review_payload, dict):
+                    recommended = str(review_payload.get("recommended_action", "")).strip().lower()
+                    if recommended in {"reject", "blocked", "auto_rejected"}:
+                        if intercepted == 0 or (isinstance(score_payload, dict) and
+                            int((score_payload.get("scores", {}) if isinstance(score_payload.get("scores"), dict) else {}).get("ai_generated_risk", 0) or 0) < 70):
+                            intercepted += 1
+
+        # Count published from publish history
+        history_payload = self._load_json(self.output_dir / self.settings.publishing.history_filename)
+        if isinstance(history_payload, list):
+            for item in history_payload:
+                if not isinstance(item, dict):
+                    continue
+                published_at = str(item.get("published_at", "")).strip()
+                if published_at.startswith(today_prefix) or published_at.startswith(datetime.now().strftime("%Y-%m-%d")):
+                    status = str(item.get("status", "")).strip().lower()
+                    if status in {"published", "submitted", "submitted_for_review", "success", "draft_created"}:
+                        published += 1
+
+        return {
+            "today_collected": collected,
+            "today_drafted": drafted,
+            "today_published": published,
+            "today_intercepted": intercepted,
         }
 
     def _build_cost_summary(self) -> dict[str, Any]:
@@ -258,61 +315,61 @@ class WebViewService:
 
         precheck_tone = "success"
         precheck_status = "success"
-        precheck_message = "??????????????"
+        precheck_message = "等待调度器启动"
         if "blocked" in str(scheduled_status.get("overall_status", "")).lower() or "preflight" in schedule_message.lower():
             precheck_tone = "error"
             precheck_status = "blocked"
-            precheck_message = schedule_message or "????????"
+            precheck_message = schedule_message or "调度已就绪"
         elif str(scheduled_status.get("overall_status", "")).lower() == "aborted":
             precheck_tone = "warn"
             precheck_status = "aborted"
-            precheck_message = schedule_message or "???????????????????"
-        stages.append(self._timeline_node("preflight", "????", precheck_status, precheck_tone, precheck_message))
+            precheck_message = schedule_message or "调度异常，请检查配置"
+        stages.append(self._timeline_node("preflight", "预检", precheck_status, precheck_tone, precheck_message))
 
         if topic_title:
-            topic_message = f"??????{topic_title}"
+            topic_message = f"已选题：{topic_title}"
             topic_tone = "success"
             topic_status = "success"
         elif workflow_status == "no_topics":
-            topic_message = "???????????????"
+            topic_message = "热点池暂无可用选题"
             topic_tone = "warn"
             topic_status = "no_topics"
         else:
-            topic_message = "????????????"
+            topic_message = "选题阶段未执行"
             topic_tone = "neutral"
             topic_status = "idle"
-        stages.append(self._timeline_node("topics", "????", topic_status, topic_tone, topic_message))
+        stages.append(self._timeline_node("topics", "选题", topic_status, topic_tone, topic_message))
 
         if run_dir:
-            generation_message = f"????????????{Path(run_dir).name}"
+            generation_message = f"内容已生成：{Path(run_dir).name}"
             generation_tone = "success"
             generation_status = "success"
         elif workflow_status in {"failed", "generation_failed"}:
-            generation_message = "?????????"
+            generation_message = "内容生成失败"
             generation_tone = "error"
             generation_status = "failed"
         else:
-            generation_message = "?????????"
+            generation_message = "内容生成跳过"
             generation_tone = "neutral"
             generation_status = "idle"
-        stages.append(self._timeline_node("generation", "????", generation_status, generation_tone, generation_message))
+        stages.append(self._timeline_node("generation", "生成", generation_status, generation_tone, generation_message))
 
-        image_message = "????????"
+        image_message = "配图已就绪"
         image_tone = "success"
         image_status = "success"
         if image_fallback:
-            image_message = "???????????????????/???"
+            image_message = "配图生成失败，已使用占位图/跳过"
             image_tone = "warn"
             image_status = "fallback"
         elif not run_dir:
-            image_message = "??????????"
+            image_message = "配图生成跳过"
             image_tone = "neutral"
             image_status = "idle"
-        stages.append(self._timeline_node("images", "????", image_status, image_tone, image_message))
+        stages.append(self._timeline_node("images", "配图", image_status, image_tone, image_message))
 
         publish_tone = "neutral"
         publish_status = "idle"
-        publish_message = "????????"
+        publish_message = "等待发布"
         if publish_states:
             if any(state in {"failed", "error", "blocked"} for state in publish_states) and any(
                 state in {"submitted", "submitted_for_review", "published", "success", "draft_created"}
@@ -320,38 +377,38 @@ class WebViewService:
             ):
                 publish_tone = "warn"
                 publish_status = "partial_success"
-                publish_message = "?????????????????????"
+                publish_message = "已提交发布，请到平台确认"
             elif any(state in {"failed", "error", "blocked"} for state in publish_states):
                 publish_tone = "error"
                 publish_status = "failed"
-                publish_message = platform_errors[0] if platform_errors else "???????"
+                publish_message = platform_errors[0] if platform_errors else "发布失败"
             else:
                 publish_tone = "success"
                 publish_status = "success"
-                publish_message = "?????????????"
-        stages.append(self._timeline_node("publish", "??/????", publish_status, publish_tone, publish_message))
+                publish_message = "发布步骤未执行"
+        stages.append(self._timeline_node("publish", "发布/提交", publish_status, publish_tone, publish_message))
 
         archive_tone = "neutral"
         archive_status = "idle"
-        archive_message = "???????"
+        archive_message = "归档已完成"
         overall_status = str(scheduled_status.get("overall_status") or scheduled_status.get("status") or "").strip().lower()
         if overall_status in {"success", "completed"}:
             archive_tone = "success"
             archive_status = overall_status
-            archive_message = "??????????"
+            archive_message = "归档写入失败"
         elif overall_status in {"partial_success", "review_required"}:
             archive_tone = "warn"
             archive_status = overall_status
-            archive_message = schedule_message or "?????????????????"
+            archive_message = schedule_message or "调度器异常，归档未完成"
         elif overall_status in {"failed", "blocked", "aborted"}:
             archive_tone = "error" if overall_status != "aborted" else "warn"
             archive_status = overall_status
-            archive_message = schedule_message or "????????????????"
+            archive_message = schedule_message or "调度器异常，归档超时"
         elif latest_publish.has_result or latest_wechat.has_result:
             archive_tone = "success"
             archive_status = "success"
-            archive_message = "????????????"
-        stages.append(self._timeline_node("archive", "????", archive_status, archive_tone, archive_message))
+            archive_message = "归档步骤未执行"
+        stages.append(self._timeline_node("archive", "归档", archive_status, archive_tone, archive_message))
         return stages
 
     def _timeline_node(self, key: str, label: str, status: str, tone: str, message: str) -> dict[str, str]:
@@ -395,12 +452,12 @@ class WebViewService:
             alerts.append(
                 {
                     "tone": "error",
-                    "title": "??????? API ??????? IP",
-                    "message": f"?????? IP ? {invalid_ip}??????????????????????????????",
+                    "title": "检测到 API 白名单外 IP",
+                    "message": f"当前 IP 为 {invalid_ip}，请将其加入白名单后重试",
                     "action_kind": "copy_ip",
-                    "action_label": "???? IP",
+                    "action_label": "复制 IP",
                     "action_value": invalid_ip,
-                    "secondary_label": "??????",
+                    "secondary_label": "打开后台",
                     "secondary_value": "https://mp.weixin.qq.com/",
                 }
             )
@@ -410,12 +467,12 @@ class WebViewService:
             alerts.append(
                 {
                     "tone": "warn",
-                    "title": f"?{login_message['label']}????????????",
+                    "title": f"{login_message['label']}平台登录已过期",
                     "message": login_message["message"],
                     "action_kind": "init_login",
-                    "action_label": "??????",
+                    "action_label": "重新登录",
                     "action_value": self.account_key,
-                    "secondary_label": "?????",
+                    "secondary_label": "切换账号",
                     "secondary_value": self.account_key,
                 }
             )
@@ -433,7 +490,7 @@ class WebViewService:
             alerts.append(
                 {
                     "tone": "info",
-                    "title": "???????????????",
+                    "title": "图片生成回退为占位图",
                     "message": normalized,
                     "action_kind": "none",
                     "action_label": "",
@@ -449,12 +506,12 @@ class WebViewService:
             alerts.append(
                 {
                     "tone": "warn" if scheduled_overall == "aborted" else "error",
-                    "title": "?????????????????",
+                    "title": "定时调度执行异常",
                     "message": scheduled_message,
                     "action_kind": "refresh_health",
-                    "action_label": "??????",
+                    "action_label": "刷新状态",
                     "action_value": self.account_key,
-                    "secondary_label": "????",
+                    "secondary_label": "查看日志",
                     "secondary_value": "open_log_modal",
                 }
             )
@@ -463,8 +520,8 @@ class WebViewService:
             alerts.append(
                 {
                     "tone": "success",
-                    "title": "????????????????",
-                    "message": "?????????????????????????",
+                    "title": "系统运行正常",
+                    "message": "所有检测项均通过，无需操作",
                     "action_kind": "none",
                     "action_label": "",
                     "action_value": "",
@@ -505,16 +562,16 @@ class WebViewService:
         match = re.search(r"invalid ip\s+([0-9]{1,3}(?:\.[0-9]{1,3}){3})", raw_text, re.IGNORECASE)
         if match:
             return match.group(1)
-        match = re.search(r"??\s*IP[^0-9]*([0-9]{1,3}(?:\.[0-9]{1,3}){3})", raw_text, re.IGNORECASE)
+        match = re.search(r"IP[^0-9]*([0-9]{1,3}(?:\.[0-9]{1,3}){3})", raw_text, re.IGNORECASE)
         if match:
             return match.group(1)
         return ""
 
     def _detect_login_issue(self, platforms: dict[str, Any], workflow_report: dict[str, Any]) -> dict[str, str] | None:
         checks = [
-            ("toutiao", "????"),
-            ("wechat", "???"),
-            ("douyin", "??"),
+            ("toutiao", "头条"),
+            ("wechat", "公众号"),
+            ("douyin", "抖音"),
         ]
         workflow_errors = "\n".join(self._collect_workflow_error_text(workflow_report)).lower()
         for key, label in checks:
@@ -530,11 +587,11 @@ class WebViewService:
             if blocked_reason == "BLOCKED_BY_IP":
                 continue
             workflow_platform_hit = key in workflow_errors or label.lower() in workflow_errors
-            if any(token in combined for token in ["login", "session", "??", "expired", "draft box"]) or (
+            if any(token in combined for token in ["login", "session", "登录", "expired", "draft box"]) or (
                 workflow_platform_hit
                 and any(token in workflow_errors for token in ["login", "session", "draft box", "creator login is required"])
             ):
-                detail = messages[0] if messages else "????????????????????????????????"
+                detail = messages[0] if messages else "登录状态已失效，请重新登录后再试"
                 return {"platform": key, "label": label, "message": detail}
         return None
 
@@ -891,6 +948,17 @@ class WebViewService:
             backend = publish_result.get("backend_response_summary", {}) if isinstance(publish_result, dict) else {}
             notes = item.get("notes", []) if isinstance(item.get("notes"), list) else []
 
+            # Read AI risk score and quality scores from content_score.json
+            score_payload = self._load_json(run_dir / "content_score.json") or {}
+            scores = score_payload.get("scores", {}) if isinstance(score_payload.get("scores"), dict) else {}
+            overall_score = int(scores.get("overall_score", 0) or 0)
+            ai_risk_score = int(scores.get("ai_generated_risk", 0) or 0)
+            validation_score = int(scores.get("validation_score", 0) or 0)
+            publish_readiness_score = int(scores.get("publish_readiness_score", 0) or 0)
+
+            # Build per-platform publish status
+            platform_statuses = self._collect_run_retry_state(run_dir)[1]
+
             result.append(
                 {
                     "title": title,
@@ -908,11 +976,17 @@ class WebViewService:
                     "article_paragraphs": article_paragraphs,
                     "excerpt": "\n\n".join(article_paragraphs[:3]),
                     "notes": [str(note) for note in notes if str(note).strip()],
+                    "overall_score": overall_score,
+                    "ai_risk_score": ai_risk_score,
+                    "validation_score": validation_score,
+                    "publish_readiness_score": publish_readiness_score,
+                    "platform_statuses": platform_statuses,
                     "artifacts": {
                         "title": self._artifact_url(run_name, f"{self.publish_dirname}/title.txt"),
                         "article": self._artifact_url(run_name, f"{self.publish_dirname}/article.md"),
                         "publish_result": self._artifact_url(run_name, f"{self.publish_dirname}/publish_result.json"),
                         "run_detail": f"/runs/{run_name}?account={self.account_key}",
+                        "compare": f"/runs/{run_name}/compare?account={self.account_key}",
                     },
                 }
             )
@@ -930,6 +1004,9 @@ class WebViewService:
                 pgc_id="",
                 message="",
                 external_url="",
+                screenshot_url="",
+                dom_url="",
+                debug_dir="",
                 has_result=False,
             )
 
@@ -1471,9 +1548,9 @@ class WebViewService:
     def _collect_run_retry_state(self, run_dir: Path) -> tuple[list[dict[str, str]], dict[str, dict[str, str]]]:
         publish_root = run_dir / self.settings.review.publish_dirname
         specs = [
-            ("toutiao", "????", publish_root / "publish_result.json", publish_root.exists()),
-            ("wechat", "???", publish_root / "wechat" / "wechat_publish_result.json", (publish_root / "wechat").exists()),
-            ("douyin", "??", publish_root / "douyin" / "douyin_publish_result.json", (publish_root / "douyin").exists()),
+            ("toutiao", "头条", publish_root / "publish_result.json", publish_root.exists()),
+            ("wechat", "公众号", publish_root / "wechat" / "wechat_publish_result.json", (publish_root / "wechat").exists()),
+            ("douyin", "抖音", publish_root / "douyin" / "douyin_publish_result.json", (publish_root / "douyin").exists()),
         ]
         retry_platforms: list[dict[str, str]] = []
         latest_platform_status: dict[str, dict[str, str]] = {}
@@ -1486,10 +1563,10 @@ class WebViewService:
             message = str(payload.get("message") or payload.get("error") or payload.get("submit_status") or "").strip()
             if not status and has_assets:
                 status = "pending"
-                message = "?????????????????"
+                message = "发布结果文件为空"
             elif not status:
                 status = "idle"
-                message = "??????????"
+                message = "发布结果异常"
             meta = self._describe_status(status)
             latest_platform_status[platform] = {
                 "platform": platform,

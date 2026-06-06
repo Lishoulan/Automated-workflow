@@ -24,15 +24,16 @@ class ExportService:
         workflow_path = self.output_dir / "workflow_result.json"
         benchmark_path = self.output_dir / "benchmark_strategy.json"
 
+        benchmark_strategy = self._build_benchmark_strategy(result)
         article_path.write_text(self._build_publish_article(result), encoding="utf-8")
-        editorial_path.write_text(self._build_editorial_packet(result), encoding="utf-8")
+        editorial_path.write_text(self._build_editorial_packet(result, benchmark_strategy), encoding="utf-8")
         titles_path.write_text(self._build_titles_package(result), encoding="utf-8")
         score_path.write_text(
             json.dumps(self._build_score_package(result), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         benchmark_path.write_text(
-            json.dumps(self._build_benchmark_strategy(result), ensure_ascii=False, indent=2),
+            json.dumps(benchmark_strategy, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         workflow_path.write_text(
@@ -53,14 +54,12 @@ class ExportService:
 
     def _build_publish_article(self, result: WorkflowResult) -> str:
         article = result.content.polished_article.strip() or result.content.article.strip()
-        title_candidates = result.content.recommended_titles + result.content.titles
-        clean_article = clean_article_text(article, title_candidates=title_candidates)
-        return (clean_article or article) + "\n"
+        # 文章已在 writer_agent._finalize_article 中清洗过，不再重复清洗以避免截断补充内容
+        return (article or "") + "\n"
 
-    def _build_editorial_packet(self, result: WorkflowResult) -> str:
+    def _build_editorial_packet(self, result: WorkflowResult, benchmark_strategy: dict) -> str:
         content = result.content
         score = result.content_score
-        benchmark_strategy = self._build_benchmark_strategy(result)
         recommended_titles = "\n".join(
             f"{index}. {title}" for index, title in enumerate(content.recommended_titles, start=1)
         ) or "1. 暂无推荐标题"
@@ -73,10 +72,10 @@ class ExportService:
         validation_notes = "\n".join(f"- {item}" for item in content.validation_notes) or "- 无"
         publish_risks = "\n".join(f"- {item}" for item in score.publish_risk_flags) or "- 无"
         publish_notes = "\n".join(f"- {item}" for item in score.publish_notes) or "- 无"
-        article = clean_article_text(
-            (content.polished_article or content.article).strip(),
-            title_candidates=content.recommended_titles + content.titles,
-        )
+        article = (
+            content.polished_article or content.article
+        ).strip()
+        # 文章已在 writer_agent._finalize_article 中清洗过，不再重复清洗
 
         return (
             "# 编辑包\n\n"

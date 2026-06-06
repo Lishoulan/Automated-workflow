@@ -47,6 +47,60 @@ class BaseAgent:
         "补充片段：",
         "摘要：",
     )
+    # 预编译的正则表达式用于避免重复编译
+    _WHITESPACE_RE = re.compile(r"\s+")
+    _BRAND_MENTION_RE = re.compile(r"(?:我们账号|本账号|本栏目|本文作者|笔者认为)[:：]?")
+    _TRIM_PUNCTUATION_RE = re.compile(r"^[，。；：:、\-\s]+|[，。；：:、\-\s]+$")
+    _MULTIPLE_NEWLINES_RE = re.compile(r"\n{3,}")
+    _HEADING_PATTERN = re.compile(r"^#{1,6}\s*")
+    _NUMBERED_LIST_PATTERN = re.compile(r"^\d+\.\s*")
+    _DASH_LIST_PATTERN = re.compile(r"^-\s+")
+    # 共享的数值处理正则表达式
+    _NUMERIC_TOKEN_RE = re.compile(
+        r"\d+(?:\.\d+)?(?:%|倍|亿元|亿|万元|万亿元|万千瓦|万台|万套|GW|GWh|MWh|kWh|MW|W|年|月|季度|Q[1-4])?"
+    )
+    
+    # 共享的常量和正则表达式
+    COMPANY_SUFFIX_RE = re.compile(
+        r"[\u4e00-\u9fffA-Za-z0-9]{2,12}(?:科技|能源|汽车|股份|集团|电气|智能|机器人|半导体|电子|时代|精工|制造|材料|电池|重工|工业|光伏|储能|动力|机电|控股|装备|技术)"
+    )
+    INVALID_COMPANY_MARKERS = {
+        "这家公司",
+        "某公司",
+        "相关公司",
+        "头部企业",
+        "企业",
+        "公司",
+        "厂商",
+        "供应商",
+        "项目方",
+        "客户",
+        "车企",
+    }
+    INVALID_COMPANY_FRAGMENTS = {
+        "更像",
+        "再落到",
+        "再拆",
+        "资本",
+        "开始",
+        "真正",
+        "故事",
+        "机会",
+        "验证",
+        "订单",
+        "交付",
+        "利润",
+        "估值",
+        "背后",
+    }
+    ORDER_ANCHOR_TOKENS = ("订单", "中标", "客户", "定点", "签约", "项目", "交付", "量产", "验收", "采购")
+    SCENE_TOKENS = ("机场", "电厂", "电站", "港口", "车间", "仓库", "园区", "工厂", "基地", "物流中心", "示范项目")
+    SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?])")
+    
+    SPORTS_TOKENS = ("体育", "足球", "篮球", "网球", "世界杯", "奥运", "英超", "西甲", "法网", "world cup", "football", "tennis", "french open", "grand slam")
+    INTERNATIONAL_TOKENS = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金", "仲裁", "白宫")
+    CROSS_BORDER_TOKENS = ("中国", "日本", "美国", "欧洲", "德国", "东京", "海外", "出海", "国际", "日韩", "东南亚")
+    BENEFIT_SHIFT_TOKENS = ("利润", "毛利", "份额", "议价", "红利", "系统集成", "零部件", "整机", "运维", "服务", "回款", "IRR")
 
     def __init__(
         self,
@@ -187,7 +241,7 @@ class BaseAgent:
         return result
 
     def normalize_title(self, title: str) -> str:
-        return re.sub(r"\s+", "", title).strip("：:，,。.!！？?")
+        return self._WHITESPACE_RE.sub("", title).strip("：:，,。.!！？?")
 
     def clean_publish_text(self, text: str) -> str:
         cleaned = str(text or "").strip()
@@ -195,7 +249,7 @@ class BaseAgent:
             return ""
         for raw, label in self.INTERNAL_LABEL_MAP.items():
             cleaned = cleaned.replace(raw, label)
-        cleaned = re.sub(r"\s+", " ", cleaned)
+        cleaned = self._WHITESPACE_RE.sub(" ", cleaned)
         cleaned = self._strip_brand_mentions(cleaned)
         return cleaned.strip()
 
@@ -215,8 +269,8 @@ class BaseAgent:
             cleaned_lines.append(self._strip_brand_mentions(line))
 
         cleaned = "\n".join(cleaned_lines)
-        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        cleaned = self._MULTIPLE_NEWLINES_RE.sub("\n\n", cleaned)
+        cleaned = self._WHITESPACE_RE.sub(" ", cleaned)
         return cleaned.strip()
 
     def _strip_brand_mentions(self, text: str) -> str:
@@ -224,10 +278,9 @@ class BaseAgent:
         brand = str(self.settings.brand_name or "").strip()
         if brand:
             cleaned = cleaned.replace(brand, "")
-        cleaned = re.sub(r"(我们账号|本账号|本号|本栏目|本文作者|笔者认为|作者认为)[:：]?", "", cleaned)
-        cleaned = re.sub(r"\s{2,}", " ", cleaned)
-        cleaned = re.sub(r"^[，。；：:、\-\s]+", "", cleaned)
-        cleaned = re.sub(r"[，。；：:、\-\s]+$", "", cleaned)
+        cleaned = self._BRAND_MENTION_RE.sub("", cleaned)
+        cleaned = self._WHITESPACE_RE.sub(" ", cleaned)
+        cleaned = self._TRIM_PUNCTUATION_RE.sub("", cleaned)
         return cleaned.strip()
 
     def clean_publish_list(self, items: list[str], limit: int | None = None) -> list[str]:
@@ -246,3 +299,220 @@ class BaseAgent:
     def is_internal_label(self, text: str) -> bool:
         normalized = self.clean_publish_text(text)
         return normalized in self.INTERNAL_LABEL_MAP.keys() or normalized in self.INTERNAL_LABEL_MAP.values()
+    
+    # 共享的辅助方法
+    def _content_mode(self, data_report):
+        if data_report is None:
+            return "generic"
+        text = " ".join(
+            str(item)
+            for item in (
+                data_report.focus_industry,
+                data_report.topic_title,
+                data_report.selection_reason,
+                getattr(data_report, "suggested_angle", ""),
+                getattr(data_report, "writing_brief", ""),
+                getattr(data_report, "format_brief", ""),
+                " ".join((data_report.focus_keywords or [])[:6]),
+                " ".join((data_report.supply_chain_keywords or [])[:6]),
+            )
+            if str(item).strip()
+        ).lower()
+        if any(token in text for token in self.SPORTS_TOKENS):
+            return "sports"
+        if any(token in text for token in self.INTERNATIONAL_TOKENS):
+            return "international"
+        return "generic"
+    
+    def _company_candidates(self, data_report):
+        candidates = self.clean_publish_list((data_report.focus_companies or []) + (data_report.companies or []))
+        return [item for item in candidates if self._is_valid_company_name(item)]
+    
+    def _is_valid_company_name(self, text: str) -> bool:
+        candidate = self.clean_publish_text(text)
+        if not candidate or len(candidate) < 2 or len(candidate) > 12:
+            return False
+        if candidate in self.INVALID_COMPANY_MARKERS:
+            return False
+        if any(marker in candidate for marker in ("：", "，", "。", "？", "！", "、", "数据", "趋势", "摘要")):
+            return False
+        if any(marker in candidate for marker in self.INVALID_COMPANY_FRAGMENTS):
+            return False
+        if candidate.startswith(("这家", "该", "某", "相关", "头部", "龙头", "重点", "当前", "后续", "行业", "赛道")):
+            return False
+        has_suffix = bool(self.COMPANY_SUFFIX_RE.fullmatch(candidate))
+        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", candidate))
+        return has_suffix or (has_cjk and len(candidate) <= 8 and candidate not in {"公司", "企业", "客户"})
+    
+    def _build_company_or_order_anchor(self, data_report):
+        companies = self._company_candidates(data_report)[:2]
+        metrics = self.clean_publish_list(getattr(data_report, "watch_metrics", [])[:4], limit=4)
+        follow_up = [item for item in re.split(r"[、，,；;]", getattr(data_report, "follow_up_focus", "")) if str(item).strip()]
+        follow_points = self.clean_publish_list(follow_up, limit=4)
+        primary = self.clean_publish_text(
+            data_report.focus_industry or ((data_report.focus_keywords or [])[0] if data_report.focus_keywords else "相关赛道")
+        )
+        nodes = self.clean_publish_list((data_report.focus_keywords or [])[1:] + (data_report.supply_chain_keywords or [])[1:], limit=3)
+        
+        if companies:
+            company_text = "、".join(companies)
+            metric_text = "、".join(follow_points or metrics or ["客户验证", "订单节奏", "交付兑现"])
+            node_text = "、".join(nodes) if nodes else primary
+            return (
+                f"真正需要盯住的，是{company_text}这类主体能不能把{node_text}上的订单和交付兑现出来。"
+                f"如果后续还能持续给出{metric_text}的明确信号，这类公司才可能从题材受益者走向业绩兑现者。"
+            )
+        
+        metric_text = "、".join(follow_points or metrics or ["客户验证", "项目交付", "毛利变化"])
+        node_text = "、".join(nodes) if nodes else primary
+        return (
+            f"即便标题里没有直接点名公司，执行层主体其实已经很清楚：上游看{node_text}，下游看客户验证、量产节奏和海外交付。"
+            f"谁能先把{metric_text}做实，谁才更可能先兑现利润。"
+        )
+    
+    def _has_concrete_anchor(self, article: str, data_report) -> bool:
+        article_lower = article.lower()
+        company_hits = sum(1 for item in self._company_candidates(data_report)[:4] if item.lower() in article_lower)
+        order_hits = sum(1 for token in self.ORDER_ANCHOR_TOKENS if token in article)
+        return company_hits >= 1 or order_hits >= 3
+    
+    def _rebalance_paragraphs(self, paragraphs: list[str], min_paragraphs: int = 5, max_paragraphs: int = 7, max_block_length: int = 160) -> list[str]:
+        blocks = [block.strip() for block in paragraphs if block.strip()]
+        expanded: list[str] = []
+        for block in blocks:
+            if len(block) > max_block_length:
+                expanded.extend(self._split_long_paragraph(block))
+            else:
+                expanded.append(block)
+        
+        while len(expanded) < min_paragraphs:
+            longest_index = max(range(len(expanded)), key=lambda idx: len(expanded[idx]))
+            split_blocks = self._split_long_paragraph(expanded[longest_index], force=True)
+            if len(split_blocks) <= 1:
+                break
+            expanded = expanded[:longest_index] + split_blocks + expanded[longest_index + 1:]
+        
+        while len(expanded) > max_paragraphs:
+            shortest_index = min(range(1, len(expanded)), key=lambda idx: len(expanded[idx]))
+            expanded[shortest_index - 1] = f"{expanded[shortest_index - 1]} {expanded[shortest_index]}".strip()
+            del expanded[shortest_index]
+        
+        return [block for block in expanded if block]
+    
+    def _split_long_paragraph(self, paragraph: str, force: bool = False) -> list[str]:
+        sentences = [item.strip() for item in self.SENTENCE_SPLIT_RE.split(paragraph) if item.strip()]
+        if len(sentences) <= 1 and not force:
+            return [paragraph]
+        if len(sentences) <= 1 and force:
+            parts = [item.strip() for item in re.split(r"(?<=[，；;])", paragraph) if item.strip()]
+            return parts if len(parts) > 1 else [paragraph]
+        
+        result: list[str] = []
+        current = ""
+        count = 0
+        for sentence in sentences:
+            candidate = f"{current}{sentence}" if current else sentence
+            if current and (len(candidate) > 118 or count >= 2):
+                result.append(current.strip())
+                current = sentence
+                count = 1
+            else:
+                current = candidate
+                count += 1
+        if current.strip():
+            result.append(current.strip())
+        return result or [paragraph]
+    
+    def _paragraph_bounds(self, content_format: str) -> tuple[int, int]:
+        if content_format == "quick_commentary":
+            return 5, 7
+        if content_format == "data_recap":
+            return 5, 7
+        if content_format == "project_breakdown":
+            return 6, 8
+        return 6, 12
+
+    def _clean_list(self, payload: object, limit: int) -> list[str]:
+        if not isinstance(payload, list):
+            return []
+        return self.unique([str(item).strip() for item in payload if str(item).strip()])[:limit]
+
+    def _normalize_paragraph(self, text: str) -> str:
+        cleaned = self.strip_prompt_leakage(text).strip()
+        cleaned = cleaned.replace("**", "").replace("__", "")
+        cleaned = self._HEADING_PATTERN.sub("", cleaned)
+        cleaned = self._NUMBERED_LIST_PATTERN.sub("", cleaned)
+        cleaned = self._DASH_LIST_PATTERN.sub("", cleaned)
+        cleaned = self._WHITESPACE_RE.sub(" ", cleaned).strip()
+        return cleaned
+
+    def _bound_score(self, value: object) -> int:
+        try:
+            score = int(value)
+        except (TypeError, ValueError):
+            score = 0
+        return max(0, min(100, score))
+
+    # 共享的数值处理方法
+    def _extract_numeric_tokens(self, text: str) -> list[str]:
+        tokens: list[str] = []
+        for match in self._NUMERIC_TOKEN_RE.findall(str(text or "")):
+            token = str(match).strip().replace(" ", "")
+            if not self._is_significant_numeric_token(token):
+                continue
+            if token not in tokens:
+                tokens.append(token)
+        return tokens
+
+    def _is_significant_numeric_token(self, token: str) -> bool:
+        cleaned = str(token or "").strip()
+        if not cleaned:
+            return False
+        suffixes = ("%", "倍", "亿元", "亿", "万元", "万亿元", "万千瓦", "万台", "万套", "GW", "GWh", "MWh", "kWh", "MW", "W", "年", "月", "季度")
+        if cleaned.startswith("Q") and len(cleaned) == 2:
+            return True
+        if any(marker in cleaned for marker in suffixes):
+            return True
+        return len(re.sub(r"\D", "", cleaned)) >= 4
+
+    def _evidence_numeric_tokens(self, data_report) -> set[str]:
+        texts = [
+            data_report.topic_title,
+            *data_report.growth_numbers,
+            *data_report.core_data,
+            *data_report.industry_trends,
+            *data_report.key_points,
+            *data_report.watch_metrics,
+            *data_report.evidence_notes,
+            *data_report.risk_flags,
+        ]
+        allowed: set[str] = set()
+        for text in texts:
+            for token in self._extract_numeric_tokens(text):
+                allowed.add(token)
+        return allowed
+
+    def _unsupported_numeric_tokens(self, article: str, data_report) -> list[str]:
+        article_tokens = self._extract_numeric_tokens(article)
+        if not article_tokens:
+            return []
+        allowed = self._evidence_numeric_tokens(data_report)
+        unsupported: list[str] = []
+        for token in article_tokens:
+            if token in allowed:
+                continue
+            if token not in unsupported:
+                unsupported.append(token)
+        return unsupported
+
+    def _has_source_anchor(self, article: str) -> bool:
+        markers = ("据", "数据显示", "公开材料", "财报", "公告", "机构统计", "报告")
+        return any(marker in article for marker in markers)
+
+    def _count_hits(self, article_text: str, candidates: list[str]) -> int:
+        hits = 0
+        for item in candidates:
+            token = str(item).strip().lower()
+            if token and token in article_text:
+                hits += 1
+        return hits

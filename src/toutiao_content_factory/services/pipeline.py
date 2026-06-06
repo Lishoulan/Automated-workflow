@@ -43,11 +43,11 @@ class ContentFactoryPipeline:
         self.workflow = AgentWorkflowService(settings, self.prompt_repository, self.openai_service, logger)
         self.cache_service = CacheService(settings.cache_dir, settings.cache_similarity_threshold, logger)
         self.exporter = ExportService(settings, logger)
+        self.notification_service = NotificationService(asdict(settings))
         self.state_manager = PipelineStateManager(
             settings.output_dir,
-            notification_service=NotificationService(asdict(settings)),
+            notification_service=self.notification_service,
         )
-        self.notification_service = NotificationService(asdict(settings))
 
     def run(self, paste_text: str | None = None, include_input_dir: bool = True) -> dict[str, str]:
         if include_input_dir:
@@ -78,13 +78,14 @@ class ContentFactoryPipeline:
             result.cache_status = "exact_hit"
             result.content.cache_note = cache_context.note
         else:
+            is_fast_mode = self.fast_mode or self.settings.fast_mode
             result = self.workflow.run(
                 extraction,
                 style.key,
                 cache_context,
-                fast_mode=self.fast_mode or self.settings.fast_mode,
-                skip_review_agent=self.settings.skip_review_agent or self.fast_mode or self.settings.fast_mode,
-                skip_publish_review=self.settings.skip_publish_review or self.fast_mode or self.settings.fast_mode,
+                fast_mode=is_fast_mode,
+                skip_review_agent=self.settings.skip_review_agent or is_fast_mode,
+                skip_publish_review=self.settings.skip_publish_review or is_fast_mode,
             )
             self.cache_service.save(result, extraction.merged_text)
 

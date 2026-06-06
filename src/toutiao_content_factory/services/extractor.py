@@ -19,6 +19,16 @@ class SignalExtractor:
         "机器视觉",
         "国内人形机器人",
     }
+    MAX_KEYWORDS_COUNT = 6
+    MAX_COMPANIES_COUNT = 4
+    MAX_SENTENCES_COUNT = 20
+    MAX_DATA_SENTENCES_COUNT = 6
+    MAX_TRENDS_COUNT = 6
+    MAX_KEY_POINTS_COUNT = 6
+    MAX_EVIDENCE_COUNT = 6
+    MAX_GROWTH_NUMBERS_COUNT = 12
+    MAX_TITLE_COMPANY_CANDIDATES = 12
+    SOURCE_PREVIEW_LENGTH = 180
     INDUSTRY_KEYWORDS = [
         "储能",
         "新能源",
@@ -184,7 +194,7 @@ class SignalExtractor:
         return filtered or list(documents)
 
     def _build_source_summary(self, document: SourceDocument) -> dict[str, str]:
-        preview = document.content[:180].replace("\n", " ")
+        preview = document.content[:self.SOURCE_PREVIEW_LENGTH].replace("\n", " ")
         return {
             "title": document.title or "untitled",
             "source_type": document.source_type,
@@ -236,12 +246,12 @@ class SignalExtractor:
             metadata_keywords.extend([item.strip() for item in raw.split("、") if item.strip()])
 
         if metadata_keywords:
-            return self._deduplicate(metadata_keywords)[:6]
+            return self._deduplicate(metadata_keywords)[:self.MAX_KEYWORDS_COUNT]
 
         ranked = self._extract_keywords(analysis_text)
         if focus_industry:
             ranked = [focus_industry] + [item for item in ranked if item != focus_industry]
-        return self._deduplicate(ranked)[:6]
+        return self._deduplicate(ranked)[:self.MAX_KEYWORDS_COUNT]
 
     def _filter_sentences_by_focus(
         self,
@@ -252,7 +262,7 @@ class SignalExtractor:
         if not focus_industry and not focus_keywords:
             return []
 
-        anchors = self._deduplicate(([focus_industry] if focus_industry else []) + focus_keywords)[:6]
+        anchors = self._deduplicate(([focus_industry] if focus_industry else []) + focus_keywords)[:self.MAX_KEYWORDS_COUNT]
         result: list[str] = []
         for sentence in sentences:
             if self._is_noise_sentence(sentence):
@@ -264,7 +274,7 @@ class SignalExtractor:
                 token in sentence for token in ("订单", "交付", "毛利", "验证", "量产", "中标", "并网", "装机", "报价", "出货")
             ):
                 result.append(sentence)
-        return self._deduplicate(result)[:20]
+        return self._deduplicate(result)[:self.MAX_SENTENCES_COUNT]
 
     def _extract_keywords(self, text: str) -> list[str]:
         counts = Counter(keyword for keyword in self.INDUSTRY_KEYWORDS if keyword in text)
@@ -287,7 +297,7 @@ class SignalExtractor:
             keyword_hits = sum(1 for keyword in focus_keywords if keyword and any(keyword in sentence and company in sentence for sentence in filtered_sentences))
             ranked.append((sentence_hits * 3 + keyword_hits, company))
         ranked.sort(reverse=True)
-        return [company for _score, company in ranked if company][:4]
+        return [company for _score, company in ranked if company][:self.MAX_COMPANIES_COUNT]
 
     def _pick_data_sentences(self, sentences: list[str]) -> list[str]:
         scored = [
@@ -299,7 +309,7 @@ class SignalExtractor:
             )
             and not self._is_noise_sentence(sentence)
         ]
-        return self._deduplicate(scored)[:6]
+        return self._deduplicate(scored)[:self.MAX_DATA_SENTENCES_COUNT]
 
     def _build_trends(self, sentences: list[str], keywords: list[str]) -> list[str]:
         trend_candidates: list[str] = []
@@ -312,7 +322,7 @@ class SignalExtractor:
         if not trend_candidates and keywords:
             trend_candidates = [f"{keywords[0]}相关环节进入验证和订单联动阶段。"]
 
-        return self._deduplicate(trend_candidates)[:6]
+        return self._deduplicate(trend_candidates)[:self.MAX_TRENDS_COUNT]
 
     def _build_key_points(
         self,
@@ -337,7 +347,7 @@ class SignalExtractor:
                 ranked.append((score, sentence))
 
         ranked.sort(key=lambda item: (item[0], len(item[1])), reverse=True)
-        points = [sentence for _score, sentence in ranked[:6]]
+        points = [sentence for _score, sentence in ranked[:self.MAX_KEY_POINTS_COUNT]]
 
         if not points and keywords:
             primary = keywords[0]
@@ -347,7 +357,7 @@ class SignalExtractor:
             else:
                 points.append(f"{primary}正在从概念热度走向商业验证，下一步要看{secondary}等环节谁先兑现。")
 
-        return self._deduplicate(points)[:6]
+        return self._deduplicate(points)[:self.MAX_KEY_POINTS_COUNT]
 
     def _build_evidence_items(
         self,
@@ -368,7 +378,7 @@ class SignalExtractor:
             for document in documents:
                 title = document.title or "source"
                 content = document.content
-                if sentence in content or sentence[:18] in content:
+                if sentence in content or sentence[:self.SOURCE_PREVIEW_LENGTH // 10] in content:
                     matched_source = title
                     break
             evidence.append(
@@ -377,7 +387,7 @@ class SignalExtractor:
                     "source": matched_source,
                 }
             )
-            if len(evidence) >= 6:
+            if len(evidence) >= self.MAX_EVIDENCE_COUNT:
                 break
         return evidence
 
@@ -390,13 +400,13 @@ class SignalExtractor:
         return stripped in {"关键结论", "数据观察", "产业链关键词", "行业判断"}
 
     def _extract_growth_numbers(self, analysis_text: str) -> list[str]:
-        return self._deduplicate(self.NUMBER_PATTERN.findall(analysis_text))[:12]
+        return self._deduplicate(self.NUMBER_PATTERN.findall(analysis_text))[:self.MAX_GROWTH_NUMBERS_COUNT]
 
     def _extract_companies(self, analysis_text: str, topic_title: str) -> list[str]:
         candidates = self._deduplicate(self.COMPANY_PATTERN.findall(analysis_text))
         title_candidates = self._extract_title_company_candidates(topic_title)
         merged = self._deduplicate(title_candidates + candidates)
-        return [item for item in merged if self._is_valid_company_name(item)][:12]
+        return [item for item in merged if self._is_valid_company_name(item)][:self.MAX_TITLE_COMPANY_CANDIDATES]
 
     def _extract_title_company_candidates(self, topic_title: str) -> list[str]:
         if not topic_title:

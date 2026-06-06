@@ -28,6 +28,14 @@ class TopicSourceResult:
 
 
 class TopicCollectionService:
+    URL_DOMAIN_BLACKLIST: frozenset[str] = frozenset({
+        "news.google.com",
+        "google.com",
+        "googleapis.com",
+        "newsrss.bbc.co.uk",
+        "bbc.co.uk",
+    })
+
     NUMBER_PATTERN = re.compile(
         r"\d+(?:\.\d+)?(?:%|倍|年|季度|个月|周|天|小时|分钟|亿元|亿美元|万元|万台|万辆|万套|万吨|万千瓦|万千瓦时|"
         r"GWh|MWh|kWh|Wh|Ah|GW|MW|kW|W|V|A)"
@@ -49,98 +57,94 @@ class TopicCollectionService:
         "宏观",
     )
     INTERNATIONAL_FALSE_POSITIVE_TOKENS = (
-        "?????",
-        "????",
-        "????",
-        "????",
-        "?????",
-        "??????",
+        "国际新闻",
+        "环球网",
+        "参考消息",
+        "海外网",
+        "国际在线",
+        "环球时报",
     )
     SPORTS_LOW_SIGNAL_TOKENS = (
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "???",
-        "??",
+        "赛事",
+        "联赛",
+        "杯赛",
+        "赛季",
+        "积分",
+        "排行榜",
+        "赛程",
     )
     INTERNATIONAL_SIGNAL_TOKENS = (
-        "??",
-        "??",
-        "??",
-        "??",
-        "???",
-        "???",
-        "??",
-        "???",
-        "??",
-        "???",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "???",
-        "??",
-        "??",
-        "????",
+        "美国",
+        "俄罗斯",
+        "乌克兰",
+        "中东",
+        "欧盟",
+        "北约",
+        "日本",
+        "韩国",
+        "英国",
+        "法国",
+        "德国",
+        "印度",
+        "伊朗",
+        "朝鲜",
+        "以色列",
+        "巴勒斯坦",
+        "叙利亚",
+        "阿富汗",
+        "土耳其",
+        "沙特",
+        "巴西",
+        "澳大利亚",
+        "加拿大",
+        "墨西哥",
+        "东南亚",
     )
     INTERNATIONAL_CONTEXT_FALSE_POSITIVE_TOKENS = (
-        "?????",
-        "????",
-        "????",
-        "????",
-        "??????????",
-        "??????",
-        "??",
-        "???",
+        "国际关系",
+        "国际法",
+        "国际组织",
+        "国际会议",
+        "国际合作与交流",
+        "国际社会",
+        "海外",
+        "外交部",
     )
     SPORTS_EVENT_TOKENS = (
-        "??",
-        "??",
-        "???",
-        "???",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
+        "足球",
+        "篮球",
+        "网球",
+        "乒乓球",
+        "排球",
+        "游泳",
+        "田径",
+        "拳击",
+        "高尔夫",
+        "滑雪",
+        "赛车",
+        "羽毛球",
+        "体操",
+        "跳水",
+        "举重",
+        "击剑",
+        "射击",
+        "摔跤",
+        "柔道",
+        "跆拳道",
+        "马术",
+        "帆船",
+        "橄榄球",
+        "棒球",
+        "冰球",
+        "短道",
+        "花滑",
         "NBA",
         "CBA",
-        "???",
-        "??",
-        "??",
-        "??",
-        "??",
+        "世界杯",
+        "奥运会",
+        "亚运会",
+        "世锦赛",
+        "全运会",
         "transfer",
         "Premier League",
         "World Cup",
@@ -154,19 +158,19 @@ class TopicCollectionService:
         "tennis",
     )
     SPORTS_CONTEXT_FALSE_POSITIVE_TOKENS = (
-        "????",
-        "???",
-        "????",
-        "????",
-        "???",
-        "???",
-        "????",
-        "????",
-        "??????",
-        "?????",
-        "??",
-        "???????",
-        "?????",
+        "体育产业",
+        "体育总局",
+        "体育赛事",
+        "体育频道",
+        "体育场馆",
+        "体育协会",
+        "体育营销",
+        "体育赞助",
+        "体育彩票",
+        "体育文化",
+        "健身",
+        "体育产业发展",
+        "体育教育",
     )
     TOPIC_TYPE_LABELS = {
         "deep_analysis": "深度分析",
@@ -295,7 +299,36 @@ class TopicCollectionService:
     HTML_CHARSET_PATTERN = re.compile(br"charset\s*=\s*[\"']?([a-zA-Z0-9_\-]+)", re.I)
     XML_ENCODING_PATTERN = re.compile(br"<\?xml[^>]+encoding=[\"']([a-zA-Z0-9_\-]+)[\"']", re.I)
     MOJIBAKE_MARKERS = ("å", "æ", "ç", "é", "ï", "¤", "�")
-    MOJIBAKE_CJK_MARKERS = ("鍥", "鏂", "鐢", "鑳", "缃", "鍙", "璁", "闂", "绔", "鍌", "姹", "鍑", "閿", "浠", "璧")
+    MOJIBAKE_CJK_MARKERS = (
+        "鍥", "鏂", "鐢", "鑳", "缃", "鍙", "璁", "闂", "绔", "鍌", "姹", "鍑", "閿", "浠", "璧",
+        # GBK-as-UTF-8 常见乱码字符（来自36氪等RSS源）
+        "浜", "紒", "鏁", "瀹", "鐙", "鍏", "借", "鏇", "濇", "柊", "铻", "嶈", "祫", "锛",
+        "屽", "鍊", "兼", "垨", "瓒", "浜", "鍖", "哄", "尯", "鍒", "╁", "彲", "鑳", "鎹",
+    )
+    # 类常量定义
+    MAX_NUMBERS_EXTRACTED = 6
+    MAX_SUMMARY_LENGTH = 120
+    MIN_FRESHNESS_SCORE = 35
+    FRESHNESS_6H = 98
+    FRESHNESS_12H = 95
+    FRESHNESS_24H = 88
+    FRESHNESS_48H = 70
+    FRESHNESS_72H = 58
+    FRESHNESS_OVER_72H = 42
+    DEFAULT_RELAXED_MAX_AGE_HOURS = 72
+    MAX_TOPIC_AGE_HOURS_FALLBACK = 24
+    MIN_SCORE_BOUND = 18
+    MAX_SCORE_BOUND = 98
+    MAX_HIGH_READ_SCORE = 72
+    MAX_HIGH_SAVE_SCORE = 72
+    MAX_HIGH_DISCUSSION_SCORE = 72
+    LOW_SIGNAL_TEXT_LENGTH = 12
+    MAX_SNIPPET_LENGTH_FOR_UNUSABLE_CHECK_1 = 140
+    MAX_SNIPPET_LENGTH_FOR_UNUSABLE_CHECK_2 = 120
+    MIN_KEYWORD_HITS_FOR_RELAXED = 2
+    MIN_TITLE_HITS_FOR_RELAXED = 1
+    MAX_EXPORT_TOPICS_FALLBACK = 6
+
     LOW_SIGNAL_TOPIC_TEXT_RE = re.compile(
         r"^(?:"
         r"\u521a\u521a|"
@@ -410,6 +443,12 @@ class TopicCollectionService:
         return await asyncio.to_thread(self._fetch_text_sync, url, encoding)
 
     def _fetch_text_sync(self, url: str, encoding: str | None = None) -> str:
+        # 快速失败：域名黑名单
+        domain = urlparse(url).hostname or ""
+        if domain in self.URL_DOMAIN_BLACKLIST:
+            self.logger.info("Skipping blacklisted domain: %s", domain)
+            raise HTTPError(url, 403, "Domain blacklisted", {}, None)
+
         retry_delays = (0.0, 1.2, 3.0)
         last_error: Exception | None = None
         for attempt, delay in enumerate(retry_delays, start=1):
@@ -428,7 +467,7 @@ class TopicCollectionService:
                 with urlopen(
                     request,
                     context=self._ssl_context,
-                    timeout=self.topic_settings.request_timeout_seconds,
+                    timeout=max(30, self.topic_settings.request_timeout_seconds),
                 ) as response:
                     raw = response.read()
                     charset = encoding or response.headers.get_content_charset()
@@ -518,7 +557,7 @@ class TopicCollectionService:
             return False
         mojibake_count = sum(text.count(marker) for marker in self.MOJIBAKE_MARKERS)
         mojibake_cjk_count = sum(text.count(marker) for marker in self.MOJIBAKE_CJK_MARKERS)
-        return (mojibake_count + mojibake_cjk_count) >= 3
+        return (mojibake_count + mojibake_cjk_count) >= 2
 
     def _decoding_hint_keywords(self) -> list[str]:
         keywords = {
@@ -588,9 +627,9 @@ class TopicCollectionService:
             + topic.title_potential_score * 0.20
         )
         topic.total_score = max(1, topic.total_score - self._selection_penalty(topic))
-        topic.is_high_read = topic.read_score >= 72
-        topic.is_high_save = topic.save_score >= 72
-        topic.is_high_discussion = topic.discussion_score >= 72
+        topic.is_high_read = topic.read_score >= self.MAX_HIGH_READ_SCORE
+        topic.is_high_save = topic.save_score >= self.MAX_HIGH_SAVE_SCORE
+        topic.is_high_discussion = topic.discussion_score >= self.MAX_HIGH_DISCUSSION_SCORE
         return topic
 
     def _match_industries(self, text: str) -> tuple[list[str], list[str]]:
@@ -605,28 +644,28 @@ class TopicCollectionService:
         return matched_industries, self._unique(matched_keywords)
 
     def _extract_numbers(self, text: str) -> list[str]:
-        return self._unique(self.NUMBER_PATTERN.findall(text))[:6]
+        return self._unique(self.NUMBER_PATTERN.findall(text))[:self.MAX_NUMBERS_EXTRACTED]
 
     def _freshness_score(self, published_at: str) -> int:
         if not published_at:
-            return 35
+            return self.MIN_FRESHNESS_SCORE
         published = self._parse_datetime(published_at)
         if published is None:
-            return 35
+            return self.MIN_FRESHNESS_SCORE
         now = datetime.now(timezone.utc)
         delta = now - published.astimezone(timezone.utc)
         hours = max(delta.total_seconds() / 3600, 0)
         if hours <= 6:
-            return 98
+            return self.FRESHNESS_6H
         if hours <= 12:
-            return 95
+            return self.FRESHNESS_12H
         if hours <= 24:
-            return 88
+            return self.FRESHNESS_24H
         if hours <= 48:
-            return 70
+            return self.FRESHNESS_48H
         if hours <= 72:
-            return 58
-        return 42
+            return self.FRESHNESS_72H
+        return self.FRESHNESS_OVER_72H
 
     def _parse_datetime(self, value: str) -> datetime | None:
         value = value.strip()
@@ -773,7 +812,7 @@ class TopicCollectionService:
             )
             if value and value > 0
         ]
-        max_age_hours = min(age_limits) if age_limits else 24
+        max_age_hours = min(age_limits) if age_limits else self.MAX_TOPIC_AGE_HOURS_FALLBACK
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
         keep: list[TopicCandidate] = []
 
@@ -794,6 +833,12 @@ class TopicCollectionService:
 
         return keep
 
+    # 泛关键词黑名单 - 这些词太宽泛，不应单独作为匹配依据
+    GENERIC_KEYWORD_BLACKLIST = frozenset({
+        "AI", "公司", "企业", "技术", "发展", "市场", "产业", "行业",
+        "项目", "投资", "合作", "建设", "生产", "制造",
+    })
+
     def _filter_to_focus_industries(
         self,
         topics: list[TopicCandidate],
@@ -813,8 +858,25 @@ class TopicCollectionService:
             for item in matched_topics
             if any(industry in focus_set for industry in item.matched_industries)
         ]
+
+        # 过滤掉仅匹配泛关键词的话题
+        specific_filtered = []
+        for item in (focused_topics if focused_topics else matched_topics):
+            specific_keywords = [
+                k for k in (item.matched_keywords or [])
+                if k not in self.GENERIC_KEYWORD_BLACKLIST
+            ]
+            if specific_keywords:
+                specific_filtered.append(item)
+            else:
+                filtered_out["industry_mismatch"] += 1
+
+        if specific_filtered:
+            if focused_topics:
+                filtered_out["industry_mismatch"] += max(len(focused_topics) - len(specific_filtered), 0)
+            return specific_filtered
+
         if focused_topics:
-            filtered_out["industry_mismatch"] += max(len(matched_topics) - len(focused_topics), 0)
             return focused_topics
 
         self.logger.warning(
@@ -837,7 +899,7 @@ class TopicCollectionService:
         if self._is_weak_event_topic(topic):
             score -= 10
         score -= self._macro_noise_penalty(topic)
-        return min(98, score)
+        return min(self.MAX_SCORE_BOUND, score)
 
     def _score_read(self, topic: TopicCandidate, freshness_score: int) -> int:
         pattern_score = self._high_performance_pattern_score(topic)
@@ -857,7 +919,7 @@ class TopicCollectionService:
             score -= 12
         score += self._focus_bonus(topic)
         score -= self._macro_noise_penalty(topic)
-        return min(96, score)
+        return min(self.MAX_SCORE_BOUND - 2, score)
 
     def _score_save(self, topic: TopicCandidate, freshness_score: int) -> int:
         pattern_score = self._high_performance_pattern_score(topic)
@@ -875,7 +937,7 @@ class TopicCollectionService:
             score -= 8
         score += self._focus_bonus(topic) // 2
         score -= self._macro_noise_penalty(topic) // 2
-        return min(96, score)
+        return min(self.MAX_SCORE_BOUND - 2, score)
 
     def _score_discussion(self, topic: TopicCandidate, freshness_score: int) -> int:
         text = f"{topic.title} {topic.summary}"
@@ -896,7 +958,7 @@ class TopicCollectionService:
             score -= 10
         score += self._focus_bonus(topic) // 2
         score -= self._macro_noise_penalty(topic)
-        return min(96, score)
+        return min(self.MAX_SCORE_BOUND - 2, score)
 
     def _classify_topic_type(self, topic: TopicCandidate) -> str:
         text = f"{topic.title} {topic.summary} {topic.snippet}".lower()
@@ -942,7 +1004,7 @@ class TopicCollectionService:
         if self._is_weak_event_topic(topic):
             score -= 10
         score -= self._macro_noise_penalty(topic) // 2
-        return max(18, min(98, score))
+        return max(self.MIN_SCORE_BOUND, min(self.MAX_SCORE_BOUND, score))
 
     def _topic_quality_flags(
         self,
@@ -1040,7 +1102,7 @@ class TopicCollectionService:
         if cleaned_snippet and not self._is_unusable_topic_snippet(cleaned_snippet):
             sentence = re.split(r"[。！？!?；;\n]", cleaned_snippet)[0].strip()
             if sentence and not self._is_unusable_topic_snippet(sentence):
-                return sentence[:120]
+                return sentence[:self.MAX_SUMMARY_LENGTH]
         if topic.extracted_numbers and topic.matched_keywords:
             return (
                 f"{topic.title}，当前可跟踪的信号包括"
@@ -1059,7 +1121,7 @@ class TopicCollectionService:
         normalized = re.sub(r"\s+", "", cleaned)
         if self.LOW_SIGNAL_TOPIC_TEXT_RE.fullmatch(normalized):
             return True
-        if len(normalized) <= 12 and re.fullmatch(r"[\d\-/:.年月日分小时前最新刚刚]+", normalized):
+        if len(normalized) <= self.LOW_SIGNAL_TEXT_LENGTH and re.fullmatch(r"[\d\-/:.年月日分小时前最新刚刚]+", normalized):
             return True
         return False
 
@@ -1110,9 +1172,9 @@ class TopicCollectionService:
             return True
         if self._looks_like_mojibake(cleaned):
             return True
-        if len(cleaned) > 140 and len(re.findall(r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d+\s*(?:分钟前|小时前|天前))", cleaned)) >= 2:
+        if len(cleaned) > self.MAX_SNIPPET_LENGTH_FOR_UNUSABLE_CHECK_1 and len(re.findall(r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d+\s*(?:分钟前|小时前|天前))", cleaned)) >= 2:
             return True
-        if len(cleaned) > 120 and cleaned.count(" ") >= 6:
+        if len(cleaned) > self.MAX_SNIPPET_LENGTH_FOR_UNUSABLE_CHECK_2 and cleaned.count(" ") >= 6:
             return True
         if len(cleaned) > 140 and sum(cleaned.count(token) for token in ("，", "、", " | ", " / ")) >= 6:
             return True
@@ -1182,7 +1244,7 @@ class TopicCollectionService:
         scored: list[TopicCandidate],
         filtered_out: dict[str, int],
     ) -> list[TopicCandidate]:
-        target_count = min(self.topic_settings.max_export_topics, 6)
+        target_count = min(self.topic_settings.max_export_topics, self.MAX_EXPORT_TOPICS_FALLBACK)
         if len(selected) >= target_count:
             return selected
 
@@ -1216,7 +1278,7 @@ class TopicCollectionService:
 
     def _build_relaxed_candidates(self, topics: list[TopicCandidate]) -> list[TopicCandidate]:
         focus_set = set(self.topic_settings.focus_industries)
-        relaxed_cutoff = datetime.now(timezone.utc) - timedelta(hours=max(self.topic_settings.max_topic_age_hours, 72))
+        relaxed_cutoff = datetime.now(timezone.utc) - timedelta(hours=max(self.topic_settings.max_topic_age_hours, self.DEFAULT_RELAXED_MAX_AGE_HOURS))
         pool: list[TopicCandidate] = []
 
         for topic in topics:
@@ -1228,7 +1290,7 @@ class TopicCollectionService:
                 continue
             title_hits = self._keyword_hits_in_title(topic)
             keyword_hits = len(topic.matched_keywords)
-            if title_hits < 1 and keyword_hits < 2:
+            if title_hits < self.MIN_TITLE_HITS_FOR_RELAXED and keyword_hits < self.MIN_KEYWORD_HITS_FOR_RELAXED:
                 continue
             published = self._parse_datetime(topic.published_at)
             if published is not None and published.astimezone(timezone.utc) < relaxed_cutoff:
@@ -1584,7 +1646,7 @@ class TopicCollectionService:
             return True
         if self._is_unusable_topic_snippet(snippet):
             return True
-        if topic.source in {"newenergy_in_en", "chuneng_in_en"} and len(snippet) > 100:
+        if topic.source in {"newenergy_ofweek", "chuneng_ofweek"} and len(snippet) > 100:
             return True
         return False
 
@@ -1737,25 +1799,35 @@ class _ZhidxTopicCollector(_BaseTopicCollector):
     DATE_PATTERN = re.compile(r'(\d{2}-\d{2}|\d{4}-\d{2}-\d{2})')
 
     async def collect(self) -> TopicSourceResult:
-        items: list[TopicCandidate] = []
-        errors: list[str] = []
-        urls = [str(item) for item in self.source_config.get("urls", [])]
-        results = await asyncio.gather(*(self.service.fetch_text(url) for url in urls), return_exceptions=True)
+        try:
+            items: list[TopicCandidate] = []
+            errors: list[str] = []
+            urls = [str(item) for item in self.source_config.get("urls", [])]
+            results = await asyncio.gather(*(self.service.fetch_text(url) for url in urls), return_exceptions=True)
 
-        for url, payload in zip(urls, results):
-            if isinstance(payload, Exception):
-                errors.append(f"{url}: {payload}")
-                continue
-            try:
-                items.extend(self._parse_page(url, payload))
-            except Exception as exc:  # pragma: no cover - defensive
-                errors.append(f"{url}: {exc}")
+            for url, payload in zip(urls, results):
+                if isinstance(payload, Exception):
+                    errors.append(f"{url}: {payload}")
+                    continue
+                try:
+                    items.extend(self._parse_page(url, payload))
+                except Exception as exc:  # pragma: no cover - defensive
+                    errors.append(f"{url}: {exc}")
 
-        return TopicSourceResult(
-            source_name=self.source_name,
-            items=items[: self.service.topic_settings.max_items_per_source],
-            errors=errors,
-        )
+            return TopicSourceResult(
+                source_name=self.source_name,
+                items=items[: self.service.topic_settings.max_items_per_source],
+                errors=errors,
+            )
+        except Exception as exc:
+            self.service.logger.warning(
+                "ZhidxTopicCollector %s failed entirely: %s", self.source_name, exc,
+            )
+            return TopicSourceResult(
+                source_name=self.source_name,
+                items=[],
+                errors=[f"Collector {self.source_name} failed entirely: {exc}"],
+            )
 
     def _parse_page(self, page_url: str, html_text: str) -> list[TopicCandidate]:
         candidates: list[TopicCandidate] = []
@@ -1790,25 +1862,35 @@ class _OfweekTopicCollector(_BaseTopicCollector):
     DATE_PATTERN = re.compile(r"(20\d{2}-\d{2}-\d{2}|\d{2}-\d{2})")
 
     async def collect(self) -> TopicSourceResult:
-        items: list[TopicCandidate] = []
-        errors: list[str] = []
-        urls = [str(item) for item in self.source_config.get("urls", [])]
-        results = await asyncio.gather(*(self.service.fetch_text(url) for url in urls), return_exceptions=True)
+        try:
+            items: list[TopicCandidate] = []
+            errors: list[str] = []
+            urls = [str(item) for item in self.source_config.get("urls", [])]
+            results = await asyncio.gather(*(self.service.fetch_text(url) for url in urls), return_exceptions=True)
 
-        for url, payload in zip(urls, results):
-            if isinstance(payload, Exception):
-                errors.append(f"{url}: {payload}")
-                continue
-            try:
-                items.extend(self._parse_page(url, payload))
-            except Exception as exc:  # pragma: no cover - defensive
-                errors.append(f"{url}: {exc}")
+            for url, payload in zip(urls, results):
+                if isinstance(payload, Exception):
+                    errors.append(f"{url}: {payload}")
+                    continue
+                try:
+                    items.extend(self._parse_page(url, payload))
+                except Exception as exc:  # pragma: no cover - defensive
+                    errors.append(f"{url}: {exc}")
 
-        return TopicSourceResult(
-            source_name=self.source_name,
-            items=items[: self.service.topic_settings.max_items_per_source],
-            errors=errors,
-        )
+            return TopicSourceResult(
+                source_name=self.source_name,
+                items=items[: self.service.topic_settings.max_items_per_source],
+                errors=errors,
+            )
+        except Exception as exc:
+            self.service.logger.warning(
+                "OfweekTopicCollector %s failed entirely: %s", self.source_name, exc,
+            )
+            return TopicSourceResult(
+                source_name=self.source_name,
+                items=[],
+                errors=[f"Collector {self.source_name} failed entirely: {exc}"],
+            )
 
     def _parse_page(self, page_url: str, html_text: str) -> list[TopicCandidate]:
         candidates: list[TopicCandidate] = []
@@ -1870,25 +1952,35 @@ class _GenericHtmlTopicCollector(_BaseTopicCollector):
         self.same_domain_only = same_domain_only
 
     async def collect(self) -> TopicSourceResult:
-        items: list[TopicCandidate] = []
-        errors: list[str] = []
-        urls = [str(item) for item in self.source_config.get("urls", [])]
-        results = await asyncio.gather(*(self.service.fetch_text(url) for url in urls), return_exceptions=True)
+        try:
+            items: list[TopicCandidate] = []
+            errors: list[str] = []
+            urls = [str(item) for item in self.source_config.get("urls", [])]
+            results = await asyncio.gather(*(self.service.fetch_text(url) for url in urls), return_exceptions=True)
 
-        for url, payload in zip(urls, results):
-            if isinstance(payload, Exception):
-                errors.append(f"{url}: {payload}")
-                continue
-            try:
-                items.extend(self._parse_page(url, payload))
-            except Exception as exc:  # pragma: no cover - defensive
-                errors.append(f"{url}: {exc}")
+            for url, payload in zip(urls, results):
+                if isinstance(payload, Exception):
+                    errors.append(f"{url}: {payload}")
+                    continue
+                try:
+                    items.extend(self._parse_page(url, payload))
+                except Exception as exc:  # pragma: no cover - defensive
+                    errors.append(f"{url}: {exc}")
 
-        return TopicSourceResult(
-            source_name=self.source_name,
-            items=self._rank_items(items)[: self.service.topic_settings.max_items_per_source],
-            errors=errors,
-        )
+            return TopicSourceResult(
+                source_name=self.source_name,
+                items=self._rank_items(items)[: self.service.topic_settings.max_items_per_source],
+                errors=errors,
+            )
+        except Exception as exc:
+            self.service.logger.warning(
+                "GenericHtmlTopicCollector %s failed entirely: %s", self.source_name, exc,
+            )
+            return TopicSourceResult(
+                source_name=self.source_name,
+                items=[],
+                errors=[f"Collector {self.source_name} failed entirely: {exc}"],
+            )
 
     def _parse_page(self, page_url: str, html_text: str) -> list[TopicCandidate]:
         base_domain = urlparse(page_url).netloc

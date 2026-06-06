@@ -22,6 +22,7 @@ from toutiao_content_factory.config import DEFAULT_ACCOUNT_KEY, AppSettings, loa
 from toutiao_content_factory.services.app_service import ContentFactoryAppService
 from toutiao_content_factory.services.automation import collect_performance_data as scheduled_collect_performance_data
 from toutiao_content_factory.services.automation import daily_run as scheduled_daily_run
+from scripts.keep_alive import main as scheduled_keep_alive
 from toutiao_content_factory.utils.logging_utils import configure_logging
 from toutiao_content_factory.web.view_service import WebViewService
 
@@ -256,6 +257,14 @@ def create_app(project_root: Path, account_key: str | None = None) -> FastAPI:
             )
             raise
 
+    def run_scheduled_keep_alive_for_account(account_key_value: str) -> None:
+        ctx = get_account_context(account_key_value)
+        try:
+            scheduled_keep_alive(account_key_value)
+            ctx.app_service.logger.info("Keep-alive finished for %s", account_key_value)
+        except Exception as exc:
+            ctx.app_service.logger.warning("Keep-alive failed for %s: %s", account_key_value, exc)
+
     def run_scheduled_performance_collection_for_account(account_key_value: str) -> None:
         ctx = get_account_context(account_key_value)
         try:
@@ -298,6 +307,18 @@ def create_app(project_root: Path, account_key: str | None = None) -> FastAPI:
                     misfire_grace_time=1800,
                 )
                 expected_job_ids.add(job_id)
+
+            # Keep-alive 30 min before each publish slot
+            for ka_index, (ka_hour, ka_minute) in enumerate([(6, 30), (11, 0), (17, 30), (21, 30)]):
+                ka_job_id = f"keep_alive:{ctx.settings.account_key}:{ka_index}"
+                scheduler.add_job(
+                    run_scheduled_keep_alive_for_account,
+                    CronTrigger(hour=ka_hour, minute=ka_minute),
+                    id=ka_job_id,
+                    args=[ctx.settings.account_key],
+                    replace_existing=True,
+                )
+                expected_job_ids.add(ka_job_id)
 
             performance_job_id = f"collect_performance_data:{ctx.settings.account_key}"
             if not _windows_schedule_owns_performance_collection():
@@ -460,6 +481,33 @@ def create_app(project_root: Path, account_key: str | None = None) -> FastAPI:
     def run_detail(request: Request, run_name: str, account: str | None = Query(default=None)):
         ctx = current_context(request, account)
         return render(request, "run_detail.html", ctx, detail=ctx.view_service.load_run_detail(run_name))
+
+    @app.get("/runs/{run_name}/compare", name="run_compare")
+    def run_compare(request: Request, run_name: str, account: str | None = Query(default=None)):
+        ctx = current_context(request, account)
+        detail = ctx.view_service.load_run_detail(run_name)
+        selected_topic = detail.get("selected_topic", {}) if isinstance(detail, dict) else {}
+        article_body = detail.get("article_body", "") if isinstance(detail, dict) else ""
+        polished_article = detail.get("review_packet", "") if isinstance(detail, dict) else ""
+        publish_package = detail.get("publish_package", "") if isinstance(detail, dict) else ""
+        final_article = publish_package or polished_article or article_body
+        content_score = detail.get("content_score", {}) if isinstance(detail, dict) else {}
+        scores = content_score.get("scores", {}) if isinstance(content_score, dict) else {}
+        return render(
+            request,
+            "compare.html",
+            ctx,
+            run_name=run_name,
+            selected_topic=selected_topic,
+            original_material=selected_topic.get("summary", "") or selected_topic.get("snippet", "") or "",
+            original_url=selected_topic.get("url", ""),
+            original_source=selected_topic.get("source", ""),
+            original_title=selected_topic.get("title", ""),
+            final_article=final_article,
+            overall_score=scores.get("overall_score", 0),
+            ai_risk_score=scores.get("ai_generated_risk", 0),
+            validation_score=scores.get("validation_score", 0),
+        )
 
     @app.get("/healthz")
     def healthz():
@@ -771,3 +819,9 @@ def create_app(project_root: Path, account_key: str | None = None) -> FastAPI:
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     return app
+
+def create_app_factory() -> FastAPI:
+    """Zero-arg factory for uvicorn --factory mode."""
+    project_root = Path(__file__).resolve().parent.parent.parent.parent
+    account_key = os.environ.get("ACCOUNT_KEY")
+    return create_app(project_root, account_key=account_key)

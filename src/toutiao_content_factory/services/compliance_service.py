@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import time
@@ -11,16 +13,22 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _is_platform_aigc_enabled(platform: str) -> bool:
+    """通用平台 AIGC 声明启用检查函数"""
+    env_key = f"{platform.upper()}_AIGC_DECLARATION_ENABLED"
+    return os.getenv(env_key, "1").strip() == "1"
+
+
 def is_aigc_declaration_enabled() -> bool:
-    return os.getenv("TOUTIAO_AIGC_DECLARATION_ENABLED", "1").strip() == "1"
+    return _is_platform_aigc_enabled("toutiao")
 
 
 def is_wechat_aigc_declaration_enabled() -> bool:
-    return os.getenv("WECHAT_AIGC_DECLARATION_ENABLED", "1").strip() == "1"
+    return _is_platform_aigc_enabled("wechat")
 
 
 def is_douyin_aigc_declaration_enabled() -> bool:
-    return os.getenv("DOUYIN_AIGC_DECLARATION_ENABLED", "1").strip() == "1"
+    return _is_platform_aigc_enabled("douyin")
 
 
 def get_max_daily_posts(platform: str = "toutiao") -> int:
@@ -49,8 +57,6 @@ def count_today_published(history_path: Path, platform: str = "toutiao") -> int:
     if not history_path.exists():
         return 0
     try:
-        import json
-
         records = json.loads(history_path.read_text(encoding="utf-8"))
         if isinstance(records, dict):
             records = records.get("records", records.get("history", []))
@@ -81,11 +87,39 @@ def check_daily_post_limit(history_path: Path, platform: str = "toutiao") -> boo
     return True
 
 
-async def click_aigc_declaration_toutiao(page) -> bool:
-    if not is_aigc_declaration_enabled():
-        logger.info("AIGC 声明标注已禁用，跳过勾选。")
+async def _click_aigc_declaration_generic(
+    page, 
+    enabled_func: callable, 
+    platform_name: str,
+    selectors: list[str],
+    check_expression: str
+) -> bool:
+    """通用 AIGC 声明复选框点击函数"""
+    if not enabled_func():
+        logger.info("%s AIGC 声明标注已禁用，跳过勾选。", platform_name)
         return False
 
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            if await locator.count() > 0:
+                checked = await locator.first.evaluate(check_expression)
+                if not checked:
+                    await locator.first.click()
+                    logger.info("已勾选 %s AIGC 声明复选框: %s", platform_name, selector)
+                    await page.wait_for_timeout(500)
+                else:
+                    logger.info("%s AIGC 声明复选框已处于勾选状态: %s", platform_name, selector)
+                return True
+        except Exception as exc:
+            logger.debug("尝试选择器 %s 失败: %s", selector, exc)
+            continue
+
+    logger.warning("未找到 %s AIGC 声明复选框，请手动勾选。", platform_name)
+    return False
+
+
+async def click_aigc_declaration_toutiao(page) -> bool:
     selectors = [
         "label.byte-checkbox:has-text('内容由AI生成')",
         "label.byte-checkbox:has-text('AI生成')",
@@ -95,37 +129,16 @@ async def click_aigc_declaration_toutiao(page) -> bool:
         "input[type='checkbox'][name*='ai']",
         "input[type='checkbox'][name*='AIGC']",
     ]
-
-    for selector in selectors:
-        try:
-            locator = page.locator(selector)
-            if await locator.count() > 0:
-                checked = await locator.first.evaluate(
-                    """el => {
-                    const input = el.querySelector('input') || el;
-                    return input.checked || el.classList.contains('byte-checkbox-checked');
-                }"""
-                )
-                if not checked:
-                    await locator.first.click()
-                    logger.info("已勾选今日头条 AIGC 声明复选框: %s", selector)
-                    await page.wait_for_timeout(500)
-                else:
-                    logger.info("今日头条 AIGC 声明复选框已处于勾选状态: %s", selector)
-                return True
-        except Exception as exc:
-            logger.debug("尝试选择器 %s 失败: %s", selector, exc)
-            continue
-
-    logger.warning("未找到今日头条 AIGC 声明复选框，请手动勾选。")
-    return False
+    check_expression = """el => {
+        const input = el.querySelector('input') || el;
+        return input.checked || el.classList.contains('byte-checkbox-checked');
+    }"""
+    return await _click_aigc_declaration_generic(
+        page, is_aigc_declaration_enabled, "今日头条", selectors, check_expression
+    )
 
 
 async def click_aigc_declaration_wechat(page) -> bool:
-    if not is_wechat_aigc_declaration_enabled():
-        logger.info("微信 AIGC 声明标注已禁用，跳过勾选。")
-        return False
-
     selectors = [
         "label:has-text('AI生成')",
         "label:has-text('内容由AI生成')",
@@ -134,30 +147,13 @@ async def click_aigc_declaration_wechat(page) -> bool:
         "input[type='checkbox'][name*='AIGC']",
         ".weui-desktop-checkbox:has-text('AI')",
     ]
-
-    for selector in selectors:
-        try:
-            locator = page.locator(selector)
-            if await locator.count() > 0:
-                checked = await locator.first.evaluate(
-                    """el => {
-                    const input = el.querySelector('input') || el;
-                    return input.checked;
-                }"""
-                )
-                if not checked:
-                    await locator.first.click()
-                    logger.info("已勾选微信 AIGC 声明复选框: %s", selector)
-                    await page.wait_for_timeout(500)
-                else:
-                    logger.info("微信 AIGC 声明复选框已处于勾选状态: %s", selector)
-                return True
-        except Exception as exc:
-            logger.debug("尝试选择器 %s 失败: %s", selector, exc)
-            continue
-
-    logger.warning("未找到微信 AIGC 声明复选框，请手动勾选。")
-    return False
+    check_expression = """el => {
+        const input = el.querySelector('input') || el;
+        return input.checked;
+    }"""
+    return await _click_aigc_declaration_generic(
+        page, is_wechat_aigc_declaration_enabled, "微信", selectors, check_expression
+    )
 
 
 async def apply_proxy_to_browser(launch_options: dict[str, Any]) -> dict[str, Any]:
@@ -186,8 +182,6 @@ class AccountLoginGuard:
                 interval,
                 wait_time,
             )
-            import asyncio
-
             await asyncio.sleep(wait_time)
         cls._last_login_time[account_key] = time.monotonic()
 
@@ -203,7 +197,5 @@ class AccountLoginGuard:
                 interval,
                 wait_time,
             )
-            import asyncio
-
             await asyncio.sleep(wait_time)
         cls._last_switch_time = time.monotonic()

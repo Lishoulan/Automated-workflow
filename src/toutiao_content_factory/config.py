@@ -1,12 +1,80 @@
 from __future__ import annotations
 
+"""配置加载模块 — 优先级与覆盖规则
+========================================
+
+配置值的解析优先级（高 → 低）：
+
+1. **账号级环境变量** — 格式 ``{BASE_NAME}__{ACCOUNT_SLUG}``（如 ``BRAND_NAME__POLITICS_NOTES``），
+   仅对对应账号生效，优先级最高。
+2. **全局环境变量** — 标准格式（如 ``OPENAI_API_KEY``、``TOUTIAO_AUTO_PUBLISH``），
+   对所有账号生效，但可被账号级变量覆盖。
+3. **账号覆盖（config.yaml → accounts → {key}）** — 账号配置中除 meta 字段
+   （label / input_dir / output_dir / logs_dir / cache_dir / browser_profile_dir / enabled）
+   外的字段会深度合并到全局配置之上。
+4. **全局 config.yaml** — 项目根目录的 config.yaml 提供所有默认值。
+5. **代码内硬编码默认值** — ``_default_config_payload()`` 等函数提供的兜底值。
+
+合并与覆盖规则
+--------------
+- ``.env`` 文件通过 ``python-dotenv`` 在启动时加载到 ``os.environ``，作为环境变量的来源之一。
+- ``config.yaml`` 中的值作为"基础层"，环境变量作为"覆盖层"。
+- 账号级配置通过 ``_deep_merge()`` 深度合并到全局配置之上，非 meta 字段逐层覆盖。
+- 环境变量（包括 .env 注入的）始终优先于 config.yaml 中的同名配置。
+- 对于布尔标志，使用 ``_env_flag()`` / ``_env_flag_scoped()`` 解析，支持 ``1/true/yes/on``。
+
+简而言之：环境变量 > config.yaml；账号级 > 全局级。
+"""
+
 import copy
 import json
 import os
+import platform
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, field_validator
+
+
+def resolve_default_font_path(variant: str = "regular") -> str:
+    """根据当前操作系统返回默认中文字体路径。
+
+    Args:
+        variant: "regular" 或 "bold"，对应常规/粗体字体。
+    """
+    system = platform.system()
+    if system == "Windows":
+        if variant == "bold":
+            return "C:/Windows/Fonts/msyhbd.ttc"
+        return "C:/Windows/Fonts/msyh.ttc"
+    elif system == "Darwin":
+        if variant == "bold":
+            return "/System/Library/Fonts/STHeiti Medium.ttc"
+        return "/System/Library/Fonts/STHeiti Light.ttc"
+    else:  # Linux 及其他
+        candidates = [
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        ]
+        bold_candidates = [
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        ]
+        search_list = bold_candidates if variant == "bold" else candidates
+        for path in search_list:
+            if Path(path).exists():
+                return path
+        return search_list[0]
 
 try:
     from dotenv import load_dotenv
@@ -48,8 +116,10 @@ def _env_value_scoped(name: str, account_key: str | None, default: str) -> str:
     return default
 
 
-@dataclass(frozen=True)
-class TopicCollectionSettings:
+class TopicCollectionSettings(BaseModel):
+    """话题采集配置模型，带数据校验。"""
+    model_config = ConfigDict(frozen=True)
+
     lookback_days: int
     max_topic_age_hours: int
     drop_topics_without_timestamp: bool
@@ -57,10 +127,26 @@ class TopicCollectionSettings:
     max_items_per_source: int
     max_export_topics: int
     request_timeout_seconds: int
+    # TODO: sports_notes 账号的 enabled_sources 当前为空，需要添加体育新闻源
+    #   （如懂球帝、虎扑、腾讯体育 RSS 等），目前仅靠 keyword_map 过滤。
     enabled_sources: list[str]
     focus_industries: list[str]
     keyword_map: dict[str, list[str]]
     source_configs: dict[str, dict[str, Any]]
+
+    @field_validator("enabled_sources", mode="before")
+    @classmethod
+    def enabled_sources_must_be_list(cls, v: Any) -> list[str]:
+        if not isinstance(v, list):
+            raise ValueError(f"enabled_sources must be a list, got {type(v).__name__}: {v!r}")
+        return [str(item) for item in v]
+
+    @field_validator("focus_industries", mode="before")
+    @classmethod
+    def focus_industries_must_be_list(cls, v: Any) -> list[str]:
+        if not isinstance(v, list):
+            raise ValueError(f"focus_industries must be a list, got {type(v).__name__}: {v!r}")
+        return [str(item) for item in v]
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "TopicCollectionSettings":
@@ -148,8 +234,8 @@ class ImageGenerationSettings:
             card_color=str(payload.get("card_color", "#0F1B2D")),
             text_color=str(payload.get("text_color", "#F5F8FF")),
             muted_text_color=str(payload.get("muted_text_color", "#91A4C2")),
-            font_path=str(payload.get("font_path", "C:/Windows/Fonts/msyh.ttc")),
-            bold_font_path=str(payload.get("bold_font_path", "C:/Windows/Fonts/msyhbd.ttc")),
+            font_path=str(payload.get("font_path", "") or resolve_default_font_path("regular")),
+            bold_font_path=str(payload.get("bold_font_path", "") or resolve_default_font_path("bold")),
             export_html=bool(payload.get("export_html", True)),
             export_svg=bool(payload.get("export_svg", True)),
             export_png=bool(payload.get("export_png", True)),
@@ -169,7 +255,7 @@ class AutomationSettings:
     def from_dict(cls, payload: dict[str, Any]) -> "AutomationSettings":
         return cls(
             default_topic_rank=int(payload.get("default_topic_rank", 1)),
-            max_daily_topic_attempts=int(payload.get("max_daily_topic_attempts", 3)),
+            max_daily_topic_attempts=int(payload.get("max_daily_topic_attempts", 5)),
             daily_run_times=[str(item).strip() for item in payload.get("daily_run_times", []) if str(item).strip()],
             archive_outputs=bool(payload.get("archive_outputs", True)),
             archive_dirname=str(payload.get("archive_dirname", "runs")),
@@ -276,6 +362,7 @@ class WechatSettings:
     author_name: str
     base_url: str
     api_base_url: str
+    api_proxy: str
     title_max_length: int
     digest_max_length: int
     history_filename: str
@@ -289,6 +376,16 @@ class WechatSettings:
     md2wechat_convert_version: str
     md2wechat_cli_path: str
     md2wechat_fallback_to_builtin: bool
+    html_anything_enabled: bool
+    html_anything_url: str
+    html_anything_template: str
+    html_anything_agent: str
+    serv00_proxy_enabled: bool
+    serv00_proxy_url: str
+    serv00_proxy_secret: str
+    editor_135_enabled: bool
+    editor_135_base_url: str
+    editor_135_profile_dir: str
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "WechatSettings":
@@ -302,10 +399,11 @@ class WechatSettings:
             author_name=str(payload.get("author_name", "")).strip(),
             base_url=str(payload.get("base_url", "https://mp.weixin.qq.com/")).strip(),
             api_base_url=str(payload.get("api_base_url", "https://api.weixin.qq.com")).strip(),
+            api_proxy=str(payload.get("api_proxy", "")).strip(),
             title_max_length=int(payload.get("title_max_length", 64)),
             digest_max_length=int(payload.get("digest_max_length", 120)),
             history_filename=str(payload.get("history_filename", "wechat_publish_history.json")),
-            cover_strategy=str(payload.get("cover_strategy", "first_inline")),
+            cover_strategy=str(payload.get("cover_strategy", "text_cover")),
             layout_backend=str(payload.get("layout_backend", "builtin")).strip() or "builtin",
             md2wechat_enabled=bool(payload.get("md2wechat_enabled", False)),
             md2wechat_api_key=str(payload.get("md2wechat_api_key", "")).strip(),
@@ -315,6 +413,16 @@ class WechatSettings:
             md2wechat_convert_version=str(payload.get("md2wechat_convert_version", "v1")).strip() or "v1",
             md2wechat_cli_path=str(payload.get("md2wechat_cli_path", "")).strip(),
             md2wechat_fallback_to_builtin=bool(payload.get("md2wechat_fallback_to_builtin", True)),
+            html_anything_enabled=bool(payload.get("html_anything_enabled", False)),
+            html_anything_url=str(payload.get("html_anything_url", "http://localhost:3000")).strip(),
+            html_anything_template=str(payload.get("html_anything_template", "")).strip(),
+            html_anything_agent=str(payload.get("html_anything_agent", "claude")).strip(),
+            serv00_proxy_enabled=bool(payload.get("serv00_proxy_enabled", False)),
+            serv00_proxy_url=str(payload.get("serv00_proxy_url", "")).strip(),
+            serv00_proxy_secret=str(payload.get("serv00_proxy_secret", "")).strip(),
+            editor_135_enabled=bool(payload.get("editor_135_enabled", True)),
+            editor_135_base_url=str(payload.get("editor_135_base_url", "https://www.135editor.com")).strip(),
+            editor_135_profile_dir=str(payload.get("editor_135_profile_dir", ".runtime/editor_135_profile")).strip(),
         )
 
 
@@ -347,7 +455,7 @@ class DouyinSettings:
         return cls(
             enabled=bool(payload.get("enabled", False)),
             auto_publish=bool(payload.get("auto_publish", False)),
-            niche=str(payload.get("niche", "??")).strip() or "??",
+            niche=str(payload.get("niche", "未设置")).strip() or "未设置",
             publish_mode=str(payload.get("publish_mode", "browser")).strip() or "browser",
             daily_post_target=int(payload.get("daily_post_target", 3)),
             base_url=str(payload.get("base_url", "https://creator.douyin.com/")).strip(),
@@ -365,8 +473,10 @@ class DouyinSettings:
         )
 
 
-@dataclass(frozen=True)
-class AccountProfile:
+class AccountProfile(BaseModel):
+    """账号配置模型，带数据校验。"""
+    model_config = ConfigDict(frozen=True)
+
     key: str
     slug: str
     label: str
@@ -377,6 +487,15 @@ class AccountProfile:
     cache_dir: str
     browser_profile_dir: str
     overrides: dict[str, Any]
+
+    @field_validator("key")
+    @classmethod
+    def key_must_be_valid_identifier(cls, v: str) -> str:
+        if not re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", v):
+            raise ValueError(
+                f"Account key must be a valid English identifier (letters, digits, underscores), got: {v!r}"
+            )
+        return v
 
     @classmethod
     def from_dict(cls, key: str, payload: dict[str, Any]) -> "AccountProfile":
@@ -395,8 +514,10 @@ class AccountProfile:
         )
 
 
-@dataclass(frozen=True)
-class StyleProfile:
+class StyleProfile(BaseModel):
+    """写作风格配置模型。"""
+    model_config = ConfigDict(frozen=True)
+
     key: str
     label: str
     tone: str
@@ -500,7 +621,15 @@ class AppSettings:
 
 
 def load_settings(project_root: Path, account_key: str | None = None) -> AppSettings:
-    load_dotenv(project_root / ".env")
+    env_path = project_root / ".env"
+    if not env_path.exists():
+        import sys
+        print(
+            f"[WARNING] .env file not found at {env_path}. "
+            "Copy .env.example to .env and fill in your API keys.",
+            file=sys.stderr,
+        )
+    load_dotenv(env_path)
 
     config_path = project_root / "config.yaml"
     config_payload = _load_config_payload(config_path)
@@ -522,13 +651,141 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     if account_profile.overrides:
         _deep_merge(merged_payload, account_profile.overrides)
 
-    model_config = merged_payload.get("model", {})
-    writing_config = merged_payload.get("writing", {})
-    industry_config = merged_payload.get("industry", {})
+    # Load sub-configs via helpers
     topic_config = TopicCollectionSettings.from_dict(merged_payload.get("topic_collection", {}))
     image_config = ImageGenerationSettings.from_dict(merged_payload.get("image_generation", {}))
     automation_config = AutomationSettings.from_dict(merged_payload.get("automation", {}))
-    automation_config = AutomationSettings(
+    review_config = ReviewSettings.from_dict(merged_payload.get("review", {}))
+    publishing_config = PublishSettings.from_dict(merged_payload.get("publishing", {}))
+    wechat_config = WechatSettings.from_dict(merged_payload.get("wechat", {}))
+    douyin_config = DouyinSettings.from_dict(merged_payload.get("douyin", {}))
+
+    is_default_account = account_profile.key == DEFAULT_ACCOUNT_KEY
+    default_style = os.getenv("DEFAULT_STYLE", str(merged_payload.get("writing", {}).get("default_style", "deep_industry_analysis")))
+
+    # Resolve account paths
+    paths = _load_account_paths(project_root, account_profile, is_default_account, publishing_config, douyin_config)
+
+    # Build final settings using helper functions
+    model_overrides = _load_model_config(merged_payload)
+    writing_overrides = _load_writing_config(merged_payload, account_profile.key)
+    automation_final = _load_automation_config(merged_payload, automation_config)
+    review_final = _load_review_config(merged_payload, review_config)
+    publishing_final = _load_publishing_config_final(merged_payload, account_profile, is_default_account, automation_config, publishing_config, paths)
+    wechat_final = _load_wechat_config_final(merged_payload, account_profile, wechat_config)
+    douyin_final = _load_douyin_config_final(merged_payload, account_profile, douyin_config, paths)
+    image_final = _load_image_config(merged_payload, image_config)
+
+    return AppSettings(
+        project_root=project_root,
+        config_path=config_path,
+        account_key=account_profile.key,
+        account_slug=account_profile.slug,
+        account_label=account_profile.label,
+        is_default_account=is_default_account,
+        input_dir=paths["input_dir"],
+        output_dir=paths["output_dir"],
+        prompts_dir=project_root / "prompts",
+        logs_dir=paths["logs_dir"],
+        cache_dir=paths["cache_dir"],
+        openai_api_key=os.getenv("OPENAI_API_KEY") or None,
+        openai_base_url=model_overrides["openai_base_url"],
+        openai_model=model_overrides["openai_model"],
+        temperature=model_overrides["temperature"],
+        max_input_chars=writing_overrides["max_input_chars"],
+        article_word_target=writing_overrides["article_word_target"],
+        brand_name=writing_overrides["brand_name"],
+        industry_focus=writing_overrides["industry_focus"],
+        audience=writing_overrides["audience"],
+        platform=writing_overrides["platform"],
+        logging_level=os.getenv("LOG_LEVEL", "INFO"),
+        default_style=default_style if default_style in styles else "deep_industry_analysis",
+        title_count=writing_overrides["title_count"],
+        recommended_title_count=writing_overrides["recommended_title_count"],
+        cache_similarity_threshold=writing_overrides["cache_similarity_threshold"],
+        style_profiles=styles,
+        topic_collection=topic_config,
+        image_generation=image_final,
+        automation=automation_final,
+        review=review_final,
+        publishing=publishing_final,
+        wechat=wechat_final,
+        douyin=douyin_final,
+        account_profiles=raw_account_profiles,
+        raw_account_profiles={
+            key: {
+                "label": profile.label,
+                "input_dir": profile.input_dir,
+                "output_dir": profile.output_dir,
+                "logs_dir": profile.logs_dir,
+                "cache_dir": profile.cache_dir,
+                "browser_profile_dir": profile.browser_profile_dir,
+                **copy.deepcopy(profile.overrides),
+            }
+            for key, profile in raw_account_profiles.items()
+        },
+        available_account_keys=sorted(raw_account_profiles),
+        fast_mode=_env_flag("TOUTIAO_FAST_MODE", False),
+        skip_image_generation=_env_flag("TOUTIAO_SKIP_IMAGE_GENERATION", False),
+        skip_review_agent=_env_flag("TOUTIAO_SKIP_REVIEW_AGENT", False),
+        skip_publish_review=_env_flag("TOUTIAO_SKIP_PUBLISH_REVIEW", False),
+    )
+
+
+
+
+def _load_model_config(merged_payload: dict[str, Any]) -> dict[str, Any]:
+    model_config = merged_payload.get("model", {})
+    return {
+        "openai_base_url": os.getenv("OPENAI_BASE_URL") or str(model_config.get("base_url", "")).strip() or None,
+        "openai_model": os.getenv("OPENAI_MODEL", str(model_config.get("name", "gpt-4.1-mini"))),
+        "temperature": float(os.getenv("OPENAI_TEMPERATURE", str(model_config.get("temperature", 0.7)))),
+    }
+
+
+def _load_writing_config(merged_payload: dict[str, Any], account_key: str) -> dict[str, Any]:
+    writing_config = merged_payload.get("writing", {})
+    industry_config = merged_payload.get("industry", {})
+    return {
+        "max_input_chars": int(os.getenv("MAX_INPUT_CHARS", str(writing_config.get("max_input_chars", 16000)))),
+        "article_word_target": int(
+            os.getenv("ARTICLE_WORD_TARGET", str(writing_config.get("article_word_target", 2000)))
+        ),
+        "brand_name": _env_value_scoped(
+            "BRAND_NAME",
+            account_key,
+            str(industry_config.get("brand_name", "手蓝数据笔记")),
+        ),
+        "industry_focus": _env_value_scoped(
+            "INDUSTRY_FOCUS",
+            account_key,
+            str(industry_config.get("focus", "新能源、机器人、智能装备、储能")),
+        ),
+        "audience": _env_value_scoped(
+            "TARGET_AUDIENCE",
+            account_key,
+            str(industry_config.get("audience", "科技行业从业者与关注产业升级的读者")),
+        ),
+        "platform": _env_value_scoped(
+            "TARGET_PLATFORM",
+            account_key,
+            str(industry_config.get("platform", "今日头条")),
+        ),
+        "title_count": int(os.getenv("TITLE_COUNT", str(writing_config.get("title_count", 20)))),
+        "recommended_title_count": int(
+            os.getenv("RECOMMENDED_TITLE_COUNT", str(writing_config.get("recommended_title_count", 3)))
+        ),
+        "cache_similarity_threshold": float(
+            os.getenv(
+                "CACHE_SIMILARITY_THRESHOLD",
+                str(writing_config.get("cache_similarity_threshold", 0.82)),
+            )
+        ),
+    }
+
+
+def _load_automation_config(merged_payload: dict[str, Any], automation_config: AutomationSettings) -> AutomationSettings:
+    return AutomationSettings(
         default_topic_rank=int(
             os.getenv("TOUTIAO_DEFAULT_TOPIC_RANK", str(automation_config.default_topic_rank))
         ),
@@ -543,13 +800,50 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         archive_dirname=automation_config.archive_dirname,
         selected_topic_basename=automation_config.selected_topic_basename,
     )
-    review_config = ReviewSettings.from_dict(merged_payload.get("review", {}))
-    publishing_config = PublishSettings.from_dict(merged_payload.get("publishing", {}))
-    wechat_config = WechatSettings.from_dict(merged_payload.get("wechat", {}))
-    douyin_config = DouyinSettings.from_dict(merged_payload.get("douyin", {}))
 
-    default_style = os.getenv("DEFAULT_STYLE", str(writing_config.get("default_style", "deep_industry_analysis")))
-    is_default_account = account_profile.key == DEFAULT_ACCOUNT_KEY
+
+def _load_review_config(merged_payload: dict[str, Any], review_config: ReviewSettings) -> ReviewSettings:
+    return ReviewSettings(
+        auto_prepare=_env_flag("TOUTIAO_REVIEW_AUTO_PREPARE", review_config.auto_prepare),
+        min_overall_score=int(
+            os.getenv("TOUTIAO_REVIEW_MIN_OVERALL_SCORE", str(review_config.min_overall_score))
+        ),
+        max_ai_risk=int(os.getenv("TOUTIAO_REVIEW_MAX_AI_RISK", str(review_config.max_ai_risk))),
+        min_auto_publish_overall_score=int(
+            os.getenv(
+                "TOUTIAO_AUTO_PUBLISH_MIN_OVERALL_SCORE",
+                str(review_config.min_auto_publish_overall_score),
+            )
+        ),
+        max_auto_publish_ai_risk=int(
+            os.getenv(
+                "TOUTIAO_AUTO_PUBLISH_MAX_AI_RISK",
+                str(review_config.max_auto_publish_ai_risk),
+            )
+        ),
+        min_auto_publish_validation_score=int(
+            os.getenv(
+                "TOUTIAO_AUTO_PUBLISH_MIN_VALIDATION_SCORE",
+                str(review_config.min_auto_publish_validation_score),
+            )
+        ),
+        min_auto_publish_readiness_score=int(
+            os.getenv(
+                "TOUTIAO_AUTO_PUBLISH_MIN_READINESS_SCORE",
+                str(review_config.min_auto_publish_readiness_score),
+            )
+        ),
+        publish_dirname=os.getenv("TOUTIAO_REVIEW_PUBLISH_DIR", review_config.publish_dirname),
+    )
+
+
+def _load_account_paths(
+    project_root: Path,
+    account_profile: AccountProfile,
+    is_default_account: bool,
+    publishing_config: PublishSettings,
+    douyin_config: DouyinSettings,
+) -> dict[str, Any]:
     input_dir = _resolve_account_path(
         project_root=project_root,
         account_slug=account_profile.slug,
@@ -609,249 +903,190 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         or (os.getenv("DOUYIN_PUBLISH_HISTORY_FILE") if is_default_account else None)
         or douyin_config.history_filename
     )
+    return {
+        "input_dir": input_dir,
+        "output_dir": output_dir,
+        "logs_dir": logs_dir,
+        "cache_dir": cache_dir,
+        "browser_profile_value": browser_profile_value,
+        "publish_history_value": publish_history_value,
+        "douyin_profile_value": douyin_profile_value,
+        "douyin_history_value": douyin_history_value,
+    }
 
-    return AppSettings(
-        project_root=project_root,
-        config_path=config_path,
-        account_key=account_profile.key,
-        account_slug=account_profile.slug,
-        account_label=account_profile.label,
-        is_default_account=is_default_account,
-        input_dir=input_dir,
-        output_dir=output_dir,
-        prompts_dir=project_root / "prompts",
-        logs_dir=logs_dir,
-        cache_dir=cache_dir,
-        openai_api_key=os.getenv("OPENAI_API_KEY") or None,
-        openai_base_url=os.getenv("OPENAI_BASE_URL") or str(model_config.get("base_url", "")).strip() or None,
-        openai_model=os.getenv("OPENAI_MODEL", str(model_config.get("name", "gpt-4.1-mini"))),
-        temperature=float(os.getenv("OPENAI_TEMPERATURE", str(model_config.get("temperature", 0.7)))),
-        max_input_chars=int(os.getenv("MAX_INPUT_CHARS", str(writing_config.get("max_input_chars", 16000)))),
-        article_word_target=int(
-            os.getenv("ARTICLE_WORD_TARGET", str(writing_config.get("article_word_target", 1200)))
+
+def _load_publishing_config_final(
+    merged_payload: dict[str, Any],
+    account_profile: AccountProfile,
+    is_default_account: bool,
+    automation_config: AutomationSettings,
+    publishing_config: PublishSettings,
+    paths: dict[str, Any],
+) -> PublishSettings:
+    return PublishSettings(
+        enabled=_env_flag("TOUTIAO_PUBLISH_ENABLED", publishing_config.enabled),
+        auto_publish=_env_flag("TOUTIAO_AUTO_PUBLISH", publishing_config.auto_publish),
+        draft_only=_env_flag("TOUTIAO_PUBLISH_DRAFT_ONLY", publishing_config.draft_only),
+        platform=os.getenv("TOUTIAO_PUBLISH_PLATFORM", publishing_config.platform),
+        base_url=os.getenv("TOUTIAO_PUBLISH_BASE_URL", publishing_config.base_url),
+        publish_url=os.getenv("TOUTIAO_PUBLISH_URL", publishing_config.publish_url),
+        user_data_dir=paths["browser_profile_value"],
+        channel=os.getenv("TOUTIAO_PUBLISH_CHANNEL", publishing_config.channel),
+        executable_path=os.getenv("TOUTIAO_BROWSER_EXECUTABLE", publishing_config.executable_path),
+        headless=_env_flag("TOUTIAO_PUBLISH_HEADLESS", publishing_config.headless),
+        wait_timeout_ms=int(
+            os.getenv("TOUTIAO_PUBLISH_TIMEOUT_MS", str(publishing_config.wait_timeout_ms))
         ),
-        brand_name=_env_value_scoped(
-            "BRAND_NAME",
-            account_profile.key,
-            str(industry_config.get("brand_name", "??????")),
+        history_filename=paths["publish_history_value"],
+        allow_duplicate_topics=_env_flag(
+            "TOUTIAO_ALLOW_DUPLICATE_TOPICS",
+            publishing_config.allow_duplicate_topics,
         ),
-        industry_focus=_env_value_scoped(
-            "INDUSTRY_FOCUS",
-            account_profile.key,
-            str(industry_config.get("focus", "???????????????")),
+        title_max_length=int(
+            os.getenv("TOUTIAO_TITLE_MAX_LENGTH", str(publishing_config.title_max_length))
         ),
-        audience=_env_value_scoped(
-            "TARGET_AUDIENCE",
-            account_profile.key,
-            str(industry_config.get("audience", "?????????????????")),
-        ),
-        platform=_env_value_scoped(
-            "TARGET_PLATFORM",
-            account_profile.key,
-            str(industry_config.get("platform", "????")),
-        ),
-        logging_level=os.getenv("LOG_LEVEL", "INFO"),
-        default_style=default_style if default_style in styles else "deep_industry_analysis",
-        title_count=int(os.getenv("TITLE_COUNT", str(writing_config.get("title_count", 20)))),
-        recommended_title_count=int(
-            os.getenv("RECOMMENDED_TITLE_COUNT", str(writing_config.get("recommended_title_count", 3)))
-        ),
-        cache_similarity_threshold=float(
-            os.getenv(
-                "CACHE_SIMILARITY_THRESHOLD",
-                str(writing_config.get("cache_similarity_threshold", 0.82)),
-            )
-        ),
-        style_profiles=styles,
-        topic_collection=topic_config,
-        image_generation=ImageGenerationSettings(
-            width=image_config.width,
-            height=image_config.height,
-            mobile_width=image_config.mobile_width,
-            mobile_height=image_config.mobile_height,
-            backend=os.getenv("IMAGE_BACKEND", image_config.backend),
-            backend_priority=os.getenv("IMAGE_BACKEND_PRIORITY", image_config.backend_priority),
-            api_mode=os.getenv("IMAGE_API_MODE", image_config.api_mode),
-            model_name=os.getenv("IMAGE_MODEL", image_config.model_name),
-            model_base_url=os.getenv("IMAGE_BASE_URL", image_config.model_base_url),
-            model_api_key=os.getenv("IMAGE_API_KEY", image_config.model_api_key),
-            request_timeout_seconds=float(
-                os.getenv("IMAGE_REQUEST_TIMEOUT_SECONDS", str(image_config.request_timeout_seconds))
-            ),
-            cover_size=os.getenv("IMAGE_COVER_SIZE", image_config.cover_size),
-            infographic_size=os.getenv("IMAGE_INFOGRAPHIC_SIZE", image_config.infographic_size),
-            max_generated_assets=int(
-                os.getenv("IMAGE_MAX_ASSETS", str(image_config.max_generated_assets))
-            ),
-            quality=os.getenv("IMAGE_QUALITY", image_config.quality),
-            style=os.getenv("IMAGE_STYLE", image_config.style),
-            background=os.getenv("IMAGE_BACKGROUND", image_config.background),
-            fallback_to_renderer=_env_flag("IMAGE_FALLBACK_TO_RENDERER", image_config.fallback_to_renderer),
-            theme_name=image_config.theme_name,
-            primary_color=image_config.primary_color,
-            secondary_color=image_config.secondary_color,
-            accent_color=image_config.accent_color,
-            background_color=image_config.background_color,
-            card_color=image_config.card_color,
-            text_color=image_config.text_color,
-            muted_text_color=image_config.muted_text_color,
-            font_path=image_config.font_path,
-            bold_font_path=image_config.bold_font_path,
-            export_html=image_config.export_html,
-            export_svg=image_config.export_svg,
-            export_png=image_config.export_png,
-        ),
-        automation=automation_config,
-        review=ReviewSettings(
-            auto_prepare=_env_flag("TOUTIAO_REVIEW_AUTO_PREPARE", review_config.auto_prepare),
-            min_overall_score=int(
-                os.getenv("TOUTIAO_REVIEW_MIN_OVERALL_SCORE", str(review_config.min_overall_score))
-            ),
-            max_ai_risk=int(os.getenv("TOUTIAO_REVIEW_MAX_AI_RISK", str(review_config.max_ai_risk))),
-            min_auto_publish_overall_score=int(
-                os.getenv(
-                    "TOUTIAO_AUTO_PUBLISH_MIN_OVERALL_SCORE",
-                    str(review_config.min_auto_publish_overall_score),
-                )
-            ),
-            max_auto_publish_ai_risk=int(
-                os.getenv(
-                    "TOUTIAO_AUTO_PUBLISH_MAX_AI_RISK",
-                    str(review_config.max_auto_publish_ai_risk),
-                )
-            ),
-            min_auto_publish_validation_score=int(
-                os.getenv(
-                    "TOUTIAO_AUTO_PUBLISH_MIN_VALIDATION_SCORE",
-                    str(review_config.min_auto_publish_validation_score),
-                )
-            ),
-            min_auto_publish_readiness_score=int(
-                os.getenv(
-                    "TOUTIAO_AUTO_PUBLISH_MIN_READINESS_SCORE",
-                    str(review_config.min_auto_publish_readiness_score),
-                )
-            ),
-            publish_dirname=os.getenv("TOUTIAO_REVIEW_PUBLISH_DIR", review_config.publish_dirname),
-        ),
-        publishing=PublishSettings(
-            enabled=_env_flag("TOUTIAO_PUBLISH_ENABLED", publishing_config.enabled),
-            auto_publish=_env_flag("TOUTIAO_AUTO_PUBLISH", publishing_config.auto_publish),
-            draft_only=_env_flag("TOUTIAO_PUBLISH_DRAFT_ONLY", publishing_config.draft_only),
-            platform=os.getenv("TOUTIAO_PUBLISH_PLATFORM", publishing_config.platform),
-            base_url=os.getenv("TOUTIAO_PUBLISH_BASE_URL", publishing_config.base_url),
-            publish_url=os.getenv("TOUTIAO_PUBLISH_URL", publishing_config.publish_url),
-            user_data_dir=browser_profile_value,
-            channel=os.getenv("TOUTIAO_PUBLISH_CHANNEL", publishing_config.channel),
-            executable_path=os.getenv("TOUTIAO_BROWSER_EXECUTABLE", publishing_config.executable_path),
-            headless=_env_flag("TOUTIAO_PUBLISH_HEADLESS", publishing_config.headless),
-            wait_timeout_ms=int(
-                os.getenv("TOUTIAO_PUBLISH_TIMEOUT_MS", str(publishing_config.wait_timeout_ms))
-            ),
-            history_filename=publish_history_value,
-            allow_duplicate_topics=_env_flag(
-                "TOUTIAO_ALLOW_DUPLICATE_TOPICS",
-                publishing_config.allow_duplicate_topics,
-            ),
-            title_max_length=int(
-                os.getenv("TOUTIAO_TITLE_MAX_LENGTH", str(publishing_config.title_max_length))
-            ),
-            cover_mode=os.getenv("TOUTIAO_PUBLISH_COVER_MODE", publishing_config.cover_mode),
-            selectors=publishing_config.selectors,
-        ),
-        wechat=WechatSettings(
-            enabled=_env_flag_scoped("WECHAT_ENABLED", account_profile.key, wechat_config.enabled),
-            auto_publish=_env_flag_scoped("WECHAT_AUTO_PUBLISH", account_profile.key, wechat_config.auto_publish),
-            toutiao_sync_delay_seconds=int(
-                _env_value_scoped(
-                    "WECHAT_TOUTIAO_SYNC_DELAY",
-                    account_profile.key,
-                    str(wechat_config.toutiao_sync_delay_seconds),
-                )
-            ),
-            app_id=os.getenv("WECHAT_APP_ID", wechat_config.app_id),
-            app_secret=os.getenv("WECHAT_APP_SECRET", wechat_config.app_secret),
-            account_name=os.getenv("WECHAT_ACCOUNT_NAME", wechat_config.account_name),
-            author_name=os.getenv("WECHAT_AUTHOR_NAME", wechat_config.author_name),
-            base_url=os.getenv("WECHAT_BASE_URL", wechat_config.base_url),
-            api_base_url=os.getenv("WECHAT_API_BASE_URL", wechat_config.api_base_url),
-            title_max_length=int(os.getenv("WECHAT_TITLE_MAX_LENGTH", str(wechat_config.title_max_length))),
-            digest_max_length=int(os.getenv("WECHAT_DIGEST_MAX_LENGTH", str(wechat_config.digest_max_length))),
-            history_filename=os.getenv("WECHAT_HISTORY_FILENAME", wechat_config.history_filename),
-            cover_strategy=os.getenv("WECHAT_COVER_STRATEGY", wechat_config.cover_strategy),
-            layout_backend=os.getenv("WECHAT_LAYOUT_BACKEND", wechat_config.layout_backend),
-            md2wechat_enabled=_env_flag("WECHAT_MD2WECHAT_ENABLED", wechat_config.md2wechat_enabled),
-            md2wechat_api_key=os.getenv("MD2WECHAT_API_KEY", wechat_config.md2wechat_api_key),
-            md2wechat_base_url=os.getenv("MD2WECHAT_BASE_URL", wechat_config.md2wechat_base_url),
-            md2wechat_theme=os.getenv("MD2WECHAT_THEME", wechat_config.md2wechat_theme),
-            md2wechat_font_size=os.getenv("MD2WECHAT_FONT_SIZE", wechat_config.md2wechat_font_size),
-            md2wechat_convert_version=os.getenv(
-                "MD2WECHAT_CONVERT_VERSION",
-                wechat_config.md2wechat_convert_version,
-            ),
-            md2wechat_cli_path=os.getenv("MD2WECHAT_CLI_PATH", wechat_config.md2wechat_cli_path),
-            md2wechat_fallback_to_builtin=_env_flag(
-                "MD2WECHAT_FALLBACK_TO_BUILTIN",
-                wechat_config.md2wechat_fallback_to_builtin,
-            ),
-        ),
-        douyin=DouyinSettings(
-            enabled=_env_flag_scoped("DOUYIN_ENABLED", account_profile.key, douyin_config.enabled),
-            auto_publish=_env_flag_scoped("DOUYIN_AUTO_PUBLISH", account_profile.key, douyin_config.auto_publish),
-            niche=_env_value_scoped("DOUYIN_NICHE", account_profile.key, douyin_config.niche),
-            publish_mode=_env_value_scoped("DOUYIN_PUBLISH_MODE", account_profile.key, douyin_config.publish_mode),
-            daily_post_target=int(
-                _env_value_scoped("DOUYIN_DAILY_POST_TARGET", account_profile.key, str(douyin_config.daily_post_target))
-            ),
-            base_url=_env_value_scoped("DOUYIN_BASE_URL", account_profile.key, douyin_config.base_url),
-            publish_url=_env_value_scoped("DOUYIN_PUBLISH_URL", account_profile.key, douyin_config.publish_url),
-            user_data_dir=douyin_profile_value,
-            channel=_env_value_scoped("DOUYIN_PUBLISH_CHANNEL", account_profile.key, douyin_config.channel),
-            executable_path=_env_value_scoped(
-                "DOUYIN_BROWSER_EXECUTABLE",
-                account_profile.key,
-                douyin_config.executable_path,
-            ),
-            headless=_env_flag_scoped("DOUYIN_PUBLISH_HEADLESS", account_profile.key, douyin_config.headless),
-            wait_timeout_ms=int(
-                _env_value_scoped("DOUYIN_PUBLISH_TIMEOUT_MS", account_profile.key, str(douyin_config.wait_timeout_ms))
-            ),
-            history_filename=douyin_history_value,
-            title_max_length=int(
-                _env_value_scoped("DOUYIN_TITLE_MAX_LENGTH", account_profile.key, str(douyin_config.title_max_length))
-            ),
-            caption_max_length=int(
-                _env_value_scoped(
-                    "DOUYIN_CAPTION_MAX_LENGTH",
-                    account_profile.key,
-                    str(douyin_config.caption_max_length),
-                )
-            ),
-            max_images=int(
-                _env_value_scoped("DOUYIN_MAX_IMAGES", account_profile.key, str(douyin_config.max_images))
-            ),
-            selectors=douyin_config.selectors,
-        ),
-        account_profiles=raw_account_profiles,
-        raw_account_profiles={
-            key: {
-                "label": profile.label,
-                "input_dir": profile.input_dir,
-                "output_dir": profile.output_dir,
-                "logs_dir": profile.logs_dir,
-                "cache_dir": profile.cache_dir,
-                "browser_profile_dir": profile.browser_profile_dir,
-                **copy.deepcopy(profile.overrides),
-            }
-            for key, profile in raw_account_profiles.items()
-        },
-        available_account_keys=sorted(raw_account_profiles),
-        fast_mode=_env_flag("TOUTIAO_FAST_MODE", False),
-        skip_image_generation=_env_flag("TOUTIAO_SKIP_IMAGE_GENERATION", False),
-        skip_review_agent=_env_flag("TOUTIAO_SKIP_REVIEW_AGENT", False),
-        skip_publish_review=_env_flag("TOUTIAO_SKIP_PUBLISH_REVIEW", False),
+        cover_mode=os.getenv("TOUTIAO_PUBLISH_COVER_MODE", publishing_config.cover_mode),
+        selectors=publishing_config.selectors,
     )
 
+
+def _load_wechat_config_final(
+    merged_payload: dict[str, Any],
+    account_profile: AccountProfile,
+    wechat_config: WechatSettings,
+) -> WechatSettings:
+    return WechatSettings(
+        enabled=_env_flag_scoped("WECHAT_ENABLED", account_profile.key, wechat_config.enabled),
+        auto_publish=_env_flag_scoped("WECHAT_AUTO_PUBLISH", account_profile.key, wechat_config.auto_publish),
+        toutiao_sync_delay_seconds=int(
+            _env_value_scoped(
+                "WECHAT_TOUTIAO_SYNC_DELAY",
+                account_profile.key,
+                str(wechat_config.toutiao_sync_delay_seconds),
+            )
+        ),
+        app_id=os.getenv("WECHAT_APP_ID", wechat_config.app_id),
+        app_secret=os.getenv("WECHAT_APP_SECRET", wechat_config.app_secret),
+        account_name=os.getenv("WECHAT_ACCOUNT_NAME", wechat_config.account_name),
+        author_name=os.getenv("WECHAT_AUTHOR_NAME", wechat_config.author_name),
+        base_url=os.getenv("WECHAT_BASE_URL", wechat_config.base_url),
+        api_base_url=os.getenv("WECHAT_API_BASE_URL", wechat_config.api_base_url),
+        api_proxy=os.getenv("WECHAT_API_PROXY", wechat_config.api_proxy),
+        title_max_length=int(os.getenv("WECHAT_TITLE_MAX_LENGTH", str(wechat_config.title_max_length))),
+        digest_max_length=int(os.getenv("WECHAT_DIGEST_MAX_LENGTH", str(wechat_config.digest_max_length))),
+        history_filename=os.getenv("WECHAT_HISTORY_FILENAME", wechat_config.history_filename),
+        cover_strategy=os.getenv("WECHAT_COVER_STRATEGY", wechat_config.cover_strategy),
+        layout_backend=os.getenv("WECHAT_LAYOUT_BACKEND", wechat_config.layout_backend),
+        md2wechat_enabled=_env_flag("WECHAT_MD2WECHAT_ENABLED", wechat_config.md2wechat_enabled),
+        md2wechat_api_key=os.getenv("MD2WECHAT_API_KEY", wechat_config.md2wechat_api_key),
+        md2wechat_base_url=os.getenv("MD2WECHAT_BASE_URL", wechat_config.md2wechat_base_url),
+        md2wechat_theme=os.getenv("MD2WECHAT_THEME", wechat_config.md2wechat_theme),
+        md2wechat_font_size=os.getenv("MD2WECHAT_FONT_SIZE", wechat_config.md2wechat_font_size),
+        md2wechat_convert_version=os.getenv(
+            "MD2WECHAT_CONVERT_VERSION",
+            wechat_config.md2wechat_convert_version,
+        ),
+        md2wechat_cli_path=os.getenv("MD2WECHAT_CLI_PATH", wechat_config.md2wechat_cli_path),
+        md2wechat_fallback_to_builtin=_env_flag(
+            "MD2WECHAT_FALLBACK_TO_BUILTIN",
+            wechat_config.md2wechat_fallback_to_builtin,
+        ),
+        html_anything_enabled=_env_flag("HTML_ANYTHING_ENABLED", wechat_config.html_anything_enabled),
+        html_anything_url=os.getenv("HTML_ANYTHING_URL", wechat_config.html_anything_url),
+        html_anything_template=os.getenv("HTML_ANYTHING_TEMPLATE", wechat_config.html_anything_template),
+        html_anything_agent=os.getenv("HTML_ANYTHING_AGENT", wechat_config.html_anything_agent),
+        serv00_proxy_enabled=_env_flag("WECHAT_SERV00_PROXY_ENABLED", wechat_config.serv00_proxy_enabled),
+        serv00_proxy_url=os.getenv("WECHAT_SERV00_PROXY_URL", wechat_config.serv00_proxy_url),
+        serv00_proxy_secret=os.getenv("WECHAT_SERV00_PROXY_SECRET", wechat_config.serv00_proxy_secret),
+        editor_135_enabled=_env_flag_scoped("WECHAT_EDITOR_135_ENABLED", account_profile.key, wechat_config.editor_135_enabled),
+        editor_135_base_url=os.getenv("WECHAT_EDITOR_135_BASE_URL", wechat_config.editor_135_base_url),
+        editor_135_profile_dir=os.getenv("WECHAT_EDITOR_135_PROFILE_DIR", wechat_config.editor_135_profile_dir),
+    )
+
+
+def _load_douyin_config_final(
+    merged_payload: dict[str, Any],
+    account_profile: AccountProfile,
+    douyin_config: DouyinSettings,
+    paths: dict[str, Any],
+) -> DouyinSettings:
+    return DouyinSettings(
+        enabled=_env_flag_scoped("DOUYIN_ENABLED", account_profile.key, douyin_config.enabled),
+        auto_publish=_env_flag_scoped("DOUYIN_AUTO_PUBLISH", account_profile.key, douyin_config.auto_publish),
+        niche=_env_value_scoped("DOUYIN_NICHE", account_profile.key, douyin_config.niche),
+        publish_mode=_env_value_scoped("DOUYIN_PUBLISH_MODE", account_profile.key, douyin_config.publish_mode),
+        daily_post_target=int(
+            _env_value_scoped("DOUYIN_DAILY_POST_TARGET", account_profile.key, str(douyin_config.daily_post_target))
+        ),
+        base_url=_env_value_scoped("DOUYIN_BASE_URL", account_profile.key, douyin_config.base_url),
+        publish_url=_env_value_scoped("DOUYIN_PUBLISH_URL", account_profile.key, douyin_config.publish_url),
+        user_data_dir=paths["douyin_profile_value"],
+        channel=_env_value_scoped("DOUYIN_PUBLISH_CHANNEL", account_profile.key, douyin_config.channel),
+        executable_path=_env_value_scoped(
+            "DOUYIN_BROWSER_EXECUTABLE",
+            account_profile.key,
+            douyin_config.executable_path,
+        ),
+        headless=_env_flag_scoped("DOUYIN_PUBLISH_HEADLESS", account_profile.key, douyin_config.headless),
+        wait_timeout_ms=int(
+            _env_value_scoped("DOUYIN_PUBLISH_TIMEOUT_MS", account_profile.key, str(douyin_config.wait_timeout_ms))
+        ),
+        history_filename=paths["douyin_history_value"],
+        title_max_length=int(
+            _env_value_scoped("DOUYIN_TITLE_MAX_LENGTH", account_profile.key, str(douyin_config.title_max_length))
+        ),
+        caption_max_length=int(
+            _env_value_scoped(
+                "DOUYIN_CAPTION_MAX_LENGTH",
+                account_profile.key,
+                str(douyin_config.caption_max_length),
+            )
+        ),
+        max_images=int(
+            _env_value_scoped("DOUYIN_MAX_IMAGES", account_profile.key, str(douyin_config.max_images))
+        ),
+        selectors=douyin_config.selectors,
+    )
+
+
+def _load_image_config(merged_payload: dict[str, Any], image_config: ImageGenerationSettings) -> ImageGenerationSettings:
+    return ImageGenerationSettings(
+        width=image_config.width,
+        height=image_config.height,
+        mobile_width=image_config.mobile_width,
+        mobile_height=image_config.mobile_height,
+        backend=os.getenv("IMAGE_BACKEND", image_config.backend),
+        backend_priority=os.getenv("IMAGE_BACKEND_PRIORITY", image_config.backend_priority),
+        api_mode=os.getenv("IMAGE_API_MODE", image_config.api_mode),
+        model_name=os.getenv("IMAGE_MODEL", image_config.model_name),
+        model_base_url=os.getenv("IMAGE_BASE_URL", image_config.model_base_url),
+        model_api_key=os.getenv("IMAGE_API_KEY", image_config.model_api_key),
+        request_timeout_seconds=float(
+            os.getenv("IMAGE_REQUEST_TIMEOUT_SECONDS", str(image_config.request_timeout_seconds))
+        ),
+        cover_size=os.getenv("IMAGE_COVER_SIZE", image_config.cover_size),
+        infographic_size=os.getenv("IMAGE_INFOGRAPHIC_SIZE", image_config.infographic_size),
+        max_generated_assets=int(
+            os.getenv("IMAGE_MAX_ASSETS", str(image_config.max_generated_assets))
+        ),
+        quality=os.getenv("IMAGE_QUALITY", image_config.quality),
+        style=os.getenv("IMAGE_STYLE", image_config.style),
+        background=os.getenv("IMAGE_BACKGROUND", image_config.background),
+        fallback_to_renderer=_env_flag("IMAGE_FALLBACK_TO_RENDERER", image_config.fallback_to_renderer),
+        theme_name=image_config.theme_name,
+        primary_color=image_config.primary_color,
+        secondary_color=image_config.secondary_color,
+        accent_color=image_config.accent_color,
+        background_color=image_config.background_color,
+        card_color=image_config.card_color,
+        text_color=image_config.text_color,
+        muted_text_color=image_config.muted_text_color,
+        font_path=image_config.font_path,
+        bold_font_path=image_config.bold_font_path,
+        export_html=image_config.export_html,
+        export_svg=image_config.export_svg,
+        export_png=image_config.export_png,
+    )
 
 def _load_config_payload(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
@@ -920,7 +1155,7 @@ def _default_config_payload() -> dict[str, Any]:
             "temperature": 0.7,
         },
         "writing": {
-            "article_word_target": 1200,
+            "article_word_target": 2000,
             "max_input_chars": 16000,
             "default_style": "deep_industry_analysis",
             "title_count": 20,
@@ -942,12 +1177,11 @@ def _default_config_payload() -> dict[str, Any]:
             "max_export_topics": 20,
             "request_timeout_seconds": 22,
             "enabled_sources": [
-                "google_news",
                 "36kr",
                 "zhidx",
                 "ofweek",
-                "chuneng_in_en",
-                "newenergy_in_en",
+                "chuneng_ofweek",
+                "newenergy_ofweek",
                 "gg_robot",
             ],
             "focus_industries": [
@@ -1020,7 +1254,11 @@ def _default_config_payload() -> dict[str, Any]:
             "sources": {
                 "google_news": {
                     "type": "google_rss",
+                    "timeout": 5,
+                    "enabled": False,
                     "urls": [
+                    ],
+                    "_disabled_urls": [
                         "https://news.google.com/rss/search?q=%E4%BA%BA%E5%BD%A2%E6%9C%BA%E5%99%A8%E4%BA%BA&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
                         "https://news.google.com/rss/search?q=%E6%96%B0%E8%83%BD%E6%BA%90&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
                         "https://news.google.com/rss/search?q=%E5%82%A8%E8%83%BD&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
@@ -1061,18 +1299,18 @@ def _default_config_payload() -> dict[str, Any]:
                         "https://www.gg-robot.com/home/aggregator/?act=report",
                     ],
                 },
-                "chuneng_in_en": {
+                "chuneng_ofweek": {
                     "type": "html",
                     "same_domain_only": True,
                     "urls": [
-                        "https://chuneng.in-en.com/",
+                        "https://chuneng.ofweek.com/",
                     ],
                 },
-                "newenergy_in_en": {
+                "newenergy_ofweek": {
                     "type": "html",
                     "same_domain_only": True,
                     "urls": [
-                        "https://newenergy.in-en.com/",
+                        "https://nev.ofweek.com/",
                     ],
                 },
             },
@@ -1102,15 +1340,15 @@ def _default_config_payload() -> dict[str, Any]:
             "card_color": "#0F1B2D",
             "text_color": "#F5F8FF",
             "muted_text_color": "#91A4C2",
-            "font_path": "C:/Windows/Fonts/msyh.ttc",
-            "bold_font_path": "C:/Windows/Fonts/msyhbd.ttc",
+            "font_path": resolve_default_font_path("regular"),
+            "bold_font_path": resolve_default_font_path("bold"),
             "export_html": True,
             "export_svg": True,
             "export_png": True,
         },
         "automation": {
             "default_topic_rank": 1,
-            "max_daily_topic_attempts": 3,
+            "max_daily_topic_attempts": 5,
             "daily_run_times": [],
             "archive_outputs": True,
             "archive_dirname": "runs",
@@ -1192,10 +1430,11 @@ def _default_config_payload() -> dict[str, Any]:
             "author_name": "手蓝",
             "base_url": "https://mp.weixin.qq.com/",
             "api_base_url": "https://api.weixin.qq.com",
+            "api_proxy": "",
             "title_max_length": 64,
             "digest_max_length": 120,
             "history_filename": "wechat_publish_history.json",
-            "cover_strategy": "first_inline",
+            "cover_strategy": "text_cover",
             "layout_backend": "builtin",
             "md2wechat_enabled": False,
             "md2wechat_api_key": "",
@@ -1205,11 +1444,21 @@ def _default_config_payload() -> dict[str, Any]:
             "md2wechat_convert_version": "v1",
             "md2wechat_cli_path": "",
             "md2wechat_fallback_to_builtin": True,
+            "html_anything_enabled": False,
+            "html_anything_url": "http://localhost:3000",
+            "html_anything_template": "",
+            "html_anything_agent": "claude",
+            "serv00_proxy_enabled": False,
+            "serv00_proxy_url": "",
+            "serv00_proxy_secret": "",
+            "editor_135_enabled": True,
+            "editor_135_base_url": "https://www.135editor.com",
+            "editor_135_profile_dir": ".runtime/editor_135_profile",
         },
         "douyin": {
             "enabled": False,
             "auto_publish": False,
-            "niche": "??",
+            "niche": "未设置",
             "publish_mode": "browser",
             "daily_post_target": 3,
             "base_url": "https://creator.douyin.com/",
@@ -1225,8 +1474,8 @@ def _default_config_payload() -> dict[str, Any]:
             "max_images": 3,
             "selectors": {
                 "caption_input": [
-                    "textarea[placeholder*='??????']",
-                    "textarea[placeholder*='??']",
+                    "textarea[placeholder*='添加作品描述']",
+                    "textarea[placeholder*='描述']",
                     "div[contenteditable='true']"
                 ],
                 "image_upload": [
@@ -1234,14 +1483,14 @@ def _default_config_payload() -> dict[str, Any]:
                     "input[type='file']"
                 ],
                 "publish_button": [
-                    "button:has-text('??')",
-                    "button:has-text('????')",
-                    "div[role='button']:has-text('??')"
+                    "button:has-text('发布')",
+                    "button:has-text('发布作品')",
+                    "div[role='button']:has-text('发布')"
                 ],
                 "success_indicator": [
-                    "text=????",
-                    "text=???",
-                    "text=????"
+                    "text=发布成功",
+                    "text=已发布",
+                    "text=提交成功"
                 ]
             }
         },

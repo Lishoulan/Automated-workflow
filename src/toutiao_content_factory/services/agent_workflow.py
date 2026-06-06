@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 import logging
@@ -23,6 +23,7 @@ from toutiao_content_factory.services.prompt_repository import PromptRepository
 
 class AgentWorkflowService:
     LOW_QUALITY_THRESHOLD = 60
+    ARTICLE_MIN_CHARS = 1500
 
     def __init__(
         self,
@@ -61,21 +62,20 @@ class AgentWorkflowService:
             self.logger.warning("EvolutionAgent failed, continuing with existing best practices rules: %s", exc)
 
         trend_report = self.trend_agent.run(extraction, style, cache_context)
-        data_report = self.data_agent.run(extraction, trend_report, style)
+        try:
+            data_report = self.data_agent.run(extraction, trend_report, style)
+        except Exception as exc:
+            self.logger.error("DataAgent failed, using fallback data report: %s", exc)
+            data_report = self.data_agent._fallback(extraction, trend_report)
         try:
             self._abort_if_low_quality(extraction, data_report)
             content = self.writer_agent.run(trend_report, data_report, style, cache_context)
 
             polish_pack = self.polish_agent.run(content, trend_report, data_report, style, cache_context)
-            content.polished_article = str(polish_pack.get("polished_article", "")).strip()
-            if content.polished_article:
-                content.article = content.polished_article
-            content.validation_notes = list(polish_pack.get("validation_notes", []))
-            content.validation_score = int(polish_pack.get("validation_score", 0))
+            self._apply_polish_pack(content, polish_pack, data_report)
 
             title_pack = self.title_agent.run(content, trend_report, data_report, style, cache_context)
-            content.titles = title_pack["titles"]
-            content.recommended_titles = title_pack["recommended_titles"]
+            self._apply_title_pack(content, title_pack)
 
             content.cover_prompt = ""
             content.infographic_prompts = []
@@ -84,9 +84,7 @@ class AgentWorkflowService:
                 review_pack = self.review_agent._fallback(content, data_report, cache_context)
             else:
                 review_pack = self.review_agent.run(content, data_report, style, cache_context)
-            content.optimized_opening_lines = list(review_pack.get("optimized_opening_lines", []))
-            content.review_notes = list(review_pack.get("review_notes", []))
-            content.cache_note = cache_context.note
+            self._apply_review_pack(content, review_pack, cache_context)
             content_score = review_pack["content_score"]
 
             if not fast_mode and self._should_run_second_polish(content, content_score):
@@ -102,18 +100,15 @@ class AgentWorkflowService:
                 revised_article = str(revised_pack.get("polished_article", "")).strip()
                 if revised_article and revised_article != content.article:
                     self.logger.info("Review-triggered polish pass executed.")
-                    content.polished_article = revised_article
-                    content.article = revised_article
+                    self._apply_polish_pack(content, revised_pack, data_report, update_validation=False)
                     content.validation_notes = list(revised_pack.get("validation_notes", [])) or content.validation_notes
                     content.validation_score = max(int(revised_pack.get("validation_score", 0)), content.validation_score)
 
                     title_pack = self.title_agent.run(content, trend_report, data_report, style, cache_context)
-                    content.titles = title_pack["titles"]
-                    content.recommended_titles = title_pack["recommended_titles"]
+                    self._apply_title_pack(content, title_pack)
 
                     review_pack = self.review_agent.run(content, data_report, style, cache_context)
-                    content.optimized_opening_lines = list(review_pack.get("optimized_opening_lines", []))
-                    content.review_notes = list(review_pack.get("review_notes", []))
+                    self._apply_review_pack(content, review_pack, cache_context)
                     content_score = review_pack["content_score"]
 
             if skip_publish_review:
@@ -186,6 +181,103 @@ class AgentWorkflowService:
             reasons.append("missing_subject_anchor")
         return reasons
 
+    def _ensure_article_min_chars(self, article: str, data_report, min_chars: int = None) -> str:
+        min_chars = min_chars if min_chars is not None else self.ARTICLE_MIN_CHARS
+        current = len(article.replace("\n", "").replace(" ", ""))
+        if current >= min_chars:
+            return article
+        self.logger.warning(
+            "Article has only %d chars (minimum %d). Appending supplementary paragraphs.",
+            current,
+            min_chars,
+        )
+        paragraphs = article.split("\n\n")
+        supplements = self._build_supplementary_paragraphs(data_report)
+        for sup in supplements:
+            paragraphs.insert(-1, sup)
+            total = len("\n\n".join(paragraphs).replace("\n", "").replace(" ", ""))
+            if total >= min_chars:
+                break
+        result = "\n\n".join(paragraphs)
+        result_chars = len(result.replace("\n", "").replace(" ", ""))
+        if result_chars < min_chars and self.openai_service.available:
+            self.logger.info("Template supplements brought article to %d chars, still below %d. Attempting LLM expansion.", result_chars, min_chars)
+            result = self._expand_article_via_llm(result, data_report, min_chars)
+        return result
+
+    def _expand_article_via_llm(self, article: str, data_report, min_chars: int) -> str:
+        current_chars = len(article.replace("\n", "").replace(" ", ""))
+        deficit = min_chars - current_chars
+        if deficit <= 0:
+            return article
+        data_parts = []
+        if hasattr(data_report, "watch_metrics") and data_report.watch_metrics:
+            data_parts.append("跟踪变量：" + "、".join(str(m) for m in data_report.watch_metrics[:5]))
+        if hasattr(data_report, "risk_flags") and data_report.risk_flags:
+            data_parts.append("风险因素：" + "、".join(str(r) for r in data_report.risk_flags[:3]))
+        data_summary = "\n".join(data_parts) if data_parts else "无额外数据"
+        system_prompt = (
+            "你是文章扩展助手。在现有文章基础上补充深度内容，禁止使用套话。"
+            "禁止重复现有文章中已经出现过的数据、观点或措辞。"
+            "输出JSON格式：{\"paragraphs\": [\"段落1\", \"段落2\", ...]}"
+        )
+        user_prompt = (
+            f"当前文章已有{current_chars}字，需要再补充约{deficit}字。\n\n"
+            f"现有文章：\n{article[:2000]}\n\n"
+            f"可用数据：\n{data_summary}\n\n"
+            f"请输出JSON格式的补充段落，每个段落不少于150字。"
+        )
+        try:
+            payload = self.openai_service.create_json_completion(system_prompt, user_prompt)
+            if payload and isinstance(payload.get("paragraphs"), list):
+                new_paragraphs = [str(p).strip() for p in payload["paragraphs"] if str(p).strip()]
+                if new_paragraphs:
+                    existing = article.split("\n\n")
+                    for p in new_paragraphs:
+                        existing.insert(-1, p)
+                    result = "\n\n".join(existing)
+                    self.logger.info("LLM expansion added %d paragraphs, article now %d chars.", len(new_paragraphs), len(result.replace("\n", "").replace(" ", "")))
+                    return result
+        except Exception as exc:
+            self.logger.warning("LLM expansion failed: %s", exc)
+        return article
+
+    @staticmethod
+    def _build_supplementary_paragraphs(data_report) -> list[str]:
+        paragraphs = []
+        if hasattr(data_report, "watch_metrics") and data_report.watch_metrics:
+            items = data_report.watch_metrics[:5]
+            if items:
+                text = "接下来该盯什么？" + "、".join(str(m) for m in items) + "——这几个指标的变化，基本决定了产业链各环节的盈利兑现节奏。"
+                paragraphs.append(text)
+        if hasattr(data_report, "risk_flags") and data_report.risk_flags:
+            items = data_report.risk_flags[:3]
+            if items:
+                text = "但风险也在积累：" + "；".join(str(r) for r in items) + "。任何一个环节的延迟，都可能拖慢整条链的兑现节奏。"
+                paragraphs.append(text)
+        if hasattr(data_report, "evidence_notes") and data_report.evidence_notes:
+            items = data_report.evidence_notes[:3]
+            if items:
+                text = "目前能确认的数据有限，" + "；".join(str(e) for e in items) + "。口径以公开材料为准，等最新财报出来再更新判断。"
+                paragraphs.append(text)
+        if hasattr(data_report, "growth_numbers") and data_report.growth_numbers and len(data_report.growth_numbers) >= 2:
+            text = f"两个核心数字：{data_report.growth_numbers[0]}和{data_report.growth_numbers[1]}。后续如果这两个指标出现明显变化，利润分配逻辑可能要重新算。"
+            paragraphs.append(text)
+        if len(paragraphs) < 3:
+            paragraphs.append(
+                "从产业链角度看，核心环节的利润兑现节奏取决于下游需求能否持续放量。"
+                "目前行业仍处于从订单验证到批量交付的过渡期，部分企业已率先在零部件环节实现收入确认，"
+                "但整体产能利用率仍有提升空间。后续需要关注头部企业的季度出货数据变化，"
+                "以及政策端对相关赛道的支持力度是否出现边际调整。"
+            )
+        if len(paragraphs) < 4:
+            paragraphs.append(
+                "产业链利润分配并非静态格局。"
+                "随着技术路线迭代和客户结构变化，不同环节的议价能力会发生此消彼长的变化。"
+                "每一轮产业升级都会重塑利润分配曲线，关键在于识别哪些环节能率先完成从量到价的切换。"
+            )
+        return paragraphs
+
     def _should_run_second_polish(self, content, content_score) -> bool:
         return (
             content_score.pass_status == "needs_revision"
@@ -199,11 +291,11 @@ class AgentWorkflowService:
     def _build_revision_focus(self, content, content_score) -> list[str]:
         focus = list(content.review_notes[:3]) + list(content_score.revision_suggestions[:3])
         if not self._has_source_anchor(content.article):
-            focus.append("????????????????????????????????")
+            focus.append("补充数据来源标记，增加具体事实锚点")
         if self._has_long_paragraph(content.article):
-            focus.append("??????? 2 ? 3 ????????????????")
+            focus.append("拆分长段落，每段控制在2-3句")
         if content_score.ai_generated_risk >= 32:
-            focus.append("????????????????????????????")
+            focus.append("调整表达风格，减少AI痕迹")
 
         result: list[str] = []
         seen: set[str] = set()
@@ -221,6 +313,27 @@ class AgentWorkflowService:
     def _has_source_anchor(self, article: str) -> bool:
         markers = ("据", "数据显示", "公开材料", "财报", "公告", "机构统计", "报告")
         return any(marker in article for marker in markers)
+
+    def _apply_polish_pack(self, content, polish_pack, data_report, update_validation: bool = True) -> None:
+        content.polished_article = str(polish_pack.get("polished_article", "")).strip()
+        if content.polished_article:
+            content.article = content.polished_article
+        content.article = self._ensure_article_min_chars(
+            content.article, data_report, min_chars=self.ARTICLE_MIN_CHARS
+        )
+        content.polished_article = content.article
+        if update_validation:
+            content.validation_notes = list(polish_pack.get("validation_notes", []))
+            content.validation_score = int(polish_pack.get("validation_score", 0))
+
+    def _apply_title_pack(self, content, title_pack) -> None:
+        content.titles = title_pack["titles"]
+        content.recommended_titles = title_pack["recommended_titles"]
+
+    def _apply_review_pack(self, content, review_pack, cache_context) -> None:
+        content.optimized_opening_lines = list(review_pack.get("optimized_opening_lines", []))
+        content.review_notes = list(review_pack.get("review_notes", []))
+        content.cache_note = cache_context.note
 
     def _apply_bad_words_gate(self, content, content_score) -> None:
         title = content.recommended_titles[0] if content.recommended_titles else ""

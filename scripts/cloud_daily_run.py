@@ -124,6 +124,59 @@ def _check_and_disable_browser_platform(platform_prefix: str, profile_dir: str) 
         _logger.info("  %s: 已禁用（无浏览器 profile）", platform_prefix)
 
 
+def _is_auth_error() -> bool:
+    """检查最近的 app.log 是否包含 PlatformAuthError。"""
+    app_log = PROJECT_ROOT / "logs" / "app.log"
+    if not app_log.exists():
+        return False
+    try:
+        tail_lines = app_log.read_text(encoding="utf-8", errors="ignore")[-2000:]
+        return "PlatformAuthError" in tail_lines or "blocked_platforms=" in tail_lines
+    except Exception:
+        return False
+
+
+# 平台前缀到环境变量名的映射
+_PLATFORM_ENV_MAP = {
+    "wechat": "WECHAT",
+    "toutiao": "TOUTIAO",
+    "douyin": "DOUYIN",
+}
+
+
+def _disable_blocking_platforms() -> None:
+    """从 app.log 中提取 blocked_platforms 并禁用对应平台。"""
+    app_log = PROJECT_ROOT / "logs" / "app.log"
+    if not app_log.exists():
+        _logger.warning("app.log 不存在，无法确定失败平台，禁用所有浏览器发布平台")
+        for prefix in _PLATFORM_ENV_MAP.values():
+            os.environ[f"{prefix}_ENABLED"] = "0"
+            os.environ[f"{prefix}_AUTO_PUBLISH"] = "0"
+        return
+
+    try:
+        tail_lines = app_log.read_text(encoding="utf-8", errors="ignore")[-4000:]
+        # 提取 blocked_platforms=wechat,toutiao 格式
+        import re
+        match = re.search(r"blocked_platforms=([^\s;]+)", tail_lines)
+        if match:
+            blocked = match.group(1).split(",")
+            for platform in blocked:
+                platform = platform.strip().lower()
+                prefix = _PLATFORM_ENV_MAP.get(platform)
+                if prefix:
+                    _logger.warning("禁用平台: %s (登录验证失败)", platform)
+                    os.environ[f"{prefix}_ENABLED"] = "0"
+                    os.environ[f"{prefix}_AUTO_PUBLISH"] = "0"
+        else:
+            _logger.warning("无法从日志提取 blocked_platforms，禁用所有浏览器发布平台")
+            for prefix in _PLATFORM_ENV_MAP.values():
+                os.environ[f"{prefix}_ENABLED"] = "0"
+                os.environ[f"{prefix}_AUTO_PUBLISH"] = "0"
+    except Exception as exc:
+        _logger.error("解析 blocked_platforms 失败: %s", exc)
+
+
 def _configure_cloud_env(account_key: str) -> None:
     """设置云端运行所需的环境变量。"""
     is_linux = platform.system() == "Linux"
@@ -300,30 +353,42 @@ def main() -> int:
 
     _logger.info("执行命令: %s", " ".join(cmd))
 
-    # 7. 执行
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=str(PROJECT_ROOT),
-            env=os.environ.copy(),
-            timeout=1800,  # 30 分钟超时
-        )
-        exit_code = result.returncode
-        if exit_code == 0:
-            _logger.info("云端定时执行成功完成 (exit_code=%d)", exit_code)
-        else:
+    # 7. 执行（支持 PlatformAuthError 自动降级重试）
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(PROJECT_ROOT),
+                env=os.environ.copy(),
+                timeout=1800,  # 30 分钟超时
+            )
+            exit_code = result.returncode
+            if exit_code == 0:
+                _logger.info("云端定时执行成功完成 (exit_code=%d)", exit_code)
+                return exit_code
+
+            # 检查是否是 PlatformAuthError，如果是则禁用失败平台并重试
+            if attempt < max_attempts and _is_auth_error():
+                _logger.warning("检测到平台登录验证失败，自动禁用失败平台并重试...")
+                _disable_blocking_platforms()
+                continue
+
             _logger.error("云端定时执行失败 (exit_code=%d)", exit_code)
-        return exit_code
-    except subprocess.TimeoutExpired:
-        _logger.error("云端定时执行超时（30 分钟）")
-        return 1
-    except KeyboardInterrupt:
-        _logger.warning("用户中断执行")
-        return 130
-    except Exception as exc:
-        _logger.error("云端定时执行异常: %s", exc)
-        _logger.error(traceback.format_exc())
-        return 1
+            return exit_code
+        except subprocess.TimeoutExpired:
+            _logger.error("云端定时执行超时（30 分钟）")
+            return 1
+        except KeyboardInterrupt:
+            _logger.warning("用户中断执行")
+            return 130
+        except Exception as exc:
+            _logger.error("云端定时执行异常: %s", exc)
+            _logger.error(traceback.format_exc())
+            return 1
+
+    _logger.error("云端定时执行在 %d 次尝试后仍然失败", max_attempts)
+    return 1
 
 
 if __name__ == "__main__":

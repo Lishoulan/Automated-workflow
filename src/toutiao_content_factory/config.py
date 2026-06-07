@@ -386,6 +386,7 @@ class WechatSettings:
     editor_135_enabled: bool
     editor_135_base_url: str
     editor_135_profile_dir: str
+    builtin_theme: str
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "WechatSettings":
@@ -423,6 +424,7 @@ class WechatSettings:
             editor_135_enabled=bool(payload.get("editor_135_enabled", True)),
             editor_135_base_url=str(payload.get("editor_135_base_url", "https://www.135editor.com")).strip(),
             editor_135_profile_dir=str(payload.get("editor_135_profile_dir", ".runtime/editor_135_profile")).strip(),
+            builtin_theme=str(payload.get("builtin_theme", "tech_blue")).strip() or "tech_blue",
         )
 
 
@@ -582,6 +584,10 @@ class AppSettings:
     skip_image_generation: bool = False
     skip_review_agent: bool = False
     skip_publish_review: bool = False
+    enhanced_insights_enabled: bool = False
+    enhanced_insights_use_multi_source: bool = False
+    enhanced_insights_use_historical: bool = False
+    enhanced_insights_use_data_mining: bool = False
 
     def ensure_directories(self) -> None:
         for directory in (
@@ -729,6 +735,10 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         skip_image_generation=_env_flag("TOUTIAO_SKIP_IMAGE_GENERATION", False),
         skip_review_agent=_env_flag("TOUTIAO_SKIP_REVIEW_AGENT", False),
         skip_publish_review=_env_flag("TOUTIAO_SKIP_PUBLISH_REVIEW", False),
+        enhanced_insights_enabled=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_ENABLED", False),
+        enhanced_insights_use_multi_source=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_MULTI_SOURCE", False),
+        enhanced_insights_use_historical=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_HISTORICAL", False),
+        enhanced_insights_use_data_mining=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_DATA_MINING", False),
     )
 
 
@@ -1001,6 +1011,7 @@ def _load_wechat_config_final(
         editor_135_enabled=_env_flag_scoped("WECHAT_EDITOR_135_ENABLED", account_profile.key, wechat_config.editor_135_enabled),
         editor_135_base_url=os.getenv("WECHAT_EDITOR_135_BASE_URL", wechat_config.editor_135_base_url),
         editor_135_profile_dir=os.getenv("WECHAT_EDITOR_135_PROFILE_DIR", wechat_config.editor_135_profile_dir),
+        builtin_theme=os.getenv("WECHAT_BUILTIN_THEME", wechat_config.builtin_theme),
     )
 
 

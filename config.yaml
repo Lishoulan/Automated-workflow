@@ -1,10 +1,10 @@
 {
   "model": {
-    "name": "gpt-4.1-mini",
+    "name": "deepseek-v4-flash",
     "temperature": 0.7
   },
   "writing": {
-    "article_word_target": 1200,
+    "article_word_target": 1500,
     "max_input_chars": 16000,
     "default_style": "deep_industry_analysis",
     "title_count": 20,
@@ -26,15 +26,13 @@
     "drop_topics_without_timestamp": true,
     "max_items_per_source": 12,
     "max_export_topics": 20,
-    "request_timeout_seconds": 22,
+    "request_timeout_seconds": 12,
     "enabled_sources": [
-      "google_news",
       "36kr",
       "zhidx",
       "ofweek",
-      "chuneng_in_en",
-      "newenergy_in_en",
-      "gg_robot"
+      "chuneng_ofweek",
+      "newenergy_ofweek"
     ],
     "focus_industries": [
       "humanoid_robot",
@@ -104,16 +102,6 @@
       ]
     },
     "sources": {
-      "google_news": {
-        "type": "google_rss",
-        "urls": [
-          "https://news.google.com/rss/search?q=%E4%BA%BA%E5%BD%A2%E6%9C%BA%E5%99%A8%E4%BA%BA&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-          "https://news.google.com/rss/search?q=%E6%96%B0%E8%83%BD%E6%BA%90&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-          "https://news.google.com/rss/search?q=%E5%82%A8%E8%83%BD&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-          "https://news.google.com/rss/search?q=AI%E7%A1%AC%E4%BB%B6&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-          "https://news.google.com/rss/search?q=%E5%B7%A5%E4%B8%9A%E8%87%AA%E5%8A%A8%E5%8C%96&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-        ]
-      },
       "36kr": {
         "type": "rss",
         "urls": [
@@ -139,26 +127,18 @@
           "https://www.ofweek.com/ai/"
         ]
       },
-      "gg_robot": {
-        "type": "html",
-        "urls": [
-          "https://www.gg-robot.com/",
-          "https://www.gg-robot.com/meeting.html",
-          "https://www.gg-robot.com/home/aggregator/?act=report"
-        ]
-      },
-      "chuneng_in_en": {
+      "chuneng_ofweek": {
         "type": "html",
         "same_domain_only": true,
         "urls": [
-          "https://chuneng.in-en.com/"
+          "https://chuneng.ofweek.com/"
         ]
       },
-      "newenergy_in_en": {
+      "newenergy_ofweek": {
         "type": "html",
         "same_domain_only": true,
         "urls": [
-          "https://newenergy.in-en.com/"
+          "https://nev.ofweek.com/"
         ]
       }
     }
@@ -166,9 +146,9 @@
   "automation": {
     "default_topic_rank": 1,
     "daily_run_times": [
-      "08:00",
-      "12:00",
-      "18:30",
+      "07:00",
+      "11:30",
+      "18:00",
       "22:00"
     ],
     "archive_outputs": true,
@@ -179,22 +159,33 @@
     "auto_prepare": true,
     "min_overall_score": 72,
     "max_ai_risk": 45,
-    "min_auto_publish_overall_score": 80,
-    "max_auto_publish_ai_risk": 40,
-    "min_auto_publish_validation_score": 80,
+    "min_auto_publish_overall_score": 65,
+    "max_auto_publish_ai_risk": 70,
+    "min_auto_publish_validation_score": 70,
     "min_auto_publish_readiness_score": 70,
     "publish_dirname": "publish"
   },
   "compliance": {
     "aigc_declaration_enabled": true,
     "max_daily_posts": 2,
-    "draft_only_mode": true,
+    "draft_only_mode": false,
     "anti_ai_flavor": {
       "banned_words": [
-        "综上所述", "不可否认", "双刃剑", "值得关注的是",
-        "换言之", "深入探讨", "如前所述", "值得注意的是",
-        "不难发现", "由此可见", "众所周知", "毋庸置疑",
-        "总而言之", "归根结底", "从某种程度上说"
+        "综上所述",
+        "不可否认",
+        "双刃剑",
+        "值得关注的是",
+        "换言之",
+        "深入探讨",
+        "如前所述",
+        "值得注意的是",
+        "不难发现",
+        "由此可见",
+        "众所周知",
+        "毋庸置疑",
+        "总而言之",
+        "归根结底",
+        "从某种程度上说"
       ],
       "style_rules": [
         "使用短句和主动语态，避免大段学术化复杂长句",
@@ -208,9 +199,95 @@
     "account_login_interval_seconds": 300,
     "account_switch_interval_seconds": 60
   },
+  "image_generation": {
+    "width": 1280,
+    "height": 720,
+    "mobile_width": 1080,
+    "mobile_height": 1920,
+    "backend": "renderer",
+    "backend_priority": "image2,local",
+    "api_mode": "images",
+    "model_name": "gpt-image-1",
+    "model_base_url": "",
+    "model_api_key": "",
+    "request_timeout_seconds": 15,
+    "cover_size": "1536x1024",
+    "infographic_size": "1024x1536",
+    "max_generated_assets": 2,
+    "quality": "high",
+    "style": "vivid",
+    "background": "opaque",
+    "fallback_to_renderer": true,
+    "theme_name": "dark_tech",
+    "primary_color": "#0B1220",
+    "secondary_color": "#122238",
+    "accent_color": "#26D9FF",
+    "background_color": "#060B14",
+    "card_color": "#0F1B2D",
+    "text_color": "#F5F8FF",
+    "muted_text_color": "#91A4C2",
+    "font_path": "",
+    "bold_font_path": "",
+    "export_html": true,
+    "export_svg": true,
+    "export_png": true
+  },
+  "publishing": {
+    "enabled": true,
+    "auto_publish": true,
+    "draft_only": false,
+    "platform": "toutiao",
+    "base_url": "https://mp.toutiao.com/",
+    "publish_url": "",
+    "user_data_dir": ".runtime/toutiao_profile",
+    "channel": "msedge",
+    "executable_path": "",
+    "headless": false,
+    "wait_timeout_ms": 15000,
+    "history_filename": "publish_history.json",
+    "allow_duplicate_topics": false,
+    "title_max_length": 30,
+    "cover_mode": "auto"
+  },
+  "wechat": {
+    "enabled": true,
+    "auto_publish": false,
+    "toutiao_sync_delay_seconds": 1800,
+    "app_id": "",
+    "app_secret": "",
+    "account_name": "",
+    "author_name": "小椰科技",
+    "base_url": "https://mp.weixin.qq.com/",
+    "api_base_url": "https://api.weixin.qq.com",
+    "api_proxy": "",
+    "title_max_length": 64,
+    "digest_max_length": 120,
+    "history_filename": "wechat_publish_history.json",
+    "cover_strategy": "text_cover",
+    "layout_backend": "builtin",
+    "md2wechat_enabled": false,
+    "md2wechat_api_key": "",
+    "md2wechat_base_url": "https://www.md2wechat.com/api/v1",
+    "md2wechat_theme": "default",
+    "md2wechat_font_size": "medium",
+    "md2wechat_convert_version": "v1",
+    "md2wechat_cli_path": "",
+    "md2wechat_fallback_to_builtin": true,
+    "html_anything_enabled": false,
+    "html_anything_url": "http://localhost:3000",
+    "html_anything_template": "",
+    "html_anything_agent": "claude",
+    "serv00_proxy_enabled": false,
+    "serv00_proxy_url": "",
+    "serv00_proxy_secret": "",
+    "editor_135_enabled": true,
+    "editor_135_base_url": "https://www.135editor.com",
+    "editor_135_profile_dir": ".runtime/editor_135_profile",
+    "builtin_theme": "tech_blue"
+  },
   "douyin": {
     "enabled": false,
-    "auto_publish": false,
+    "auto_publish": true,
     "niche": "??",
     "publish_mode": "browser",
     "daily_post_target": 10,
@@ -227,7 +304,6 @@
     "max_images": 3
   },
   "styles": {
-
     "deep_industry_analysis": {
       "label": "深度行业分析风",
       "tone": "冷静、专业、强调产业链兑现和环节分化。",
@@ -274,13 +350,11 @@
       },
       "topic_collection": {
         "enabled_sources": [
-          "google_news",
           "36kr",
           "zhidx",
           "ofweek",
-          "chuneng_in_en",
-          "newenergy_in_en",
-          "gg_robot"
+          "chuneng_ofweek",
+          "newenergy_ofweek"
         ],
         "focus_industries": [
           "humanoid_robot",
@@ -289,11 +363,186 @@
           "ai_hardware",
           "industrial_automation"
         ]
-      }
+      },
+      "enabled": true
     },
     "robot_notes": {
-      "label": "手蓝政治笔记",
+      "label": "机器人/地缘科技笔记",
       "browser_profile_dir": ".runtime/accounts/robot_notes/toutiao_profile",
+      "industry": {
+        "brand_name": "手蓝机器人笔记",
+        "focus": "人形机器人、具身智能、AI硬件、工业自动化、新能源",
+        "audience": "关注人形机器人、具身智能与AI硬件技术进展的头条读者"
+      },
+      "writing": {
+        "default_style": "tech_media"
+      },
+      "topic_collection": {
+        "max_topic_age_hours": 48,
+        "drop_topics_without_timestamp": false,
+        "enabled_sources": [
+          "36kr",
+          "zhidx",
+          "ofweek",
+          "qbitai",
+          "jiqizhixin",
+          "leiphone"
+        ],
+        "focus_industries": [
+          "humanoid_robot",
+          "ai_hardware",
+          "industrial_automation",
+          "new_energy"
+        ],
+        "keyword_map": {
+          "humanoid_robot": [
+            "人形机器人",
+            "具身智能",
+            "灵巧手",
+            "减速器",
+            "执行器",
+            "无框力矩电机",
+            "丝杠",
+            "机器人",
+            "仿生",
+            "运动控制",
+            "Optimus",
+            "Walker",
+            "优必选",
+            "宇树",
+            "智元",
+            "傅利叶",
+            "小鹏铁",
+            "特斯拉机器人",
+            "机械臂",
+            "协作机器人",
+            "力传感器",
+            "六维力",
+            "谐波减速器",
+            "RV减速器",
+            "滚珠丝杠",
+            "行星滚柱",
+            "伺服电机",
+            "驱控一体",
+            "关节模组",
+            "末端执行器"
+          ],
+          "ai_hardware": [
+            "AI硬件",
+            "算力",
+            "GPU",
+            "芯片",
+            "边缘计算",
+            "服务器",
+            "CPO",
+            "大模型",
+            "LLM",
+            "智算",
+            "推理芯片",
+            "训练芯片",
+            "英伟达",
+            "华为昇腾",
+            "寒武纪",
+            "光模块",
+            "液冷",
+            "AI芯片",
+            "NPU",
+            "TPU",
+            "存算一体",
+            "HBM",
+            "先进封装",
+            "CoWoS"
+          ],
+          "industrial_automation": [
+            "工业自动化",
+            "工业机器人",
+            "机器视觉",
+            "PLC",
+            "伺服",
+            "传感器",
+            "工业母机",
+            "智能制造",
+            "数字孪生",
+            "工控",
+            "SCADA",
+            "MES",
+            "AGV",
+            "叉车",
+            "产线",
+            "柔性制造",
+            "黑灯工厂",
+            "智能工厂",
+            "工业互联网",
+            "低代码"
+          ],
+          "new_energy": [
+            "新能源",
+            "锂电",
+            "电池",
+            "充电",
+            "固态电池",
+            "储能",
+            "光伏",
+            "风电",
+            "动力电池",
+            "钠电",
+            "氢能",
+            "宁德时代",
+            "比亚迪",
+            "逆变器",
+            "充电桩",
+            "新能源车"
+          ]
+        },
+        "sources": {
+          "36kr": {
+            "type": "rss",
+            "urls": [
+              "https://36kr.com/feed-article",
+              "https://36kr.com/feed-newsflash"
+            ]
+          },
+          "zhidx": {
+            "type": "html",
+            "urls": [
+              "https://www.zhidx.com/",
+              "https://www.zhidx.com/p/category/%E6%9C%BA%E5%99%A8%E4%BA%BA%E6%97%A0%E4%BA%BA%E6%9C%BA",
+              "https://www.zhidx.com/p/category/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD"
+            ]
+          },
+          "ofweek": {
+            "type": "html",
+            "urls": [
+              "https://robot.ofweek.com/CATList-8321200-8100-robot.html",
+              "https://robot.ofweek.com/CAT-898890-humanoidRobot.html",
+              "https://www.ofweek.com/ai/"
+            ]
+          },
+          "qbitai": {
+            "type": "rss",
+            "urls": [
+              "https://www.qbitai.com/feed"
+            ]
+          },
+          "jiqizhixin": {
+            "type": "rss",
+            "urls": [
+              "https://www.jiqizhixin.com/rss"
+            ]
+          },
+          "leiphone": {
+            "type": "rss",
+            "urls": [
+              "https://www.leiphone.com/feed/"
+            ]
+          }
+        }
+      },
+      "enabled": true
+    },
+    "politics_notes": {
+      "label": "手蓝政治笔记",
+      "browser_profile_dir": ".runtime/accounts/politics_notes/toutiao_profile",
       "industry": {
         "brand_name": "手蓝政治笔记",
         "focus": "国际政治、地缘博弈、关税、外交与全球政经联动",
@@ -305,7 +554,6 @@
       "topic_collection": {
         "max_topic_age_hours": 48,
         "enabled_sources": [
-          "google_news",
           "36kr"
         ],
         "focus_industries": [
@@ -334,21 +582,6 @@
           ]
         },
         "sources": {
-          "google_news": {
-            "type": "google_rss",
-            "urls": [
-              "https://news.google.com/rss/search?q=%E5%9B%BD%E9%99%85&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E7%BE%8E%E5%9B%BD+%E5%85%B3%E7%A8%8E&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E4%B8%AD%E4%B8%9C+%E5%B1%80%E5%8A%BF&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E4%BF%84%E4%B9%8C&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E6%AC%A7%E7%9B%9F+%E5%A4%96%E4%BA%A4&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E5%85%A8%E7%90%83+%E5%B8%82%E5%9C%BA&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E7%89%B9%E6%9C%97%E6%99%AE+%E5%85%B3%E7%A8%8E&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E4%BB%A5%E8%89%B2%E5%88%97+%E4%BC%8A%E6%9C%97&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E7%99%BD%E5%AE%AB+%E5%A4%96%E4%BA%A4&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E6%B2%B9%E4%BB%B7+%E9%BB%84%E9%87%91&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-            ]
-          },
           "36kr": {
             "type": "rss",
             "urls": [
@@ -357,12 +590,13 @@
             ]
           }
         }
-      }
+      },
+      "enabled": true
     },
-    "energy_notes": {
-      "enabled": false,
-      "label": "手蓝体育笔记",
-      "browser_profile_dir": ".runtime/accounts/energy_notes/toutiao_profile",
+    "sports_notes": {
+      "enabled": true,
+      "label": "体育笔记",
+      "browser_profile_dir": ".runtime/accounts/sports_notes/toutiao_profile",
       "industry": {
         "brand_name": "手蓝体育笔记",
         "focus": "体育赛事、足球、篮球、国足、国际大赛、赛后复盘",
@@ -373,11 +607,8 @@
       },
       "topic_collection": {
         "max_topic_age_hours": 48,
-        "enabled_sources": [
-          "google_news",
-          "bbc_football",
-          "bbc_tennis"
-        ],
+        "enabled_sources": [],
+        "_todo_enabled_sources": "TODO: zhidx不符合体育定位，需添加体育新闻源(懂球帝/虎扑/腾讯体育RSS)",
         "focus_industries": [
           "sports"
         ],
@@ -407,51 +638,10 @@
             "季后赛",
             "点球",
             "红牌",
-            "转会",
-            "transfer",
-            "Premier League",
-            "World Cup",
-            "Wimbledon",
-            "French Open",
-            "Grand Slam",
-            "football",
-            "tennis",
-            "manager",
-            "champion",
-            "squad"
+            "转会"
           ]
         },
-        "sources": {
-          "google_news": {
-            "type": "google_rss",
-            "urls": [
-              "https://news.google.com/rss/search?q=%E8%B6%B3%E7%90%83+%E8%BD%AC%E4%BC%9A&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E8%B6%B3%E7%90%83+%E5%86%B3%E8%B5%9B&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=NBA+%E5%AD%A3%E5%90%8E%E8%B5%9B&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E5%9B%BD%E8%B6%B3+%E6%AF%94%E8%B5%9B&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E6%AC%A7%E5%86%A0+%E6%B7%98%E6%B1%B0%E8%B5%9B&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E4%B9%92%E4%B9%93+%E5%86%B3%E8%B5%9B&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E8%8B%B1%E8%B6%85+%E4%BA%89%E5%86%A0&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E8%A5%BF%E7%94%B2+%E6%AF%94%E8%B5%9B&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=CBA+%E5%AD%A3%E5%90%8E%E8%B5%9B&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E4%BA%9A%E5%86%A0+%E6%AF%94%E8%B5%9B&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E7%82%B9%E7%90%83+%E7%BB%9D%E6%9D%80&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-              "https://news.google.com/rss/search?q=%E7%BA%A2%E7%89%8C+%E4%BA%89%E8%AE%AE&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-            ]
-          },
-          "bbc_football": {
-            "type": "rss",
-            "urls": [
-              "http://newsrss.bbc.co.uk/rss/sportonline_uk_edition/football/rss.xml"
-            ]
-          },
-          "bbc_tennis": {
-            "type": "rss",
-            "urls": [
-              "http://newsrss.bbc.co.uk/rss/sportonline_uk_edition/tennis/rss.xml"
-            ]
-          }
-        }
+        "sources": {}
       }
     },
     "hardware_notes": {
@@ -471,7 +661,9 @@
           "ai_hardware",
           "humanoid_robot",
           "industrial_automation"
-        ]
+        ],
+        "enabled_sources": [],
+        "_todo_enabled_sources": "TODO: add enabled_sources"
       }
     },
     "automation_notes": {
@@ -491,8 +683,16 @@
           "industrial_automation",
           "humanoid_robot",
           "ai_hardware"
-        ]
+        ],
+        "enabled_sources": [],
+        "_todo_enabled_sources": "TODO: add enabled_sources"
       }
     }
+  },
+  "enhanced_insights": {
+    "enabled": false,
+    "multi_source": false,
+    "historical": false,
+    "data_mining": false
   }
 }

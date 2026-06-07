@@ -5,7 +5,9 @@ import logging
 
 from toutiao_content_factory.agents import (
     DataAgent,
+    DataMiningAgent,
     EvolutionAgent,
+    InsightAgent,
     PolishAgent,
     PublishReviewAgent,
     ReviewAgent,
@@ -15,7 +17,7 @@ from toutiao_content_factory.agents import (
 )
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import LowQualityAbortException
-from toutiao_content_factory.models import CacheContext, ExtractionResult, WorkflowResult
+from toutiao_content_factory.models import CacheContext, ExtractionResult, InsightReport, WorkflowResult
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.services.prompt_repository import PromptRepository
@@ -42,6 +44,8 @@ class AgentWorkflowService:
         self.title_agent = TitleAgent(settings, prompt_repository, openai_service, logger)
         self.review_agent = ReviewAgent(settings, prompt_repository, openai_service, logger)
         self.publish_review_agent = PublishReviewAgent(settings, prompt_repository, openai_service, logger)
+        self.insight_agent = InsightAgent(settings, prompt_repository, openai_service, logger)
+        self.data_mining_agent = DataMiningAgent(settings, prompt_repository, openai_service, logger)
         self.content_guard_service = ContentGuardService(settings, logger)
         self.openai_service = openai_service
 
@@ -69,7 +73,24 @@ class AgentWorkflowService:
             data_report = self.data_agent._fallback(extraction, trend_report)
         try:
             self._abort_if_low_quality(extraction, data_report)
-            content = self.writer_agent.run(trend_report, data_report, style, cache_context)
+            insight_report: InsightReport | None = None
+            if settings.enhanced_insights_enabled:
+                try:
+                    self.logger.info("Running InsightAgent for enhanced opinions...")
+                    insight_report = self.insight_agent.run(
+                        extraction, trend_report, data_report, style, cache_context
+                    )
+                    self.logger.info(f"Insight generated: {insight_report.main_insight[:80]}...")
+                except Exception as exc:
+                    self.logger.warning(f"InsightAgent failed, falling back: %s", exc)
+                    insight_report = None
+
+            if insight_report:
+                content = self.writer_agent.run_with_insights(
+                    trend_report, data_report, insight_report, style, cache_context
+                )
+            else:
+                content = self.writer_agent.run(trend_report, data_report, style, cache_context)
 
             polish_pack = self.polish_agent.run(content, trend_report, data_report, style, cache_context)
             self._apply_polish_pack(content, polish_pack, data_report)

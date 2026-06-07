@@ -483,3 +483,91 @@ class ImageArtifacts:
     cover_svg: Path | None = None
     infographic_svgs: list[Path] = field(default_factory=list)
     html_files: list[Path] = field(default_factory=list)
+
+
+@dataclass
+class InsightReport:
+    """深度洞察报告"""
+    main_insight: str = ""
+    supporting_data: list[str] = field(default_factory=list)
+    alternative_angles: list[str] = field(default_factory=list)
+    counterarguments: list[str] = field(default_factory=list)
+    prediction: str = ""
+    confidence_score: float = 0.0
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "InsightReport":
+        return cls(
+            main_insight=str(payload.get("main_insight", "")),
+            supporting_data=list(payload.get("supporting_data", [])),
+            alternative_angles=list(payload.get("alternative_angles", [])),
+            counterarguments=list(payload.get("counterarguments", [])),
+            prediction=str(payload.get("prediction", "")),
+            confidence_score=float(payload.get("confidence_score", 0.0)),
+        )
+
+
+@dataclass
+class DataInsightReport:
+    """数据洞察报告"""
+    extracted_metrics: list[dict] = field(default_factory=list)
+    trends: list[str] = field(default_factory=list)
+    anomalies: list[str] = field(default_factory=list)
+    correlations: list[str] = field(default_factory=list)
+    data_conclusions: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "DataInsightReport":
+        return cls(
+            extracted_metrics=list(payload.get("extracted_metrics", [])),
+            trends=list(payload.get("trends", [])),
+            anomalies=list(payload.get("anomalies", [])),
+            correlations=list(payload.get("correlations", [])),
+            data_conclusions=list(payload.get("data_conclusions", [])),
+        )
+
+
+@dataclass
+class MultiSourceReport:
+    """多源信息聚合报告（为未来准备）"""
+    primary_sources: list[SourceDocument] = field(default_factory=list)
+    secondary_sources: list[SourceDocument] = field(default_factory=list)
+    consensus_points: list[str] = field(default_factory=list)
+    controversy_points: list[str] = field(default_factory=list)
+    overlooked_signals: list[str] = field(default_factory=list)
+    source_credibility: dict[str, float] = field(default_factory=dict)
+    synthesis_summary: str = ""
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "MultiSourceReport":
+        return cls(
+            primary_sources=[SourceDocument(**d) for d in payload.get("primary_sources", [])],
+            secondary_sources=[SourceDocument(**d) for d in payload.get("secondary_sources", [])],
+            consensus_points=list(payload.get("consensus_points", [])),
+            controversy_points=list(payload.get("controversy_points", [])),
+            overlooked_signals=list(payload.get("overlooked_signals", [])),
+            source_credibility=dict(payload.get("source_credibility", {})),
+            synthesis_summary=str(payload.get("synthesis_summary", "")),
+        )
+
+
+@dataclass
+class HistoricalComparison:
+    """历史对比报告（为未来准备）"""
+    historical_events: list[dict] = field(default_factory=list)
+    similarities: list[str] = field(default_factory=list)
+    differences: list[str] = field(default_factory=list)
+    historical_outcomes: list[str] = field(default_factory=list)
+    historical_insights: list[str] = field(default_factory=list)
+    future_prediction: str = ""
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "HistoricalComparison":
+        return cls(
+            historical_events=list(payload.get("historical_events", [])),
+            similarities=list(payload.get("similarities", [])),
+            differences=list(payload.get("differences", [])),
+            historical_outcomes=list(payload.get("historical_outcomes", [])),
+            historical_insights=list(payload.get("historical_insights", [])),
+            future_prediction=str(payload.get("future_prediction", "")),
+        )

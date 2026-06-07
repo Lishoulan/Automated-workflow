@@ -9,7 +9,7 @@ import yaml
 
 from toutiao_content_factory.agents.base import BaseAgent
 from toutiao_content_factory.config import AppSettings, StyleProfile
-from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, TrendReport
+from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, InsightReport, TrendReport
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.openai_service import OpenAIContentService
@@ -120,6 +120,80 @@ class WriterAgent(BaseAgent):
             self_benchmark_context=self_benchmark_context,
         )
 
+    def run_with_insights(
+        self,
+        trend_report: TrendReport,
+        data_report: DataReport,
+        insight_report: InsightReport,
+        style: StyleProfile,
+        cache_context: CacheContext,
+    ) -> GeneratedContent:
+        benchmark_track = self.clean_publish_text(data_report.focus_industry).strip() or self.infer_benchmark_track(
+            data_report.topic_title,
+            data_report.focus_keywords,
+            data_report.supply_chain_keywords,
+            trend_report.recommended_angle,
+        )
+        self_benchmark_context = self.growth_ops_service.get_self_benchmark_track_context(benchmark_track)
+        benchmark_digest = self.growth_ops_service.build_benchmark_digest(benchmark_track, purpose="writer")
+        tone_directive = self._tone_directive(style)
+        viral_template_instruction = self._viral_template_instruction(style, self_benchmark_context)
+        kol_voice_instruction = self._kol_voice_instruction()
+        prompt = self.render_prompt(
+            "writer_with_insights_prompt.md",
+            platform=self.settings.platform,
+            brand_name=self.settings.brand_name,
+            industry_focus=self.settings.industry_focus,
+            audience=self.settings.audience,
+            style_digest=self.style_digest(style),
+            brand_digest=self.brand_digest(extra_sections=[benchmark_digest]),
+            tone_directive=tone_directive,
+            viral_template_instruction=viral_template_instruction,
+            kol_voice_instruction=kol_voice_instruction,
+            cache_note=self.cache_note(cache_context),
+            trend_json=self.json_text(trend_report.__dict__),
+            data_json=self.json_text(data_report.__dict__),
+            insight_json=self.json_text(insight_report.__dict__),
+            article_word_target=str(data_report.word_target or self.settings.article_word_target),
+            min_word_target=str(max(1500, int(data_report.word_target or self.settings.article_word_target) // 2)),
+            content_format_label=data_report.content_format_label or "深度分析",
+            format_brief=data_report.format_brief or "写成完整产业分析稿。",
+            paragraph_instruction=data_report.paragraph_instruction or "5到7段，每段2到3句。",
+        )
+        system_prompt = f"{self._writer_system_prompt(style)}{self.best_practices_instruction()}"
+        payload = self.request_json(system_prompt, prompt)
+        if payload:
+            opening_lines = self._finalize_opening_lines(
+                payload.get("opening_lines"),
+                trend_report,
+                data_report,
+                style,
+                benchmark_track=benchmark_track,
+                self_benchmark_context=self_benchmark_context,
+            )
+            comment_prompt = self._finalize_comment_prompt(payload.get("comment_prompt"), data_report)
+            article = self._finalize_article(
+                str(payload.get("article", "")).strip(),
+                trend_report,
+                data_report,
+                comment_prompt=comment_prompt,
+                benchmark_track=benchmark_track,
+                self_benchmark_context=self_benchmark_context,
+            )
+            summary = self._finalize_summary(payload.get("summary"), article, trend_report, data_report)
+            tags = self._sanitize_tags(payload.get("tags"), data_report)
+            recommended_topics = self._finalize_topics(payload.get("recommended_topics"), data_report, trend_report)
+            return GeneratedContent(
+                article=article,
+                opening_lines=opening_lines,
+                summary=summary,
+                tags=tags,
+                recommended_topics=recommended_topics,
+                comment_prompt=comment_prompt,
+            )
+        # Fallback to regular run if insights prompt fails
+        return self.run(trend_report, data_report, style, cache_context)
+
     def _fallback(
         self,
         trend_report: TrendReport,
@@ -182,40 +256,6 @@ class WriterAgent(BaseAgent):
         content_format = data_report.content_format or "deep_analysis"
         scene_anchor = self._scene_anchor(data_report, trend_report)
         content_mode = self._content_mode(data_report)
-
-        if content_mode == "sports":
-            paragraphs = self._build_sports_article(
-                opening_lines,
-                trend_report,
-                data_report,
-                comment_prompt,
-            )
-            raw_article = "\n\n".join(part for part in paragraphs if part.strip())
-            return self._finalize_article(
-                raw_article,
-                trend_report,
-                data_report,
-                comment_prompt=comment_prompt,
-                benchmark_track=benchmark_track,
-                self_benchmark_context=self_benchmark_context,
-            )
-
-        if content_mode == "international":
-            paragraphs = self._build_international_article(
-                opening_lines,
-                trend_report,
-                data_report,
-                comment_prompt,
-            )
-            raw_article = "\n\n".join(part for part in paragraphs if part.strip())
-            return self._finalize_article(
-                raw_article,
-                trend_report,
-                data_report,
-                comment_prompt=comment_prompt,
-                benchmark_track=benchmark_track,
-                self_benchmark_context=self_benchmark_context,
-            )
 
         if content_format == "quick_commentary":
             paragraphs = [
@@ -291,23 +331,6 @@ class WriterAgent(BaseAgent):
             angle,
         )
         content_mode = self._content_mode(data_report)
-
-        if content_mode == "sports":
-            localized_primary = self._localize_sports_text(primary)
-            lines = [
-                f"{scene_anchor or '这条名单消息'}不只是赛前信息，它很可能直接改变外界对下一阶段比赛的判断。",
-                f"{localized_primary}现在真正值得看的，不是谁上了热搜，而是谁掌握了后续走势里的主动权。",
-                self._short_angle_line(angle or "真正的看点不在表面名单，而在阵容选择背后的取舍"),
-            ]
-            return self._normalize_opening_lines(lines)
-
-        if content_mode == "international":
-            lines = [
-                f"{scene_anchor or '这条国际消息'}不能只当单点新闻看，它背后往往连着更大的博弈变化。",
-                f"{primary}现在最值得看的，不是谁先表态，而是谁在真实让步、谁在继续施压。",
-                self._short_angle_line(angle or "真正的变化不在表态本身，而在下一步动作"),
-            ]
-            return self._normalize_opening_lines(lines)
 
         if content_format == "quick_commentary":
             lines = [
@@ -487,59 +510,6 @@ class WriterAgent(BaseAgent):
             question += "？"
         return f"风险边界也要讲清楚。{risk_text}。{question}"
 
-    def _build_sports_article(
-        self,
-        opening_lines: list[str],
-        trend_report: TrendReport,
-        data_report: DataReport,
-        comment_prompt: str,
-    ) -> list[str]:
-        title = self._localize_sports_text(self.clean_publish_text(data_report.topic_title).strip()) or "这条体育消息"
-        summary_bits = self._sports_summary_bits(data_report)
-        follow_text = self._sports_follow_text(data_report)
-        angle = self._localize_sports_text(self._article_angle(trend_report, data_report))
-        issue_text = self._sports_issue_text(data_report, trend_report)
-        trend_text = "；".join(self._localize_sports_text(item) for item in self._pick_items(data_report.industry_trends, 2))
-        evidence = self._localize_sports_text(self._best_evidence_note(data_report))
-        risk_text = "；".join(self._localize_sports_text(item) for item in self._pick_items(data_report.risk_flags, 2)) or "目前公开信息仍有限，真正的影响还要看后续名单、赛程和临场表现"
-        if evidence.startswith("Current public material centers on"):
-            evidence = ""
-
-        paragraphs = [
-            " ".join(opening_lines[:3]),
-            f"{title}之所以会有讨论度，不是因为信息量有多大，而是它碰到的正是球迷最敏感的判断点：{issue_text}。",
-            f"从现有素材看，最值得抓住的线索是{summary_bits}。{evidence or '这至少说明，外界对后续阵容与比赛走势的预期，已经开始被重新改写。'}",
-            f"如果把这件事放到后续比赛里看，真正要盯的不是情绪本身，而是{follow_text}。这会直接决定这条消息最终是普通噪音，还是会变成影响赛果的前置信号。",
-            f"{angle}。{('另外，' + trend_text + '。') if trend_text else ''}{risk_text}。",
-            comment_prompt.strip() or self._default_comment_prompt(data_report),
-        ]
-        return [item for item in paragraphs if item.strip()]
-
-    def _build_international_article(
-        self,
-        opening_lines: list[str],
-        trend_report: TrendReport,
-        data_report: DataReport,
-        comment_prompt: str,
-    ) -> list[str]:
-        title = self.clean_publish_text(data_report.topic_title).strip() or "这条国际消息"
-        summary_bits = self._international_summary_bits(data_report)
-        follow_text = self._international_follow_text(data_report)
-        angle = self._article_angle(trend_report, data_report)
-        issue_text = self._international_issue_text(data_report, trend_report)
-        trend_text = "；".join(self._pick_items(data_report.industry_trends, 2))
-        evidence = self._best_evidence_note(data_report)
-        risk_text = "；".join(self._pick_items(data_report.risk_flags, 2)) or "目前公开信息仍有限，接下来还要看政策动作、谈判进展和市场反馈"
-
-        paragraphs = [
-            " ".join(opening_lines[:3]),
-            f"{title}真正值得看的，不是表面表态，而是{issue_text}。这通常意味着各方的底线、筹码和时间窗口正在重新变化。",
-            f"从现有素材看，最应该先看懂的是{summary_bits}。{evidence or '这至少说明，事件已经不再只是口头层面，而是在逼近更具体的动作选择。'}",
-            f"接下来真正值得跟踪的，是{follow_text}。这些变量会决定局势是继续升级、短暂缓和，还是转向新的谈判与博弈阶段。",
-            f"{angle}。{('另外，' + trend_text + '。') if trend_text else ''}{risk_text}。",
-            comment_prompt.strip() or self._default_comment_prompt(data_report),
-        ]
-        return [item for item in paragraphs if item.strip()]
 
     def _finalize_article(
         self,
@@ -550,89 +520,29 @@ class WriterAgent(BaseAgent):
         benchmark_track: str = "",
         self_benchmark_context: dict[str, object] | None = None,
     ) -> str:
-        content_mode = self._content_mode(data_report)
         cleaned = self.strip_prompt_leakage(article)
-        if content_mode in {"sports", "international"}:
-            cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n").strip()
-            if self._should_rebuild_mode_article(cleaned):
-                rebuilt = (
-                    self._build_sports_article(
-                        self._build_opening_lines(
-                            trend_report,
-                            data_report,
-                            self.settings.get_style(None),
-                            benchmark_track=benchmark_track,
-                            self_benchmark_context=self_benchmark_context,
-                        ),
-                        trend_report,
-                        data_report,
-                        comment_prompt,
-                    )
-                    if content_mode == "sports"
-                    else self._build_international_article(
-                        self._build_opening_lines(
-                            trend_report,
-                            data_report,
-                            self.settings.get_style(None),
-                            benchmark_track=benchmark_track,
-                            self_benchmark_context=self_benchmark_context,
-                        ),
-                        trend_report,
-                        data_report,
-                        comment_prompt,
-                    )
-                )
-                cleaned = "\n\n".join(rebuilt)
-        else:
-            cleaned = clean_article_text(cleaned)
+        cleaned = clean_article_text(cleaned)
         paragraphs = [self._normalize_paragraph(block) for block in cleaned.split("\n\n") if block.strip()]
         paragraphs = [block for block in paragraphs if block]
 
         if not paragraphs:
-            if content_mode == "sports":
-                paragraphs = self._build_sports_article(
-                    self._build_opening_lines(
-                        trend_report,
-                        data_report,
-                        self.settings.get_style(None),
-                        benchmark_track=benchmark_track,
-                        self_benchmark_context=self_benchmark_context,
-                    ),
-                    trend_report,
-                    data_report,
-                    comment_prompt,
-                )
-            elif content_mode == "international":
-                paragraphs = self._build_international_article(
-                    self._build_opening_lines(
-                        trend_report,
-                        data_report,
-                        self.settings.get_style(None),
-                        benchmark_track=benchmark_track,
-                        self_benchmark_context=self_benchmark_context,
-                    ),
-                    trend_report,
-                    data_report,
-                    comment_prompt,
-                )
-            else:
-                paragraphs = [
-                    self._normalize_paragraph(
-                        " ".join(
-                            self._build_opening_lines(
-                                trend_report,
-                                data_report,
-                                self.settings.get_style(None),
-                                benchmark_track=benchmark_track,
-                                self_benchmark_context=self_benchmark_context,
-                            )
+            paragraphs = [
+                self._normalize_paragraph(
+                    " ".join(
+                        self._build_opening_lines(
+                            trend_report,
+                            data_report,
+                            self.settings.get_style(None),
+                            benchmark_track=benchmark_track,
+                            self_benchmark_context=self_benchmark_context,
                         )
-                    ),
-                    self._build_company_or_order_anchor(data_report),
-                    self._build_metrics_paragraph(self._pick_items(data_report.watch_metrics, 4)),
-                ]
+                    )
+                ),
+                self._build_company_or_order_anchor(data_report),
+                self._build_metrics_paragraph(self._pick_items(data_report.watch_metrics, 4)),
+            ]
 
-        if content_mode == "generic" and not self._has_concrete_anchor("\n\n".join(paragraphs), data_report):
+        if not self._has_concrete_anchor("\n\n".join(paragraphs), data_report):
             anchor = self._build_company_or_order_anchor(data_report)
             if anchor:
                 insert_at = 3 if len(paragraphs) >= 3 else len(paragraphs)
@@ -641,36 +551,19 @@ class WriterAgent(BaseAgent):
         content_format = data_report.content_format or "deep_analysis"
         min_paras, max_paras = self._paragraph_bounds(content_format)
         paragraphs = self._rebalance_paragraphs(paragraphs, min_paragraphs=min_paras, max_paragraphs=max_paras, max_block_length=165)
-        if content_mode == "generic":
-            paragraphs = self._apply_self_benchmark_structure(
-                paragraphs,
-                trend_report,
-                data_report,
-                self_benchmark_context=self_benchmark_context,
-            )
-            paragraphs = self._ensure_structured_headings(paragraphs, trend_report, data_report)
+        paragraphs = self._apply_self_benchmark_structure(
+            paragraphs,
+            trend_report,
+            data_report,
+            self_benchmark_context=self_benchmark_context,
+        )
+        paragraphs = self._ensure_structured_headings(paragraphs, trend_report, data_report)
         paragraphs = self._ensure_closing_question(paragraphs, comment_prompt or self._default_comment_prompt(data_report))
         _min_paragraphs, max_paragraphs = self._paragraph_bounds(data_report.content_format or "deep_analysis")
         paragraphs = paragraphs[:max_paragraphs]
         paragraphs = self._ensure_min_char_count(paragraphs, data_report)
         article_text = "\n\n".join(paragraphs).strip()
-        if content_mode == "sports":
-            article_text = self._localize_sports_text(article_text)
-            article_text = re.sub(r"\bThe joy and despair of\b", "", article_text, flags=re.I)
-            article_text = re.sub(r"\bIn, or out\?\b", "谁进谁出", article_text, flags=re.I)
         return article_text
-
-    def _should_rebuild_mode_article(self, article: str) -> bool:
-        text = self.clean_publish_text(article).strip()
-        if not text:
-            return True
-        if "manual_paste" in text.lower():
-            return True
-        if any(token in text for token in self.MODE_NOISE_TOKENS):
-            return True
-        if re.search(r"(^|\n)\s*[A-Za-z][A-Za-z0-9 ,:'?!.\-]{18,}", text):
-            return True
-        return False
 
     def _writer_system_prompt(self, style: StyleProfile) -> str:
         return (
@@ -1016,98 +909,7 @@ class WriterAgent(BaseAgent):
 
 
 
-    def _sports_summary_bits(self, data_report: DataReport) -> str:
-        items = self._mode_clean_items(
-            data_report.core_data + data_report.key_points + data_report.evidence_notes,
-            limit=3,
-            blocked=self.MODE_NOISE_TOKENS,
-        )
-        if items:
-            return "、".join(self._localize_sports_text(item) for item in items[:3])
-        title = self._localize_sports_text(self.clean_publish_text(data_report.topic_title).strip())
-        return title or "这条消息触发的阵容与走势变化"
 
-    def _sports_follow_text(self, data_report: DataReport) -> str:
-        items = self._mode_clean_items(data_report.watch_metrics, limit=4, blocked=self.MODE_NOISE_TOKENS)
-        if items:
-            return "、".join(self._localize_sports_text(item) for item in items)
-        if data_report.follow_up_focus.strip():
-            cleaned = self._localize_sports_text(self.clean_publish_text(data_report.follow_up_focus).strip("。"))
-            if cleaned:
-                return cleaned
-        return "阵容变化、关键人物状态、赛程难度和舆论争议是否继续发酵"
-
-    def _sports_issue_text(self, data_report: DataReport, trend_report: TrendReport) -> str:
-        text = " ".join(
-            [
-                self.clean_publish_text(data_report.topic_title),
-                *self._pick_items(data_report.key_points, 3),
-                *self._pick_items(trend_report.audience_hooks, 2),
-            ]
-        )
-        if any(token in text.lower() for token in ("squad", "名单", "入选", "落选")):
-            return "谁该进名单、谁该被放弃，以及教练到底在押注什么"
-        if any(token in text.lower() for token in ("seed", "签表", "draw")):
-            return "签表与对位变化会不会提前改写后续走势"
-        if any(token in text.lower() for token in ("interview", "奖金", "pay", "row")):
-            return "场外争议会不会反过来影响球员状态与赛事叙事"
-        return "这件事背后的真正胜负手和后续变化"
-
-    def _international_summary_bits(self, data_report: DataReport) -> str:
-        items = self._mode_clean_items(
-            data_report.core_data + data_report.key_points + data_report.evidence_notes,
-            limit=3,
-            blocked=self.MODE_NOISE_TOKENS,
-        )
-        if items:
-            return "、".join(items[:3])
-        title = self.clean_publish_text(data_report.topic_title).strip()
-        return title or "这场国际博弈里已经浮出的关键信号"
-
-    def _international_follow_text(self, data_report: DataReport) -> str:
-        items = self._mode_clean_items(data_report.watch_metrics, limit=4, blocked=self.MODE_NOISE_TOKENS)
-        if items:
-            return "、".join(items)
-        if data_report.follow_up_focus.strip():
-            cleaned = self.clean_publish_text(data_report.follow_up_focus).strip("。")
-            if cleaned:
-                return cleaned
-        return "政策表态、谈判进展、相关国家是否跟进动作以及市场反馈"
-
-    def _international_issue_text(self, data_report: DataReport, trend_report: TrendReport) -> str:
-        text = " ".join(
-            [
-                self.clean_publish_text(data_report.topic_title),
-                *self._pick_items(data_report.key_points, 3),
-                *self._pick_items(trend_report.audience_hooks, 2),
-            ]
-        )
-        if any(token in text for token in ("仲裁", "制裁", "关税", "封锁", "禁令")):
-            return "谁在动用制度与规则工具重新施压，谁又在试图守住自身利益"
-        if any(token in text for token in ("停火", "谈判", "峰会", "会晤")):
-            return "谈判窗口究竟是真的打开了，还是只是在给各方争取时间"
-        return "谁在施压、谁在让步，以及这场博弈接下来会往哪边走"
-
-    def _localize_sports_text(self, text: str) -> str:
-        normalized = self.clean_publish_text(text).strip()
-        replacements = {
-            "World Cup": "世界杯",
-            "world cup": "世界杯",
-            "football": "足球",
-            "Football": "足球",
-            "squad selection": "名单选择",
-            "squad": "名单",
-            "In, or out?": "谁进谁出",
-            "The joy and despair of": "",
-        }
-        for source, target in replacements.items():
-            normalized = normalized.replace(source, target)
-        normalized = re.sub(r"\bIn, or out\?\b", "谁进谁出", normalized, flags=re.I)
-        normalized = re.sub(r"\bThe joy and despair of\b", "", normalized, flags=re.I)
-        normalized = re.sub(r"\bCurrent public material centers on\b", "", normalized, flags=re.I)
-        normalized = normalized.replace("paste", "")
-        normalized = re.sub(r"\s+", " ", normalized).strip(" ，。")
-        return normalized
 
     def _scene_anchor(self, data_report: DataReport, trend_report: TrendReport) -> str:
         texts = [

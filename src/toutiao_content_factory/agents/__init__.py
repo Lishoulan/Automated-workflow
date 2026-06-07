@@ -1,6 +1,8 @@
 from .benchmark_monitor_agent import BenchmarkMonitorAgent
 from .data_agent import DataAgent
+from .data_mining_agent import DataMiningAgent
 from .evolution_agent import EvolutionAgent
+from .insight_agent import InsightAgent
 from .polish_agent import PolishAgent
 from .publish_review_agent import PublishReviewAgent
 from .sample_collector_agent import SampleCollectorAgent
@@ -14,7 +16,9 @@ __all__ = [
     "TrendAgent",
     "BenchmarkMonitorAgent",
     "DataAgent",
+    "DataMiningAgent",
     "EvolutionAgent",
+    "InsightAgent",
     "WriterAgent",
     "TitleAgent",
     "PolishAgent",

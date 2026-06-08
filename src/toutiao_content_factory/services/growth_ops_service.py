@@ -112,7 +112,7 @@ articles:
       - "联赛"
     notes:
       - "先收集真实爆款再启用，不要把空模板纳入策略学习"
-      - "重点观察赛前判断、赛后复盘、关键人物和争议节点"
+      - "重点观察趋势判断、事后复盘、关键人物和争议节点"
     inferred_patterns:
       - "结果先行开头"
       - "具体数字配具体主体"
@@ -450,13 +450,32 @@ articles:
     def infer_title_playbook_track(self, text: str) -> str:
         normalized = str(text or "")
         robot_tokens = ("机器人", "人形", "具身", "减速器", "灵巧手", "伺服", "关节电机")
+        chip_tokens = ("芯片", "半导体", "封测", "晶圆", "EDA", "光刻", "代工", "算力", "光刻机")
         energy_tokens = ("储能", "光伏", "锂电", "电池", "逆变器", "PCS", "风电", "并网", "充电")
+        ai_tokens = ("大模型", "LLM", "AI应用", "AI", "人工智能")
+        industry_automation_tokens = ("智能制造", "工业自动化", "PLC", "MES", "数控", "工业互联网", "工控")
         international_tokens = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金")
         sports_tokens = ("体育", "足球", "篮球", "国足", "男篮", "女篮", "欧冠", "英超", "西甲", "中超", "NBA", "世界杯", "奥运", "乒乓", "羽毛球")
+        
+        # 优先判断科技相关行业（优先级更高）
         if any(token in normalized for token in robot_tokens):
             return "AI机器人"
+        if any(token in normalized for token in chip_tokens):
+            return "半导体芯片"
         if any(token in normalized for token in energy_tokens):
             return "新能源储能"
+        if any(token in normalized for token in ai_tokens):
+            return "AI应用"
+        if any(token in normalized for token in industry_automation_tokens):
+            return "工业自动化"
+        
+        # 检查是否有任何科技相关词汇（优先级更高）
+        tech_tokens = ["机器人", "芯片", "半导体", "储能", "光伏", "锂电", "电池", "AI", "大模型", "智能制造", "工业自动化", "人形", "具身", "减速器", "灵巧手", "伺服", "算力", "光刻机", "风电", "逆变器"]
+        tech_tokens_count = sum(1 for token in tech_tokens if token in normalized)
+        if tech_tokens_count > 0:
+            return "科技商业"
+        
+        # 只有当没有科技相关词汇时，才判断为国际热点或体育赛事
         if any(token in normalized for token in international_tokens):
             return "国际热点"
         if any(token in normalized for token in sports_tokens):
@@ -471,8 +490,12 @@ articles:
         selected = next((item for item in tracks if str(item.get("track", "")).strip() == requested_track), None)
         if selected is None and normalized_track:
             selected = next((item for item in tracks if str(item.get("track", "")).strip() == normalized_track), None)
-        if selected is None and tracks:
-            selected = tracks[0]
+        if selected is None:
+            # 如果找不到，优先找科技商业
+            selected = next((item for item in tracks if "科技" in str(item.get("track", ""))), None)
+            if selected is None and tracks:
+                # 最后才回退到第一个
+                selected = tracks[0]
         selected = selected or {}
         resolved_track = (
             str(selected.get("track", normalized_track or requested_track)).strip()
@@ -718,7 +741,7 @@ articles:
             cleaned_reasons = ["题材可改写，但需要更强主体和结论"]
 
         return {
-            "track": str(track_context.get("track", normalized_track)).strip() or normalized_track,
+            "track": normalized_track,
             "score": score,
             "reasons": cleaned_reasons,
             "title_style": title_style,
@@ -1441,11 +1464,11 @@ articles:
             ]
         if "体育" in track:
             return [
-                f"{primary}这场比赛，真正改变走势的是哪个回合",
-                f"{primary}赛后最值得讨论的争议点到底是什么",
-                f"如果复盘{primary}，最该盯住的是哪名球员或哪次换人",
-                f"{primary}结果出来后，排名和后续赛程会怎么变",
-                f"{primary}输了或赢了之后，下一场最大的压力给到了谁",
+                f"{primary}这件事，真正改变走势的是哪个关键节点",
+                f"{primary}事后最值得讨论的争议点到底是什么",
+                f"如果复盘{primary}，最该盯住的是哪个关键企业或哪次技术转向",
+                f"{primary}结果出来后，市场格局和后续走势会怎么变",
+                f"{primary}落地之后，下一个最大的压力给到了谁",
             ]
         return [
             "一个热点走热以后，真正有议价权的是哪一层",
@@ -1532,39 +1555,39 @@ articles:
             }
         if "体育" in track:
             return {
-                "voice_summary": "像头条高阅读体育号那样，抓比赛、争议和关键人物，但一定落到结果、转折、数据和后续走势。",
-                "reader_value": "读者更关心谁赢了、为什么赢、谁失误了、这个结果后面会改变什么。",
+                "voice_summary": "像头条高阅读深度号那样，抓事件、争议和关键变量，但一定落到结果、转折、数据和后续走势。",
+                "reader_value": "读者更关心发生了什么、为什么、谁受影响、后续会怎样。",
                 "opening_rules": [
-                    "首句先给比赛判断或结果判断，不从背景资料讲起。",
-                    "第二句给比分、关键数据或关键人物表现。",
+                    "首句先给判断或结论，不从背景资料讲起。",
+                    "第二句给关键数据或关键企业表现。",
                     "第三句点出最值得讨论的转折、争议或后续影响。",
                 ],
                 "structure_rules": [
-                    "先写结果和转折，再写关键人物和数据支撑。",
-                    "中段必须出现比分、数据、判罚、战术或状态中的至少两个。",
-                    "后段补赛程影响、排名变化或舆论争议。",
-                    "结尾回到下一场、下一轮或后续变量。",
+                    "先写结果和转折，再写关键变量和数据支撑。",
+                    "中段必须出现数据、技术路线、市场份额或企业动态中的至少两个。",
+                    "后段补产业影响、格局变化或舆论争议。",
+                    "结尾回到后续变量和跟踪方向。",
                 ],
                 "angle_rules": [
-                    "不要只写赛果，要解释比赛怎么被改写。",
-                    "优先从关键人物、关键回合、关键判罚、关键战术切入。",
-                    "把热度翻译成复盘价值，不停留在情绪宣泄。",
+                    "不要只写表面新闻，要解释事件怎么改变格局。",
+                    "优先从关键企业、关键节点、关键数据切入。",
+                    "把热度翻译成分析价值，不停留在情绪宣泄。",
                 ],
                 "evidence_rules": [
-                    "优先抽取比分、命中率、射门、控球、失误、连胜、积分、排名等硬数据。",
-                    "没有完整数据时也要落到明确球员、球队和转折节点。",
-                    "避免伪造技术统计和未出现的内幕消息。",
+                    "优先抽取市场规模、增长率、份额、融资额、订单量等硬数据。",
+                    "没有完整数据时也要落到明确企业、产品和转折节点。",
+                    "避免伪造数据和未出现的内幕消息。",
                 ],
                 "review_focus": [
-                    "有没有结果先行和转折感。",
-                    "有没有关键人物与数据支撑。",
-                    "有没有赛程、排名或舆论层面的后续影响。",
+                    "有没有判断先行和转折感。",
+                    "有没有关键变量与数据支撑。",
+                    "有没有产业格局或舆论层面的后续影响。",
                     "结尾有没有留下下一步看点。",
                 ],
                 "avoid_patterns": [
-                    "不要写成纯加油帖或情绪帖。",
-                    "不要只堆比赛过程，不提关键转折。",
-                    "不要把未经证实的场外传闻写成事实。",
+                    "不要写成纯情绪帖。",
+                    "不要只堆事件过程，不提关键转折。",
+                    "不要把未经证实的传闻写成事实。",
                 ],
             }
         if "储能" in track or "新能源" in track:

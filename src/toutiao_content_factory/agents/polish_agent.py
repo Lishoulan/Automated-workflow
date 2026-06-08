@@ -185,7 +185,7 @@ class PolishAgent(BaseAgent):
             notes.append(f"正文已落入 {evidence_hits} 个核心数字或增速信号。")
         else:
             if content_mode == "sports":
-                notes.append("正文仍缺少更具体的事实锚点，建议补进名单、赛程、人物状态或争议背景。")
+                notes.append("正文仍缺少更具体的事实锚点，建议补进技术路线、市场份额、关键企业动态或争议背景。")
             elif content_mode == "international":
                 notes.append("正文仍缺少更具体的事实锚点，建议补进政策动作、谈判节点或市场反应。")
             else:
@@ -208,7 +208,7 @@ class PolishAgent(BaseAgent):
         keyword_hits = self._count_hits(article_lower, data_report.supply_chain_keywords[:5])
         if content_mode == "sports":
             score += 8
-            notes.append("正文已经围绕比赛走势、阵容判断和后续变量展开。")
+            notes.append("正文已经围绕产业走势、技术路线和后续变量展开。")
         elif content_mode == "international":
             score += 8
             notes.append("正文已经围绕博弈关系、后续变量和外溢影响展开。")
@@ -401,7 +401,7 @@ class PolishAgent(BaseAgent):
             data_report.focus_industry or (data_report.focus_keywords[0] if data_report.focus_keywords else "这个方向")
         )
         if content_mode == "sports":
-            return "你觉得这条消息最可能改变阵容选择、比赛走势还是舆论预期？"
+            return "你觉得这条消息最可能改变产业格局、技术路线还是舆论预期？"
         if content_mode == "international":
             return "你觉得接下来最值得盯的是谁会先让步、谁会继续施压，还是市场会先给出反应？"
         return f"您更看重{primary}后续先落地订单、交付，还是毛利率改善？"
@@ -438,15 +438,15 @@ class PolishAgent(BaseAgent):
         return self._build_company_or_order_anchor(data_report)
 
     def _rebuild_cautious_sports_article(self, data_report: DataReport, trend_report: TrendReport) -> str:
-        title = self.clean_publish_text(data_report.topic_title).strip() or "这条体育消息"
+        title = self.clean_publish_text(data_report.topic_title).strip() or "这条热点消息"
         source_anchor = self._build_source_anchor(data_report) or "从公开材料看，目前能确认的信息仍然有限。"
-        metrics = "、".join(self.clean_publish_list(data_report.watch_metrics, limit=4)) or "阵容变化、赛程难度、关键人物状态和舆论争议"
-        risks = "；".join(self.clean_publish_list(data_report.risk_flags, limit=3)) or "公开素材有限时，最需要防止的是把赛前消息写成确定性结论"
+        metrics = "、".join(self.clean_publish_list(data_report.watch_metrics, limit=4)) or "技术路线变化、市场份额变化、关键企业动态和舆论争议"
+        risks = "；".join(self.clean_publish_list(data_report.risk_flags, limit=3)) or "公开素材有限时，最需要防止的是把初步消息写成确定性结论"
         angle = self.clean_publish_text(trend_report.recommended_angle).strip()
         paragraphs = [
-            f"{title}不只是赛前消息，它更像一个会改变后续判断的前置信号。{source_anchor}",
-            f"真正值得看的，不是把新闻复述一遍，而是它会不会改变阵容选择、比赛走势和舆论预期。",
-            f"接下来更值得跟踪的，是{metrics}。这些变量会决定这条消息最终只是短期讨论，还是会真的影响后续比赛。",
+            f"{title}不只是初步消息，它更像一个会改变后续判断的前置信号。{source_anchor}",
+            f"真正值得看的，不是把新闻复述一遍，而是它会不会改变产业格局、技术路线和市场预期。",
+            f"接下来更值得跟踪的，是{metrics}。这些变量会决定这条消息最终只是短期讨论，还是会真的影响后续走势。",
             f"{angle or '真正有价值的写法，是把关键人物、关键节点和后续走势说清楚。'}",
             f"风险边界也要保留：{risks}。{self._build_closing_question(data_report)}",
         ]

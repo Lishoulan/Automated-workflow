@@ -674,7 +674,7 @@ class WriterAgent(BaseAgent):
         if first_sentence:
             return f"{first_sentence}{self._summary_tail(primary, angle)}"
         if content_mode == "sports":
-            return "这条体育热点真正值得看的，不是表面消息本身，而是它会不会改变后续比赛预期、阵容选择和舆论走势。"
+            return "这条消息真正值得看的，不是表面信息本身，而是它会不会改变后续产业预期、技术路线和市场走势。"
         if content_mode == "international":
             return "这条国际热点真正值得看的，不是表态本身，而是谁在施压、谁在让步，以及下一步局势会如何变化。"
         return f"{primary}正在从题材热度转向执行验证，真正决定下一阶段强弱的，是订单、交付和毛利谁先兑现。"
@@ -712,7 +712,7 @@ class WriterAgent(BaseAgent):
 
     def _varied_sports_comment_prompt(self) -> str:
         options = [
-            "你觉得这条消息会如何影响后续的阵容选择？",
+            "你觉得这条消息会如何影响后续的产业格局？",
             "在你看来，这场比赛的走势会因此改变吗？",
             "你认为舆论会如何解读这次变化？",
             "如果是你，会如何调整接下来的策略？",

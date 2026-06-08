@@ -486,11 +486,11 @@ class TopicAutomationService:
     ) -> str:
         if topic_mode == "sports":
             return (
-                "请先准确理解并消化素材里的英文信息，再写成自然中文体育分析稿。"
+                "请先准确理解并消化素材里的英文信息，再写成自然中文深度分析稿。"
                 "不要逐句硬翻，不要保留英文新闻腔，不要写成产业链、订单、融资、公司主体分析。"
-                "重点写清：这件事为什么今天值得看、关键人物或球队是谁、真正的转折点或争议点是什么、"
-                "它会怎样影响后续赛程、阵容选择、舆论走向或比赛预期。"
-                "如果素材是名单、签表、采访、奖金争议或赛前消息，必须解释它对比赛走势意味着什么。"
+                "重点写清：这件事为什么今天值得看、关键企业或人物是谁、真正的转折点或争议点是什么、"
+                "它会怎样影响后续产业格局、技术路线、舆论走向或市场预期。"
+                "如果素材是初步消息、政策信号、行业动态或争议事件，必须解释它对产业走势意味着什么。"
                 "全文自然分成4到6段，每段2到3句，不要出现 #、##、项目符号或英文小标题；"
                 "如果事实不足，不要编造比分、伤病、采访原话或内幕。"
                 "结尾只留一个开放式讨论问题。"
@@ -643,7 +643,7 @@ class TopicAutomationService:
                 reasons.append(f"与{primary_industry}里的{primary_keywords.split('、')[0]}环节相关")
         if not reasons:
             if topic_mode == "sports":
-                reasons.append("题材处在赛前预期、赛后复盘或争议扩散的高关注区间")
+                reasons.append("题材处在趋势预期、事后复盘或争议扩散的高关注区间")
             elif topic_mode == "international":
                 reasons.append("题材处在国际博弈和市场预期变化的高关注区间")
             else:
@@ -662,7 +662,7 @@ class TopicAutomationService:
         if topic_mode == "sports":
             return (
                 f"这条体育热点真正值得写的，不是把新闻复述一遍，而是解释{primary_keyword}背后的胜负手、争议点和后续走势。"
-                "读者真正关心的是：这会不会改变阵容选择、比赛预期、舆论风向，或者直接影响下一场比赛。"
+                "读者真正关心的是：这会不会改变产业格局、市场预期、舆论风向，或者直接影响后续走势。"
             )
         if topic_mode == "international":
             return (
@@ -700,7 +700,7 @@ class TopicAutomationService:
         topic_mode = self._topic_mode(topic)
         title_text = f"{topic.title} {topic.summary} {topic.snippet}"
         if topic_mode == "sports":
-            return "阵容变化、赛程难度、关键人物状态、舆论争议是否继续发酵"
+            return "技术路线变化、市场份额变化、关键企业动态、舆论争议是否继续发酵"
         if topic_mode == "international":
             return "政策表态、谈判进展、市场反馈、相关国家是否跟进动作"
         if primary_industry == "AI硬件" or "芯片" in primary_keywords:
@@ -748,7 +748,7 @@ class TopicAutomationService:
     def _build_content_format_brief(self, topic: TopicCandidate, primary_industry: str) -> str:
         topic_mode = self._topic_mode(topic)
         if topic_mode == "sports":
-            return "适合写成体育复盘或赛前判断稿，重点解释影响胜负的关键变量、争议点和后续走势。"
+            return "适合写成深度分析稿，重点解释影响产业格局的关键变量、争议点和后续走势。"
         if topic_mode == "international":
             return "适合写成国际局势解读稿，重点解释博弈关系、变量变化和后续影响。"
         if topic.recommended_format == "quick_commentary":

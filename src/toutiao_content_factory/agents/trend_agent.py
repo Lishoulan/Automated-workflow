@@ -62,7 +62,7 @@ class TrendAgent(BaseAgent):
             hot_trends = self.unique(
                 extraction.industry_trends[:4]
                 + [
-                    f"{primary}相关内容正从单纯热点讨论转向赛前预期和赛后复盘。",
+                    f"{primary}相关内容正从单纯热点讨论转向趋势预期和事后复盘。",
                     f"{secondary}会成为影响后续判断的重要线索。",
                 ]
             )[:4]
@@ -71,14 +71,14 @@ class TrendAgent(BaseAgent):
                     f"{primary}复盘",
                     f"{primary}争议点",
                     f"{secondary}走势",
-                    "阵容变化",
-                    "比赛预期",
+                    "技术路线变化",
+                    "市场预期",
                 ]
             )[:5]
             audience_hooks = self.unique(
                 [
                     f"这条{primary}消息真正值得看的，不是表面信息，而是它会不会改写后续判断。",
-                    f"{secondary}为什么会影响阵容选择、比赛走势或舆论风向？",
+                    f"{secondary}为什么会影响产业格局、技术路线或舆论风向？",
                     "真正有阅读价值的，不是复述消息，而是把影响解释清楚。",
                 ]
             )[:3]

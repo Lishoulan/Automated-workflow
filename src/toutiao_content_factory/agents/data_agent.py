@@ -493,7 +493,7 @@ class DataAgent(BaseAgent):
 
     def _format_brief_for_format(self, content_format: str, focus_industry: str, content_mode: str = "generic") -> str:
         if content_mode == "sports":
-            return "写成体育复盘或赛前判断稿，重点解释事件对阵容选择、比赛走势和舆论预期的影响。"
+            return "写成深度分析稿，重点解释事件对产业格局、技术路线和市场预期的影响。"
         if content_mode == "international":
             return "写成国际热点解读稿，重点解释各方博弈关系、后续变量和外溢影响。"
         if content_format == "quick_commentary":
@@ -540,8 +540,11 @@ class DataAgent(BaseAgent):
 
         text = f"{primary} {secondary}".lower()
         if any(token in text for token in self.SPORTS_TOKENS):
-            return self.unique(["阵容变化", "赛程难度", "关键人物状态", "舆论争议是否继续发酵"])[:5]
-        if any(token in text for token in self.INTERNATIONAL_TOKENS):
+            return self.unique(["技术路线变化", "市场份额变化", "关键企业动态", "舆论争议是否继续发酵"])[:5]
+        # 只有当没有科技相关词汇时，才判断为国际热点
+        tech_tokens = ["机器人", "芯片", "半导体", "储能", "光伏", "锂电", "电池", "ai", "大模型", "智能制造", "工业自动化"]
+        tech_tokens_count = sum(1 for token in tech_tokens if token in text)
+        if tech_tokens_count == 0 and any(token in text for token in self.INTERNATIONAL_TOKENS):
             return self.unique(["政策表态", "谈判进展", "相关国家是否跟进动作", "市场反馈"])[:5]
 
         delivery_metric = "样机转量产速度" if any(token in primary for token in ("机器人", "装备")) else "项目交付节奏"
@@ -584,7 +587,7 @@ class DataAgent(BaseAgent):
             supply_chain_keywords = self._clean_mode_list(
                 supply_chain_keywords,
                 blocked=self.MODE_NOISE_TOKENS,
-                fallback=["阵容", "赛程", "关键人物", "比赛走势"],
+                fallback=["技术路线", "市场份额", "关键企业", "产业走势"],
                 limit=6,
             )
             core_data = self._clean_mode_list(
@@ -597,8 +600,8 @@ class DataAgent(BaseAgent):
                 industry_trends,
                 blocked=self.MODE_NOISE_TOKENS,
                 fallback=[
-                    "这类名单与赛前信息的热度，正在从新闻转向走势判断。",
-                    "读者更关心的是阵容变化会不会改变比赛预期。",
+                    "这类信息的热度，正在从新闻转向趋势判断。",
+                    "读者更关心的是技术路线变化会不会改变产业预期。",
                 ],
                 limit=4,
             )
@@ -607,14 +610,14 @@ class DataAgent(BaseAgent):
                 blocked=self.MODE_NOISE_TOKENS,
                 fallback=[
                     "真正值得写的不是复述消息，而是解释它会如何影响后续比赛。",
-                    "关键人物、名单取舍和赛程变化，才是决定讨论度的核心。",
+                    "关键企业、技术路线和市场份额变化，才是决定讨论度的核心。",
                 ],
                 limit=4,
             )
             watch_metrics = self._clean_mode_list(
                 watch_metrics,
                 blocked=self.MODE_NOISE_TOKENS,
-                fallback=["阵容变化", "赛程难度", "关键人物状态", "舆论争议是否继续发酵"],
+                fallback=["技术路线变化", "市场份额变化", "关键企业动态", "舆论争议是否继续发酵"],
                 limit=5,
             )
             evidence_notes = self._clean_mode_list(
@@ -628,7 +631,7 @@ class DataAgent(BaseAgent):
                 blocked=self.MODE_NOISE_TOKENS,
                 fallback=[
                     "如果后续名单、状态或临场信息继续变化，当前判断可能很快改写。",
-                    "公开信息不足时，最需要避免的是把赛前消息写成确定结论。",
+                    "公开信息不足时，最需要避免的是把初步消息写成确定结论。",
                 ],
                 limit=4,
             )
@@ -723,12 +726,12 @@ class DataAgent(BaseAgent):
     def _sports_keywords(self, extraction: ExtractionResult) -> list[str]:
         text = f"{extraction.topic_title} {extraction.selection_reason} {extraction.suggested_angle}".lower()
         if "world cup" in text or "世界杯" in text:
-            return ["世界杯", "名单", "阵容", "比赛走势"]
+            return ["全球市场", "名单", "技术路线", "产业走势"]
         if "football" in text:
-            return ["足球", "名单", "关键人物", "比赛走势"]
+            return ["行业动态", "名单", "关键企业", "产业走势"]
         if "tennis" in text or "法网" in text:
-            return ["网球", "签表", "关键人物", "比赛走势"]
-        return ["体育赛事", "名单", "关键人物", "比赛走势"]
+            return ["细分领域", "排名", "关键企业", "产业走势"]
+        return ["行业动态", "名单", "关键企业", "产业走势"]
 
     def _international_keywords(self, extraction: ExtractionResult) -> list[str]:
         text = f"{extraction.topic_title} {extraction.selection_reason} {extraction.suggested_angle}".lower()
@@ -742,7 +745,7 @@ class DataAgent(BaseAgent):
         title = self._sports_subject_label(extraction)
         return [
             f"{title}触发的讨论重点，不在消息本身，而在后续比赛判断。",
-            "名单取舍、关键人物状态和赛程难度，决定这条消息会不会继续发酵。",
+            "技术路线取舍、关键企业动态和市场份额变化，决定这条消息会不会继续发酵。",
         ]
 
     def _international_core_points(self, extraction: ExtractionResult) -> list[str]:
@@ -809,14 +812,16 @@ class DataAgent(BaseAgent):
         keywords: list[str],
     ) -> list[str]:
         text = " ".join([primary, secondary, trend_report.recommended_angle, *keywords]).lower()
+        tech_tokens = ["机器人", "芯片", "半导体", "储能", "光伏", "锂电", "电池", "ai", "大模型", "智能制造", "工业自动化"]
+        tech_tokens_count = sum(1 for token in tech_tokens if token in text)
         mode = "sports" if any(token in text for token in self.SPORTS_TOKENS) \
-            else "international" if any(token in text for token in self.INTERNATIONAL_TOKENS) \
+            else "international" if tech_tokens_count == 0 and any(token in text for token in self.INTERNATIONAL_TOKENS) \
             else "generic"
         if mode == "sports":
             risks = [
                 f"{primary}热度升高，不等于后续走势已经被提前锁定。",
                 "如果后续名单、状态或临场信息继续变化，当前判断很容易被快速改写。",
-                "公开素材有限时，最需要防止的是把赛前消息写成确定性结论。",
+                "公开素材有限时，最需要防止的是把初步消息写成确定性结论。",
             ]
             return self.clean_publish_list(risks, limit=4)
         if mode == "international":
@@ -856,7 +861,9 @@ class DataAgent(BaseAgent):
         ).lower()
         if any(token in text for token in self.SPORTS_TOKENS):
             return "sports"
-        if any(token in text for token in self.INTERNATIONAL_TOKENS):
+        tech_tokens = ["机器人", "芯片", "半导体", "储能", "光伏", "锂电", "电池", "ai", "大模型", "智能制造", "工业自动化"]
+        tech_tokens_count = sum(1 for token in tech_tokens if token in text)
+        if tech_tokens_count == 0 and any(token in text for token in self.INTERNATIONAL_TOKENS):
             return "international"
         return "generic"
 

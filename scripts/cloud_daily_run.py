@@ -204,14 +204,17 @@ def _configure_cloud_env(account_key: str) -> None:
 
     # --- 发布配置 ---
     os.environ.setdefault("TOUTIAO_PUBLISH_ENABLED", "1")
-    os.environ.setdefault("TOUTIAO_AUTO_PUBLISH", "0")  # 云端默认不自动发布，改为草稿模式
+    os.environ.setdefault("TOUTIAO_AUTO_PUBLISH", "1")  # 云端自动发布
 
     # 云端浏览器登录 session 管理：
     # GitHub Actions 通过 cache 持久化 .runtime/ 目录来保持登录状态。
     # 如果 .runtime/ 下没有对应平台的 profile，说明首次运行，没有登录 session，
     # 此时必须禁用该平台的浏览器发布，否则 PlatformAuthError 会中断整个流程。
     # 用户可以通过手动上传 profile 缓存来启用浏览器发布。
-    _check_and_disable_browser_platform("WECHAT", ".runtime/wechat_profile")
+    # 微信：如果启用了 135 编辑器，检查 editor_135_profile；否则检查 wechat_profile
+    wechat_135_enabled = os.environ.get("WECHAT_EDITOR_135_ENABLED", "0") == "1"
+    wechat_profile_dir = ".runtime/editor_135_profile" if wechat_135_enabled else ".runtime/wechat_profile"
+    _check_and_disable_browser_platform("WECHAT", wechat_profile_dir)
     _check_and_disable_browser_platform("TOUTIAO", ".runtime/toutiao_profile")
     _check_and_disable_browser_platform("DOUYIN", ".runtime/douyin_profile")
 

@@ -110,8 +110,9 @@ jobs:
       WECHAT_LAYOUT_BACKEND: ${{ secrets.WECHAT_LAYOUT_BACKEND || 'builtin' }}
       WECHAT_MD2WECHAT_ENABLED: ${{ secrets.WECHAT_MD2WECHAT_ENABLED || '0' }}
       WECHAT_SERV00_PROXY_ENABLED: ${{ secrets.WECHAT_SERV00_PROXY_ENABLED || '0' }}
-      WECHAT_EDITOR_135_ENABLED: "1"
+      WECHAT_EDITOR_135_ENABLED: "0"
       WECHAT_EDITOR_135_PROFILE_DIR: .runtime/editor_135_profile
+      WECHAT_BROWSER_PROFILE_DIR: .runtime/wechat_profile
 
       # 抖音发布（云端只做内容生成，发布由本地脚本完成）
       DOUYIN_ENABLED: "0"

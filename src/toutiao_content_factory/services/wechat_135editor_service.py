@@ -48,6 +48,8 @@ class Editor135Service:
         self.settings = settings
         self.logger = logger
         self._base_url = settings.wechat.editor_135_base_url.rstrip("/")
+        self._debug_dir = settings.account_runtime_dir / "debug"
+        self._debug_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # 公开接口
@@ -116,7 +118,7 @@ class Editor135Service:
                 self._click_save_sync(page)
 
                 # Step 6: 在保存图文对话框中上传封面、勾选同步、保存
-                sync_result = self._save_and_sync(page, cover_path=cover_path)
+                sync_result = self._save_and_sync(page, title=title, cover_path=cover_path)
 
                 result = {
                     "status": "draft_saved" if sync_result else "sync_failed",
@@ -414,7 +416,7 @@ class Editor135Service:
 
         raise RuntimeError("未找到「保存同步」按钮。")
 
-    def _save_and_sync(self, page, *, cover_path: Path | None = None) -> bool:
+    def _save_and_sync(self, page, *, title: str = "", cover_path: Path | None = None) -> bool:
         """在保存图文对话框中上传封面、勾选同步公众号、保存。"""
         self.logger.info("正在保存图文对话框中操作...")
 
@@ -437,12 +439,49 @@ class Editor135Service:
         if cover_path and cover_path.exists():
             self._upload_cover_in_save_dialog(page, dialog, cover_path)
 
+        # 确保对话框中的文章标题已填写（WxMsgName 字段）
+        # 始终用传入的 title 覆盖，避免标题为空或显示为字体大小
+        try:
+            name_input = dialog.query_selector("#WxMsgName")
+            if name_input:
+                fill_title = title.strip() if title.strip() else ""
+                if not fill_title:
+                    try:
+                        title_input = page.query_selector("input[id*='wx_input'], input.edui-wx-input")
+                        if title_input:
+                            fill_title = title_input.input_value().strip()
+                    except Exception:
+                        pass
+                if fill_title:
+                    # 使用 JS nativeSetter + dispatchEvent 确保 React/jQuery 表单能感知到值变化
+                    page.evaluate("""([selector, value]) => {
+                        const input = document.querySelector(selector);
+                        if (input) {
+                            const nativeSetter = Object.getOwnPropertyDescriptor(
+                                window.HTMLInputElement.prototype, 'value'
+                            ).set;
+                            nativeSetter.call(input, value);
+                            input.dispatchEvent(new Event('input', { bubbles: true }));
+                            input.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    }""", ["#WxMsgName", fill_title])
+                    self.logger.info("已填写对话框标题: %s", fill_title[:30])
+                else:
+                    self.logger.warning("对话框标题为空且无法获取标题")
+        except Exception as exc:
+            self.logger.warning("填写对话框标题失败: %s", exc)
+
         # 确保同步公众号的复选框已勾选
         try:
-            sync_checkbox = dialog.query_selector("input[type='checkbox']:not([id*='comment'])")
+            # 同步复选框的name为 data[WxMsg][sync][]
+            sync_checkbox = dialog.query_selector("input[name='data[WxMsg][sync][]']")
             if sync_checkbox and not sync_checkbox.is_checked():
                 sync_checkbox.click(force=True)
                 self.logger.info("已勾选同步公众号")
+            elif sync_checkbox and sync_checkbox.is_checked():
+                self.logger.info("同步公众号已勾选")
+            else:
+                self.logger.warning("未找到同步公众号复选框")
         except Exception as exc:
             self.logger.warning("检查同步复选框: %s", exc)
 
@@ -458,34 +497,302 @@ class Editor135Service:
         page.wait_for_timeout(1000)
 
         # 点击「保存文章」按钮
+        # 注意：135编辑器的保存按钮是 <input type="submit" id="save-wx-msg">，
+        # 有两个同名元素（一个隐藏一个可见），需要选可见的那个
         try:
-            save_btn = dialog.query_selector("text=保存文章")
+            save_btn = None
+
+            # 方法1: 精确匹配 value="保存文章" 的 input#save-wx-msg
+            # 注意：有两个 input#save-wx-msg，一个 value="投稿给其他用户"，一个 value="保存文章"
+            try:
+                save_btn = page.locator("#save-wx-msg[value='保存文章']:visible").first
+                if save_btn.count() > 0:
+                    self.logger.info("通过 locator 找到 value='保存文章' 的 #save-wx-msg")
+                else:
+                    save_btn = None
+            except Exception:
+                save_btn = None
+
+            # 方法2: query_selector_all 遍历所有 #save-wx-msg，找 value="保存文章" 的那个
             if not save_btn:
-                # 尝试在页面上查找
-                save_btn = page.query_selector(".modal.show .btn-primary, .modal.show button:has-text('保存')")
+                try:
+                    all_save_btns = page.query_selector_all("#save-wx-msg")
+                    for btn in all_save_btns:
+                        if btn.is_visible():
+                            btn_value = btn.get_attribute("value") or ""
+                            if "保存" in btn_value and "投稿" not in btn_value:
+                                save_btn = btn
+                                self.logger.info("通过遍历找到 value='%s' 的 #save-wx-msg", btn_value)
+                                break
+                except Exception:
+                    pass
+
+            # 方法3: 在对话框内查找 input[type=submit]
+            if not save_btn:
+                try:
+                    submit_inputs = page.query_selector_all("#save-wx-msg-dialog input[type='submit']")
+                    for btn in submit_inputs:
+                        if btn.is_visible():
+                            save_btn = btn
+                            self.logger.info("通过 input[type=submit] 找到保存按钮")
+                            break
+                except Exception:
+                    pass
+
+            # 方法4: 回退查找对话框中所有可见的 .btn-primary（含 input 和 button）
+            if not save_btn:
+                try:
+                    btns = page.query_selector_all("#save-wx-msg-dialog .btn-primary")
+                    for btn in btns:
+                        if btn.is_visible():
+                            save_btn = btn
+                            self.logger.info("通过 .btn-primary 回退找到保存按钮")
+                            break
+                except Exception:
+                    pass
+
             if save_btn and save_btn.is_visible():
-                save_btn.click(force=True)
-                self.logger.info("已点击「保存文章」")
-                page.wait_for_timeout(5000)
+                # 保存前截图
+                try:
+                    debug_path = self._debug_dir / f"before_save_click_{int(time.time())}.png"
+                    page.screenshot(path=str(debug_path))
+                except Exception:
+                    pass
+
+                # 尝试多种点击方式
+                click_success = False
+
+                # 方式1: Playwright locator click — 精确匹配 value="保存文章"
+                try:
+                    save_locator = page.locator("#save-wx-msg[value='保存文章']:visible").first
+                    save_locator.click(timeout=10000)
+                    click_success = True
+                    self.logger.info("通过 locator.click() 点击保存按钮成功")
+                except Exception as exc:
+                    self.logger.warning("locator.click() 失败: %s，尝试其他方式", exc)
+
+                # 方式2: 直接 click element handle
+                if not click_success:
+                    try:
+                        save_btn.click(force=True)
+                        click_success = True
+                        self.logger.info("通过 element_handle.click() 点击保存按钮成功")
+                    except Exception as exc:
+                        self.logger.warning("element_handle.click() 失败: %s，尝试其他方式", exc)
+
+                # 方式3: 通过 form submit 触发
+                if not click_success:
+                    try:
+                        form_result = page.evaluate("""() => {
+                            const btn = document.getElementById('save-wx-msg');
+                            if (btn && btn.form) {
+                                btn.form.submit();
+                                return 'form_submit';
+                            }
+                            // 查找对话框中的 form
+                            const dialog = document.getElementById('save-wx-msg-dialog');
+                            if (dialog) {
+                                const form = dialog.querySelector('form');
+                                if (form) {
+                                    form.submit();
+                                    return 'dialog_form_submit';
+                                }
+                            }
+                            return 'no_form';
+                        }""")
+                        self.logger.info("form submit 结果: %s", form_result)
+                        if form_result != "no_form":
+                            click_success = True
+                    except Exception as exc:
+                        self.logger.warning("form submit 失败: %s", exc)
+
+                # 方式4: JS dispatch submit event
+                if not click_success:
+                    try:
+                        page.evaluate("""() => {
+                            const btns = document.querySelectorAll('#save-wx-msg');
+                            for (const btn of btns) {
+                                if (btn.value === '保存文章' && btn.form) {
+                                    btn.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                                    return;
+                                }
+                            }
+                        }""")
+                        click_success = True
+                        self.logger.info("通过 dispatchEvent('submit') 触发保存")
+                    except Exception as exc:
+                        self.logger.warning("dispatchEvent submit 失败: %s", exc)
+
+                # 方式5: 直接调用全局 saveWxMsg() 函数
+                if not click_success:
+                    try:
+                        fn_result = page.evaluate("""() => {
+                            if (typeof saveWxMsg === 'function') {
+                                saveWxMsg();
+                                return 'saveWxMsg_called';
+                            }
+                            return 'no_fn';
+                        }""")
+                        self.logger.info("saveWxMsg() 结果: %s", fn_result)
+                        if fn_result == "saveWxMsg_called":
+                            click_success = True
+                    except Exception as exc:
+                        self.logger.warning("saveWxMsg() 调用失败: %s", exc)
+
+                # 方式6: jQuery trigger click on the correct button
+                if not click_success:
+                    try:
+                        jq_result = page.evaluate("""() => {
+                            const btns = document.querySelectorAll('#save-wx-msg');
+                            for (const btn of btns) {
+                                if (btn.value === '保存文章') {
+                                    if (typeof jQuery === 'function') {
+                                        jQuery(btn).trigger('click');
+                                        return 'jquery_trigger';
+                                    }
+                                    btn.click();
+                                    return 'native_click';
+                                }
+                            }
+                            return 'not_found';
+                        }""")
+                        self.logger.info("jQuery trigger 结果: %s", jq_result)
+                        if jq_result != "not_found":
+                            click_success = True
+                    except Exception as exc:
+                        self.logger.warning("jQuery trigger 失败: %s", exc)
+
+                if not click_success:
+                    self.logger.error("所有点击方式均失败")
+                    return False
+
+                self.logger.info("已触发保存操作")
+                page.wait_for_timeout(3000)
+
+                # 保存后可能再次弹出版权声明对话框，需要关闭
+                for attempt in range(3):
+                    self._dismiss_copyright_popup(page)
+                    page.wait_for_timeout(2000)
+                    popup_check = page.query_selector("[id*='copyright_popup']")
+                    if not popup_check or not popup_check.is_visible():
+                        break
+                # 保存后截图
+                try:
+                    debug_path = self._debug_dir / f"after_save_click_{int(time.time())}.png"
+                    page.screenshot(path=str(debug_path))
+                    self.logger.info("调试截图(保存后): %s", debug_path)
+                except Exception:
+                    pass
+                # 检查是否有错误提示
+                try:
+                    error_el = page.query_selector(".error, .alert-danger, .toast-error, [class*='error'], .layui-layer-content")
+                    if error_el and error_el.is_visible():
+                        self.logger.error("保存时出现错误: %s", error_el.inner_text(timeout=3000))
+                except Exception:
+                    pass
+                # 检查对话框中是否还有必填项提示
+                try:
+                    dialog_text = page.inner_text("#save-wx-msg-dialog", timeout=3000)
+                    if "请填写" in dialog_text or "不能为空" in dialog_text:
+                        self.logger.warning("对话框有必填项提示: %s", dialog_text[:200])
+                except Exception:
+                    pass
             else:
                 self.logger.warning("未找到「保存文章」按钮")
+                try:
+                    debug_path = self._debug_dir / f"no_save_btn_{int(time.time())}.png"
+                    page.screenshot(path=str(debug_path))
+                    self.logger.info("调试截图(无保存按钮): %s", debug_path)
+                except Exception:
+                    pass
                 return False
         except Exception as exc:
             self.logger.error("点击保存按钮失败: %s", exc)
             return False
 
         # 等待保存和同步完成
-        max_wait = 60
+        max_wait = 90
         start_time = time.time()
+        last_progress = ""
         while time.time() - start_time < max_wait:
+            # 检查同步进度条（多种选择器）
+            try:
+                progress_text = page.evaluate("""() => {
+                    // 查找同步进度条
+                    const selectors = [
+                        '.syncProgressBar',
+                        '[class*="syncProgress"]',
+                        '[class*="SyncProgress"]',
+                        '.progress-bar',
+                        '[class*="progress"]',
+                    ];
+                    for (const sel of selectors) {
+                        const el = document.querySelector(sel);
+                        if (el && el.offsetParent !== null) {
+                            return el.innerText || el.textContent;
+                        }
+                    }
+                    // 查找包含百分比的元素
+                    const allEls = document.querySelectorAll('*');
+                    for (const el of allEls) {
+                        const text = (el.innerText || '').trim();
+                        if (/^\\d+%$/.test(text) && el.offsetParent !== null) {
+                            return text;
+                        }
+                    }
+                    return '';
+                }""")
+                if progress_text and progress_text.strip():
+                    progress_stripped = progress_text.strip()[:50]
+                    if progress_stripped != last_progress:
+                        self.logger.info("同步进度: %s", progress_stripped)
+                        last_progress = progress_stripped
+                    if "100%" in progress_stripped:
+                        self.logger.info("同步进度100%，同步完成")
+                        page.wait_for_timeout(3000)
+                        return True
+            except Exception:
+                pass
+
             # 检查对话框是否已关闭
             try:
                 dialog_check = page.query_selector("#save-wx-msg-dialog")
                 if dialog_check is None or not dialog_check.is_visible():
+                    # 对话框关闭 = 保存到135编辑器成功
+                    # 但同步到公众号是异步的，需要继续等待
+                    elapsed = time.time() - start_time
+                    if elapsed < 10:
+                        # 对话框关闭太快（<10秒），同步可能还没开始
+                        # 继续等待同步进度
+                        self.logger.info("保存图文对话框已关闭，等待同步完成...")
+                        page.wait_for_timeout(5000)
+                        # 检查是否有同步结果提示
+                        try:
+                            sync_result_text = page.evaluate("""() => {
+                                // 查找同步结果提示
+                                const selectors = [
+                                    '.sync-result', '.sync-result-msg',
+                                    '[class*="syncResult"]', '[class*="sync_result"]',
+                                    '.toast', '.layui-layer-content',
+                                    '.alert-success', '.alert-info',
+                                ];
+                                for (const sel of selectors) {
+                                    const el = document.querySelector(sel);
+                                    if (el && el.offsetParent !== null) {
+                                        return el.innerText || el.textContent;
+                                    }
+                                }
+                                return '';
+                            }""")
+                            if sync_result_text and sync_result_text.strip():
+                                self.logger.info("同步结果提示: %s", sync_result_text.strip()[:100])
+                        except Exception:
+                            pass
+                        # 对话框关闭后额外等待同步
+                        page.wait_for_timeout(10000)
                     self.logger.info("保存图文对话框已关闭，保存成功")
                     return True
             except Exception:
-                # query_selector 返回 None 或 is_visible 抛异常都说明对话框已关闭
                 self.logger.info("保存图文对话框已关闭（异常检测），保存成功")
                 return True
 
@@ -496,15 +803,39 @@ class Editor135Service:
                     if marker in page_text:
                         self.logger.info("同步成功！检测到标记: %s", marker)
                         return True
-                # 检查常见的保存成功提示
-                for marker in ["保存成功", "已保存", "操作成功"]:
+                for marker in ["保存成功", "已保存", "操作成功", "同步成功"]:
                     if marker in page_text:
                         self.logger.info("保存成功！检测到标记: %s", marker)
                         return True
             except Exception:
                 pass
 
-            page.wait_for_timeout(2000)
+            # 再次检查并关闭可能弹出的版权声明
+            self._dismiss_copyright_popup(page)
+
+            # 额外：通过JS强制关闭所有版权声明对话框
+            try:
+                page.evaluate("""() => {
+                    const popups = document.querySelectorAll('[id*="copyright_popup"]');
+                    for (const popup of popups) {
+                        if (popup.classList.contains('show') || popup.style.display !== 'none') {
+                            popup.style.display = 'none';
+                            popup.classList.remove('show', 'in');
+                        }
+                    }
+                    // 也关闭遮罩层
+                    const backdrops = document.querySelectorAll('.modal-backdrop');
+                    for (const bd of backdrops) {
+                        // 只关闭与版权声明相关的遮罩
+                        if (backdrops.length > 1) {
+                            bd.remove();
+                        }
+                    }
+                }""")
+            except Exception:
+                pass
+
+            page.wait_for_timeout(3000)
 
         self.logger.warning("保存同步等待超时（%d秒）", max_wait)
         # 即使超时，也可能保存成功了，只是检测不到标记
@@ -613,19 +944,29 @@ class Editor135Service:
         self._dismiss_copyright_popup(page)
 
     def _dismiss_copyright_popup(self, page) -> None:
-        """关闭上传图片后弹出的版权声明对话框。"""
+        """关闭上传图片后弹出的版权声明对话框，并勾选'下次不再提示'。"""
         try:
             # 查找版权声明对话框
             popup = page.query_selector("[id*='copyright_popup']")
             if popup and popup.is_visible():
                 self.logger.info("检测到版权声明对话框，尝试关闭...")
 
+                # 先勾选"下次不再提示"
+                try:
+                    no_remind = popup.query_selector("input[type='checkbox'], input[name*='remind'], input[name*='again']")
+                    if no_remind and not no_remind.is_checked():
+                        no_remind.click(force=True)
+                        self.logger.info("已勾选'下次不再提示'")
+                except Exception:
+                    pass
+
                 # 点击确认/关闭按钮
                 for selector in [
-                    ".btn-primary",
+                    "button:has-text('我已知晓')",
                     "button:has-text('确认')",
                     "button:has-text('确定')",
                     "button:has-text('同意')",
+                    ".btn-primary",
                     ".close",
                     "button.close",
                 ]:

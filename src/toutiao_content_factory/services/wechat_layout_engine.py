@@ -1,4 +1,11 @@
-"""微信公众号高级排版引擎 — CSS Inline + 组件渲染 + API草案备份"""
+"""微信公众号高级排版引擎 — 纯内联样式 + HTML结构渲染
+
+微信编辑器只认内联 style，不支持 <style> 标签和伪元素。
+因此本引擎直接在 HTML 生成阶段注入内联样式，
+用 HTML 元素模拟伪元素装饰效果（如标题底线、引用引号等）。
+
+设计参考: doocs/md / mdnice / 135编辑器
+"""
 from __future__ import annotations
 
 import html
@@ -15,12 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# 默认微信排版 CSS 主题
+# 微信排版主题配置
 # ============================================================================
 
 @dataclass
 class WechatTheme:
-    """微信公众号排版主题配置"""
+    """微信公众号排版主题配色与尺寸"""
     name: str = "default"
     primary_color: str = "#1a6fb5"
     secondary_color: str = "#3a8fd4"
@@ -30,318 +37,976 @@ class WechatTheme:
     bg_color: str = "#ffffff"
     card_bg: str = "#f8f9fb"
     border_color: str = "#e0e5eb"
+    h2_bg: str = ""
+    blockquote_bg: str = "#f7f9fc"
+    strong_bg: str = ""
+    list_bullet_color: str = ""
     font_family: str = '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
-    title_size: str = "22px"
-    heading_size: str = "18px"
+    title_size: str = "24px"
+    heading_size: str = "20px"
     body_size: str = "16px"
     caption_size: str = "14px"
-    line_height: str = "1.8"
-    paragraph_spacing: str = "0.8em"
-    card_padding: str = "16px"
-    card_radius: str = "8px"
-    blockquote_border_width: str = "3px"
-    blockquote_bg: str = "#f7f9fc"
+    line_height: str = "2.0"
+    paragraph_spacing: str = "1.0em"
+    card_padding: str = "20px"
+    card_radius: str = "12px"
 
-    DEFAULT_THEME_CSS = """
-    /* 微信公众号基础样式 */
-    .wechat-article {{
-        font-family: {font_family};
-        font-size: {body_size};
-        color: {text_color};
-        line-height: {line_height};
-        max-width: 100%;
-        word-wrap: break-word;
-    }}
-    .wechat-article h1 {{
-        font-size: {title_size};
-        font-weight: 700;
-        color: {text_color};
-        margin: 1.2em 0 0.6em;
-        letter-spacing: 0.5px;
-    }}
-    .wechat-article h2 {{
-        font-size: {heading_size};
-        font-weight: 600;
-        color: {primary_color};
-        margin: 1em 0 0.5em;
-        padding-left: 10px;
-        border-left: {blockquote_border_width} solid {primary_color};
-    }}
-    .wechat-article h3 {{
-        font-size: 17px;
-        font-weight: 600;
-        color: {text_color};
-        margin: 0.8em 0 0.4em;
-    }}
-    .wechat-article p {{
-        margin: {paragraph_spacing} 0;
-        text-align: justify;
-    }}
-    .wechat-article strong {{
-        color: {primary_color};
-        font-weight: 600;
-    }}
-    .wechat-article blockquote {{
-        border-left: {blockquote_border_width} solid {primary_color};
-        background: {blockquote_bg};
-        margin: 0.8em 0;
-        padding: 10px 16px;
-        border-radius: 0 4px 4px 0;
-        color: #5a5a5a;
-        font-size: 15px;
-    }}
-    .wechat-article .info-card {{
-        background: {accent_color};
-        border-left: {blockquote_border_width} solid {primary_color};
-        padding: {card_padding};
-        margin: 0.8em 0;
-        border-radius: {card_radius};
-    }}
-    .wechat-article .highlight-box {{
-        background: linear-gradient(135deg, #fff9e6, #fff3cd);
-        border: 1px solid #ffe08a;
-        padding: {card_padding};
-        margin: 0.8em 0;
-        border-radius: {card_radius};
-        font-size: {caption_size};
-        color: #6d5600;
-    }}
-    .wechat-article .data-callout {{
-        background: {card_bg};
-        border: 1px solid {border_color};
-        padding: {card_padding};
-        margin: 0.8em 0;
-        border-radius: {card_radius};
-    }}
-    .wechat-article .data-callout-title {{
-        font-size: {caption_size};
-        color: {muted_color};
-        margin-bottom: 4px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }}
-    .wechat-article .closing-card {{
-        background: {card_bg};
-        border: 1px dashed {border_color};
-        padding: {card_padding};
-        margin: 1.2em 0;
-        border-radius: {card_radius};
-        text-align: center;
-        color: {muted_color};
-        font-size: {caption_size};
-    }}
-    .wechat-article .divider-line {{
-        text-align: center;
-        margin: 1.2em 0;
-        color: {border_color};
-        font-size: 12px;
-        letter-spacing: 8px;
-    }}
-    .wechat-article img {{
-        max-width: 100%;
-        height: auto;
-        border-radius: 4px;
-    }}
-    .wechat-article .image-caption {{
-        text-align: center;
-        font-size: {caption_size};
-        color: {muted_color};
-        margin-top: 4px;
-    }}
-    .wechat-article code {{
-        background: #f2f4f5;
-        padding: 2px 6px;
-        border-radius: 3px;
-        font-size: 90%;
-        font-family: "SF Mono", "Menlo", "Consolas", monospace;
-    }}
-    .wechat-article pre {{
-        background: #f6f8fa;
-        padding: 12px;
-        border-radius: 6px;
-        overflow-x: auto;
-        font-size: 14px;
-        line-height: 1.5;
-    }}
-    .wechat-article ol, .wechat-article ul {{
-        padding-left: 1.5em;
-        margin: 0.5em 0;
-    }}
-    .wechat-article li {{
-        margin-bottom: 0.3em;
-    }}
-    """
+    def resolved_h2_bg(self) -> str:
+        return self.h2_bg or self.primary_color
 
-    def css(self) -> str:
-        return self.DEFAULT_THEME_CSS.format(
-            font_family=self.font_family,
-            body_size=self.body_size,
-            text_color=self.text_color,
-            line_height=self.line_height,
-            title_size=self.title_size,
-            heading_size=self.heading_size,
-            primary_color=self.primary_color,
-            blockquote_border_width=self.blockquote_border_width,
-            blockquote_bg=self.blockquote_bg,
-            paragraph_spacing=self.paragraph_spacing,
-            accent_color=self.accent_color,
-            card_padding=self.card_padding,
-            card_radius=self.card_radius,
-            muted_color=self.muted_color,
-            caption_size=self.caption_size,
-            card_bg=self.card_bg,
-            border_color=self.border_color,
+    def resolved_strong_bg(self) -> str:
+        return self.strong_bg or self.accent_color
+
+    def resolved_list_bullet_color(self) -> str:
+        return self.list_bullet_color or self.primary_color
+
+
+# ============================================================================
+# 预设主题
+# ============================================================================
+
+THEME_PRESETS: dict[str, WechatTheme] = {
+    "tech_blue": WechatTheme(
+        name="tech_blue",
+        primary_color="#1a6fb5",
+        secondary_color="#3a8fd4",
+        accent_color="#e8f4fd",
+        h2_bg="#1a6fb5",
+        blockquote_bg="#f0f6fc",
+        strong_bg="#e8f4fd",
+        list_bullet_color="#1a6fb5",
+    ),
+    "vibrant_orange": WechatTheme(
+        name="vibrant_orange",
+        primary_color="#e8723a",
+        secondary_color="#f09860",
+        accent_color="#fef3ec",
+        text_color="#3a2a1a",
+        h2_bg="#e8723a",
+        blockquote_bg="#fdf5ee",
+        strong_bg="#fef3ec",
+        list_bullet_color="#e8723a",
+        border_color="#f0d8c4",
+        card_bg="#fdf8f4",
+    ),
+    "literary_green": WechatTheme(
+        name="literary_green",
+        primary_color="#2b8a5e",
+        secondary_color="#4eaa80",
+        accent_color="#edf7f1",
+        text_color="#2a3a2f",
+        h2_bg="#2b8a5e",
+        blockquote_bg="#f0f8f3",
+        strong_bg="#edf7f1",
+        list_bullet_color="#2b8a5e",
+        border_color="#c8e0d0",
+        card_bg="#f5faf7",
+    ),
+    "minimal_gray": WechatTheme(
+        name="minimal_gray",
+        primary_color="#5a5a5a",
+        secondary_color="#7a7a7a",
+        accent_color="#f5f5f5",
+        text_color="#2f2f2f",
+        h2_bg="#5a5a5a",
+        blockquote_bg="#f8f8f8",
+        strong_bg="#f0f0f0",
+        list_bullet_color="#5a5a5a",
+        border_color="#e0e0e0",
+        card_bg="#fafafa",
+    ),
+    "business_gold": WechatTheme(
+        name="business_gold",
+        primary_color="#b8860b",
+        secondary_color="#d4a843",
+        accent_color="#fdf8ed",
+        text_color="#2a2518",
+        h2_bg="#b8860b",
+        blockquote_bg="#faf5e8",
+        strong_bg="#fdf8ed",
+        list_bullet_color="#b8860b",
+        border_color="#e8d8b0",
+        card_bg="#fcf9f2",
+    ),
+    "royal_purple": WechatTheme(
+        name="royal_purple",
+        primary_color="#7b4bbf",
+        secondary_color="#9d6cd9",
+        accent_color="#f3eefc",
+        text_color="#2f283a",
+        h2_bg="#7b4bbf",
+        blockquote_bg="#f7f3fc",
+        strong_bg="#f3eefc",
+        list_bullet_color="#7b4bbf",
+        border_color="#d8c8e8",
+        card_bg="#faf7fc",
+    ),
+    "sakura_pink": WechatTheme(
+        name="sakura_pink",
+        primary_color="#e85c7a",
+        secondary_color="#f08aa3",
+        accent_color="#fef2f5",
+        text_color="#3a282d",
+        h2_bg="#e85c7a",
+        blockquote_bg="#fdf5f7",
+        strong_bg="#fef2f5",
+        list_bullet_color="#e85c7a",
+        border_color="#f0c8d0",
+        card_bg="#fef8fa",
+    ),
+    "ocean_teal": WechatTheme(
+        name="ocean_teal",
+        primary_color="#148f8c",
+        secondary_color="#3ab3b0",
+        accent_color="#e9f7f7",
+        text_color="#253535",
+        h2_bg="#148f8c",
+        blockquote_bg="#f0f7f7",
+        strong_bg="#e9f7f7",
+        list_bullet_color="#148f8c",
+        border_color="#c8e0e0",
+        card_bg="#f5faf9",
+    ),
+}
+
+# 默认主题 = tech_blue
+THEME_PRESETS["default"] = THEME_PRESETS["tech_blue"]
+
+
+# ============================================================================
+# 内联样式构建器 — 所有样式直接内联，不依赖 class 或 <style>
+# ============================================================================
+
+class InlineStyleBuilder:
+    """根据主题配置生成内联样式字符串"""
+
+    def __init__(self, theme: WechatTheme | None = None):
+        self.t = theme or WechatTheme()
+
+    # --- 容器 ---
+    def article_wrapper(self) -> str:
+        return (
+            f"font-family: {self.t.font_family}; "
+            f"font-size: {self.t.body_size}; "
+            f"color: {self.t.text_color}; "
+            f"line-height: {self.t.line_height}; "
+            f"max-width: 100%; "
+            f"word-wrap: break-word; "
+            f"letter-spacing: 1px; "
+            f"padding: 16px 0;"
+        )
+
+    # --- 标题 ---
+    def h1(self) -> str:
+        return (
+            f"font-size: {self.t.title_size}; "
+            f"font-weight: 900; "
+            f"color: {self.t.text_color}; "
+            f"margin: 2.8em 0 1.4em; "
+            f"letter-spacing: 3px; "
+            f"text-align: center; "
+            f"line-height: 1.7; "
+            f"padding: 0.8em 1.2em; "
+            f"border-bottom: 4px solid {self.t.primary_color}; "
+            f"border-top: 4px solid {self.t.primary_color}; "
+            f"display: table; "
+            f"margin-left: auto; "
+            f"margin-right: auto; "
+            f"background: linear-gradient(180deg, transparent 55%, {self.t.accent_color} 55%); "
+            f"position: relative; "
+            f"box-shadow: 0 6px 16px rgba(0,0,0,0.08); "
+            f"border-radius: 4px;"
+        )
+
+    def h1_underline(self) -> str:
+        """h1 底部装饰线（模拟 ::after）"""
+        return (
+            f"display: block; "
+            f"width: 80px; "
+            f"height: 4px; "
+            f"background: linear-gradient(90deg, {self.t.primary_color}, {self.t.secondary_color}); "
+            f"margin: 16px auto 0; "
+            f"border-radius: 4px;"
+        )
+
+    def h2(self) -> str:
+        """h2 精致的渐变色块"""
+        return (
+            f"font-size: {self.t.heading_size}; "
+            f"font-weight: 900; "
+            f"color: #ffffff; "
+            f"background: linear-gradient(135deg, {self.t.resolved_h2_bg()}, {self.t.secondary_color}); "
+            f"margin: 2.8em 0 1.4em; "
+            f"padding: 14px 40px; "
+            f"border-radius: 20px; "
+            f"text-align: center; "
+            f"line-height: 1.7; "
+            f"display: table; "
+            f"margin-left: auto; "
+            f"margin-right: auto; "
+            f"letter-spacing: 3px; "
+            f"box-shadow: 0 6px 24px rgba(0,0,0,0.18); "
+            f"border: 2px solid rgba(255,255,255,0.3);"
+        )
+
+    def h3(self) -> str:
+        return (
+            f"font-size: 19px; "
+            f"font-weight: 900; "
+            f"color: {self.t.primary_color}; "
+            f"margin: 2.2em 0 1em; "
+            f"padding: 12px 0 12px 22px; "
+            f"border-left: 7px solid {self.t.primary_color}; "
+            f"border-bottom: 2px solid {self.t.accent_color}; "
+            f"line-height: 1.7; "
+            f"background: linear-gradient(90deg, {self.t.accent_color}, transparent); "
+            f"border-radius: 0 10px 10px 0; "
+            f"box-shadow: 0 2px 8px rgba(0,0,0,0.06);"
+        )
+
+    # --- 段落 ---
+    def paragraph(self) -> str:
+        return (
+            f"margin: {self.t.paragraph_spacing} 0; "
+            f"text-align: justify; "
+            f"letter-spacing: 1.5px; "
+            f"line-height: {self.t.line_height}; "
+            f"text-indent: 2em; "
+            f"font-size: 16px;"
+        )
+
+    def strong(self) -> str:
+        return (
+            f"color: {self.t.primary_color}; "
+            f"font-weight: 800; "
+            f"background: {self.t.resolved_strong_bg()}; "
+            f"padding: 2px 6px; "
+            f"border-radius: 4px; "
+            f"border-bottom: 2px solid {self.t.primary_color};"
+        )
+
+    def link(self) -> str:
+        return (
+            f"color: {self.t.primary_color}; "
+            f"text-decoration: none; "
+            f"border-bottom: 2px solid {self.t.primary_color}; "
+            f"padding-bottom: 1px;"
+        )
+
+    # --- 引用块 ---
+    def blockquote(self) -> str:
+        return (
+            f"border-left: 5px solid {self.t.primary_color}; "
+            f"background: linear-gradient(90deg, {self.t.blockquote_bg}, transparent); "
+            f"margin: 1.5em 0; "
+            f"padding: 18px 22px; "
+            f"border-radius: 0 12px 12px 0; "
+            f"color: #5a5a5a; "
+            f"font-size: 15px; "
+            f"box-shadow: 0 4px 12px rgba(0,0,0,0.08); "
+            f"position: relative;"
+        )
+
+    def blockquote_quote_mark(self) -> str:
+        """引用块左上角引号装饰"""
+        return (
+            f"font-size: 36px; "
+            f"color: {self.t.primary_color}; "
+            f"opacity: 0.15; "
+            f"font-family: Georgia, serif; "
+            f"line-height: 1; "
+            f"margin-bottom: 6px;"
+        )
+
+    # --- 信息卡片 ---
+    def info_card(self) -> str:
+        return (
+            f"background: linear-gradient(135deg, {self.t.accent_color}, transparent); "
+            f"border-left: 5px solid {self.t.primary_color}; "
+            f"padding: {self.t.card_padding}; "
+            f"margin: 1.2em 0; "
+            f"border-radius: {self.t.card_radius}; "
+            f"box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
+        )
+
+    def info_card_icon(self) -> str:
+        return (
+            f"font-size: 20px; "
+            f"float: right; "
+            f"margin-top: -4px; "
+            f"opacity: 0.6;"
+        )
+
+    # --- 高亮框 ---
+    def highlight_box(self) -> str:
+        return (
+            f"background: linear-gradient(135deg, #fffbe6, transparent); "
+            f"border: 2px solid #ffe08a; "
+            f"border-left: 5px solid #f5a623; "
+            f"padding: {self.t.card_padding}; "
+            f"margin: 1.2em 0; "
+            f"border-radius: {self.t.card_radius}; "
+            f"font-size: {self.t.caption_size}; "
+            f"color: #6d5600; "
+            f"box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
+        )
+
+    # --- 数据提示框 ---
+    def data_callout(self) -> str:
+        return (
+            f"background: linear-gradient(135deg, {self.t.card_bg}, transparent); "
+            f"border: 2px solid {self.t.border_color}; "
+            f"padding: {self.t.card_padding}; "
+            f"margin: 1.2em 0; "
+            f"border-radius: {self.t.card_radius}; "
+            f"box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
+        )
+
+    def data_callout_title(self) -> str:
+        return (
+            f"font-size: {self.t.caption_size}; "
+            f"color: {self.t.primary_color}; "
+            f"margin-bottom: 8px; "
+            f"font-weight: 800; "
+            f"letter-spacing: 1px;"
+        )
+
+    # --- 金句引用 ---
+    def golden_quote(self) -> str:
+        return (
+            f"background: linear-gradient(135deg, {self.t.accent_color}, transparent); "
+            f"border-left: 5px solid {self.t.primary_color}; "
+            f"padding: 24px {self.t.card_padding}; "
+            f"margin: 1.5em 0; "
+            f"border-radius: {self.t.card_radius}; "
+            f"text-align: center; "
+            f"font-size: 18px; "
+            f"font-weight: 700; "
+            f"color: {self.t.primary_color}; "
+            f"line-height: 1.8; "
+            f"box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
+        )
+
+    # --- 结尾卡片 ---
+    def closing_card(self) -> str:
+        return (
+            f"background: linear-gradient(135deg, {self.t.card_bg}, {self.t.accent_color}); "
+            f"border: 2px dashed {self.t.border_color}; "
+            f"padding: 28px {self.t.card_padding}; "
+            f"margin: 2em 0; "
+            f"border-radius: {self.t.card_radius}; "
+            f"text-align: center; "
+            f"color: {self.t.muted_color}; "
+            f"font-size: {self.t.caption_size}; "
+            f"box-shadow: 0 6px 20px rgba(0,0,0,0.12);"
+        )
+
+    # --- 标签卡片 ---
+    def tag_card(self) -> str:
+        return (
+            f"background: linear-gradient(135deg, {self.t.accent_color}, #ffffff); "
+            f"border: 1px solid {self.t.border_color}; "
+            f"padding: 16px {self.t.card_padding}; "
+            f"margin: 1em 0; "
+            f"border-radius: {self.t.card_radius}; "
+            f"box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
+        )
+
+    # --- 步骤卡片 ---
+    def step_card(self) -> str:
+        return (
+            f"background: linear-gradient(90deg, {self.t.accent_color}, transparent); "
+            f"border-left: 5px solid {self.t.primary_color}; "
+            f"padding: 18px {self.t.card_padding}; "
+            f"margin: 1.2em 0; "
+            f"border-radius: 0 12px 12px 0; "
+            f"box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
+        )
+
+    # --- 要点列表 ---
+    def key_point(self) -> str:
+        return (
+            f"background: linear-gradient(135deg, {self.t.accent_color}, transparent); "
+            f"border: 1px solid {self.t.primary_color}; "
+            f"padding: 12px 18px; "
+            f"margin: 0.8em 0; "
+            f"border-radius: 10px; "
+            f"box-shadow: 0 2px 8px rgba(0,0,0,0.06);"
+        )
+
+    # --- 统计卡片 ---
+    def stat_card(self) -> str:
+        return (
+            f"background: linear-gradient(135deg, {self.t.primary_color}, {self.t.secondary_color}); "
+            f"padding: 24px {self.t.card_padding}; "
+            f"margin: 1.5em 0; "
+            f"border-radius: 16px; "
+            f"text-align: center; "
+            f"color: #ffffff; "
+            f"box-shadow: 0 6px 20px rgba(0,0,0,0.18);"
+        )
+
+    # --- 分割线 ---
+    def divider(self) -> str:
+        return (
+            f"text-align: center; "
+            f"margin: 2em 0; "
+            f"color: {self.t.border_color}; "
+            f"font-size: 14px; "
+            f"letter-spacing: 10px; "
+            f"position: relative; "
+            f"padding: 10px 0;"
+        )
+
+    def hr_line(self) -> str:
+        return (
+            f"border: none; "
+            f"height: 3px; "
+            f"background: linear-gradient(90deg, transparent, {self.t.primary_color}, transparent); "
+            f"margin: 2em 0; "
+            f"border-radius: 2px;"
+        )
+
+    # --- 图片 ---
+    def image(self) -> str:
+        return (
+            f"max-width: 100%; "
+            f"height: auto; "
+            f"border-radius: 12px; "
+            f"display: block; "
+            f"margin: 1.2em auto; "
+            f"box-shadow: 0 6px 20px rgba(0,0,0,0.12); "
+            f"border: 1px solid {self.t.border_color};"
+        )
+
+    def image_caption(self) -> str:
+        return (
+            f"text-align: center; "
+            f"font-size: {self.t.caption_size}; "
+            f"color: {self.t.muted_color}; "
+            f"margin-top: 10px; "
+            f"padding: 6px 0; "
+            f"border-bottom: 1px dashed {self.t.border_color};"
+        )
+
+    # --- 代码 ---
+    def inline_code(self) -> str:
+        return (
+            f"background: linear-gradient(135deg, {self.t.accent_color}, transparent); "
+            f"padding: 3px 8px; "
+            f"border-radius: 6px; "
+            f"font-size: 90%; "
+            f"font-family: 'SF Mono', 'Menlo', 'Consolas', monospace; "
+            f"color: {self.t.primary_color}; "
+            f"border: 1px solid {self.t.border_color}; "
+            f"box-shadow: 0 2px 6px rgba(0,0,0,0.05);"
+        )
+
+    def code_block(self) -> str:
+        return (
+            f"background: #2d2d2d; "
+            f"color: #f8f8f2; "
+            f"padding: 20px; "
+            f"border-radius: 12px; "
+            f"overflow-x: auto; "
+            f"font-size: 14px; "
+            f"line-height: 1.6; "
+            f"margin: 1.2em 0; "
+            f"box-shadow: 0 6px 20px rgba(0,0,0,0.15);"
+        )
+
+    # --- 列表 ---
+    def ul(self) -> str:
+        return f"padding-left: 1.8em; margin: 1em 0; list-style: none;"
+
+    def ol(self) -> str:
+        return f"padding-left: 1.8em; margin: 1em 0;"
+
+    def li(self) -> str:
+        return f"margin-bottom: 0.8em; line-height: 1.8;"
+
+    def li_bullet(self) -> str:
+        """无序列表项前缀圆点装饰"""
+        return (
+            f"display: inline-block; "
+            f"width: 8px; "
+            f"height: 8px; "
+            f"border-radius: 50%; "
+            f"background: linear-gradient(135deg, {self.t.resolved_list_bullet_color()}, {self.t.secondary_color}); "
+            f"margin-right: 10px; "
+            f"vertical-align: middle; "
+            f"margin-top: -2px; "
+            f"box-shadow: 0 2px 4px rgba(0,0,0,0.1);"
+        )
+
+    # --- 表格 ---
+    def table(self) -> str:
+        return (
+            f"width: 100%; "
+            f"border-collapse: collapse; "
+            f"margin: 1.2em 0; "
+            f"font-size: {self.t.caption_size}; "
+            f"border-radius: {self.t.card_radius}; "
+            f"overflow: hidden; "
+            f"box-shadow: 0 6px 20px rgba(0,0,0,0.08);"
+        )
+
+    def th(self) -> str:
+        return (
+            f"background: linear-gradient(135deg, {self.t.primary_color}, {self.t.secondary_color}); "
+            f"color: #ffffff; "
+            f"padding: 14px 16px; "
+            f"text-align: left; "
+            f"font-weight: 700;"
+        )
+
+    def td(self) -> str:
+        return (
+            f"padding: 14px 16px; "
+            f"border-bottom: 1px solid {self.t.border_color};"
+        )
+
+    # --- 脚注 ---
+    def footnote(self) -> str:
+        return (
+            f"font-size: 12px; "
+            f"color: {self.t.muted_color}; "
+            f"border-top: 2px solid {self.t.border_color}; "
+            f"padding-top: 12px; "
+            f"margin-top: 2em;"
         )
 
 
 # ============================================================================
-# 自定义组件渲染器
+# 自定义组件渲染器（内联样式版）
 # ============================================================================
 
 class WechatComponentRenderer:
     """将自定义 Markdown 扩展语法渲染为微信内联 HTML 组件"""
 
-    # 组件正则模式
     BLOCK_PATTERNS = [
-        # :::info ... :::
         (re.compile(r'^:::info\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "info_card"),
-        # :::warning ... :::
         (re.compile(r'^:::warning\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "highlight_box"),
-        # :::data ... :::
         (re.compile(r'^:::data\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "data_callout"),
-        # ```highlight ... ```
+        (re.compile(r'^:::tag\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "tag_card"),
+        (re.compile(r'^:::step\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "step_card"),
+        (re.compile(r'^:::key\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "key_point"),
+        (re.compile(r'^:::stat\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "stat_card"),
         (re.compile(r'^```highlight\s*\n(.*?)```', re.DOTALL | re.MULTILINE), "highlight_box"),
-        # >> 金句引用
         (re.compile(r'^>>\s+(.+?)$', re.MULTILINE), "pullquote"),
-        # --- 分割线
         (re.compile(r'^---$', re.MULTILINE), "divider"),
     ]
 
     @classmethod
-    def render_components(cls, markdown: str) -> str:
-        """将自定义 Markdown 扩展转换为 HTML"""
+    def _wrap_content_paragraphs(cls, content: str, style: str = "") -> str:
+        """将组件内容中的纯文本行包裹为 <p> 标签"""
+        lines = content.strip().split("\n")
+        wrapped = []
+        p_style = f' style="{style}"' if style else ""
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("<"):
+                wrapped.append(stripped)
+            else:
+                wrapped.append(f"<p{p_style}>{stripped}</p>")
+        return "\n".join(wrapped)
+
+    @classmethod
+    def render_components(cls, markdown: str, sb: InlineStyleBuilder) -> str:
         result = markdown
 
         for pattern, component_type in cls.BLOCK_PATTERNS:
             if component_type == "info_card":
                 def info_replacer(m):
                     content = m.group(1).strip()
-                    return f'<section class="info-card">\n{content}\n</section>'
+                    body = cls._wrap_content_paragraphs(content, "margin: 0.5em 0; line-height: 1.8;")
+                    return (
+                        f'<section style="{sb.info_card()}">\n'
+                        f'<span style="{sb.info_card_icon()}">💡</span>\n'
+                        f'{body}\n'
+                        f'</section>'
+                    )
                 result = pattern.sub(info_replacer, result)
 
             elif component_type == "highlight_box":
                 def highlight_replacer(m):
                     content = m.group(1).strip()
-                    return f'<section class="highlight-box">\n{content}\n</section>'
+                    body = cls._wrap_content_paragraphs(content, "margin: 0.5em 0; line-height: 1.8;")
+                    return f'<section style="{sb.highlight_box()}">\n{body}\n</section>'
                 result = pattern.sub(highlight_replacer, result)
 
             elif component_type == "data_callout":
                 def data_replacer(m):
                     content = m.group(1).strip()
-                    # Extract title from first line if it starts with #
                     lines = content.split("\n", 1)
                     title_html = ""
-                    body = content
+                    body_text = content
                     if lines[0].startswith("# "):
                         title = lines[0][2:].strip()
-                        title_html = f'<div class="data-callout-title">{html.escape(title)}</div>'
-                        body = lines[1].strip() if len(lines) > 1 else ""
-                    return f'<section class="data-callout">\n{title_html}\n{body}\n</section>'
+                        title_html = f'<div style="{sb.data_callout_title()}">{html.escape(title)}</div>'
+                        body_text = lines[1].strip() if len(lines) > 1 else ""
+                    body = cls._wrap_content_paragraphs(body_text)
+                    return f'<section style="{sb.data_callout()}">\n{title_html}\n{body}\n</section>'
                 result = pattern.sub(data_replacer, result)
 
             elif component_type == "pullquote":
                 def pullquote_replacer(m):
                     content = m.group(1).strip()
-                    return f'<blockquote><strong>✦</strong> {content}</blockquote>'
+                    return (
+                        f'<section style="{sb.golden_quote()}">\n'
+                        f'<p style="margin: 0; text-align: center;">{content}</p>\n'
+                        f'</section>'
+                    )
                 result = pattern.sub(pullquote_replacer, result)
 
+            elif component_type == "tag_card":
+                def tag_replacer(m):
+                    content = m.group(1).strip()
+                    body = cls._wrap_content_paragraphs(content, "margin: 0.5em 0; line-height: 1.8;")
+                    return (
+                        f'<section style="{sb.tag_card()}">\n'
+                        f'{body}\n'
+                        f'</section>'
+                    )
+                result = pattern.sub(tag_replacer, result)
+
+            elif component_type == "step_card":
+                def step_replacer(m):
+                    content = m.group(1).strip()
+                    lines = content.split("\n", 1)
+                    title_html = ""
+                    body_text = content
+                    if lines[0].startswith("# "):
+                        title = lines[0][2:].strip()
+                        title_html = f'<div style="font-weight: 800; color: {sb.t.primary_color}; margin-bottom: 8px; font-size: 17px;">{html.escape(title)}</div>'
+                        body_text = lines[1].strip() if len(lines) > 1 else ""
+                    body = cls._wrap_content_paragraphs(body_text)
+                    return (
+                        f'<section style="{sb.step_card()}">\n'
+                        f'{title_html}\n'
+                        f'{body}\n'
+                        f'</section>'
+                    )
+                result = pattern.sub(step_replacer, result)
+
+            elif component_type == "key_point":
+                def key_replacer(m):
+                    content = m.group(1).strip()
+                    body = cls._wrap_content_paragraphs(content, "margin: 0; line-height: 1.7; font-weight: 500;")
+                    return (
+                        f'<section style="{sb.key_point()}">\n'
+                        f'{body}\n'
+                        f'</section>'
+                    )
+                result = pattern.sub(key_replacer, result)
+
+            elif component_type == "stat_card":
+                def stat_replacer(m):
+                    content = m.group(1).strip()
+                    lines = content.split("\n")
+                    number = lines[0].strip() if len(lines) > 0 else ""
+                    label = lines[1].strip() if len(lines) > 1 else ""
+                    return (
+                        f'<section style="{sb.stat_card()}">\n'
+                        f'<p style="margin: 0; font-size: 48px; font-weight: 900; line-height: 1.2;">{html.escape(number)}</p>\n'
+                        f'<p style="margin: 8px 0 0; font-size: 16px; opacity: 0.9; line-height: 1.5;">{html.escape(label)}</p>\n'
+                        f'</section>'
+                    )
+                result = pattern.sub(stat_replacer, result)
+
             elif component_type == "divider":
-                result = pattern.sub('<p class="divider-line">· · ·</p>', result)
+                result = pattern.sub(
+                    f'<p style="{sb.divider()}">✦ ✦ ✦</p>',
+                    result,
+                )
 
         return result
 
     @classmethod
-    def add_closing_card(cls, html_content: str, brand_name: str = "") -> str:
-        """在文章末尾添加互动卡片"""
-        card = f"""<section class="closing-card">
-<p><strong>✳ 以上为本文全部内容</strong></p>
-<p>如果你觉得有收获，欢迎<span style="color: #1a6fb5;">点赞</span>、<span style="color: #1a6fb5;">在看</span>、<span style="color: #1a6fb5;">转发</span></p>
-<p style="font-size: 12px; color: #aaa; margin-top: 8px;">{brand_name} · 深度行业观察</p>
-</section>"""
+    def add_closing_card(cls, html_content: str, brand_name: str = "", sb: InlineStyleBuilder | None = None) -> str:
+        if sb is None:
+            sb = InlineStyleBuilder()
+        card = (
+            f'<section style="{sb.closing_card()}">\n'
+            f'<p style="margin-bottom: 8px;"><strong>✨ 以上为本文全部内容 ✨</strong></p>\n'
+            f'<p style="margin: 4px 0;">如果你觉得有收获，欢迎'
+            f'<span style="color: {sb.t.primary_color}; font-weight: 700;">点赞</span>、'
+            f'<span style="color: {sb.t.primary_color}; font-weight: 700;">在看</span>、'
+            f'<span style="color: {sb.t.primary_color}; font-weight: 700;">转发</span></p>\n'
+            f'<p style="font-size: 13px; color: #aaa; margin-top: 12px;">{html.escape(brand_name)} · 深度行业观察</p>\n'
+            f'</section>'
+        )
         return html_content.rstrip() + "\n" + card
 
 
 # ============================================================================
-# CSS Inline 转换器
+# Markdown → 微信内联 HTML 转换器
 # ============================================================================
 
-class CssInliner:
-    """将 HTML 中的 <style> 块转换为内联样式（微信编辑器只认内联样式）"""
+class MarkdownToWechatConverter:
+    """将 Markdown 文章转换为微信兼容的纯内联样式 HTML"""
 
-    @classmethod
-    def convert(cls, html_content: str, theme: WechatTheme | None = None) -> str:
-        """将 class-based CSS 转换为内联 style 属性
+    def __init__(self, theme: WechatTheme | None = None, brand_name: str = ""):
+        self.theme = theme or WechatTheme()
+        self.brand_name = brand_name
+        self.sb = InlineStyleBuilder(self.theme)
 
-        采用简单的 CSS 解析器（无需 premailer 等重依赖），
-        支持微信富文本编辑器的常见场景。
+    def convert(self, markdown: str, *, add_closing: bool = True) -> str:
+        """完整转换流程：智能结构化 → 组件渲染 → HTML生成(含内联样式) → 闭合卡片"""
+        structured = self._auto_structure(markdown)
+        html_with_components = WechatComponentRenderer.render_components(structured, self.sb)
+        html_body = self._markdown_to_html(html_with_components)
+        html_wrapped = (
+            f'<section style="{self.sb.article_wrapper()}">\n'
+            f'{html_body}\n'
+            f'</section>'
+        )
+        if add_closing:
+            html_wrapped = WechatComponentRenderer.add_closing_card(
+                html_wrapped, self.brand_name, self.sb
+            )
+        return html_wrapped
+
+    # ---- 智能结构化 ----
+    # 纯文本段落没有 # 标题、> 引用等标记时，自动识别并添加结构
+
+    def _auto_structure(self, markdown: str) -> str:
+        """为纯文本段落自动添加 Markdown 结构标记
+
+        规则：
+        1. 短句（≤25字）+ 感叹号/问号结尾 → h2
+        2. 短句（≤20字）+ 冒号结尾 → h3
+        3. 含"——"破折号的总结性句子 → blockquote
+        4. 互动提问（"你觉得"/"你怎么看"等）→ blockquote
+        5. 首段短句（≤30字，文章第一个段落）→ blockquote（导语）
         """
-        if theme is None:
-            theme = WechatTheme()
+        lines = markdown.split("\n")
+        result: list[str] = []
+        has_any_heading = any(line.strip().startswith("#") for line in lines if line.strip())
+        first_nonempty_found = False
 
-        # 提取所有 CSS 规则
-        css_text = theme.css()
-        rules = cls._parse_css_rules(css_text)
+        for line in lines:
+            stripped = line.strip()
 
-        # 简单策略：包裹外层 div，对已知 class 应用内联样式
-        wrapped = f'<section style="font-family: {theme.font_family}; font-size: {theme.body_size}; color: {theme.text_color}; line-height: {theme.line_height}; max-width: 100%; word-wrap: break-word;">\n{html_content}\n</section>'
+            if not stripped:
+                result.append(line)
+                continue
 
-        # 对已知的 class 进行内联样式注入
-        for selector, styles in rules.items():
-            class_name = selector.lstrip(".")
-            # 替换 class="xxx" 为 class="xxx" style="..."
-            wrapped = cls._inject_inline_style(wrapped, class_name, styles)
+            if (stripped.startswith("#") or stripped.startswith(">") or
+                stripped.startswith("- ") or stripped.startswith("* ") or
+                stripped.startswith(":::") or stripped.startswith("```") or
+                stripped.startswith(">>") or stripped.startswith("---") or
+                re.match(r'^\d+\.\s', stripped)):
+                result.append(line)
+                first_nonempty_found = True
+                continue
 
-        return wrapped
+            if stripped.startswith("<"):
+                result.append(line)
+                first_nonempty_found = True
+                continue
 
-    @classmethod
-    def _parse_css_rules(cls, css_text: str) -> dict[str, str]:
-        """极简 CSS 解析：提取 .classname { ... } 规则"""
-        rules: dict[str, str] = {}
-        # 匹配选择器块
-        pattern = re.compile(
-            r'([^{]+)\s*\{([^}]*)\}',
-            re.DOTALL | re.MULTILINE,
-        )
-        for match in pattern.finditer(css_text):
-            selectors_raw = match.group(1).strip()
-            properties = match.group(2).strip()
+            if not first_nonempty_found and len(stripped) <= 30:
+                result.append(f"> {stripped}")
+                first_nonempty_found = True
+                continue
+            first_nonempty_found = True
 
-            # 只处理以 . 开头的类选择器
-            for selector in selectors_raw.split(","):
-                selector = selector.strip()
-                if selector.startswith("."):
-                    clean_selector = selector.split()[0]  # 去掉伪类等
-                    rules[clean_selector] = "; ".join(
-                        p.strip().rstrip(";")
-                        for p in properties.split(";")
-                        if p.strip()
+            if re.match(r'^(你觉得|你怎么看|你怎么认为|欢迎留言|你会选择)', stripped):
+                result.append(f"> {stripped}")
+                continue
+
+            if len(stripped) <= 25 and re.search(r'[！？!?]$', stripped):
+                if not has_any_heading:
+                    result.append(f"## {stripped}")
+                    continue
+
+            if len(stripped) <= 20 and re.search(r'[：:]$', stripped):
+                result.append(f"### {stripped}")
+                continue
+
+            if "——" in stripped and len(stripped) > 15:
+                result.append(f"> {stripped}")
+                continue
+
+            result.append(line)
+
+        return "\n".join(result)
+
+    def _markdown_to_html(self, text: str) -> str:
+        """Markdown → 内联样式 HTML（每个元素直接带 style 属性）"""
+        lines = text.strip().split("\n")
+        html_lines: list[str] = []
+        in_list = False
+        list_type = ""
+        in_blockquote = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            if not stripped:
+                if in_list:
+                    html_lines.append(f"</{list_type}>")
+                    in_list = False
+                if in_blockquote:
+                    html_lines.append("</blockquote>")
+                    in_blockquote = False
+                continue
+
+            if (stripped.startswith("<section") or stripped.startswith("<p>") or stripped.startswith("<p ")
+                    or stripped.startswith("<div") or stripped.startswith("<span")):
+                if in_list:
+                    html_lines.append(f"</{list_type}>")
+                    in_list = False
+                if in_blockquote:
+                    html_lines.append("</blockquote>")
+                    in_blockquote = False
+                html_lines.append(line)
+                continue
+
+            if (stripped.startswith("</section") or stripped.startswith("</p>") or stripped.startswith("</div>")
+                    or stripped.startswith("</span")):
+                html_lines.append(line)
+                continue
+
+            if stripped.startswith("# ") and not stripped.startswith("## "):
+                if in_list:
+                    html_lines.append(f"</{list_type}>")
+                    in_list = False
+                if in_blockquote:
+                    html_lines.append("</blockquote>")
+                    in_blockquote = False
+                content = self._inline_format(stripped[2:])
+                html_lines.append(
+                    f'<h1 style="{self.sb.h1()}">{content}</h1>\n'
+                    f'<span style="{self.sb.h1_underline()}"></span>'
+                )
+                continue
+
+            if stripped.startswith("## ") and not stripped.startswith("### "):
+                if in_list:
+                    html_lines.append(f"</{list_type}>")
+                    in_list = False
+                if in_blockquote:
+                    html_lines.append("</blockquote>")
+                    in_blockquote = False
+                content = self._inline_format(stripped[3:])
+                html_lines.append(
+                    f'<h2 style="{self.sb.h2()}">{content}</h2>'
+                )
+                continue
+
+            if stripped.startswith("### "):
+                if in_list:
+                    html_lines.append(f"</{list_type}>")
+                    in_list = False
+                if in_blockquote:
+                    html_lines.append("</blockquote>")
+                    in_blockquote = False
+                content = self._inline_format(stripped[4:])
+                html_lines.append(
+                    f'<h3 style="{self.sb.h3()}">{content}</h3>'
+                )
+                continue
+
+            if stripped.startswith("> ") or stripped == ">":
+                if in_list:
+                    html_lines.append(f"</{list_type}>")
+                    in_list = False
+                quote_content = stripped[2:].strip() if stripped.startswith("> ") else ""
+                if not in_blockquote:
+                    in_blockquote = True
+                    html_lines.append(
+                        f'<blockquote style="{self.sb.blockquote()}">'
                     )
+                if quote_content:
+                    html_lines.append(
+                        f'<p style="margin: 0.3em 0; color: #5a5a5a; font-size: 15px;">'
+                        f'{self._inline_format(quote_content)}</p>'
+                    )
+                continue
 
-        return rules
+            if re.match(r'^[\-\*]\s+', stripped):
+                if in_blockquote:
+                    html_lines.append("</blockquote>")
+                    in_blockquote = False
+                content = re.sub(r'^[\-\*]\s+', '', stripped)
+                if not in_list:
+                    in_list = True
+                    list_type = "ul"
+                    html_lines.append(f'<ul style="{self.sb.ul()}">')
+                html_lines.append(
+                    f'<li style="{self.sb.li()}">'
+                    f'<span style="{self.sb.li_bullet()}"></span>'
+                    f'{self._inline_format(content)}</li>'
+                )
+                continue
 
-    @classmethod
-    def _inject_inline_style(cls, html_content: str, class_name: str, styles: str) -> str:
-        """为指定 class 的元素注入内联样式"""
-        # 匹配 class="xxx" 或 class="xxx yyy"
-        pattern = re.compile(
-            rf'(<[^>]*class\s*=\s*["\'])([^"\']*\b{class_name}\b[^"\']*)(["\'][^>]*>)',
-            re.IGNORECASE,
+            if re.match(r'^\d+\.\s+', stripped):
+                if in_blockquote:
+                    html_lines.append("</blockquote>")
+                    in_blockquote = False
+                content = re.sub(r'^\d+\.\s+', '', stripped)
+                if not in_list or list_type != "ol":
+                    if in_list:
+                        html_lines.append(f"</{list_type}>")
+                    in_list = True
+                    list_type = "ol"
+                    html_lines.append(f'<ol style="{self.sb.ol()}">')
+                html_lines.append(f'<li style="{self.sb.li()}">{self._inline_format(content)}</li>')
+                continue
+
+            if stripped == "---" or stripped == "***":
+                if in_list:
+                    html_lines.append(f"</{list_type}>")
+                    in_list = False
+                if in_blockquote:
+                    html_lines.append("</blockquote>")
+                    in_blockquote = False
+                html_lines.append(f'<p style="{self.sb.divider()}">✦ ✦ ✦</p>')
+                continue
+
+            if in_list:
+                html_lines.append(f"</{list_type}>")
+                in_list = False
+            if in_blockquote:
+                html_lines.append("</blockquote>")
+                in_blockquote = False
+            html_lines.append(f'<p style="{self.sb.paragraph()}">{self._inline_format(stripped)}</p>')
+
+        if in_list:
+            html_lines.append(f"</{list_type}>")
+        if in_blockquote:
+            html_lines.append("</blockquote>")
+
+        return "\n".join(html_lines)
+
+    def _inline_format(self, text: str) -> str:
+        """处理行内格式：加粗、代码、链接、图片"""
+        text = re.sub(
+            r'\*\*(.+?)\*\*',
+            rf'<strong style="{self.sb.strong()}">\1</strong>',
+            text,
         )
-        return pattern.sub(
-            rf'\1\2\3 style="{html.escape(styles)}"',
-            html_content,
+        text = re.sub(
+            r'`([^`]+)`',
+            rf'<code style="{self.sb.inline_code()}">\1</code>',
+            text,
         )
+        text = re.sub(
+            r'\[([^\]]+)\]\(([^\)]+)\)',
+            rf'<a href="\2" style="{self.sb.link()}">\1</a>',
+            text,
+        )
+        text = re.sub(
+            r'!\[([^\]]*)\]\(([^\)]+)\)',
+            rf'<img src="\2" alt="\1" style="{self.sb.image()}">'
+            rf'<p style="{self.sb.image_caption()}">\1</p>',
+            text,
+        )
+        return text
 
 
 # ============================================================================
@@ -384,7 +1049,7 @@ class WechatDraftApiClient:
             data = json.loads(resp.read().decode("utf-8"))
             self._access_token = str(data.get("access_token", ""))
             expires_in = int(data.get("expires_in", 7200))
-            self._token_expires = time.time() + expires_in - 300  # 提前 5 分钟刷新
+            self._token_expires = time.time() + expires_in - 300
             self.logger.info("WeChat access token refreshed, expires in %ds", expires_in)
             return self._access_token
         except Exception as exc:
@@ -401,10 +1066,6 @@ class WechatDraftApiClient:
         need_open_comment: int = 0,
         only_fans_can_comment: int = 0,
     ) -> dict[str, Any]:
-        """通过 API 创建微信公众号草稿
-
-        参考文档: https://developers.weixin.qq.com/doc/offiaccount/Draft_Box/Add_draft.html
-        """
         if not self.available:
             raise RuntimeError("WeChat Draft API is not configured. Set WECHAT_APP_ID and WECHAT_APP_SECRET.")
 
@@ -442,13 +1103,9 @@ class WechatDraftApiClient:
             return {"status": "error", "error": str(exc), "draft_media_id": ""}
 
     def upload_image(self, image_path: Path | str) -> dict[str, Any]:
-        """上传图片到微信素材库，返回 media_id 和 url"""
         if not self.available:
             return {"status": "error", "error": "API not configured"}
 
-        # 注意：微信草稿/图文消息中的图片需要先用草稿素材接口上传
-        # 这里使用的是永久素材接口作为简化实现
-        # 生产环境建议使用 draft/material 专用接口
         access_token = self._get_access_token()
         url = f"{self.MATERIAL_ADD_URL}?access_token={access_token}&type=image"
 
@@ -481,145 +1138,6 @@ class WechatDraftApiClient:
         except Exception as exc:
             self.logger.error("Failed to upload image to WeChat: %s", exc)
             return {"status": "error", "error": str(exc)}
-
-
-# ============================================================================
-# Markdown → 微信 HTML 转换器（完整流程）
-# ============================================================================
-
-class MarkdownToWechatConverter:
-    """将 Markdown 文章转换为微信兼容的 HTML（含组件渲染 + CSS Inline）"""
-
-    def __init__(self, theme: WechatTheme | None = None, brand_name: str = ""):
-        self.theme = theme or WechatTheme()
-        self.brand_name = brand_name
-
-    def convert(self, markdown: str, *, add_closing: bool = True) -> str:
-        """完整转换流程：组件 → 基础 HTML → CSS Inline → 闭合卡片"""
-        # Step 1: 渲染自定义组件
-        html_with_components = WechatComponentRenderer.render_components(markdown)
-
-        # Step 2: 基础 Markdown → HTML
-        html_base = self._markdown_to_html(html_with_components)
-
-        # Step 3: CSS Inline 转换
-        html_inlined = CssInliner.convert(html_base, self.theme)
-
-        # Step 4: 添加互动卡片
-        if add_closing:
-            html_inlined = self._append_closing(html_inlined)
-
-        return html_inlined
-
-    def _markdown_to_html(self, text: str) -> str:
-        """简易 Markdown → HTML 转换（兼容微信），处理标题、段落、加粗、链接、列表等"""
-        lines = text.strip().split("\n")
-        html_lines: list[str] = []
-        in_list = False
-        list_type = ""
-
-        for line in lines:
-            stripped = line.strip()
-
-            # 空行
-            if not stripped:
-                if in_list:
-                    html_lines.append(f"</{list_type}>")
-                    in_list = False
-                continue
-
-            # 已经是 HTML 块（section/blockquote）
-            if stripped.startswith("<section") or stripped.startswith("<blockquote"):
-                if in_list:
-                    html_lines.append(f"</{list_type}>")
-                    in_list = False
-                html_lines.append(line)
-                continue
-
-            # 关闭标签
-            if stripped.startswith("</section") or stripped.startswith("</blockquote"):
-                html_lines.append(line)
-                continue
-
-            # 标题
-            if stripped.startswith("### "):
-                if in_list:
-                    html_lines.append(f"</{list_type}>")
-                    in_list = False
-                html_lines.append(f"<h3>{self._inline_format(stripped[4:])}</h3>")
-                continue
-            if stripped.startswith("## "):
-                if in_list:
-                    html_lines.append(f"</{list_type}>")
-                    in_list = False
-                html_lines.append(f"<h2>{self._inline_format(stripped[3:])}</h2>")
-                continue
-            if stripped.startswith("# "):
-                if in_list:
-                    html_lines.append(f"</{list_type}>")
-                    in_list = False
-                html_lines.append(f"<h1>{self._inline_format(stripped[2:])}</h1>")
-                continue
-
-            # 无序列表
-            if re.match(r'^[\-\*]\s+', stripped):
-                content = re.sub(r'^[\-\*]\s+', '', stripped)
-                if not in_list:
-                    in_list = True
-                    list_type = "ul"
-                    html_lines.append(f"<{list_type}>")
-                html_lines.append(f"<li>{self._inline_format(content)}</li>")
-                continue
-
-            # 有序列表
-            if re.match(r'^\d+\.\s+', stripped):
-                content = re.sub(r'^\d+\.\s+', '', stripped)
-                if not in_list or list_type != "ol":
-                    if in_list:
-                        html_lines.append(f"</{list_type}>")
-                    in_list = True
-                    list_type = "ol"
-                    html_lines.append(f"<{list_type}>")
-                html_lines.append(f"<li>{self._inline_format(content)}</li>")
-                continue
-
-            # 分割线
-            if stripped == "---" or stripped == "***":
-                if in_list:
-                    html_lines.append(f"</{list_type}>")
-                    in_list = False
-                html_lines.append('<p class="divider-line">· · ·</p>')
-                continue
-
-            # 普通段落
-            if in_list:
-                html_lines.append(f"</{list_type}>")
-                in_list = False
-            html_lines.append(f"<p>{self._inline_format(stripped)}</p>")
-
-        if in_list:
-            html_lines.append(f"</{list_type}>")
-
-        return "\n".join(html_lines)
-
-    def _inline_format(self, text: str) -> str:
-        """处理行内格式：加粗、斜体、链接、代码"""
-        # 加粗 **text**
-        text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
-        # 行内代码 `code`
-        text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
-        # 链接 [text](url)
-        text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2">\1</a>', text)
-        # 图片 ![alt](url)
-        text = re.sub(
-            r'!\[([^\]]*)\]\(([^\)]+)\)',
-            r'<img src="\2" alt="\1"><p class="image-caption">\1</p>',
-            text,
-        )
-        return text
-
-    def _append_closing(self, html_content: str) -> str:
-        return WechatComponentRenderer.add_closing_card(html_content, self.brand_name)
 
 
 # ============================================================================

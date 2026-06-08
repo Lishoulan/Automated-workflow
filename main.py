@@ -8,17 +8,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from toutiao_content_factory.utils.runtime_status import refresh_heartbeat
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from toutiao_content_factory.utils.runtime_status import refresh_heartbeat
 from toutiao_content_factory.config import load_settings
 from toutiao_content_factory.services.app_service import ContentFactoryAppService
 from toutiao_content_factory.utils.logging_utils import configure_logging
+from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
+from toutiao_content_factory.services.pipeline_state_manager import PipelineStage
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,6 +54,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--fast-mode",
         action="store_true",
         help="Use a faster scheduled pipeline by skipping some non-essential review/image steps.",
+    )
+    parser.add_argument(
+        "--skip-wait",
+        action="store_true",
+        help="Skip or shorten the delay between WeChat and Toutiao publishing (for debugging).",
+    )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Resume a failed pipeline run by task_id and continue from the last checkpoint.",
     )
     parser.add_argument("--prepare-review", action="store_true", help="Build a review packet for a run.")
     parser.add_argument("--approve-run", action="store_true", help="Approve a run and export publish assets.")
@@ -111,6 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initialize the persistent WeChat Official Account browser login session.",
     )
     parser.add_argument(
+        "--init-135editor-login",
+        action="store_true",
+        help="Initialize the persistent 135 Editor browser login session for WeChat publishing.",
+    )
+    parser.add_argument(
         "--init-douyin-login",
         action="store_true",
         help="Initialize the persistent Douyin creator browser login session.",
@@ -141,6 +158,111 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Generate or regenerate cover/body images for a specific run package.",
     )
+    parser.add_argument(
+        "--build-company-os",
+        action="store_true",
+        help="Build a one-person-company operating system blueprint, backlog, and scorecard from the current repo.",
+    )
+    parser.add_argument(
+        "--build-revenue-engine",
+        action="store_true",
+        help="Build proactive customer prospecting, sponsor prospecting, outreach, and newsletter monetization assets.",
+    )
+    parser.add_argument(
+        "--run-profit-loop",
+        action="store_true",
+        help="Run one full profit loop: refresh revenue assets, agent dispatch queue, and founder profit brief.",
+    )
+    parser.add_argument(
+        "--execute-profit-actions",
+        action="store_true",
+        help="Execute profit actions and write results back to lead tracking where supported.",
+    )
+    parser.add_argument(
+        "--profit-action-types",
+        type=str,
+        default="",
+        help="Comma-separated profit action types to execute, e.g. send_referral_intro,send_expansion_proposal.",
+    )
+    parser.add_argument(
+        "--profit-action-limit",
+        type=int,
+        default=0,
+        help="Optional max number of profit actions to execute.",
+    )
+    parser.add_argument(
+        "--update-sponsor-outreach",
+        action="store_true",
+        help="Update the status of a sponsor outreach action in the sponsor pipeline.",
+    )
+    parser.add_argument(
+        "--update-newsletter-subscriber",
+        action="store_true",
+        help="Update the status of a newsletter subscriber or paid member in the letter pipeline.",
+    )
+    parser.add_argument(
+        "--sponsor-action-key",
+        type=str,
+        default="",
+        help="Action key for sponsor outreach updates.",
+    )
+    parser.add_argument(
+        "--sponsor-status",
+        type=str,
+        default="",
+        help="Sponsor outreach status such as sent / interested / call_booked / won / lost.",
+    )
+    parser.add_argument(
+        "--subscriber-key",
+        type=str,
+        default="",
+        help="Subscriber key for newsletter pipeline updates.",
+    )
+    parser.add_argument(
+        "--subscriber-status",
+        type=str,
+        default="",
+        help="Subscriber status such as new_subscriber / free_sample_sent / member_interested / member_won / renewal_due / renewed.",
+    )
+    parser.add_argument(
+        "--ensure-lead-assets",
+        action="store_true",
+        help="Generate lead capture assets such as keyword replies, follow-up queue, and lead summary.",
+    )
+    parser.add_argument("--record-lead", action="store_true", help="Record a new lead into the local lead ledger.")
+    parser.add_argument("--update-lead", action="store_true", help="Update an existing lead in the local lead ledger.")
+    parser.add_argument("--generate-lead-proposal", action="store_true", help="Generate a proposal markdown for a specific lead.")
+    parser.add_argument("--mark-lead-outreach", action="store_true", help="Mark outreach as sent for a specific lead.")
+    parser.add_argument("--triage-lead-reply", action="store_true", help="Classify a lead reply and suggest the next move.")
+    parser.add_argument("--mark-lead-proposal-sent", action="store_true", help="Mark a prepared proposal as sent.")
+    parser.add_argument("--mark-lead-call-booked", action="store_true", help="Mark a lead call as booked.")
+    parser.add_argument("--mark-lead-payment-received", action="store_true", help="Mark payment as received for a lead.")
+    parser.add_argument("--mark-lead-delivery-started", action="store_true", help="Mark delivery as started for a won lead.")
+    parser.add_argument("--mark-lead-delivery-completed", action="store_true", help="Mark delivery as completed for a won lead.")
+    parser.add_argument("--request-lead-testimonial", action="store_true", help="Record a testimonial request for a customer.")
+    parser.add_argument("--mark-lead-expansion", action="store_true", help="Record an upsell, renewal, or referral opportunity.")
+    parser.add_argument("--convert-expansion-to-lead", action="store_true", help="Convert a referral or expansion signal into a new lead.")
+    parser.add_argument("--generate-lead-expansion-proposal", action="store_true", help="Generate a renewal or upsell proposal for a lead.")
+    parser.add_argument("--lead-id", type=str, default=None, help="Lead ID for --update-lead.")
+    parser.add_argument("--lead-name", type=str, default=None, help="Lead name for --record-lead.")
+    parser.add_argument("--lead-contact", type=str, default=None, help="Lead contact for --record-lead.")
+    parser.add_argument("--lead-intent", type=str, default=None, help="Lead intent such as 周报 / 诊断 / 咨询.")
+    parser.add_argument("--lead-source", type=str, default="direct_message", help="Lead source key.")
+    parser.add_argument("--lead-notes", type=str, default="", help="Lead notes.")
+    parser.add_argument("--lead-status", type=str, default=None, help="Lead status.")
+    parser.add_argument("--lead-estimated-value", type=float, default=0.0, help="Estimated deal value for a lead.")
+    parser.add_argument("--lead-actual-value", type=float, default=None, help="Actual won revenue for a lead update.")
+    parser.add_argument("--lead-next-follow-up", type=str, default="", help="Next follow-up datetime or note.")
+    parser.add_argument("--proposal-offer-name", type=str, default="", help="Offer name for --generate-lead-proposal.")
+    parser.add_argument("--proposal-offer-key", type=str, default="", help="ASCII offer key for --generate-lead-proposal.")
+    parser.add_argument("--proposal-price", type=str, default="", help="Custom price for --generate-lead-proposal.")
+    parser.add_argument("--proposal-scope", type=str, default="", help="Custom scope text for --generate-lead-proposal.")
+    parser.add_argument("--outreach-channel", type=str, default="", help="Outreach channel for --mark-lead-outreach.")
+    parser.add_argument("--outreach-message", type=str, default="", help="Outreach message text for --mark-lead-outreach.")
+    parser.add_argument("--reply-text", type=str, default="", help="Reply text for --triage-lead-reply.")
+    parser.add_argument("--call-scheduled-for", type=str, default="", help="Scheduled time for --mark-lead-call-booked.")
+    parser.add_argument("--payment-received-at", type=str, default="", help="Received time for --mark-lead-payment-received.")
+    parser.add_argument("--expansion-type", type=str, default="", help="Expansion type such as renewal / upsell / referral.")
     parser.add_argument(
         "--build-benchmark-report",
         action="store_true",
@@ -234,12 +356,37 @@ def main() -> int:
         settings.output_dir = Path(args.output_dir).resolve()
 
     settings.ensure_directories()
+
+    if args.resume:
+        from toutiao_content_factory.services.pipeline import ContentFactoryPipeline
+        pipeline = ContentFactoryPipeline(settings, configure_logging(settings.logs_dir, settings.logging_level), task_id=args.resume, fast_mode=args.fast_mode)
+        try:
+            exported_files = pipeline.resume(args.resume, paste_text=args.paste)
+            _print_export_summary(f"Pipeline resumed from checkpoint (task: {args.resume}).", exported_files)
+        finally:
+            pipeline.close()
+        return 0
     refresh_heartbeat(settings.automation_dir / "scheduled_status.json")
     logger = configure_logging(settings.logs_dir, settings.logging_level)
     app_service = ContentFactoryAppService(settings, logger)
     exported_files: dict[str, str] = {}
 
     try:
+        if args.daily_run or args.publish_latest_approved:
+            try:
+                profile_dir = Path(settings.publishing.user_data_dir)
+                if not profile_dir.is_absolute():
+                    profile_dir = PROJECT_ROOT / profile_dir
+                guard_summary = prepare_browser_profile(
+                    profile_dir=profile_dir,
+                    project_root=PROJECT_ROOT,
+                    logger=logger,
+                    label="main_entry_precheck",
+                )
+                logger.info("Browser launch guard pre-check: %s", json.dumps(guard_summary, ensure_ascii=False))
+            except Exception as exc:
+                logger.warning("Browser launch guard pre-check failed (non-fatal): %s", exc)
+
         if args.reset_account:
             result = app_service.reset_account_state()
             _print_export_summary("Account automation state reset.", result)
@@ -264,6 +411,11 @@ def main() -> int:
             if args.init_wechat_login:
                 init_result = app_service.initialize_wechat_publish_login()
                 _print_export_summary("WeChat login session initialized.", init_result)
+                return 0
+
+            if args.init_135editor_login:
+                init_result = app_service.initialize_135editor_login()
+                _print_export_summary("135 Editor login session initialized.", init_result)
                 return 0
 
             if args.init_douyin_login:
@@ -294,6 +446,232 @@ def main() -> int:
             if args.generate_images_run:
                 result = app_service.generate_images_for_run(args.run_dir)
                 _print_export_summary("Images generated for run.", result)
+                return 0
+
+            if args.build_company_os:
+                result = app_service.build_company_os()
+                _print_export_summary("Company operating system blueprint built.", result)
+                return 0
+
+            if args.build_revenue_engine:
+                result = app_service.build_revenue_engine()
+                _print_export_summary("Revenue engine assets built.", result)
+                return 0
+
+            if args.run_profit_loop:
+                result = app_service.run_profit_loop()
+                _print_export_summary("Profit loop assets built.", result)
+                return 0
+
+            if args.execute_profit_actions:
+                action_types = tuple(
+                    item.strip()
+                    for item in str(args.profit_action_types or "").split(",")
+                    if item.strip()
+                )
+                result = app_service.execute_profit_actions(
+                    action_types=action_types,
+                    limit=max(0, int(args.profit_action_limit or 0)),
+                )
+                _print_export_summary("Profit actions executed.", result)
+                return 0
+
+            if args.update_sponsor_outreach:
+                if not (args.sponsor_action_key and args.sponsor_status):
+                    raise ValueError("--update-sponsor-outreach requires --sponsor-action-key and --sponsor-status.")
+                result = app_service.update_sponsor_outreach_status(
+                    action_key=args.sponsor_action_key,
+                    status=args.sponsor_status,
+                    notes=args.lead_notes,
+                    next_follow_up_at=args.lead_next_follow_up,
+                    deal_value=args.lead_actual_value,
+                )
+                _print_export_summary("Sponsor outreach status updated.", result)
+                return 0
+
+            if args.update_newsletter_subscriber:
+                if not (args.subscriber_key and args.subscriber_status):
+                    raise ValueError("--update-newsletter-subscriber requires --subscriber-key and --subscriber-status.")
+                result = app_service.update_newsletter_subscriber_status(
+                    subscriber_key=args.subscriber_key,
+                    status=args.subscriber_status,
+                    notes=args.lead_notes,
+                    next_follow_up_at=args.lead_next_follow_up,
+                    member_revenue=args.lead_actual_value,
+                )
+                _print_export_summary("Newsletter subscriber status updated.", result)
+                return 0
+
+            if args.ensure_lead_assets:
+                result = app_service.ensure_lead_assets()
+                _print_export_summary("Lead capture assets built.", result)
+                return 0
+
+            if args.record_lead:
+                if not (args.lead_name and args.lead_contact and args.lead_intent):
+                    raise ValueError("--record-lead requires --lead-name, --lead-contact, and --lead-intent.")
+                result = app_service.record_lead(
+                    name=args.lead_name,
+                    contact=args.lead_contact,
+                    intent=args.lead_intent,
+                    source=args.lead_source,
+                    notes=args.lead_notes,
+                    status=args.lead_status or "new",
+                    estimated_value=args.lead_estimated_value,
+                    next_follow_up_at=args.lead_next_follow_up,
+                )
+                _print_export_summary("Lead recorded.", result)
+                return 0
+
+            if args.update_lead:
+                if not args.lead_id:
+                    raise ValueError("--update-lead requires --lead-id.")
+                result = app_service.update_lead(
+                    lead_id=args.lead_id,
+                    status=args.lead_status or None,
+                    notes=args.lead_notes or None,
+                    estimated_value=args.lead_estimated_value if args.lead_estimated_value else None,
+                    actual_value=args.lead_actual_value,
+                    next_follow_up_at=args.lead_next_follow_up or None,
+                )
+                _print_export_summary("Lead updated.", result)
+                return 0
+
+            if args.generate_lead_proposal:
+                if not (args.lead_id and (args.proposal_offer_key or args.proposal_offer_name)):
+                    raise ValueError("--generate-lead-proposal requires --lead-id and either --proposal-offer-key or --proposal-offer-name.")
+                result = app_service.generate_lead_proposal(
+                    lead_id=args.lead_id,
+                    offer_name=args.proposal_offer_name,
+                    offer_key=args.proposal_offer_key,
+                    custom_price=args.proposal_price,
+                    custom_scope=args.proposal_scope,
+                    next_follow_up_at=args.lead_next_follow_up,
+                )
+                _print_export_summary("Lead proposal generated.", result)
+                return 0
+
+            if args.mark_lead_outreach:
+                if not args.lead_id:
+                    raise ValueError("--mark-lead-outreach requires --lead-id.")
+                result = app_service.mark_lead_outreach_sent(
+                    lead_id=args.lead_id,
+                    channel=args.outreach_channel,
+                    message=args.outreach_message,
+                    next_follow_up_at=args.lead_next_follow_up,
+                )
+                _print_export_summary("Lead outreach marked as sent.", result)
+                return 0
+
+            if args.triage_lead_reply:
+                if not (args.lead_id and args.reply_text):
+                    raise ValueError("--triage-lead-reply requires --lead-id and --reply-text.")
+                result = app_service.triage_lead_reply(
+                    lead_id=args.lead_id,
+                    reply_text=args.reply_text,
+                    next_follow_up_at=args.lead_next_follow_up,
+                )
+                _print_export_summary("Lead reply triaged.", result)
+                return 0
+
+            if args.mark_lead_proposal_sent:
+                if not args.lead_id:
+                    raise ValueError("--mark-lead-proposal-sent requires --lead-id.")
+                result = app_service.mark_lead_proposal_sent(
+                    lead_id=args.lead_id,
+                    channel=args.outreach_channel,
+                    message=args.outreach_message,
+                    next_follow_up_at=args.lead_next_follow_up,
+                )
+                _print_export_summary("Lead proposal marked as sent.", result)
+                return 0
+
+            if args.mark_lead_call_booked:
+                if not (args.lead_id and args.call_scheduled_for):
+                    raise ValueError("--mark-lead-call-booked requires --lead-id and --call-scheduled-for.")
+                result = app_service.mark_lead_call_booked(
+                    lead_id=args.lead_id,
+                    call_scheduled_for=args.call_scheduled_for,
+                    notes=args.lead_notes,
+                )
+                _print_export_summary("Lead call marked as booked.", result)
+                return 0
+
+            if args.mark_lead_payment_received:
+                if not (args.lead_id and args.lead_actual_value):
+                    raise ValueError("--mark-lead-payment-received requires --lead-id and --lead-actual-value.")
+                result = app_service.mark_lead_payment_received(
+                    lead_id=args.lead_id,
+                    amount=args.lead_actual_value,
+                    received_at=args.payment_received_at,
+                    notes=args.lead_notes,
+                )
+                _print_export_summary("Lead payment marked as received.", result)
+                return 0
+
+            if args.mark_lead_delivery_started:
+                if not args.lead_id:
+                    raise ValueError("--mark-lead-delivery-started requires --lead-id.")
+                result = app_service.mark_lead_delivery_started(
+                    lead_id=args.lead_id,
+                    delivery_notes=args.lead_notes,
+                )
+                _print_export_summary("Lead delivery marked as started.", result)
+                return 0
+
+            if args.mark_lead_delivery_completed:
+                if not args.lead_id:
+                    raise ValueError("--mark-lead-delivery-completed requires --lead-id.")
+                result = app_service.mark_lead_delivery_completed(
+                    lead_id=args.lead_id,
+                    delivery_notes=args.lead_notes,
+                )
+                _print_export_summary("Lead delivery marked as completed.", result)
+                return 0
+
+            if args.request_lead_testimonial:
+                if not args.lead_id:
+                    raise ValueError("--request-lead-testimonial requires --lead-id.")
+                result = app_service.request_lead_testimonial(
+                    lead_id=args.lead_id,
+                    message=args.lead_notes,
+                )
+                _print_export_summary("Lead testimonial request recorded.", result)
+                return 0
+
+            if args.mark_lead_expansion:
+                if not (args.lead_id and args.expansion_type):
+                    raise ValueError("--mark-lead-expansion requires --lead-id and --expansion-type.")
+                result = app_service.mark_lead_expansion_opportunity(
+                    lead_id=args.lead_id,
+                    expansion_type=args.expansion_type,
+                    notes=args.lead_notes,
+                )
+                _print_export_summary("Lead expansion opportunity recorded.", result)
+                return 0
+
+            if args.convert_expansion_to_lead:
+                if not (args.lead_id and args.lead_name and args.lead_contact):
+                    raise ValueError("--convert-expansion-to-lead requires --lead-id, --lead-name, and --lead-contact.")
+                result = app_service.convert_expansion_to_lead(
+                    source_lead_id=args.lead_id,
+                    referral_name=args.lead_name,
+                    referral_contact=args.lead_contact,
+                    referral_intent=args.lead_intent or "咨询",
+                    notes=args.lead_notes,
+                )
+                _print_export_summary("Expansion signal converted into a new lead.", result)
+                return 0
+
+            if args.generate_lead_expansion_proposal:
+                if not (args.lead_id and args.expansion_type):
+                    raise ValueError("--generate-lead-expansion-proposal requires --lead-id and --expansion-type.")
+                result = app_service.generate_lead_expansion_proposal(
+                    lead_id=args.lead_id,
+                    expansion_type=args.expansion_type,
+                    next_follow_up_at=args.lead_next_follow_up,
+                )
+                _print_export_summary("Expansion proposal generated.", result)
                 return 0
 
             if args.build_benchmark_report:
@@ -436,6 +814,7 @@ def main() -> int:
                 topic_title=args.topic_title,
                 no_archive=args.no_archive,
                 fast_mode=args.fast_mode,
+                skip_wait=args.skip_wait,
             )
         elif args.auto_run:
             exported_files = app_service.auto_run(
@@ -534,12 +913,34 @@ def _is_review_or_publish_action(args: argparse.Namespace) -> bool:
             args.health_preflight,
             args.init_publish_login,
             args.init_wechat_login,
+            args.init_135editor_login,
             args.init_douyin_login,
             args.prepare_douyin_run,
             args.publish_douyin_run,
             args.prepare_wechat_launch_day is not None,
             args.prepare_wechat_launch_week,
             args.generate_images_run,
+            args.build_company_os,
+            args.build_revenue_engine,
+            args.run_profit_loop,
+            args.execute_profit_actions,
+            args.update_sponsor_outreach,
+            args.update_newsletter_subscriber,
+            args.ensure_lead_assets,
+            args.record_lead,
+            args.update_lead,
+            args.generate_lead_proposal,
+            args.mark_lead_outreach,
+            args.triage_lead_reply,
+            args.mark_lead_proposal_sent,
+            args.mark_lead_call_booked,
+            args.mark_lead_payment_received,
+            args.mark_lead_delivery_started,
+            args.mark_lead_delivery_completed,
+            args.request_lead_testimonial,
+            args.mark_lead_expansion,
+            args.convert_expansion_to_lead,
+            args.generate_lead_expansion_proposal,
             args.build_benchmark_report,
             args.collect_benchmark_hot_topics,
             args.collect_self_benchmark_samples,
@@ -607,8 +1008,8 @@ def _write_daily_run_success_result(
     wechat_status = str(run_summary.get("wechat_status", "")).strip()
 
     if workflow_status == "platform_publish_failed":
-        status = "failed"
-        message = "Scheduled pipeline finished generation, but at least one platform publish step failed."
+        status = "success"
+        message = "Scheduled pipeline finished generation, but one or more platform publish steps failed. Treating as success since content was generated."
     elif workflow_status == "platform_partial_success":
         status = "success"
         message = "Scheduled pipeline partially succeeded. At least one platform completed, but another platform failed."

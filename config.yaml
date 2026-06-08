@@ -690,7 +690,7 @@
     }
   },
   "enhanced_insights": {
-    "enabled": false,
+    "enabled": true,
     "multi_source": false,
     "historical": false,
     "data_mining": false

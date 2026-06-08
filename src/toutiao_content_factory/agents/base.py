@@ -46,6 +46,12 @@ class BaseAgent:
         "原文链接：",
         "补充片段：",
         "摘要：",
+        "体裁要求：",
+        "体裁要求",
+        "manual_paste：",
+        "manual_paste",
+        "来源摘要：",
+        "来源摘要",
     )
     # 预编译的正则表达式用于避免重复编译
     _WHITESPACE_RE = re.compile(r"\s+")

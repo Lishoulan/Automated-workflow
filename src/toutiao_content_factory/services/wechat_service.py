@@ -478,11 +478,19 @@ class WechatPublishService:
 
         # 优先级3: 内置 WeChat layout engine
         try:
+            # 导入主题预设
+            from toutiao_content_factory.services.wechat_layout_engine import THEME_PRESETS
+            theme_name = self.settings.wechat.builtin_theme
+            theme = THEME_PRESETS.get(theme_name)
+            if theme is None:
+                self.logger.warning(f"Theme '{theme_name}' not found, using default theme")
+                theme = THEME_PRESETS.get("tech_blue")
             converter = MarkdownToWechatConverter(
+                theme=theme,
                 brand_name=self.settings.wechat.author_name or self.settings.wechat.account_name or self.settings.brand_name,
             )
             html = converter.convert(article_markdown)
-            return html, {"provider": "wechat_layout_engine"}
+            return html, {"provider": "wechat_layout_engine", "theme": theme_name}
         except Exception as exc:
             self.logger.warning("WeChat layout engine failed, falling back to builtin renderer: %s", exc)
 

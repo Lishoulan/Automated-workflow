@@ -735,10 +735,10 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         skip_image_generation=_env_flag("TOUTIAO_SKIP_IMAGE_GENERATION", False),
         skip_review_agent=_env_flag("TOUTIAO_SKIP_REVIEW_AGENT", False),
         skip_publish_review=_env_flag("TOUTIAO_SKIP_PUBLISH_REVIEW", False),
-        enhanced_insights_enabled=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_ENABLED", False),
-        enhanced_insights_use_multi_source=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_MULTI_SOURCE", False),
-        enhanced_insights_use_historical=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_HISTORICAL", False),
-        enhanced_insights_use_data_mining=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_DATA_MINING", False),
+        enhanced_insights_enabled=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_ENABLED", bool(merged_payload.get("enhanced_insights", {}).get("enabled", False))),
+        enhanced_insights_use_multi_source=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_MULTI_SOURCE", bool(merged_payload.get("enhanced_insights", {}).get("multi_source", False))),
+        enhanced_insights_use_historical=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_HISTORICAL", bool(merged_payload.get("enhanced_insights", {}).get("historical", False))),
+        enhanced_insights_use_data_mining=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_DATA_MINING", bool(merged_payload.get("enhanced_insights", {}).get("data_mining", False))),
     )
 
 
@@ -1506,6 +1506,12 @@ def _default_config_payload() -> dict[str, Any]:
             }
         },
         "styles": _default_style_payloads(),
+        "enhanced_insights": {
+            "enabled": False,
+            "multi_source": False,
+            "historical": False,
+            "data_mining": False,
+        },
     }
 
 

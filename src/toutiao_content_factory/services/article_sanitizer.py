@@ -35,6 +35,12 @@ META_NOISE_PREFIXES = (
     "对标账号高热内容",
     "对标热点/",
     "36氪头条号：",
+    "体裁要求：",
+    "体裁要求",
+    "manual_paste：",
+    "manual_paste",
+    "来源摘要：",
+    "来源摘要",
 )
 
 SECTION_LABELS = {
@@ -48,6 +54,14 @@ SECTION_LABELS = {
     "正文校验备注",
 }
 
+# 行内噪声模式：匹配 "体裁要求：..." 和 "manual_paste：..." 等
+_INLINE_NOISE_PATTERNS = [
+    re.compile(r"体裁要求[：:]?.*?(?=[。；;！!？?\n]|$)"),
+    re.compile(r"manual_paste[：:]?.*?(?=[。；;！!？?\n]|$)"),
+    re.compile(r"来源摘要[：:]\s*manual_paste[。；;]?"),
+    re.compile(r"来源摘要[：:][^。；;！!？?\n]*"),
+]
+
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?；;])")
 COMMA_SPLIT_RE = re.compile(r"(?<=[，、；：:])")
 INLINE_HEADING_RE = re.compile(r"(?<!\n)\s+(?=#{1,6}\s*)")
@@ -58,6 +72,7 @@ def clean_article_text(article: str, title_candidates: Iterable[str] | None = No
     if not text:
         return ""
 
+    text = _strip_inline_noise(text)
     text = _normalize_markdown_structure(text)
     text = _strip_markdown_blocks(text)
     blocks = [_clean_block(block) for block in re.split(r"\n\s*\n+", text) if block.strip()]
@@ -113,6 +128,16 @@ def _supplement_short_article(text: str, current_char_count: int) -> str:
     if paragraphs_to_add:
         text = text.rstrip() + "\n\n" + "\n\n".join(paragraphs_to_add)
     return text
+
+
+def _strip_inline_noise(text: str) -> str:
+    """Remove inline prompt leakage like '体裁要求：...' and 'manual_paste：...'."""
+    for pattern in _INLINE_NOISE_PATTERNS:
+        text = pattern.sub("", text)
+    # Clean up leftover artifacts like "是" before removed noise
+    text = re.sub(r"[，,]?\s*是\s*[，,。；;]", "，", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip()
 
 
 def _normalize_markdown_structure(text: str) -> str:
@@ -235,6 +260,8 @@ def _looks_like_noise(text: str) -> bool:
             "对标热点/",
             "36氪头条号：",
             "benchmark_hotspot",
+            "体裁要求",
+            "manual_paste",
         )
     )
 

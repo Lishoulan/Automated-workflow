@@ -74,7 +74,7 @@ class AgentWorkflowService:
         try:
             self._abort_if_low_quality(extraction, data_report)
             insight_report: InsightReport | None = None
-            if settings.enhanced_insights_enabled:
+            if self.settings.enhanced_insights_enabled:
                 try:
                     self.logger.info("Running InsightAgent for enhanced opinions...")
                     insight_report = self.insight_agent.run(

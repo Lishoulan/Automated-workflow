@@ -79,9 +79,9 @@ jobs:
       CACHE_SIMILARITY_THRESHOLD: ${{ secrets.CACHE_SIMILARITY_THRESHOLD || '0.82' }}
       LOG_LEVEL: INFO
 
-      # 头条发布（云端只做内容生成，发布由本地脚本完成）
+      # 头条发布
       TOUTIAO_PUBLISH_ENABLED: "1"
-      TOUTIAO_AUTO_PUBLISH: "0"
+      TOUTIAO_AUTO_PUBLISH: "1"
       TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS: ${{ secrets.TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS || '3' }}
       TOUTIAO_AIGC_DECLARATION_ENABLED: "1"
       TOUTIAO_PUBLISH_PLATFORM: toutiao
@@ -96,9 +96,9 @@ jobs:
       TOUTIAO_TITLE_MAX_LENGTH: "30"
       TOUTIAO_PUBLISH_COVER_MODE: ${{ secrets.TOUTIAO_PUBLISH_COVER_MODE || 'single' }}
 
-      # 微信发布（云端只做内容生成，发布由本地脚本完成）
-      WECHAT_ENABLED: "0"
-      WECHAT_AUTO_PUBLISH: "0"
+      # 微信发布
+      WECHAT_ENABLED: "1"
+      WECHAT_AUTO_PUBLISH: "1"
       WECHAT_ACCOUNT_NAME: ${{ secrets.WECHAT_ACCOUNT_NAME || '' }}
       WECHAT_AUTHOR_NAME: ${{ secrets.WECHAT_AUTHOR_NAME || '手蓝' }}
       WECHAT_BASE_URL: https://mp.weixin.qq.com/
@@ -110,7 +110,7 @@ jobs:
       WECHAT_LAYOUT_BACKEND: ${{ secrets.WECHAT_LAYOUT_BACKEND || 'builtin' }}
       WECHAT_MD2WECHAT_ENABLED: ${{ secrets.WECHAT_MD2WECHAT_ENABLED || '0' }}
       WECHAT_SERV00_PROXY_ENABLED: ${{ secrets.WECHAT_SERV00_PROXY_ENABLED || '0' }}
-      WECHAT_EDITOR_135_ENABLED: "0"
+      WECHAT_EDITOR_135_ENABLED: "1"
       WECHAT_EDITOR_135_PROFILE_DIR: .runtime/editor_135_profile
 
       # 抖音发布（云端只做内容生成，发布由本地脚本完成）

@@ -41,26 +41,29 @@ class LettaClient:
         """Retrieve relevant memory context for a given topic."""
         if not self.agent_id:
             return ""
-        path = f"/v1/agents/{self.agent_id}/memory"
+        path = f"/v1/agents/{self.agent_id}/core-memory"
         result = self._request("GET", path)
         if not result:
             return ""
         # Extract relevant context from memory blocks
-        memories = result.get("core_memory", [])
-        if isinstance(memories, list):
-            parts = [m.get("content", "") for m in memories if m.get("content")]
+        blocks = result if isinstance(result, list) else result.get("blocks", result.get("core_memory", []))
+        if isinstance(blocks, list):
+            parts = [m.get("value", m.get("content", "")) for m in blocks if m.get("value") or m.get("content")]
             return "\n".join(parts)
-        return str(memories) if memories else ""
+        return str(blocks) if blocks else ""
 
     def save_observation(self, observation: str) -> bool:
-        """Save an observation to the agent's memory."""
+        """Save an observation to the agent's memory by updating core memory blocks."""
         if not self.agent_id:
             return False
-        path = f"/v1/agents/{self.agent_id}/messages"
+        # Use the core-memory block update API instead of messages (which triggers LLM call)
+        path = f"/v1/agents/{self.agent_id}/core-memory"
+        # Append observation to the human block
         body = {
-            "messages": [{"role": "user", "content": observation}],
+            "label": "human",
+            "value": observation,
         }
-        result = self._request("POST", path, body)
+        result = self._request("PATCH", path, body)
         return bool(result)
 
     def create_agent(self, name: str, description: str = "") -> str:

@@ -31,16 +31,25 @@ class FrontendImageRenderer:
         self._browser = None
 
     def _get_browser(self):
-        """Lazy-init Playwright browser (Chromium)."""
+        """Lazy-init Playwright browser (use system Edge/Chrome, or download Chromium)."""
         if self._browser is not None:
             return self._browser
         try:
             from playwright.sync_api import sync_playwright
             pw = sync_playwright().start()
-            self._browser = pw.chromium.launch()
-            self._pw = pw  # keep reference to prevent GC
-            self.logger.info("FrontendImageRenderer: Playwright Chromium launched")
-            return self._browser
+            # Try system Edge first, then Chrome, then default Chromium
+            for channel in ["msedge", "chrome", None]:
+                try:
+                    kwargs = {"channel": channel} if channel else {}
+                    self._browser = pw.chromium.launch(**kwargs)
+                    self._pw = pw
+                    self.logger.info("FrontendImageRenderer: launched browser (channel=%s)", channel or "chromium")
+                    return self._browser
+                except Exception:
+                    continue
+            self.logger.warning("FrontendImageRenderer: no browser available")
+            pw.stop()
+            return None
         except Exception as exc:
             self.logger.warning("FrontendImageRenderer: Playwright unavailable (%s), will use Pillow fallback", exc)
             return None

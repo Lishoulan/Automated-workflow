@@ -217,6 +217,19 @@ class ImageGenerationService:
     def __init__(self, settings, logger):
         self.settings = settings
         self.logger = logger
+        self._frontend_renderer = None
+
+    def _get_frontend_renderer(self):
+        """Lazy-init the frontend image renderer."""
+        if self._frontend_renderer is not None:
+            return self._frontend_renderer
+        try:
+            from toutiao_content_factory.services.frontend_image_renderer import FrontendImageRenderer
+            self._frontend_renderer = FrontendImageRenderer(logger=self.logger)
+            return self._frontend_renderer
+        except Exception as exc:
+            self.logger.debug("Frontend renderer init failed: %s", exc)
+            return None
 
     def generate_for_run(self, run_dir, include_infographics=True):
         publish_dir = run_dir / self.settings.review.publish_dirname
@@ -231,11 +244,26 @@ class ImageGenerationService:
         pi.mkdir(parents=True, exist_ok=True)
         cr = ri / "cover.png"
         cp = pi / "cover.png"
-        try:
-            generate_text_cover(title, str(cr))
-        except Exception as e:
-            self.logger.error("Cover failed: %s", e)
-            raise
+
+        # Try frontend renderer first, fall back to Pillow
+        used_frontend = False
+        renderer = self._get_frontend_renderer()
+        if renderer is not None:
+            try:
+                result_path = renderer.render_cover(title, str(cr))
+                if result_path and cr.exists():
+                    used_frontend = True
+                    self.logger.info("Cover generated via frontend renderer")
+            except Exception as e:
+                self.logger.warning("Frontend cover failed, falling back to Pillow: %s", e)
+
+        if not used_frontend:
+            try:
+                generate_text_cover(title, str(cr))
+            except Exception as e:
+                self.logger.error("Cover failed: %s", e)
+                raise
+
         if cr.exists():
             Image.open(cr).save(cp, format="PNG")
         ips = []
@@ -244,22 +272,33 @@ class ImageGenerationService:
             for idx, pt in enumerate(prompts[:3], start=1):
                 rp = ri / ("infographic_" + str(idx) + ".png")
                 pp = pi / ("infographic_" + str(idx) + ".png")
-                try:
-                    gen_infographic(pt, str(rp))
-                    if rp.exists():
-                        Image.open(rp).save(pp, format="PNG")
-                    ips.append(rp)
-                except Exception as e:
-                    self.logger.warning("Infographic %d skipped: %s", idx, e)
+                # Try frontend renderer for infographic
+                infographic_frontend = False
+                if renderer is not None:
+                    try:
+                        result_path = renderer.render_infographic(pt, str(rp))
+                        if result_path and rp.exists():
+                            infographic_frontend = True
+                    except Exception as e:
+                        self.logger.debug("Frontend infographic %d failed: %s", idx, e)
+                if not infographic_frontend:
+                    try:
+                        gen_infographic(pt, str(rp))
+                    except Exception as e:
+                        self.logger.warning("Infographic %d skipped: %s", idx, e)
+                        continue
+                if rp.exists():
+                    Image.open(rp).save(pp, format="PNG")
+                ips.append(rp)
         else:
             for d in (pi, ri):
                 for f in sorted(d.glob("infographic_*.png")):
                     f.unlink(missing_ok=True)
         result = {
             "generated_at": self._now(),
-            "backend": "pillow",
+            "backend": "frontend" if used_frontend else "pillow",
             "model": "local",
-            "used_fallback": False,
+            "used_fallback": not used_frontend,
             "cover_prompt": title,
             "infographic_prompts": [str(p) for p in ips],
             "artifacts": {"cover": str(cr), "infographics": [str(p) for p in ips]},

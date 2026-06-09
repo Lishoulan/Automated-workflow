@@ -11,7 +11,7 @@ __pycache__/
 logs/
 cache/
 output/
-images/
+/images/
 .tmp_publish_regen/
 
 .idea/
@@ -31,3 +31,38 @@ config/guard-*/
 
 SKILL.md
 zettaranc-skill-main/
+
+# 临时调试文件
+_temp_*
+_fix_*
+temp_*
+test_stderr*
+test_stdout*
+test_err*
+test_out*
+pip_install_log*
+wechat_patch_*
+
+# 一次性调试/修复/检查脚本
+_debug_*.py
+fix_*.py
+cleanup_*.py
+inspect_*.py
+verify_*.py
+analyze_*.py
+check_articles*.py
+check_syntax*.py
+check_file*.py
+check_remaining*.py
+check_final*.py
+read_files*.py
+optimize_*.py
+_refactor_*.py
+
+# 备份文件
+*.bak
+*.broken_*
+*.gbkdecoded.*
+
+# Codex 引用文件
+.codex_*

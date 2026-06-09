@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Infographic</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;500;700;900&family=Space+Grotesk:wght@400;700&display=swap');
+
+  :root {
+    --accent: #00e5a0;
+    --accent-dim: rgba(0,229,160,0.12);
+    --accent-glow: rgba(0,229,160,0.3);
+    --blue: #00b4ff;
+    --purple: #7850ff;
+    --text: #e8ecf2;
+    --muted: rgba(232,236,242,0.45);
+    --card: rgba(255,255,255,0.04);
+    --card-border: rgba(255,255,255,0.07);
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    width: 800px;
+    height: 1200px;
+    overflow: hidden;
+    font-family: 'Noto Sans SC', sans-serif;
+    background: #0a0e17;
+    color: var(--text);
+    position: relative;
+    padding: 48px;
+  }
+
+  .bg-mesh {
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 70% 40% at 80% 10%, rgba(0,229,160,0.08) 0%, transparent 60%),
+      radial-gradient(ellipse 50% 50% at 20% 90%, rgba(0,180,255,0.06) 0%, transparent 50%),
+      linear-gradient(180deg, #0a0e17 0%, #0f1525 50%, #0a0e17 100%);
+  }
+
+  .content { position: relative; z-index: 2; height: 100%; display: flex; flex-direction: column; }
+
+  /* Header */
+  .header {
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--card-border);
+  }
+  .eyebrow {
+    font-family: 'Space Grotesk', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+  .header h1 {
+    font-size: 32px;
+    font-weight: 900;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    background: linear-gradient(135deg, #fff 0%, #b8c4d4 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Metric cards */
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+  .metric-card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .metric-card::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), transparent);
+  }
+  .metric-label {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    letter-spacing: 0.04em;
+  }
+  .metric-value {
+    font-family: 'Space Grotesk', monospace;
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .metric-unit {
+    font-size: 14px;
+    font-weight: 400;
+    color: var(--muted);
+    margin-left: 4px;
+  }
+
+  /* Section */
+  .section {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 16px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .section-title {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-title::before {
+    content: "";
+    width: 4px; height: 18px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+
+  /* List items */
+  .list-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .list-item:last-child { border-bottom: none; }
+  .list-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-top: 7px;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 4px var(--accent-dim);
+  }
+  .list-dot.blue { background: var(--blue); box-shadow: 0 0 0 4px rgba(0,180,255,0.15); }
+  .list-dot.purple { background: var(--purple); box-shadow: 0 0 0 4px rgba(120,80,255,0.15); }
+  .list-text {
+    font-size: 14px;
+    line-height: 1.6;
+    color: rgba(232,236,242,0.8);
+  }
+
+  /* Timeline */
+  .timeline-item {
+    display: flex;
+    gap: 16px;
+    padding: 10px 0;
+    position: relative;
+  }
+  .timeline-marker {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .timeline-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-dim);
+  }
+  .timeline-line {
+    width: 1px;
+    flex: 1;
+    background: rgba(255,255,255,0.06);
+    margin-top: 4px;
+  }
+  .timeline-content {
+    font-size: 14px;
+    line-height: 1.6;
+    color: rgba(232,236,242,0.75);
+    padding-bottom: 8px;
+  }
+
+  /* Footer */
+  .footer {
+    margin-top: auto;
+    padding-top: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-top: 1px solid var(--card-border);
+  }
+  .footer-brand {
+    font-family: 'Space Grotesk', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.08em;
+  }
+  .footer-note {
+    font-size: 11px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+  <div class="bg-mesh"></div>
+  <div class="content">
+    <div class="header">
+      <div class="eyebrow">{{ eyebrow }}</div>
+      <h1>{{ title }}</h1>
+    </div>
+
+    <div class="metrics-grid">
+      {% for metric in metrics %}
+      <div class="metric-card">
+        <div class="metric-label">{{ metric.label }}</div>
+        <div class="metric-value">{{ metric.value }}<span class="metric-unit">{{ metric.unit }}</span></div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="section">
+      <div class="section-title">{{ section_title }}</div>
+      {% for item in items %}
+      <div class="list-item">
+        <div class="list-dot {% if loop.index0 % 3 == 1 %}blue{% elif loop.index0 % 3 == 2 %}purple{% endif %}"></div>
+        <div class="list-text">{{ item }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="footer">
+      <span class="footer-brand">{{ brand }}</span>
+      <span class="footer-note">{{ date }}</span>
+    </div>
+  </div>
+</body>
+</html>

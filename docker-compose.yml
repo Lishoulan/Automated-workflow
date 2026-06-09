@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   content-factory:
     build:
@@ -11,13 +9,6 @@ services:
     environment:
       - TOUTIAO_PUBLISH_HEADLESS=1
       - TOUTIAO_PUBLISH_CHANNEL=chromium
-    depends_on:
-      deerflow:
-        condition: service_started
-      letta:
-        condition: service_started
-      prompt-optimizer:
-        condition: service_started
     volumes:
       - ./output:/app/output
       - ./prompts:/app/prompts
@@ -27,12 +18,15 @@ services:
       - ai-network
 
   deerflow:
-    image: bytedance/deer-flow:latest
+    image: ghcr.io/bytedance/deer-flow-backend:latest
     ports:
       - "8001:8001"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.deepseek.com}
+      - DEER_FLOW_CONFIG_PATH=/app/config/config.yaml
+    volumes:
+      - ./config/deerflow:/app/config:ro
     networks:
       - ai-network
 
@@ -52,12 +46,13 @@ services:
       - ai-network
 
   prompt-optimizer:
-    image: linshenkx/prompt-optimizer:latest
+    image: linshen/prompt-optimizer:latest
     ports:
-      - "8501:8501"
+      - "8501:80"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - VITE_OPENAI_API_KEY=${OPENAI_API_KEY}
+      - VITE_CUSTOM_API_BASE_URL=${OPENAI_BASE_URL:-https://api.deepseek.com}
+      - VITE_CUSTOM_API_MODEL=deepseek-chat
     networks:
       - ai-network
 

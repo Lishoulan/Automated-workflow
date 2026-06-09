@@ -154,6 +154,15 @@ jobs:
       TOUTIAO_ENHANCED_INSIGHTS_USE_HISTORICAL: ${{ secrets.TOUTIAO_ENHANCED_INSIGHTS_USE_HISTORICAL || '0' }}
       TOUTIAO_ENHANCED_INSIGHTS_USE_DATA_MINING: ${{ secrets.TOUTIAO_ENHANCED_INSIGHTS_USE_DATA_MINING || '0' }}
 
+      # ---- Docker AI 服务配置 ----
+      DEERFLOW_ENABLED: "1"
+      DEERFLOW_BASE_URL: "http://localhost:8001"
+      LETTA_ENABLED: "1"
+      LETTA_BASE_URL: "http://localhost:8283"
+      PROMPT_OPTIMIZER_ENABLED: "1"
+      PROMPT_OPTIMIZER_BASE_URL: "http://localhost:8501"
+      RUFLO_ENABLED: "0"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -178,6 +187,27 @@ jobs:
         run: |
           playwright install chromium
           playwright install-deps chromium
+
+      - name: Start AI services via Docker Compose
+        run: |
+          docker compose up -d deerflow letta prompt-optimizer postgres
+          echo "Waiting for services to be ready..."
+          sleep 15
+          docker compose ps
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          LETTA_DB_PASSWORD: letta_cloud_pass
+
+      - name: Check AI services health
+        run: |
+          echo "Checking DeerFlow..."
+          curl -sf http://localhost:8001/health && echo "DeerFlow: OK" || echo "DeerFlow: UNAVAILABLE"
+          echo "Checking Letta..."
+          curl -sf http://localhost:8283/v1/health && echo "Letta: OK" || echo "Letta: UNAVAILABLE"
+          echo "Checking Prompt Optimizer..."
+          curl -sf http://localhost:8501/health && echo "Prompt Optimizer: OK" || echo "Prompt Optimizer: UNAVAILABLE"
+        continue-on-error: true
 
       - name: Restore browser profile cache
         uses: actions/cache@v4

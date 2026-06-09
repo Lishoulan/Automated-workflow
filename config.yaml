@@ -694,5 +694,17 @@
     "multi_source": false,
     "historical": false,
     "data_mining": false
+  },
+  "one_person_company": {
+    "deerflow_enabled": false,
+    "deerflow_base_url": "http://localhost:8001",
+    "letta_enabled": false,
+    "letta_base_url": "http://localhost:8283",
+    "letta_agent_id": "",
+    "prompt_optimizer_enabled": false,
+    "prompt_optimizer_base_url": "http://localhost:8501",
+    "ruflo_enabled": false,
+    "ruflo_base_url": "http://localhost:8002",
+    "agency_roles_dir": "config/agency_roles"
   }
 }

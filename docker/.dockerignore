@@ -1,0 +1,8 @@
+.runtime/
+output/
+logs/
+__pycache__/
+*.pyc
+.env
+.git
+browser_profiles_seed.tar.gz

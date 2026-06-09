@@ -588,6 +588,17 @@ class AppSettings:
     enhanced_insights_use_multi_source: bool = False
     enhanced_insights_use_historical: bool = False
     enhanced_insights_use_data_mining: bool = False
+    # ---- One-Person Company AI Services ----
+    deerflow_enabled: bool = False
+    deerflow_base_url: str = "http://deerflow:8001"
+    letta_enabled: bool = False
+    letta_base_url: str = "http://letta:8283"
+    letta_agent_id: str = ""
+    prompt_optimizer_enabled: bool = False
+    prompt_optimizer_base_url: str = "http://prompt-optimizer:8501"
+    ruflo_enabled: bool = False
+    ruflo_base_url: str = "http://ruflo:8002"
+    agency_roles_dir: str = "config/agency_roles"
 
     def ensure_directories(self) -> None:
         for directory in (
@@ -739,6 +750,17 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         enhanced_insights_use_multi_source=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_MULTI_SOURCE", bool(merged_payload.get("enhanced_insights", {}).get("multi_source", False))),
         enhanced_insights_use_historical=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_HISTORICAL", bool(merged_payload.get("enhanced_insights", {}).get("historical", False))),
         enhanced_insights_use_data_mining=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_DATA_MINING", bool(merged_payload.get("enhanced_insights", {}).get("data_mining", False))),
+        # One-Person Company AI Services
+        deerflow_enabled=_env_flag("DEERFLOW_ENABLED", False),
+        deerflow_base_url=os.getenv("DEERFLOW_BASE_URL", "http://deerflow:8001"),
+        letta_enabled=_env_flag("LETTA_ENABLED", False),
+        letta_base_url=os.getenv("LETTA_BASE_URL", "http://letta:8283"),
+        letta_agent_id=os.getenv("LETTA_AGENT_ID", ""),
+        prompt_optimizer_enabled=_env_flag("PROMPT_OPTIMIZER_ENABLED", False),
+        prompt_optimizer_base_url=os.getenv("PROMPT_OPTIMIZER_BASE_URL", "http://prompt-optimizer:8501"),
+        ruflo_enabled=_env_flag("RUFLO_ENABLED", False),
+        ruflo_base_url=os.getenv("RUFLO_BASE_URL", "http://ruflo:8002"),
+        agency_roles_dir=os.getenv("AGENCY_ROLES_DIR", "config/agency_roles"),
     )
 
 

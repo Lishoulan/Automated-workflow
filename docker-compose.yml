@@ -1,0 +1,98 @@
+version: "3.8"
+
+services:
+  content-factory:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - TOUTIAO_PUBLISH_HEADLESS=1
+      - TOUTIAO_PUBLISH_CHANNEL=chromium
+    depends_on:
+      deerflow:
+        condition: service_started
+      letta:
+        condition: service_started
+      prompt-optimizer:
+        condition: service_started
+    volumes:
+      - ./output:/app/output
+      - ./prompts:/app/prompts
+      - ./config:/app/config
+      - cf_runtime:/app/.runtime
+    networks:
+      - ai-network
+
+  deerflow:
+    image: bytedance/deer-flow:latest
+    ports:
+      - "8001:8001"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+    networks:
+      - ai-network
+
+  letta:
+    image: letta/letta:latest
+    ports:
+      - "8283:8283"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - letta_data:/root/.letta
+    networks:
+      - ai-network
+
+  prompt-optimizer:
+    image: linshenkx/prompt-optimizer:latest
+    ports:
+      - "8501:8501"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+    networks:
+      - ai-network
+
+  ruflo:
+    image: ruvnet/ruflo:latest
+    ports:
+      - "8002:8002"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - ./config/agency_roles:/app/agents
+    networks:
+      - ai-network
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: letta
+      POSTGRES_USER: letta
+      POSTGRES_PASSWORD: ${LETTA_DB_PASSWORD:-letta_pass}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U letta"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-network
+
+volumes:
+  letta_data:
+  postgres_data:
+  cf_runtime:
+
+networks:
+  ai-network:
+    driver: bridge

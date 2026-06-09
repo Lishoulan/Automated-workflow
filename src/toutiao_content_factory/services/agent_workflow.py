@@ -19,6 +19,7 @@ from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import LowQualityAbortException
 from toutiao_content_factory.models import CacheContext, ExtractionResult, InsightReport, WorkflowResult
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
+from toutiao_content_factory.services.letta_client import LettaClient
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 
@@ -49,6 +50,34 @@ class AgentWorkflowService:
         self.content_guard_service = ContentGuardService(settings, logger)
         self.openai_service = openai_service
 
+        # One-Person Company AI Services
+        self._letta_client: LettaClient | None = None
+        if settings.letta_enabled and settings.letta_base_url:
+            self._letta_client = LettaClient(
+                base_url=settings.letta_base_url,
+                agent_id=settings.letta_agent_id,
+                logger=logger,
+            )
+
+    def _get_memory_context(self, topic: str = "") -> str:
+        """Retrieve memory context from Letta if available."""
+        if not self._letta_client:
+            return ""
+        try:
+            return self._letta_client.get_memory_context(topic)
+        except Exception as exc:
+            self.logger.warning("Letta memory retrieval failed (non-blocking): %s", exc)
+            return ""
+
+    def _save_memory_observation(self, observation: str) -> None:
+        """Save an observation to Letta memory if available."""
+        if not self._letta_client:
+            return
+        try:
+            self._letta_client.save_observation(observation)
+        except Exception as exc:
+            self.logger.warning("Letta memory save failed (non-blocking): %s", exc)
+
     def run(
         self,
         extraction: ExtractionResult,
@@ -76,6 +105,9 @@ class AgentWorkflowService:
             insight_report: InsightReport | None = None
             if self.settings.enhanced_insights_enabled:
                 try:
+                    memory_context = self._get_memory_context(extraction.topic_title)
+                    if memory_context:
+                        self.logger.info("Letta memory context loaded: %d chars", len(memory_context))
                     self.logger.info("Running InsightAgent for enhanced opinions...")
                     insight_report = self.insight_agent.run(
                         extraction, trend_report, data_report, style, cache_context
@@ -157,6 +189,11 @@ class AgentWorkflowService:
             raise
 
         model_used = self.settings.openai_model if self.openai_service.available else "local-draft"
+
+        self._save_memory_observation(
+            f"Run completed: topic selected, article generated and published"
+        )
+
         return WorkflowResult(
             extraction=extraction,
             trend_report=trend_report,

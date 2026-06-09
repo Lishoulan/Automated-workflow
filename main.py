@@ -341,6 +341,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--share-count", type=int, default=None, help="Share/repost count.")
     parser.add_argument("--comment-count", type=int, default=None, help="Comment count.")
     parser.add_argument("--follower-gain", type=int, default=None, help="Follower gain after publish.")
+    parser.add_argument(
+        "--deep-research",
+        type=str,
+        default=None,
+        help="Run DeerFlow deep research on a given topic and output the report.",
+    )
     return parser
 
 
@@ -365,6 +371,15 @@ def main() -> int:
             _print_export_summary(f"Pipeline resumed from checkpoint (task: {args.resume}).", exported_files)
         finally:
             pipeline.close()
+        return 0
+    if args.deep_research:
+        from toutiao_content_factory.services.deerflow_client import DeerFlowClient
+        client = DeerFlowClient(settings.deerflow_base_url, logger)
+        result = client.deep_research(args.deep_research)
+        if result:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print("Deep research failed or DeerFlow service unavailable.")
         return 0
     refresh_heartbeat(settings.automation_dir / "scheduled_status.json")
     logger = configure_logging(settings.logs_dir, settings.logging_level)

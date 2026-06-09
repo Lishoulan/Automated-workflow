@@ -31,6 +31,10 @@ from toutiao_content_factory.services.platform_health_service import PlatformHea
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.notification_service import NotificationService
 from toutiao_content_factory.services.circuit_breaker import PlatformCircuitBreaker
+from toutiao_content_factory.services.company_os_service import CompanyOSService
+from toutiao_content_factory.services.lead_ops_service import LeadOpsService
+from toutiao_content_factory.services.monetization_service import MonetizationService
+from toutiao_content_factory.services.revenue_engine_service import RevenueEngineService
 
 
 class ContentFactoryAppService:
@@ -46,6 +50,10 @@ class ContentFactoryAppService:
         self.growth_ops_service = GrowthOpsService(settings, logger)
         self.topic_pool_service = TopicPoolService(settings, logger)
         self.content_guard_service = ContentGuardService(settings, logger)
+        self.company_os_service = CompanyOSService(settings, logger)
+        self.lead_ops_service = LeadOpsService(settings, logger)
+        self.monetization_service = MonetizationService(settings, logger)
+        self.revenue_engine_service = RevenueEngineService(settings, logger)
         self.notification_service = NotificationService(dict(os.environ), fallback_log_dir=str(self.settings.output_dir / "automation"))
         if not self.notification_service.is_configured:
             self.logger.debug(
@@ -1122,6 +1130,394 @@ class ContentFactoryAppService:
         result = self.growth_ops_service.build_benchmark_report()
         return {name: str(path) for name, path in result.items()}
 
+    def build_company_os(self) -> dict[str, str]:
+        result = self.company_os_service.build_company_os()
+        return {name: str(path) for name, path in result.items()}
+
+    def build_revenue_engine(self) -> dict[str, str]:
+        benchmark_report = self.company_os_service._load_json_if_exists(self.settings.output_dir / "growth_ops" / "benchmark_report.json")
+        self_benchmark_report = self.company_os_service._load_json_if_exists(
+            self.settings.output_dir / "growth_ops" / "self_benchmark_report.json"
+        )
+        integrations = self.company_os_service._load_integrations()
+        result = self.revenue_engine_service.build_assets(
+            integrations=integrations,
+            benchmark_report=benchmark_report,
+            self_benchmark_report=self_benchmark_report,
+        )
+        recommendation_result = self.lead_ops_service.enrich_generated_leads_with_recommendations()
+        proposal_draft_result = self.lead_ops_service.auto_draft_generated_proposals()
+        lead_assets = self.lead_ops_service.ensure_assets()
+        payload = {name: str(path) for name, path in result.items()}
+        payload.update({name: str(path) for name, path in lead_assets.items()})
+        payload["enriched_generated_leads"] = str(recommendation_result.get("updated", 0))
+        payload["auto_drafted_proposals"] = str(proposal_draft_result.get("drafted", 0))
+        payload["auto_drafted_proposal_report"] = json.dumps(proposal_draft_result, ensure_ascii=False)
+        return payload
+
+    def run_profit_loop(self) -> dict[str, str]:
+        benchmark_report = self.company_os_service._load_json_if_exists(self.settings.output_dir / "growth_ops" / "benchmark_report.json")
+        self_benchmark_report = self.company_os_service._load_json_if_exists(
+            self.settings.output_dir / "growth_ops" / "self_benchmark_report.json"
+        )
+        integrations = self.company_os_service._load_integrations()
+        result = self.revenue_engine_service.run_profit_loop(
+            integrations=integrations,
+            benchmark_report=benchmark_report,
+            self_benchmark_report=self_benchmark_report,
+        )
+        payload = {name: str(path) for name, path in result.items()}
+        return payload
+
+    def execute_profit_actions(self, *, action_types: tuple[str, ...] = (), limit: int = 0) -> dict[str, str]:
+        benchmark_report = self.company_os_service._load_json_if_exists(self.settings.output_dir / "growth_ops" / "benchmark_report.json")
+        self_benchmark_report = self.company_os_service._load_json_if_exists(
+            self.settings.output_dir / "growth_ops" / "self_benchmark_report.json"
+        )
+        integrations = self.company_os_service._load_integrations()
+        result = self.revenue_engine_service.execute_profit_actions(
+            action_types=action_types,
+            limit=limit,
+            integrations=integrations,
+            benchmark_report=benchmark_report,
+            self_benchmark_report=self_benchmark_report,
+        )
+        return {name: str(path) for name, path in result.items()}
+
+    def update_sponsor_outreach_status(
+        self,
+        *,
+        action_key: str,
+        status: str,
+        notes: str = "",
+        next_follow_up_at: str = "",
+        deal_value: float | None = None,
+    ) -> dict[str, str]:
+        result = self.revenue_engine_service.update_sponsor_outreach_status(
+            action_key=action_key,
+            status=status,
+            notes=notes,
+            next_follow_up_at=next_follow_up_at,
+            deal_value=deal_value,
+        )
+        return {name: str(path) for name, path in result.items()}
+
+    def update_newsletter_subscriber_status(
+        self,
+        *,
+        subscriber_key: str,
+        status: str,
+        notes: str = "",
+        next_follow_up_at: str = "",
+        member_revenue: float | None = None,
+    ) -> dict[str, str]:
+        result = self.revenue_engine_service.update_newsletter_subscriber_status(
+            subscriber_key=subscriber_key,
+            status=status,
+            notes=notes,
+            next_follow_up_at=next_follow_up_at,
+            member_revenue=member_revenue,
+        )
+        return {name: str(path) for name, path in result.items()}
+
+    def ensure_lead_assets(self) -> dict[str, str]:
+        result = self.lead_ops_service.ensure_assets()
+        return {name: str(path) for name, path in result.items()}
+
+    def record_lead(
+        self,
+        *,
+        name: str,
+        contact: str,
+        intent: str,
+        source: str,
+        notes: str = "",
+        status: str = "new",
+        estimated_value: float = 0.0,
+        next_follow_up_at: str = "",
+    ) -> dict[str, str]:
+        entry = self.lead_ops_service.record_lead(
+            name=name,
+            contact=contact,
+            intent=intent,
+            source=source,
+            notes=notes,
+            status=status,
+            estimated_value=estimated_value,
+            next_follow_up_at=next_follow_up_at,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        result = {name: str(path) for name, path in assets.items()}
+        result["lead_entry_id"] = str(entry.get("id", ""))
+        return result
+
+    def update_lead(
+        self,
+        *,
+        lead_id: str,
+        status: str | None = None,
+        notes: str | None = None,
+        estimated_value: float | None = None,
+        actual_value: float | None = None,
+        next_follow_up_at: str | None = None,
+    ) -> dict[str, str]:
+        entry = self.lead_ops_service.update_lead(
+            lead_id=lead_id,
+            status=status,
+            notes=notes,
+            estimated_value=estimated_value,
+            actual_value=actual_value,
+            next_follow_up_at=next_follow_up_at,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        result = {name: str(path) for name, path in assets.items()}
+        result["lead_entry_id"] = str(entry.get("id", ""))
+        return result
+
+    def generate_lead_proposal(
+        self,
+        *,
+        lead_id: str,
+        offer_name: str = "",
+        offer_key: str = "",
+        custom_price: str = "",
+        custom_scope: str = "",
+        next_follow_up_at: str = "",
+        mark_as_sent: bool = True,
+        auto_generated: bool = False,
+    ) -> dict[str, str]:
+        result = self.lead_ops_service.generate_lead_proposal(
+            lead_id=lead_id,
+            offer_name=offer_name,
+            offer_key=offer_key,
+            custom_price=custom_price,
+            custom_scope=custom_scope,
+            next_follow_up_at=next_follow_up_at,
+            mark_as_sent=mark_as_sent,
+            auto_generated=auto_generated,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        payload = {name: str(path) for name, path in assets.items()}
+        payload["proposal_path"] = str(result["proposal_path"])
+        payload["lead_id"] = str(result["lead_id"])
+        return payload
+
+    def mark_lead_outreach_sent(
+        self,
+        *,
+        lead_id: str,
+        channel: str = "",
+        message: str = "",
+        next_follow_up_at: str = "",
+    ) -> dict[str, str]:
+        entry = self.lead_ops_service.mark_outreach_sent(
+            lead_id=lead_id,
+            channel=channel,
+            message=message,
+            next_follow_up_at=next_follow_up_at,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        result = {name: str(path) for name, path in assets.items()}
+        result["lead_id"] = str(entry.get("id", ""))
+        result["outreach_sent_at"] = str(entry.get("outreach_sent_at", ""))
+        result["recommended_next_action"] = str(entry.get("recommended_next_action", ""))
+        return result
+
+    def triage_lead_reply(
+        self,
+        *,
+        lead_id: str,
+        reply_text: str,
+        next_follow_up_at: str = "",
+    ) -> dict[str, str]:
+        result = self.lead_ops_service.triage_reply(
+            lead_id=lead_id,
+            reply_text=reply_text,
+            next_follow_up_at=next_follow_up_at,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        payload = {name: str(path) for name, path in assets.items()}
+        payload["lead_id"] = str(result.get("lead_id", ""))
+        payload["reply_temperature"] = str(result.get("reply_temperature", ""))
+        payload["recommended_status"] = str(result.get("recommended_status", ""))
+        payload["suggested_reply"] = str(result.get("suggested_reply", ""))
+        payload["recommended_next_action"] = str(result.get("recommended_next_action", ""))
+        payload["next_follow_up_at"] = str(result.get("next_follow_up_at", ""))
+        return payload
+
+    def mark_lead_proposal_sent(
+        self,
+        *,
+        lead_id: str,
+        channel: str = "",
+        message: str = "",
+        next_follow_up_at: str = "",
+    ) -> dict[str, str]:
+        entry = self.lead_ops_service.mark_proposal_sent(
+            lead_id=lead_id,
+            channel=channel,
+            message=message,
+            next_follow_up_at=next_follow_up_at,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        result = {name: str(path) for name, path in assets.items()}
+        result["lead_id"] = str(entry.get("id", ""))
+        result["proposal_sent_at"] = str(entry.get("proposal_sent_at", ""))
+        result["recommended_next_action"] = str(entry.get("recommended_next_action", ""))
+        return result
+
+    def mark_lead_call_booked(
+        self,
+        *,
+        lead_id: str,
+        call_scheduled_for: str,
+        notes: str = "",
+    ) -> dict[str, str]:
+        entry = self.lead_ops_service.mark_call_booked(
+            lead_id=lead_id,
+            call_scheduled_for=call_scheduled_for,
+            notes=notes,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        result = {name: str(path) for name, path in assets.items()}
+        result["lead_id"] = str(entry.get("id", ""))
+        result["call_scheduled_for"] = str(entry.get("call_scheduled_for", ""))
+        result["recommended_next_action"] = str(entry.get("recommended_next_action", ""))
+        return result
+
+    def mark_lead_payment_received(
+        self,
+        *,
+        lead_id: str,
+        amount: float,
+        received_at: str = "",
+        notes: str = "",
+    ) -> dict[str, str]:
+        entry = self.lead_ops_service.mark_payment_received(
+            lead_id=lead_id,
+            amount=amount,
+            received_at=received_at,
+            notes=notes,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        result = {name: str(path) for name, path in assets.items()}
+        result["lead_id"] = str(entry.get("id", ""))
+        result["payment_received_at"] = str(entry.get("payment_received_at", ""))
+        result["actual_value"] = str(entry.get("actual_value", ""))
+        return result
+
+    def mark_lead_delivery_started(
+        self,
+        *,
+        lead_id: str,
+        delivery_notes: str = "",
+    ) -> dict[str, str]:
+        entry = self.lead_ops_service.mark_delivery_started(
+            lead_id=lead_id,
+            delivery_notes=delivery_notes,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        result = {name: str(path) for name, path in assets.items()}
+        result["lead_id"] = str(entry.get("id", ""))
+        result["delivery_started_at"] = str(entry.get("delivery_started_at", ""))
+        return result
+
+    def mark_lead_delivery_completed(
+        self,
+        *,
+        lead_id: str,
+        delivery_notes: str = "",
+    ) -> dict[str, str]:
+        entry = self.lead_ops_service.mark_delivery_completed(
+            lead_id=lead_id,
+            delivery_notes=delivery_notes,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        result = {name: str(path) for name, path in assets.items()}
+        result["lead_id"] = str(entry.get("id", ""))
+        result["delivery_completed_at"] = str(entry.get("delivery_completed_at", ""))
+        return result
+
+    def request_lead_testimonial(
+        self,
+        *,
+        lead_id: str,
+        message: str = "",
+    ) -> dict[str, str]:
+        entry = self.lead_ops_service.request_testimonial(
+            lead_id=lead_id,
+            message=message,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        result = {name: str(path) for name, path in assets.items()}
+        result["lead_id"] = str(entry.get("id", ""))
+        result["testimonial_requested_at"] = str(entry.get("testimonial_requested_at", ""))
+        return result
+
+    def mark_lead_expansion_opportunity(
+        self,
+        *,
+        lead_id: str,
+        expansion_type: str,
+        notes: str = "",
+    ) -> dict[str, str]:
+        entry = self.lead_ops_service.mark_expansion_opportunity(
+            lead_id=lead_id,
+            expansion_type=expansion_type,
+            notes=notes,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        result = {name: str(path) for name, path in assets.items()}
+        result["lead_id"] = str(entry.get("id", ""))
+        result["expansion_identified_at"] = str(entry.get("expansion_identified_at", ""))
+        result["expansion_opportunity_type"] = str(entry.get("expansion_opportunity_type", ""))
+        return result
+
+    def convert_expansion_to_lead(
+        self,
+        *,
+        source_lead_id: str,
+        referral_name: str,
+        referral_contact: str,
+        referral_intent: str = "咨询",
+        notes: str = "",
+    ) -> dict[str, str]:
+        entry = self.lead_ops_service.convert_expansion_to_lead(
+            source_lead_id=source_lead_id,
+            referral_name=referral_name,
+            referral_contact=referral_contact,
+            referral_intent=referral_intent,
+            notes=notes,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        result = {name: str(path) for name, path in assets.items()}
+        result["lead_entry_id"] = str(entry.get("id", ""))
+        result["referral_source_lead_id"] = str(entry.get("referral_source_lead_id", ""))
+        return result
+
+    def generate_lead_expansion_proposal(
+        self,
+        *,
+        lead_id: str,
+        expansion_type: str,
+        next_follow_up_at: str = "",
+    ) -> dict[str, str]:
+        payload = self.lead_ops_service.generate_expansion_proposal(
+            lead_id=lead_id,
+            expansion_type=expansion_type,
+            next_follow_up_at=next_follow_up_at,
+        )
+        assets = self.lead_ops_service.ensure_assets()
+        result = {name: str(path) for name, path in assets.items()}
+        result["lead_id"] = str(payload.get("lead_id", ""))
+        result["proposal_path"] = str(payload.get("proposal_path", ""))
+        result["offer_name"] = str(payload.get("offer_name", ""))
+        result["expansion_type"] = str(payload.get("expansion_type", ""))
+        return result
+
+    def list_offer_choices(self) -> list[dict[str, str]]:
+        return self.lead_ops_service.list_offer_choices()
+
     def collect_benchmark_hot_topics(
         self,
         *,
@@ -2023,3 +2419,24 @@ class ContentFactoryAppService:
             f"Platform health check blocked: {', '.join(readable_platforms)}",
             blocking_platforms=blocking_platforms,
         )
+
+    def check_ai_services_health(self) -> dict[str, bool]:
+        """Check health of all one-person company AI services."""
+        health = {}
+        if self.settings.deerflow_enabled:
+            from toutiao_content_factory.services.deerflow_client import DeerFlowClient
+            client = DeerFlowClient(self.settings.deerflow_base_url, self.logger)
+            health["deerflow"] = client.health_check()
+        if self.settings.letta_enabled:
+            from toutiao_content_factory.services.letta_client import LettaClient
+            client = LettaClient(self.settings.letta_base_url, self.settings.letta_agent_id, self.logger)
+            health["letta"] = bool(client.get_memory_context())
+        if self.settings.prompt_optimizer_enabled:
+            from toutiao_content_factory.services.prompt_optimizer_client import PromptOptimizerClient
+            client = PromptOptimizerClient(self.settings.prompt_optimizer_base_url, self.logger)
+            health["prompt_optimizer"] = client.health_check()
+        if self.settings.ruflo_enabled:
+            from toutiao_content_factory.services.ruflo_client import RufloClient
+            client = RufloClient(self.settings.ruflo_base_url, self.logger)
+            health["ruflo"] = client.health_check()
+        return health

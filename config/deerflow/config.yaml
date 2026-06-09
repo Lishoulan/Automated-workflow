@@ -6,10 +6,10 @@ token_usage:
   enabled: true
 
 models:
-  - name: deepseek-v3
-    display_name: DeepSeek V3
+  - name: deepseek-v4-flash
+    display_name: DeepSeek V4 Flash
     use: langchain_openai:ChatOpenAI
-    model: deepseek-chat
+    model: deepseek-v4-flash
     api_key: $OPENAI_API_KEY
     base_url: https://api.deepseek.com
 

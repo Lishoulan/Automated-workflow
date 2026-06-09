@@ -159,6 +159,7 @@ jobs:
       DEERFLOW_BASE_URL: "http://localhost:8001"
       LETTA_ENABLED: "1"
       LETTA_BASE_URL: "http://localhost:8283"
+      LETTA_AGENT_ID: ${{ secrets.LETTA_AGENT_ID || '' }}
       PROMPT_OPTIMIZER_ENABLED: "1"
       PROMPT_OPTIMIZER_BASE_URL: "http://localhost:8501"
       RUFLO_ENABLED: "0"
@@ -192,7 +193,7 @@ jobs:
         run: |
           docker compose up -d deerflow letta prompt-optimizer postgres
           echo "Waiting for services to be ready..."
-          sleep 15
+          sleep 20
           docker compose ps
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -206,8 +207,30 @@ jobs:
           echo "Checking Letta..."
           curl -sf http://localhost:8283/v1/health && echo "Letta: OK" || echo "Letta: UNAVAILABLE"
           echo "Checking Prompt Optimizer..."
-          curl -sf http://localhost:8501/health && echo "Prompt Optimizer: OK" || echo "Prompt Optimizer: UNAVAILABLE"
+          curl -sf http://localhost:8501/ && echo "Prompt Optimizer: OK" || echo "Prompt Optimizer: UNAVAILABLE"
         continue-on-error: true
+
+      - name: Ensure Letta agent exists
+        if: env.LETTA_AGENT_ID == ''
+        run: |
+          AGENT_ID=$(curl -sf -X POST http://localhost:8283/v1/agents \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "content-factory-memory",
+              "description": "Content factory memory agent",
+              "memory_blocks": [
+                {"label": "persona", "value": "I am a content factory assistant that remembers user preferences, writing style, and content strategy decisions."},
+                {"label": "human", "value": "The user is a tech content creator focusing on AI, robotics, and new energy."}
+              ],
+              "llm_config": {
+                "model": "deepseek-v4-flash",
+                "model_endpoint_type": "openai",
+                "model_endpoint": "'"${OPENAI_BASE_URL}"'",
+                "context_window": 64000
+              }
+            }' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          echo "LETTA_AGENT_ID=$AGENT_ID" >> $GITHUB_ENV
+          echo "Created Letta agent: $AGENT_ID"
 
       - name: Restore browser profile cache
         uses: actions/cache@v4

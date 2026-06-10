@@ -175,6 +175,8 @@ class EngagementAgent:
             return []
 
         # 4. 在单次浏览器会话中批量执行点赞和评论
+        consecutive_failures = 0
+        max_consecutive_failures = 3  # 连续失败3次则停止
         try:
             from playwright.sync_api import sync_playwright
 
@@ -192,20 +194,39 @@ class EngagementAgent:
                 for item in items_to_like:
                     record = self._perform_like_in_session(browser, platform, item)
                     records.append(record)
-                    self._random_delay()
+                    if not record.success:
+                        consecutive_failures += 1
+                        if consecutive_failures >= max_consecutive_failures:
+                            self.logger.warning("连续 %d 次点赞失败，停止互动", consecutive_failures)
+                            break
+                    else:
+                        consecutive_failures = 0
+                    self._random_delay(min_s=3.0, max_s=10.0)
 
-                # 4b. 生成并发布评论
+                # 4b. 点赞和评论之间增加间隔
+                self._random_delay(min_s=5.0, max_s=15.0)
+
+                # 4c. 生成并发布评论（评论间隔更长，降低风控风险）
                 comment_count_today = self._count_today_actions("comment")
                 remaining_comments = max(0, self._strategy.max_daily_comments - comment_count_today)
                 items_to_comment = target_items[:remaining_comments]
 
+                consecutive_failures = 0
                 for item in items_to_comment:
                     comment_text = self._generate_comment(item.get("title", ""), item.get("summary", ""))
                     if not comment_text:
                         continue
                     record = self._perform_comment_in_session(browser, platform, item, comment_text)
                     records.append(record)
-                    self._random_delay()
+                    if not record.success:
+                        consecutive_failures += 1
+                        if consecutive_failures >= max_consecutive_failures:
+                            self.logger.warning("连续 %d 次评论失败，停止互动", consecutive_failures)
+                            break
+                    else:
+                        consecutive_failures = 0
+                    # 评论间隔比点赞更长，模拟真实用户行为
+                    self._random_delay(min_s=8.0, max_s=25.0)
 
                 browser.close()
 

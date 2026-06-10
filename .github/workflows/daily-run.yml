@@ -148,7 +148,7 @@ jobs:
 
       # 快速模式
       TOUTIAO_FAST_MODE: ${{ secrets.TOUTIAO_FAST_MODE || '0' }}
-      TOUTIAO_SKIP_IMAGE_GENERATION: ${{ secrets.TOUTIAO_SKIP_IMAGE_GENERATION || '1' }}
+      TOUTIAO_SKIP_IMAGE_GENERATION: ${{ secrets.TOUTIAO_SKIP_IMAGE_GENERATION || '0' }}
       TOUTIAO_SKIP_REVIEW_AGENT: ${{ secrets.TOUTIAO_SKIP_REVIEW_AGENT || '0' }}
       TOUTIAO_SKIP_PUBLISH_REVIEW: ${{ secrets.TOUTIAO_SKIP_PUBLISH_REVIEW || '0' }}
       TOUTIAO_REVIEW_MIN_OVERALL_SCORE: ${{ secrets.TOUTIAO_REVIEW_MIN_OVERALL_SCORE || '72' }}
@@ -221,12 +221,13 @@ jobs:
         run: |
           docker compose up -d deerflow letta prompt-optimizer postgres
           echo "Waiting for services to be ready..."
-          sleep 20
+          sleep 10
           docker compose ps
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           LETTA_DB_PASSWORD: letta_cloud_pass
+        continue-on-error: true
 
       - name: Check AI services health
         run: |

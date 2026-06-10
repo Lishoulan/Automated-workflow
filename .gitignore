@@ -8,6 +8,12 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 
+# 数据库文件
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
 logs/
 cache/
 output/

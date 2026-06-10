@@ -599,6 +599,23 @@ class AppSettings:
     ruflo_enabled: bool = False
     ruflo_base_url: str = "http://ruflo:8002"
     agency_roles_dir: str = "config/agency_roles"
+    # Multi-platform publishing
+    bilibili_enabled: bool = False
+    zhihu_enabled: bool = False
+    weibo_enabled: bool = False
+    xiaohongshu_enabled: bool = False
+    youtube_enabled: bool = False
+    # Engagement agent
+    engagement_enabled: bool = False
+    engagement_max_daily_likes: int = 50
+    engagement_max_daily_comments: int = 20
+    engagement_comment_style: str = "professional"
+    # Monetization
+    monetization_enabled: bool = False
+    cps_enabled: bool = False
+    cpe_enabled: bool = False
+    # Matrix operations
+    matrix_enabled: bool = False
 
     def ensure_directories(self) -> None:
         for directory in (
@@ -761,6 +778,23 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         ruflo_enabled=_env_flag("RUFLO_ENABLED", False),
         ruflo_base_url=os.getenv("RUFLO_BASE_URL", "http://ruflo:8002"),
         agency_roles_dir=os.getenv("AGENCY_ROLES_DIR", "config/agency_roles"),
+        # Multi-platform publishing
+        bilibili_enabled=_env_flag("BILIBILI_ENABLED", False),
+        zhihu_enabled=_env_flag("ZHIHU_ENABLED", False),
+        weibo_enabled=_env_flag("WEIBO_ENABLED", False),
+        xiaohongshu_enabled=_env_flag("XIAOHONGSHU_ENABLED", False),
+        youtube_enabled=_env_flag("YOUTUBE_ENABLED", False),
+        # Engagement agent
+        engagement_enabled=_env_flag("ENGAGEMENT_ENABLED", False),
+        engagement_max_daily_likes=int(os.getenv("ENGAGEMENT_MAX_DAILY_LIKES", "50")),
+        engagement_max_daily_comments=int(os.getenv("ENGAGEMENT_MAX_DAILY_COMMENTS", "20")),
+        engagement_comment_style=os.getenv("ENGAGEMENT_COMMENT_STYLE", "professional"),
+        # Monetization
+        monetization_enabled=_env_flag("MONETIZATION_ENABLED", False),
+        cps_enabled=_env_flag("CPS_ENABLED", False),
+        cpe_enabled=_env_flag("CPE_ENABLED", False),
+        # Matrix operations
+        matrix_enabled=_env_flag("MATRIX_ENABLED", False),
     )
 
 

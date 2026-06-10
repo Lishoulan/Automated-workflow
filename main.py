@@ -347,6 +347,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Run DeerFlow deep research on a given topic and output the report.",
     )
+    parser.add_argument("--engagement", action="store_true", help="Run daily engagement agent (like, comment, follow).")
+    parser.add_argument("--engagement-mine-topics", action="store_true", help="Mine comments for topic ideas.")
+    parser.add_argument("--multi-publish", action="store_true", help="Publish to all enabled platforms.")
+    parser.add_argument("--platforms", type=str, default=None, help="Comma-separated list of platforms for --multi-publish (e.g., bilibili,zhihu,weibo).")
+    parser.add_argument("--matrix-dashboard", action="store_true", help="Show matrix operations dashboard.")
+    parser.add_argument("--monetization-sync", action="store_true", help="Sync monetization data and generate revenue report.")
     return parser
 
 
@@ -380,6 +386,45 @@ def main() -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
             print("Deep research failed or DeerFlow service unavailable.")
+        return 0
+    if args.engagement:
+        from toutiao_content_factory.services.engagement_agent import EngagementAgent
+        agent = EngagementAgent(settings, logger)
+        records = agent.run_daily_engagement("toutiao", args.account or "default")
+        print(f"Engagement completed: {len(records)} actions")
+        return 0
+    if args.engagement_mine_topics:
+        from toutiao_content_factory.services.engagement_agent import EngagementAgent
+        agent = EngagementAgent(settings, logger)
+        topics = agent.mine_comments_for_topics("toutiao", args.account or "default")
+        print(json.dumps(topics, ensure_ascii=False, indent=2))
+        return 0
+    if args.multi_publish:
+        from toutiao_content_factory.services.multi_platform_publisher import MultiPlatformPublisher
+        from toutiao_content_factory.services.bilibili_publisher import BilibiliPublisher
+        from toutiao_content_factory.services.zhihu_publisher import ZhihuPublisher
+        from toutiao_content_factory.services.weibo_publisher import WeiboPublisher
+        mpp = MultiPlatformPublisher(settings, logger)
+        if settings.bilibili_enabled:
+            mpp.register_publisher("bilibili", BilibiliPublisher(settings, logger))
+        if settings.zhihu_enabled:
+            mpp.register_publisher("zhihu", ZhihuPublisher(settings, logger))
+        if settings.weibo_enabled:
+            mpp.register_publisher("weibo", WeiboPublisher(settings, logger))
+        platforms = args.platforms.split(",") if args.platforms else None
+        print(f"Available platforms: {mpp.get_available_platforms()}")
+        return 0
+    if args.matrix_dashboard:
+        from toutiao_content_factory.services.matrix_ops_manager import MatrixOpsManager
+        mgr = MatrixOpsManager(settings, logger)
+        data = mgr.get_dashboard_data()
+        print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
+        return 0
+    if args.monetization_sync:
+        from toutiao_content_factory.services.monetization_engine import MonetizationEngine
+        engine = MonetizationEngine(settings, logger)
+        report = engine.get_revenue_report("monthly")
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0
     refresh_heartbeat(settings.automation_dir / "scheduled_status.json")
     logger = configure_logging(settings.logs_dir, settings.logging_level)

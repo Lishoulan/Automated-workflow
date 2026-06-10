@@ -32,7 +32,7 @@ class EngagementStrategy:
     max_daily_likes: int = 50
     max_daily_comments: int = 20
     comment_style: str = "professional"
-    engagement_hours: list[int] = field(default_factory=lambda: list(range(8, 22)))
+    engagement_hours: list[int] = field(default_factory=lambda: list(range(8, 23)))
 
 
 @dataclass
@@ -340,50 +340,65 @@ class EngagementAgent:
             self.logger.warning("加载互动策略配置失败，使用默认值: %s", exc)
 
     def _scan_target_content(self, platform: str, account_id: str) -> list[dict]:
-        """使用关键词在平台上扫描目标内容，返回 [{id, title, summary, url}]。"""
+        """使用关键词在平台上扫描目标内容，返回 [{id, title, summary, url}]。
+
+        改进：直接访问头条搜索页面，从HTML中提取真实文章URL。
+        """
         items: list[dict] = []
         try:
             from playwright.sync_api import sync_playwright
+            import re
 
             with sync_playwright() as pw:
                 browser = self._launch_browser(pw, platform, account_id)
                 if browser is None:
                     return []
                 page = browser.new_page()
-                search_url = self._build_search_url(platform)
-                if not search_url:
-                    browser.close()
-                    return []
-
-                page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(2000)
 
                 for keyword in self._strategy.target_keywords:
                     try:
-                        search_input = page.query_selector(
-                            "input[type='search'], input[placeholder*='搜索'], input[name='keyword']"
-                        )
-                        if search_input:
-                            search_input.fill(keyword)
-                            search_input.press("Enter")
-                            page.wait_for_timeout(1500)
+                        # 头条搜索 URL（综合搜索，包含文章结果）
+                        search_url = f"https://www.toutiao.com/search/?keyword={keyword}"
+                        page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+                        page.wait_for_timeout(3000)
 
-                        cards = page.query_selector_all(
-                            "div[class*='article'], div[class*='feed'], div[class*='card'], a[class*='title']"
+                        # 从页面HTML中提取文章URL（正则匹配）
+                        html = page.content()
+                        article_urls = re.findall(
+                            r'https?://www\.toutiao\.com/(?:article|group)/\d+', html
                         )
-                        for card in cards[:10]:
-                            title_el = card.query_selector("a, span, h3, h2, [class*='title']")
-                            title = (title_el.inner_text() if title_el else "").strip()
+
+                        # 同时提取搜索结果标题（从 jump 链接中提取）
+                        jump_links = page.query_selector_all("a[href*='search/jump']")
+                        titles_by_url: dict[str, str] = {}
+                        for link_el in jump_links:
+                            href = link_el.get_attribute("href") or ""
+                            title = (link_el.inner_text() or "").strip()[:80]
                             if not title:
                                 continue
-                            link = title_el.get_attribute("href") if title_el else ""
-                            item_id = str(hash(title))[:12]
+                            # 从 jump URL 中解码真实 URL
+                            url_match = re.search(r'url=([^&]+)', href)
+                            if url_match:
+                                from urllib.parse import unquote
+                                real_url = unquote(url_match.group(1))
+                                if "article" in real_url or "group" in real_url:
+                                    titles_by_url[real_url] = title
+
+                        # 合并结果
+                        seen_ids: set[str] = set()
+                        for url in article_urls:
+                            article_id = url.split("/")[-1]
+                            if article_id in seen_ids:
+                                continue
+                            seen_ids.add(article_id)
+                            title = titles_by_url.get(url, f"文章 {article_id[:8]}")
                             items.append({
-                                "id": item_id,
+                                "id": article_id,
                                 "title": title,
                                 "summary": title[:100],
-                                "url": link or "",
+                                "url": url,
                             })
+
                     except Exception as exc:
                         self.logger.debug("搜索关键词 %s 失败: %s", keyword, exc)
 

@@ -110,7 +110,7 @@ jobs:
       WECHAT_LAYOUT_BACKEND: ${{ secrets.WECHAT_LAYOUT_BACKEND || 'builtin' }}
       WECHAT_MD2WECHAT_ENABLED: ${{ secrets.WECHAT_MD2WECHAT_ENABLED || '0' }}
       WECHAT_SERV00_PROXY_ENABLED: ${{ secrets.WECHAT_SERV00_PROXY_ENABLED || '0' }}
-      WECHAT_EDITOR_135_ENABLED: "0"
+      WECHAT_EDITOR_135_ENABLED: "1"
       WECHAT_EDITOR_135_PROFILE_DIR: .runtime/editor_135_profile
       WECHAT_BROWSER_PROFILE_DIR: .runtime/wechat_profile
 
@@ -263,7 +263,7 @@ jobs:
       - name: Seed browser profiles from release
         run: |
           NEED_SEED=false
-          for profile in toutiao_profile wechat_profile; do
+          for profile in toutiao_profile wechat_profile editor_135_profile; do
             if [ ! -d ".runtime/$profile" ] || [ -z "$(ls -A .runtime/$profile 2>/dev/null)" ]; then
               echo "Profile $profile is missing or empty, need seed."
               NEED_SEED=true

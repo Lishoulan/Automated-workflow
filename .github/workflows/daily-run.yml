@@ -54,8 +54,8 @@ jobs:
       PYTHONUTF8: "1"
       TOUTIAO_ACCOUNT: ${{ github.event.inputs.account || 'default' }}
 
-      # 图片生成
-      IMAGE_BACKEND: ${{ secrets.IMAGE_BACKEND || 'renderer' }}
+      # 图片生成（frontend = HTML+Playwright截图，renderer = Pillow兜底）
+      IMAGE_BACKEND: ${{ secrets.IMAGE_BACKEND || 'frontend' }}
       IMAGE_API_MODE: ${{ secrets.IMAGE_API_MODE || 'images' }}
       IMAGE_MODEL: ${{ secrets.IMAGE_MODEL || 'gpt-image-1' }}
       IMAGE_MAX_ASSETS: ${{ secrets.IMAGE_MAX_ASSETS || '2' }}

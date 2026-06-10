@@ -174,28 +174,45 @@ class EngagementAgent:
             self.logger.info("未扫描到目标内容，跳过互动")
             return []
 
-        # 4. 执行点赞
-        like_count_today = self._count_today_actions("like")
-        remaining_likes = max(0, self._strategy.max_daily_likes - like_count_today)
-        items_to_like = target_items[:remaining_likes]
+        # 4. 在单次浏览器会话中批量执行点赞和评论
+        try:
+            from playwright.sync_api import sync_playwright
 
-        for item in items_to_like:
-            record = self._perform_like(platform, account_id, item)
-            records.append(record)
-            self._random_delay()
+            with sync_playwright() as pw:
+                browser = self._launch_browser(pw, platform, account_id)
+                if browser is None:
+                    self.logger.warning("浏览器启动失败，跳过互动")
+                    return []
 
-        # 5. 生成并发布评论
-        comment_count_today = self._count_today_actions("comment")
-        remaining_comments = max(0, self._strategy.max_daily_comments - comment_count_today)
-        items_to_comment = target_items[:remaining_comments]
+                # 4a. 执行点赞
+                like_count_today = self._count_today_actions("like")
+                remaining_likes = max(0, self._strategy.max_daily_likes - like_count_today)
+                items_to_like = target_items[:remaining_likes]
 
-        for item in items_to_comment:
-            comment_text = self._generate_comment(item.get("title", ""), item.get("summary", ""))
-            if not comment_text:
-                continue
-            record = self._perform_comment(platform, account_id, item, comment_text)
-            records.append(record)
-            self._random_delay()
+                for item in items_to_like:
+                    record = self._perform_like_in_session(browser, platform, item)
+                    records.append(record)
+                    self._random_delay()
+
+                # 4b. 生成并发布评论
+                comment_count_today = self._count_today_actions("comment")
+                remaining_comments = max(0, self._strategy.max_daily_comments - comment_count_today)
+                items_to_comment = target_items[:remaining_comments]
+
+                for item in items_to_comment:
+                    comment_text = self._generate_comment(item.get("title", ""), item.get("summary", ""))
+                    if not comment_text:
+                        continue
+                    record = self._perform_comment_in_session(browser, platform, item, comment_text)
+                    records.append(record)
+                    self._random_delay()
+
+                browser.close()
+
+        except ImportError:
+            self.logger.warning("Playwright 未安装，跳过互动")
+        except Exception as exc:
+            self.logger.error("互动执行异常: %s", exc)
 
         self.logger.info(
             "每日互动完成: 点赞 %d / %d, 评论 %d / %d",
@@ -385,8 +402,8 @@ class EngagementAgent:
                 unique.append(item)
         return unique
 
-    def _perform_like(self, platform: str, account_id: str, item: dict) -> EngagementRecord:
-        """通过 Playwright 执行点赞操作。"""
+    def _perform_like_in_session(self, browser, platform: str, item: dict) -> EngagementRecord:
+        """在已有浏览器会话中执行点赞操作。"""
         record = EngagementRecord(
             platform=platform,
             action="like",
@@ -397,24 +414,18 @@ class EngagementAgent:
             success=False,
         )
         try:
-            from playwright.sync_api import sync_playwright
+            page = browser.new_page()
+            url = item.get("url", "")
+            if url and url.startswith("http"):
+                page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                page.wait_for_timeout(1500)
 
-            with sync_playwright() as pw:
-                browser = self._launch_browser(pw, platform, account_id)
-                if browser is None:
-                    return record
-                page = browser.new_page()
-                url = item.get("url", "")
-                if url:
-                    if not url.startswith("http"):
-                        url = self._resolve_relative_url(platform, url)
-                    page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                    page.wait_for_timeout(1000)
-
+                # 头条文章页点赞按钮
                 like_btn = page.query_selector(
                     "button[class*='like'], div[class*='like'], "
                     "span[class*='like'], [data-action='like'], "
-                    "svg[class*='like'], [aria-label*='赞']"
+                    "svg[class*='like'], [aria-label*='赞'], "
+                    "div.digg, span.digg-word"
                 )
                 if like_btn:
                     like_btn.click()
@@ -422,20 +433,20 @@ class EngagementAgent:
                     self.logger.info("点赞成功: %s", item.get("title", "")[:30])
                 else:
                     self.logger.debug("未找到点赞按钮: %s", item.get("title", "")[:30])
+            else:
+                self.logger.debug("URL无效，跳过: %s", item.get("title", "")[:30])
 
-                browser.close()
-        except ImportError:
-            self.logger.warning("Playwright 未安装，无法执行点赞")
+            page.close()
         except Exception as exc:
             self.logger.error("点赞操作异常: %s", exc)
 
         self._save_record(record)
         return record
 
-    def _perform_comment(
-        self, platform: str, account_id: str, item: dict, comment_text: str
+    def _perform_comment_in_session(
+        self, browser, platform: str, item: dict, comment_text: str
     ) -> EngagementRecord:
-        """通过 Playwright 执行评论操作。"""
+        """在已有浏览器会话中执行评论操作。"""
         record = EngagementRecord(
             platform=platform,
             action="comment",
@@ -446,46 +457,46 @@ class EngagementAgent:
             success=False,
         )
         try:
-            from playwright.sync_api import sync_playwright
+            page = browser.new_page()
+            url = item.get("url", "")
+            if not url or not url.startswith("http"):
+                self.logger.debug("URL无效，跳过评论: %s", item.get("title", "")[:30])
+                page.close()
+                self._save_record(record)
+                return record
 
-            with sync_playwright() as pw:
-                browser = self._launch_browser(pw, platform, account_id)
-                if browser is None:
-                    return record
-                page = browser.new_page()
-                url = item.get("url", "")
-                if url:
-                    if not url.startswith("http"):
-                        url = self._resolve_relative_url(platform, url)
-                    page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                    page.wait_for_timeout(1000)
+            page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_timeout(2000)
 
-                comment_input = page.query_selector(
-                    "textarea[class*='comment'], div[contenteditable='true'][class*='comment'], "
-                    "textarea[placeholder*='评论'], textarea[placeholder*='说'], "
-                    "div[contenteditable='true'][placeholder*='评论']"
+            # 头条文章页评论输入框（多种选择器兼容）
+            comment_input = page.query_selector(
+                "textarea[class*='comment'], div[contenteditable='true'][class*='comment'], "
+                "textarea[placeholder*='评论'], textarea[placeholder*='说'], "
+                "div[contenteditable='true'][placeholder*='评论'], "
+                "div.comment-input textarea, div.comment-box textarea, "
+                "textarea#comment-textarea, textarea.input-area"
+            )
+            if comment_input:
+                comment_input.fill(comment_text)
+                page.wait_for_timeout(500)
+
+                submit_btn = page.query_selector(
+                    "button[class*='submit'], button[class*='send'], "
+                    "button:has-text('发表'), button:has-text('发送'), "
+                    "button:has-text('评论'), button:has-text('提交'), "
+                    "a:has-text('发表'), div.comment-btn button"
                 )
-                if comment_input:
-                    comment_input.fill(comment_text)
-                    page.wait_for_timeout(500)
-
-                    submit_btn = page.query_selector(
-                        "button[class*='submit'], button[class*='send'], "
-                        "button:has-text('发表'), button:has-text('发送'), "
-                        "button:has-text('评论')"
-                    )
-                    if submit_btn:
-                        submit_btn.click()
-                        record.success = True
-                        self.logger.info("评论成功: %s", item.get("title", "")[:30])
-                    else:
-                        self.logger.debug("未找到评论提交按钮")
+                if submit_btn:
+                    submit_btn.click()
+                    page.wait_for_timeout(1000)
+                    record.success = True
+                    self.logger.info("评论成功: %s", item.get("title", "")[:30])
                 else:
-                    self.logger.debug("未找到评论输入框: %s", item.get("title", "")[:30])
+                    self.logger.debug("未找到评论提交按钮: %s", item.get("title", "")[:30])
+            else:
+                self.logger.debug("未找到评论输入框: %s", item.get("title", "")[:30])
 
-                browser.close()
-        except ImportError:
-            self.logger.warning("Playwright 未安装，无法执行评论")
+            page.close()
         except Exception as exc:
             self.logger.error("评论操作异常: %s", exc)
 

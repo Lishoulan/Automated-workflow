@@ -2,10 +2,18 @@ name: Daily Run
 
 on:
   schedule:
-    # 北京时间 8:00 = UTC 0:00
-    - cron: '0 0 * * *'
+    # 北京时间 6:00 = UTC 22:00
+    - cron: '0 22 * * *'
+    # 北京时间 10:00 = UTC 2:00
+    - cron: '0 2 * * *'
+    # 北京时间 14:00 = UTC 6:00
+    - cron: '0 6 * * *'
     # 北京时间 18:00 = UTC 10:00
     - cron: '0 10 * * *'
+    # 北京时间 22:00 = UTC 14:00
+    - cron: '0 14 * * *'
+    # 北京时间 2:00 = UTC 18:00
+    - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
       account:
@@ -82,7 +90,7 @@ jobs:
       # 头条发布
       TOUTIAO_PUBLISH_ENABLED: "1"
       TOUTIAO_AUTO_PUBLISH: "1"
-      TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS: ${{ secrets.TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS || '3' }}
+      TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS: ${{ secrets.TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS || '6' }}
       TOUTIAO_AIGC_DECLARATION_ENABLED: "1"
       TOUTIAO_PUBLISH_PLATFORM: toutiao
       TOUTIAO_PUBLISH_BASE_URL: https://mp.toutiao.com/

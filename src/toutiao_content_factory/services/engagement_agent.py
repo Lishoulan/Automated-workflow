@@ -52,13 +52,19 @@ class EngagementRecord:
 # DeepSeek API 辅助（仅使用 urllib，无额外依赖）
 # ---------------------------------------------------------------------------
 
-_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1/chat/completions"
+_base = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com").rstrip("/")
+# DeepSeek API: base_url + /chat/completions (OpenAI 兼容)
+if _base.endswith("/v1"):
+    _DEEPSEEK_BASE_URL = _base + "/chat/completions"
+else:
+    _DEEPSEEK_BASE_URL = _base + "/v1/chat/completions"
+_DEEPSEEK_MODEL = os.getenv("OPENAI_MODEL", "deepseek-v4-flash")
 
 
 def _call_deepseek(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int = 200) -> str:
     """调用 DeepSeek Chat API，返回助手回复文本。"""
     payload = json.dumps({
-        "model": "deepseek-chat",
+        "model": _DEEPSEEK_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -124,7 +130,7 @@ class EngagementAgent:
         self._strategy = EngagementStrategy()
         self._db_path = self.settings.cache_dir / "engagement.db"
         self._db: sqlite3.Connection | None = None
-        self._deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "")
+        self._deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
 
     # ---- 属性 ----
 
@@ -612,18 +618,29 @@ class EngagementAgent:
         try:
             profile_dir = self._resolve_browser_profile(platform, account_id)
             channel = self.settings.publishing.channel or "msedge"
-            launch_kwargs: dict[str, Any] = {
-                "headless": self.settings.publishing.headless,
-                "channel": channel,
-            }
-            if profile_dir:
-                launch_kwargs["user_data_dir"] = str(profile_dir)
-
+            headless = self.settings.publishing.headless
             executable = self.settings.publishing.executable_path
-            if executable:
-                launch_kwargs["executable_path"] = executable
 
-            return playwright.chromium.launch(**launch_kwargs)
+            if profile_dir:
+                # 使用 persistent context 加载已有 profile
+                launch_kwargs: dict[str, Any] = {
+                    "headless": headless,
+                    "channel": channel,
+                }
+                if executable:
+                    launch_kwargs["executable_path"] = executable
+                return playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir), **launch_kwargs
+                )
+            else:
+                # 无 profile，普通启动
+                launch_kwargs = {
+                    "headless": headless,
+                    "channel": channel,
+                }
+                if executable:
+                    launch_kwargs["executable_path"] = executable
+                return playwright.chromium.launch(**launch_kwargs)
         except Exception as exc:
             self.logger.error("启动浏览器失败: %s", exc)
             return None

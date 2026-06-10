@@ -369,6 +369,9 @@ def main() -> int:
 
     settings.ensure_directories()
 
+    # 提前初始化 logger，供 deep_research / engagement / monetization 等早期分支使用
+    logger = configure_logging(settings.logs_dir, settings.logging_level)
+
     if args.resume:
         from toutiao_content_factory.services.pipeline import ContentFactoryPipeline
         pipeline = ContentFactoryPipeline(settings, configure_logging(settings.logs_dir, settings.logging_level), task_id=args.resume, fast_mode=args.fast_mode)
@@ -427,7 +430,6 @@ def main() -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0
     refresh_heartbeat(settings.automation_dir / "scheduled_status.json")
-    logger = configure_logging(settings.logs_dir, settings.logging_level)
     app_service = ContentFactoryAppService(settings, logger)
     exported_files: dict[str, str] = {}
 

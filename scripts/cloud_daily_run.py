@@ -308,6 +308,74 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_extra_modules(account_key: str) -> None:
+    """运行 AiToEarn 集成模块（engagement / monetization / matrix）。
+
+    在主 pipeline 完成后执行，各模块独立运行，互不影响。
+    """
+    main_py = str(PROJECT_ROOT / "main.py")
+
+    # --- 互动 Agent ---
+    if os.environ.get("ENGAGEMENT_ENABLED", "0") == "1":
+        _logger.info("运行互动 Agent...")
+        try:
+            result = subprocess.run(
+                [sys.executable, main_py, "--engagement", "--account", account_key],
+                cwd=str(PROJECT_ROOT),
+                env=os.environ.copy(),
+                timeout=600,
+            )
+            _logger.info("互动 Agent 完成 (exit_code=%d)", result.returncode)
+        except Exception as exc:
+            _logger.warning("互动 Agent 执行异常（非致命）: %s", exc)
+
+        # 评论挖掘
+        try:
+            result = subprocess.run(
+                [sys.executable, main_py, "--engagement-mine-topics", "--account", account_key],
+                cwd=str(PROJECT_ROOT),
+                env=os.environ.copy(),
+                timeout=300,
+            )
+            _logger.info("评论挖掘完成 (exit_code=%d)", result.returncode)
+        except Exception as exc:
+            _logger.warning("评论挖掘执行异常（非致命）: %s", exc)
+    else:
+        _logger.info("互动 Agent 未启用，跳过")
+
+    # --- 变现同步 ---
+    if os.environ.get("MONETIZATION_ENABLED", "0") == "1":
+        _logger.info("运行变现数据同步...")
+        try:
+            result = subprocess.run(
+                [sys.executable, main_py, "--monetization-sync"],
+                cwd=str(PROJECT_ROOT),
+                env=os.environ.copy(),
+                timeout=300,
+            )
+            _logger.info("变现同步完成 (exit_code=%d)", result.returncode)
+        except Exception as exc:
+            _logger.warning("变现同步执行异常（非致命）: %s", exc)
+    else:
+        _logger.info("变现系统未启用，跳过")
+
+    # --- 矩阵看板 ---
+    if os.environ.get("MATRIX_ENABLED", "0") == "1":
+        _logger.info("输出矩阵运营看板...")
+        try:
+            result = subprocess.run(
+                [sys.executable, main_py, "--matrix-dashboard"],
+                cwd=str(PROJECT_ROOT),
+                env=os.environ.copy(),
+                timeout=120,
+            )
+            _logger.info("矩阵看板输出完成 (exit_code=%d)", result.returncode)
+        except Exception as exc:
+            _logger.warning("矩阵看板执行异常（非致命）: %s", exc)
+    else:
+        _logger.info("矩阵运营未启用，跳过")
+
+
 def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
@@ -369,6 +437,8 @@ def main() -> int:
             exit_code = result.returncode
             if exit_code == 0:
                 _logger.info("云端定时执行成功完成 (exit_code=%d)", exit_code)
+                # 主 pipeline 成功后运行 AiToEarn 集成模块
+                _run_extra_modules(account_key)
                 return exit_code
 
             # 检查是否是 PlatformAuthError，如果是则禁用失败平台并重试

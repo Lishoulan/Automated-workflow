@@ -154,6 +154,26 @@ jobs:
       TOUTIAO_ENHANCED_INSIGHTS_USE_HISTORICAL: ${{ secrets.TOUTIAO_ENHANCED_INSIGHTS_USE_HISTORICAL || '0' }}
       TOUTIAO_ENHANCED_INSIGHTS_USE_DATA_MINING: ${{ secrets.TOUTIAO_ENHANCED_INSIGHTS_USE_DATA_MINING || '0' }}
 
+      # ---- 新平台发布配置（AiToEarn 集成） ----
+      BILIBILI_ENABLED: ${{ secrets.BILIBILI_ENABLED || '0' }}
+      ZHIHU_ENABLED: ${{ secrets.ZHIHU_ENABLED || '0' }}
+      WEIBO_ENABLED: ${{ secrets.WEIBO_ENABLED || '0' }}
+      XIAOHONGSHU_ENABLED: ${{ secrets.XIAOHONGSHU_ENABLED || '0' }}
+
+      # ---- 互动 Agent 配置 ----
+      ENGAGEMENT_ENABLED: ${{ secrets.ENGAGEMENT_ENABLED || '0' }}
+      ENGAGEMENT_MAX_DAILY_LIKES: ${{ secrets.ENGAGEMENT_MAX_DAILY_LIKES || '50' }}
+      ENGAGEMENT_MAX_DAILY_COMMENTS: ${{ secrets.ENGAGEMENT_MAX_DAILY_COMMENTS || '20' }}
+      ENGAGEMENT_COMMENT_STYLE: ${{ secrets.ENGAGEMENT_COMMENT_STYLE || 'professional' }}
+
+      # ---- 变现系统配置 ----
+      MONETIZATION_ENABLED: ${{ secrets.MONETIZATION_ENABLED || '0' }}
+      CPS_ENABLED: ${{ secrets.CPS_ENABLED || '0' }}
+      CPE_ENABLED: ${{ secrets.CPE_ENABLED || '0' }}
+
+      # ---- 矩阵运营配置 ----
+      MATRIX_ENABLED: ${{ secrets.MATRIX_ENABLED || '0' }}
+
       # ---- Docker AI 服务配置 ----
       DEERFLOW_ENABLED: "1"
       DEERFLOW_BASE_URL: "http://localhost:8001"
@@ -284,6 +304,34 @@ jobs:
             ARGS="$ARGS --fast-mode"
           fi
           python scripts/cloud_daily_run.py $ARGS
+
+      - name: Run engagement agent
+        if: env.ENGAGEMENT_ENABLED == '1'
+        run: |
+          echo "Running daily engagement agent..."
+          python main.py --engagement --account ${{ github.event.inputs.account || 'default' }}
+        continue-on-error: true
+
+      - name: Mine engagement topics
+        if: env.ENGAGEMENT_ENABLED == '1'
+        run: |
+          echo "Mining comments for topic ideas..."
+          python main.py --engagement-mine-topics --account ${{ github.event.inputs.account || 'default' }}
+        continue-on-error: true
+
+      - name: Run monetization sync
+        if: env.MONETIZATION_ENABLED == '1'
+        run: |
+          echo "Syncing monetization data..."
+          python main.py --monetization-sync
+        continue-on-error: true
+
+      - name: Show matrix dashboard
+        if: env.MATRIX_ENABLED == '1'
+        run: |
+          echo "Matrix operations dashboard:"
+          python main.py --matrix-dashboard
+        continue-on-error: true
 
       - name: Upload output artifacts
         if: always()

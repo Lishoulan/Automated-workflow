@@ -407,6 +407,7 @@ def main() -> int:
         from toutiao_content_factory.services.bilibili_publisher import BilibiliPublisher
         from toutiao_content_factory.services.zhihu_publisher import ZhihuPublisher
         from toutiao_content_factory.services.weibo_publisher import WeiboPublisher
+        from toutiao_content_factory.services.xiaohongshu_publisher import XiaohongshuPublisher
         mpp = MultiPlatformPublisher(settings, logger)
         if settings.bilibili_enabled:
             mpp.register_publisher("bilibili", BilibiliPublisher(settings, logger))
@@ -414,6 +415,8 @@ def main() -> int:
             mpp.register_publisher("zhihu", ZhihuPublisher(settings, logger))
         if settings.weibo_enabled:
             mpp.register_publisher("weibo", WeiboPublisher(settings, logger))
+        if settings.xiaohongshu_enabled:
+            mpp.register_publisher("xiaohongshu", XiaohongshuPublisher(settings, logger))
         platforms = args.platforms.split(",") if args.platforms else None
         print(f"Available platforms: {mpp.get_available_platforms()}")
         return 0

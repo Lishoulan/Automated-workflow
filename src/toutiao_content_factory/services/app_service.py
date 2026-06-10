@@ -1935,7 +1935,128 @@ class ContentFactoryAppService:
                     if self._is_session_expired_error(exc):
                         self._notify_session_expired("Douyin", exc)
 
+        # ── 多平台发布（微博 / 知乎 / 小红书） ──
+        self._publish_to_extra_platforms(
+            run_dir, platform_results, platform_errors, exported_files
+        )
+
         return exported_files, platform_results, platform_errors
+
+    def _publish_to_extra_platforms(
+        self,
+        run_dir: Path,
+        platform_results: dict[str, dict[str, object]],
+        platform_errors: list[str],
+        exported_files: dict[str, str],
+    ) -> None:
+        """发布文章到微博/知乎/小红书等额外平台。"""
+        # 读取文章内容
+        article_path = run_dir / "article.md"
+        title_path = run_dir / self.settings.review.publish_dirname / "title.txt"
+        if not article_path.exists():
+            self.logger.warning("article.md 不存在，跳过多平台发布")
+            return
+
+        article_content = article_path.read_text(encoding="utf-8", errors="replace").strip()
+        article_title = ""
+        if title_path.exists():
+            article_title = title_path.read_text(encoding="utf-8", errors="replace").strip()
+        if not article_title:
+            article_title = article_content[:30].replace("\n", " ")
+
+        # 收集图片
+        images: list[str] = []
+        cover_dir = run_dir / "images"
+        if cover_dir.exists():
+            for ext in ("*.png", "*.jpg", "*.jpeg"):
+                images.extend(str(p) for p in sorted(cover_dir.glob(ext)))
+        cover_path = run_dir / "cover.png"
+        if cover_path.exists() and str(cover_path) not in images:
+            images.insert(0, str(cover_path))
+
+        # 收集标签
+        tags: list[str] = []
+        tags_path = run_dir / self.settings.review.publish_dirname / "tags.txt"
+        if tags_path.exists():
+            for line in tags_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                tag = line.strip().lstrip("#").strip()
+                if tag:
+                    tags.append(tag)
+
+        # 微博
+        if self.settings.weibo_enabled:
+            try:
+                from toutiao_content_factory.services.weibo_publisher import WeiboPublisher
+                publisher = WeiboPublisher(self.settings, self.logger)
+                result = publisher.publish_article(
+                    title=article_title,
+                    content=article_content,
+                    images=images,
+                    tags=tags,
+                )
+                platform_results["weibo"] = {
+                    "status": "success" if result.success else "failed",
+                    "permalink": result.permalink,
+                    "error": result.error,
+                }
+                if result.success:
+                    self.logger.info("微博发布成功: %s", result.permalink)
+                else:
+                    platform_errors.append(f"微博发布失败: {result.error}")
+            except Exception as exc:
+                platform_errors.append(f"微博发布异常: {exc}")
+                platform_results["weibo"] = {"status": "failed", "error": str(exc)}
+                self.logger.exception("微博发布异常")
+
+        # 知乎
+        if self.settings.zhihu_enabled:
+            try:
+                from toutiao_content_factory.services.zhihu_publisher import ZhihuPublisher
+                publisher = ZhihuPublisher(self.settings, self.logger)
+                result = publisher.publish_article(
+                    title=article_title,
+                    content=article_content,
+                    images=images,
+                    tags=tags,
+                )
+                platform_results["zhihu"] = {
+                    "status": "success" if result.success else "failed",
+                    "permalink": result.permalink,
+                    "error": result.error,
+                }
+                if result.success:
+                    self.logger.info("知乎发布成功: %s", result.permalink)
+                else:
+                    platform_errors.append(f"知乎发布失败: {result.error}")
+            except Exception as exc:
+                platform_errors.append(f"知乎发布异常: {exc}")
+                platform_results["zhihu"] = {"status": "failed", "error": str(exc)}
+                self.logger.exception("知乎发布异常")
+
+        # 小红书
+        if self.settings.xiaohongshu_enabled:
+            try:
+                from toutiao_content_factory.services.xiaohongshu_publisher import XiaohongshuPublisher
+                publisher = XiaohongshuPublisher(self.settings, self.logger)
+                result = publisher.publish_article(
+                    title=article_title,
+                    content=article_content,
+                    images=images,
+                    tags=tags,
+                )
+                platform_results["xiaohongshu"] = {
+                    "status": "success" if result.success else "failed",
+                    "permalink": result.permalink,
+                    "error": result.error,
+                }
+                if result.success:
+                    self.logger.info("小红书发布成功: %s", result.permalink)
+                else:
+                    platform_errors.append(f"小红书发布失败: {result.error}")
+            except Exception as exc:
+                platform_errors.append(f"小红书发布异常: {exc}")
+                platform_results["xiaohongshu"] = {"status": "failed", "error": str(exc)}
+                self.logger.exception("小红书发布异常")
 
     def _wechat_publish_succeeded(self, snapshot: dict[str, object]) -> bool:
         status = str(snapshot.get("status", "")).strip().lower()

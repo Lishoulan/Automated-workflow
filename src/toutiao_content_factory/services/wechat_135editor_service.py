@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -88,54 +89,68 @@ class Editor135Service:
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self.settings.publishing.headless,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
-            page = None
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
+        # Run sync_playwright in a dedicated thread to avoid
+        # "using Playwright Sync API inside the asyncio loop" errors
+        # when called from an async context (e.g. FastAPI / cloud_daily_run).
+        def _run_in_thread() -> dict[str, Any]:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=self.settings.publishing.headless,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                )
+                page = None
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
 
-                # Step 1: 打开135编辑器
-                self._open_editor(page)
+                    # Step 1: 打开135编辑器
+                    self._open_editor(page)
 
-                # Step 2: 检查登录状态
-                if self._is_login_required(page):
+                    # Step 2: 检查登录状态
+                    if self._is_login_required(page):
+                        raise RuntimeError(
+                            "135编辑器未登录或登录已过期。请先运行 --init-135editor-login 初始化登录。"
+                        )
+
+                    # Step 3: 在标题输入框中填写标题
+                    self._fill_title(page, title)
+
+                    # Step 4: 通过UEditor API设置文章内容
+                    self._paste_html_content(page, article_html)
+
+                    # Step 5: 点击「保存同步」打开保存图文对话框
+                    self._click_save_sync(page)
+
+                    # Step 6: 在保存图文对话框中上传封面、勾选同步、保存
+                    sync_result = self._save_and_sync(page, title=title, cover_path=cover_path)
+
+                    result = {
+                        "status": "draft_saved" if sync_result else "sync_failed",
+                        "method": "editor_135",
+                        "title": title,
+                        "editor_url": page.url,
+                    }
+                    self.logger.info("135编辑器同步结果: %s", result["status"])
+                    return result
+
+                except Exception as exc:
+                    self._capture_debug_artifacts(page, {"title": title, "method": "editor_135"})
                     raise RuntimeError(
-                        "135编辑器未登录或登录已过期。请先运行 --init-135editor-login 初始化登录。"
-                    )
+                        f"135编辑器发布失败: {exc}"
+                    ) from exc
+                finally:
+                    browser.close()
 
-                # Step 3: 在标题输入框中填写标题
-                self._fill_title(page, title)
-
-                # Step 4: 通过UEditor API设置文章内容
-                self._paste_html_content(page, article_html)
-
-                # Step 5: 点击「保存同步」打开保存图文对话框
-                self._click_save_sync(page)
-
-                # Step 6: 在保存图文对话框中上传封面、勾选同步、保存
-                sync_result = self._save_and_sync(page, title=title, cover_path=cover_path)
-
-                result = {
-                    "status": "draft_saved" if sync_result else "sync_failed",
-                    "method": "editor_135",
-                    "title": title,
-                    "editor_url": page.url,
-                }
-                self.logger.info("135编辑器同步结果: %s", result["status"])
-                return result
-
-            except Exception as exc:
-                self._capture_debug_artifacts(page, {"title": title, "method": "editor_135"})
-                raise RuntimeError(
-                    f"135编辑器发布失败: {exc}"
-                ) from exc
-            finally:
-                browser.close()
+        try:
+            import asyncio
+            asyncio.get_running_loop()
+            # We are inside an asyncio event loop — run in a separate thread.
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(_run_in_thread).result(timeout=120)
+        except RuntimeError:
+            # No running event loop — safe to call directly.
+            return _run_in_thread()
 
     def initialize_login_session(self) -> dict[str, str]:
         """初始化135编辑器登录会话。打开浏览器让用户手动登录。"""

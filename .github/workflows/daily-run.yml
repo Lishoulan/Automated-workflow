@@ -241,8 +241,9 @@ jobs:
 
       - name: Ensure Letta agent exists
         if: env.LETTA_AGENT_ID == ''
+        continue-on-error: true
         run: |
-          AGENT_ID=$(curl -sf -X POST http://localhost:8283/v1/agents \
+          RESPONSE=$(curl -sf -X POST http://localhost:8283/v1/agents \
             -H "Content-Type: application/json" \
             -d '{
               "name": "content-factory-memory",
@@ -257,9 +258,18 @@ jobs:
                 "model_endpoint": "'"${OPENAI_BASE_URL}"'",
                 "context_window": 64000
               }
-            }' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-          echo "LETTA_AGENT_ID=$AGENT_ID" >> $GITHUB_ENV
-          echo "Created Letta agent: $AGENT_ID"
+            }' 2>/dev/null || echo "")
+          if [ -n "$RESPONSE" ]; then
+            AGENT_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+            if [ -n "$AGENT_ID" ]; then
+              echo "LETTA_AGENT_ID=$AGENT_ID" >> $GITHUB_ENV
+              echo "Created Letta agent: $AGENT_ID"
+            else
+              echo "Letta agent creation returned no valid ID, skipping"
+            fi
+          else
+            echo "Letta service unavailable, skipping agent creation"
+          fi
 
       - name: Restore browser profile cache
         uses: actions/cache@v4

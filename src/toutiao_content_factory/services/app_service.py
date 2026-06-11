@@ -9,6 +9,14 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
+
+def _safe_json_loads(text: str, *, default: dict | list | None = None) -> dict | list | None:
+    """安全解析JSON字符串，解析失败返回默认值。"""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return default
+
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import LowQualityAbortException, PlatformAuthError
 from toutiao_content_factory.models import DailyTopicsReport, TopicCandidate
@@ -208,7 +216,7 @@ class ContentFactoryAppService:
         platform: str,
         track: str | None,
     ) -> tuple[DailyTopicsReport, Path]:
-        payload = json.loads(benchmark_json_path.read_text(encoding="utf-8"))
+        payload = _safe_json_loads(benchmark_json_path.read_text(encoding="utf-8"), default={})
         benchmark_topics = self._load_benchmark_topic_candidates(payload)
         if not benchmark_topics:
             merge_summary_path = self._write_benchmark_merge_summary(
@@ -1613,7 +1621,7 @@ class ContentFactoryAppService:
             workflow_path = resolved / "workflow_result.json"
             score_path = resolved / "content_score.json"
             workflow_path.write_text(json.dumps(workflow.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-            score_payload = json.loads(score_path.read_text(encoding="utf-8")) if score_path.exists() else {}
+            score_payload = _safe_json_loads(score_path.read_text(encoding="utf-8"), default={}) if score_path.exists() else {}
             score_payload["scores"] = {
                 **dict(score_payload.get("scores", {})),
                 "publish_readiness_score": workflow.content_score.publish_readiness_score,
@@ -1716,7 +1724,7 @@ class ContentFactoryAppService:
         score_path = run_dir / "content_score.json"
         if not score_path.exists():
             return {}
-        payload = json.loads(score_path.read_text(encoding="utf-8"))
+        payload = _safe_json_loads(score_path.read_text(encoding="utf-8"), default={})
         raw_scores = payload.get("scores", {}) if isinstance(payload, dict) else {}
         snapshot = {
             "overall_score": int(raw_scores.get("overall_score", 0)),
@@ -2075,7 +2083,7 @@ class ContentFactoryAppService:
         result_path = run_dir / self.settings.review.publish_dirname / "publish_result.json"
         if not result_path.exists():
             return {"status": "missing"}
-        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        payload = _safe_json_loads(result_path.read_text(encoding="utf-8"), default={})
         if not isinstance(payload, dict):
             return {"status": "invalid"}
         return {
@@ -2087,7 +2095,7 @@ class ContentFactoryAppService:
         result_path = run_dir / self.settings.review.publish_dirname / "wechat" / "wechat_publish_result.json"
         if not result_path.exists():
             return {"status": "missing"}
-        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        payload = _safe_json_loads(result_path.read_text(encoding="utf-8"), default={})
         if not isinstance(payload, dict):
             return {"status": "invalid"}
         status = str(payload.get("status", "")).strip()
@@ -2111,7 +2119,7 @@ class ContentFactoryAppService:
         result_path = run_dir / self.settings.review.publish_dirname / "douyin" / "douyin_publish_result.json"
         if not result_path.exists():
             return {"status": "missing"}
-        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        payload = _safe_json_loads(result_path.read_text(encoding="utf-8"), default={})
         if not isinstance(payload, dict):
             return {"status": "invalid"}
         return {
@@ -2187,7 +2195,7 @@ class ContentFactoryAppService:
         status_path = self.settings.automation_dir / "scheduled_status.json"
         if status_path.exists():
             try:
-                payload = json.loads(status_path.read_text(encoding="utf-8-sig"))
+                payload = _safe_json_loads(status_path.read_text(encoding="utf-8-sig"), default={})
             except json.JSONDecodeError:
                 payload = {}
         else:
@@ -2417,7 +2425,7 @@ class ContentFactoryAppService:
         status_path = run_dir / "review_status.json"
         if not status_path.exists():
             return ""
-        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        payload = _safe_json_loads(status_path.read_text(encoding="utf-8"), default={})
         return str(payload.get("selected_title", "")).strip()
 
     _STALE_RUN_MAX_AGE_DAYS = 30
@@ -2449,7 +2457,7 @@ class ContentFactoryAppService:
         lock_path = self.settings.automation_dir / "daily_run.lock"
         if lock_path.exists():
             try:
-                payload = json.loads(lock_path.read_text(encoding="utf-8"))
+                payload = _safe_json_loads(lock_path.read_text(encoding="utf-8"), default={})
                 # 优先检查心跳超时
                 last_heartbeat_ts = float(payload.get("last_heartbeat_ts", 0))
                 if last_heartbeat_ts > 0 and time.time() - last_heartbeat_ts > self._DAILY_RUN_HEARTBEAT_TIMEOUT_SECONDS:
@@ -2485,7 +2493,7 @@ class ContentFactoryAppService:
         if not lock_path.exists():
             return
         try:
-            payload = json.loads(lock_path.read_text(encoding="utf-8"))
+            payload = _safe_json_loads(lock_path.read_text(encoding="utf-8"), default={})
             payload["last_heartbeat_ts"] = time.time()
             lock_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         except Exception:

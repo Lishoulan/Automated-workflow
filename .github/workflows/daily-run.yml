@@ -313,6 +313,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Keep browser sessions alive
+        run: |
+          echo "Refreshing browser cookies to prevent session expiry..."
+          python scripts/keep_alive.py --headless --account ${{ github.event.inputs.account || 'default' }} || true
+        continue-on-error: true
+
       - name: Run daily pipeline
         run: |
           ARGS="--account ${{ github.event.inputs.account || 'default' }} --skip-browser-check"
@@ -361,3 +367,19 @@ jobs:
             output/
             logs/
           retention-days: 7
+
+      - name: Update browser profile seed
+        if: success()
+        run: |
+          echo "Updating browser profile seed with fresh cookies..."
+          python scripts/pack_browser_profiles.py
+          if [ -f "browser_profiles_seed.tar.gz" ]; then
+            echo "Uploading updated profile seed to GitHub Release..."
+            gh release upload browser-profiles-v1 browser_profiles_seed.tar.gz --clobber --repo Lishoulan/Automated-workflow
+            echo "Profile seed updated successfully."
+          else
+            echo "No profile seed generated, skipping upload."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true

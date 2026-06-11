@@ -14,10 +14,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNTIME_DIR = os.path.join(PROJECT_ROOT, ".runtime")
 OUTPUT_FILE = os.path.join(PROJECT_ROOT, "browser_profiles_seed.tar.gz")
 
-# 源目录 → 目标目录映射（相对于 .runtime/）
+# 源目录 → 目标目录映射（相对于 PROJECT_ROOT/.runtime/）
 PROFILE_MAPPINGS = [
     ("accounts/robot_notes/toutiao_profile", "toutiao_profile"),
-    ("accounts/robot-notes/.runtime/editor_135_profile", "editor_135_profile"),
+    (".runtime/editor_135_profile", "editor_135_profile"),
 ]
 
 # 排除的目录名（匹配路径中任意层级）
@@ -161,6 +161,8 @@ def main():
     print("=" * 60)
 
     # 阶段1：精简复制
+    import tempfile
+
     for src_rel, dst_rel in PROFILE_MAPPINGS:
         src_path = os.path.join(RUNTIME_DIR, src_rel)
         dst_path = os.path.join(RUNTIME_DIR, dst_rel)
@@ -169,22 +171,44 @@ def main():
             print(f"\n[SKIP] 源目录不存在: .runtime/{src_rel}")
             continue
 
-        # 目标目录已存在则先删除
-        if os.path.exists(dst_path):
-            print(f"\n🗑  删除已有目标: .runtime/{dst_rel}")
-            shutil.rmtree(dst_path)
+        # 如果源和目标相同，先复制到临时目录再替换，避免删除源
+        if os.path.abspath(src_path) == os.path.abspath(dst_path):
+            tmp_dir = tempfile.mkdtemp(prefix="profile_pack_", dir=RUNTIME_DIR)
+            try:
+                print(f"\n📂 复制: .runtime/{src_rel} → 临时目录 → .runtime/{dst_rel}")
+                orig, kept = copy_profile(src_path, tmp_dir)
+                total_original += orig
+                total_kept += kept
+                print(f"   原始大小: {fmt_size(orig)}")
+                print(f"   保留大小: {fmt_size(kept)}")
+                if orig > 0:
+                    ratio = kept / orig * 100
+                    print(f"   保留比例: {ratio:.1f}%")
+                # 替换目标目录
+                if os.path.exists(dst_path):
+                    shutil.rmtree(dst_path)
+                shutil.move(tmp_dir, dst_path)
+            except Exception:
+                if os.path.isdir(tmp_dir):
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                raise
+        else:
+            # 目标目录已存在则先删除
+            if os.path.exists(dst_path):
+                print(f"\n🗑  删除已有目标: .runtime/{dst_rel}")
+                shutil.rmtree(dst_path)
 
-        os.makedirs(dst_path, exist_ok=True)
+            os.makedirs(dst_path, exist_ok=True)
 
-        print(f"\n📂 复制: .runtime/{src_rel} → .runtime/{dst_rel}")
-        orig, kept = copy_profile(src_path, dst_path)
-        total_original += orig
-        total_kept += kept
-        print(f"   原始大小: {fmt_size(orig)}")
-        print(f"   保留大小: {fmt_size(kept)}")
-        if orig > 0:
-            ratio = kept / orig * 100
-            print(f"   保留比例: {ratio:.1f}%")
+            print(f"\n📂 复制: .runtime/{src_rel} → .runtime/{dst_rel}")
+            orig, kept = copy_profile(src_path, dst_path)
+            total_original += orig
+            total_kept += kept
+            print(f"   原始大小: {fmt_size(orig)}")
+            print(f"   保留大小: {fmt_size(kept)}")
+            if orig > 0:
+                ratio = kept / orig * 100
+                print(f"   保留比例: {ratio:.1f}%")
 
     # 阶段2：打包为 tar.gz
     print(f"\n📦 打包为 tar.gz ...")

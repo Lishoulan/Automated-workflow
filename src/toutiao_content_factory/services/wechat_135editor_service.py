@@ -142,13 +142,18 @@ class Editor135Service:
                 finally:
                     browser.close()
 
+        import asyncio
         try:
-            import asyncio
             asyncio.get_running_loop()
+            in_async_loop = True
+        except RuntimeError:
+            in_async_loop = False
+
+        if in_async_loop:
             # We are inside an asyncio event loop — run in a separate thread.
             with ThreadPoolExecutor(max_workers=1) as pool:
                 return pool.submit(_run_in_thread).result(timeout=120)
-        except RuntimeError:
+        else:
             # No running event loop — safe to call directly.
             return _run_in_thread()
 
@@ -217,6 +222,9 @@ class Editor135Service:
         profile_value = self.settings.wechat.editor_135_profile_dir
         if Path(profile_value).is_absolute():
             return Path(profile_value)
+        # 如果路径以 .runtime 开头，相对于项目根目录解析（避免嵌套 .runtime/.runtime/）
+        if profile_value.startswith(".runtime") or profile_value.startswith(".runtime\\"):
+            return self.settings.project_root / profile_value
         return self.settings.account_runtime_dir / profile_value
 
     def _open_editor(self, page) -> None:

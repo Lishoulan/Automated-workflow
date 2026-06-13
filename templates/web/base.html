@@ -33,10 +33,10 @@
 
       <nav class="nav">
         <a href="/?{{ account_query }}" class="nav-link{% if current_path == '/' %} active{% endif %}">账号管理</a>
-        <a href="/dashboard?{{ account_query }}" class="nav-link{% if current_path == '/dashboard' %} active{% endif %}">单账号看板</a>
+        <a href="/dashboard?{{ account_query }}" class="nav-link{% if current_path == '/dashboard' %} active{% endif %}">监控大屏</a>
         <a href="/topics?{{ account_query }}" class="nav-link{% if current_path == '/topics' %} active{% endif %}">热点池</a>
         <a href="/runs?{{ account_query }}" class="nav-link{% if current_path == '/runs' %} active{% endif %}">归档批次</a>
-        <a href="/published?{{ account_query }}" class="nav-link{% if current_path == '/published' %} active{% endif %}">已发布预览</a>
+        <a href="/published?{{ account_query }}" class="nav-link{% if current_path == '/published' %} active{% endif %}">文章回溯</a>
       </nav>
 
       <div class="sidebar-card">

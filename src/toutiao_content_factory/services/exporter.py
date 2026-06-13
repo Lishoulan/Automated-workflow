@@ -7,6 +7,7 @@ from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import WorkflowResult
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
+from toutiao_content_factory.services.monetization_service import MonetizationService
 
 
 class ExportService:
@@ -15,6 +16,7 @@ class ExportService:
         self.output_dir = settings.output_dir
         self.logger = logger
         self.growth_ops_service = GrowthOpsService(settings, logger)
+        self.monetization_service = MonetizationService(settings, logger)
 
     def export(self, result: WorkflowResult) -> dict[str, Path]:
         article_path = self.output_dir / "article.md"
@@ -55,7 +57,7 @@ class ExportService:
     def _build_publish_article(self, result: WorkflowResult) -> str:
         article = result.content.polished_article.strip() or result.content.article.strip()
         # 文章已在 writer_agent._finalize_article 中清洗过，不再重复清洗以避免截断补充内容
-        return (article or "") + "\n"
+        return self.monetization_service.append_cta(article, platform_key="default")
 
     def _build_editorial_packet(self, result: WorkflowResult, benchmark_strategy: dict) -> str:
         content = result.content

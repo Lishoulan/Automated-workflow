@@ -10,6 +10,8 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.utils.runtime_status import recover_stale_running_status
 
@@ -154,6 +156,13 @@ class WebViewService:
         performance_feedback = self.load_performance_feedback()
         health_panel = self.build_health_panel(platform_health)
         notifications = self.list_notifications(limit=8)
+        lead_summary = self.load_lead_summary()
+        recent_leads = self.list_recent_leads(limit=8)
+        lead_assets = self.load_lead_assets()
+        lead_config = self.load_lead_config()
+        offer_choices = self.load_offer_choices()
+        revenue_engine_assets = self.load_revenue_engine_assets()
+        opportunity_sync_report = self.load_opportunity_sync_report()
         scheduled_logs = self.list_scheduled_logs(limit=6)
         snapshot = self.build_account_snapshot()
         pipeline_timeline = self._build_pipeline_timeline(
@@ -191,6 +200,13 @@ class WebViewService:
             "schedule_runtime": schedule_runtime,
             "scheduled_windows": self.list_scheduled_windows(),
             "notifications": notifications,
+            "lead_summary": lead_summary,
+            "recent_leads": recent_leads,
+            "lead_assets": lead_assets,
+            "lead_config": lead_config,
+            "offer_choices": offer_choices,
+            "revenue_engine_assets": revenue_engine_assets,
+            "opportunity_sync_report": opportunity_sync_report,
             "publish_history": self.list_publish_history(limit=8),
             "platform_health": platform_health,
             "topic_pool": topic_pool,
@@ -203,6 +219,130 @@ class WebViewService:
             "actionable_alerts": actionable_alerts,
             "log_console": log_console,
         }
+
+    def load_lead_summary(self) -> dict[str, Any]:
+        payload = self._load_json(self.automation_dir / "lead_ops" / "lead_summary.json")
+        return payload if isinstance(payload, dict) else {}
+
+    def list_recent_leads(self, limit: int = 8) -> list[dict[str, Any]]:
+        payload = self._load_json(self.automation_dir / "lead_ops" / "lead_ledger.json")
+        if not isinstance(payload, list):
+            return []
+        result: list[dict[str, Any]] = []
+        for item in payload[:limit]:
+            if not isinstance(item, dict):
+                continue
+            enriched = dict(item)
+            proposal_path = str(enriched.get("proposal_path", "")).strip()
+            enriched["proposal_url"] = self._output_url_from_absolute_path(proposal_path)
+            enriched["is_auto_proposal_ready"] = bool(enriched.get("proposal_auto_generated")) and bool(proposal_path)
+            enriched["recommended_next_action"] = str(enriched.get("recommended_next_action", "")).strip()
+            enriched["reply_temperature"] = str(enriched.get("reply_temperature", "")).strip()
+            enriched["outreach_sent_at"] = str(enriched.get("outreach_sent_at", "")).strip()
+            result.append(enriched)
+        return result
+
+    def load_lead_assets(self) -> dict[str, str]:
+        lead_root = self.automation_dir / "lead_ops"
+        mapping = {
+            "reply_manual": "keyword_reply_manual.md",
+            "followup_queue": "followup_queue.md",
+            "outreach_queue": "outreach_queue.md",
+            "lead_summary": "lead_summary.json",
+            "lead_ledger": "lead_ledger.json",
+            "proposal_catalog": "proposal_catalog.md",
+            "offer_snapshot": "offer_snapshot.json",
+            "outreach_sequences": "outreach_sequences.json",
+            "outbound_campaign_brief": "outbound_campaign_brief.md",
+            "outbound_campaign_pack": "outbound_campaign_pack.json",
+            "reply_triage_playbook": "reply_triage_playbook.md",
+            "reply_triage_pack": "reply_triage_pack.json",
+            "conversion_push_pack": "conversion_push_pack.json",
+            "outreach_execution_log": "outreach_execution_log.json",
+            "sales_execution_dashboard": "sales_execution_dashboard.json",
+            "sales_execution_brief": "sales_execution_brief.md",
+            "wechat_batch_messages": "wechat_batch_messages.md",
+            "email_batch_messages": "email_batch_messages.md",
+            "platform_dm_batch_messages": "platform_dm_batch_messages.md",
+            "customer_success_dashboard": "customer_success_dashboard.json",
+            "customer_success_brief": "customer_success_brief.md",
+            "expansion_pipeline": "expansion_pipeline.json",
+            "referral_pipeline_brief": "referral_pipeline_brief.md",
+        }
+        result: dict[str, str] = {}
+        for key, filename in mapping.items():
+            path = lead_root / filename
+            result[key] = self._account_output_artifact_url(f"automation/lead_ops/{filename}") if path.exists() else ""
+        return result
+
+    def load_lead_config(self) -> dict[str, Any]:
+        config_path = self.settings.project_root / "config" / "company_leads.yaml"
+        payload = self._load_yaml(config_path)
+        if not isinstance(payload, dict):
+            return {"sources": [], "statuses": [], "intents": []}
+        return {
+            "sources": [item for item in payload.get("sources", []) if isinstance(item, dict)],
+            "statuses": [str(item).strip() for item in payload.get("statuses", []) if str(item).strip()],
+            "intents": [str(item).strip() for item in payload.get("intents", []) if str(item).strip()],
+        }
+
+    def load_offer_choices(self) -> list[dict[str, str]]:
+        config_path = self.settings.project_root / "config" / "company_revenue.yaml"
+        payload = self._load_yaml(config_path)
+        if not isinstance(payload, dict):
+            return []
+        result: list[dict[str, str]] = []
+        for item in payload.get("core_offers", []):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            key = str(item.get("key", "")).strip() or self._slugify_offer_name(name)
+            price = str(item.get("price", "")).strip()
+            result.append(
+                {
+                    "key": key,
+                    "name": name,
+                    "price": price,
+                    "label": f"{name} ({price})" if price else name,
+                }
+            )
+        return result
+
+    def load_revenue_engine_assets(self) -> dict[str, str]:
+        root = self.automation_dir / "revenue_engine"
+        mapping = {
+            "customer_targets": "customer_targets.json",
+            "sponsor_targets": "sponsor_targets.json",
+            "revenue_signal_report": "revenue_signal_report.json",
+            "opportunity_sync_report": "opportunity_sync_report.json",
+            "opportunity_queue": "opportunity_queue.json",
+            "opportunity_queue_markdown": "opportunity_queue.md",
+            "outreach_playbook": "outreach_playbook.md",
+            "deer_flow_task_pack": "deer_flow_task_pack.yaml",
+            "newsletter_offer": "newsletter_offer.md",
+            "weekly_pipeline": "weekly_pipeline.md",
+            "prompt_optimization_pack": "prompt_optimization_pack.json",
+            "cloudflow_blueprint": "cloudflow_blueprint.yaml",
+            "letter_campaign": "letter_campaign.md",
+            "agennts_dispatch_queue": "agennts_dispatch_queue.json",
+            "founder_profit_brief": "founder_profit_brief.md",
+            "profit_action_pack": "profit_action_pack.json",
+            "profit_loop_report": "profit_loop_report.json",
+            "sponsor_outreach_log": "sponsor_outreach_log.json",
+            "sponsor_pipeline": "sponsor_pipeline.json",
+            "profit_action_execution_report": "profit_action_execution_report.json",
+        }
+        result: dict[str, str] = {}
+        for key, filename in mapping.items():
+            path = root / filename
+            result[key] = self._account_output_artifact_url(f"automation/revenue_engine/{filename}") if path.exists() else ""
+        return result
+
+    def load_opportunity_sync_report(self) -> dict[str, Any]:
+        payload = self._load_json(self.automation_dir / "revenue_engine" / "opportunity_sync_report.json")
+        return payload if isinstance(payload, dict) else {}
 
     def _build_today_stats(self) -> dict[str, Any]:
         """Build today's monitoring stats: collected, drafted, published, intercepted."""
@@ -2436,3 +2576,35 @@ class WebViewService:
                 continue
             paragraphs.append(chunk)
         return paragraphs
+
+    def _load_yaml(self, path: Path) -> dict[str, Any] | list[Any] | None:
+        if not path.exists():
+            return None
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            return None
+        if isinstance(payload, (dict, list)):
+            return payload
+        return None
+
+    def _output_url_from_absolute_path(self, raw_path: str) -> str:
+        text = str(raw_path or "").strip()
+        if not text:
+            return ""
+        candidate = Path(text)
+        if not candidate.is_absolute():
+            candidate = (self.output_dir / text).resolve()
+        else:
+            candidate = candidate.resolve()
+        try:
+            relative = candidate.relative_to(self.output_dir.resolve())
+        except ValueError:
+            return ""
+        if not candidate.exists():
+            return ""
+        return self._account_output_artifact_url(relative.as_posix())
+
+    def _slugify_offer_name(self, offer_name: str) -> str:
+        cleaned = "".join(ch if ch.isalnum() else "_" for ch in str(offer_name))
+        return cleaned.strip("_").lower() or "offer"

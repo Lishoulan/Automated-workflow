@@ -26,6 +26,11 @@
       <span>发布就绪分</span>
       <strong>{{ detail.run.publish_readiness_score }}</strong>
     </div>
+    <div class="metric-card">
+      <span>AI 风险</span>
+      <strong>{% if detail.run.ai_risk >= 70 %}<span style="color:var(--bad);">{{ detail.run.ai_risk }}</span>{% elif detail.run.ai_risk >= 40 %}<span style="color:var(--warn);">{{ detail.run.ai_risk }}</span>{% else %}{{ detail.run.ai_risk }}{% endif %}</strong>
+    </div>
+    <a class="button button-outline" href="/runs/{{ detail.run.name }}/compare?account={{ account_key }}" style="text-decoration:none;">内容比对</a>
   </div>
 </section>
 

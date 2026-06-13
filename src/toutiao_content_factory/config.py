@@ -423,7 +423,7 @@ class WechatSettings:
             serv00_proxy_secret=str(payload.get("serv00_proxy_secret", "")).strip(),
             editor_135_enabled=bool(payload.get("editor_135_enabled", True)),
             editor_135_base_url=str(payload.get("editor_135_base_url", "https://www.135editor.com")).strip(),
-            editor_135_profile_dir=str(payload.get("editor_135_profile_dir", ".runtime/editor_135_profile")).strip(),
+            editor_135_profile_dir=str(payload.get("editor_135_profile_dir", "editor_135_profile")).strip(),
             builtin_theme=str(payload.get("builtin_theme", "tech_blue")).strip() or "tech_blue",
         )
 

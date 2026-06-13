@@ -12,6 +12,7 @@ from toutiao_content_factory.models import TopicCandidate, WorkflowResult
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
 from toutiao_content_factory.services.schema_guard_service import SchemaGuardService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
+from toutiao_content_factory.services.monetization_service import MonetizationService
 from toutiao_content_factory.services.publish_service import PublishService
 from toutiao_content_factory.agents.base import BaseAgent
 
@@ -40,6 +41,7 @@ class ReviewWorkflowService:
         self.logger = logger
         self.publish_service = PublishService(settings, logger)
         self.growth_ops_service = GrowthOpsService(settings, logger)
+        self.monetization_service = MonetizationService(settings, logger)
         self._text_cleaner = BaseAgent.__new__(BaseAgent)
         self._text_cleaner.settings = settings
 
@@ -168,6 +170,7 @@ class ReviewWorkflowService:
             self._text_cleaner.strip_prompt_leakage(bundle.article).strip(),
             title_candidates=[chosen_title, *bundle.recommended_titles, *bundle.titles],
         )
+        clean_article = self.monetization_service.append_cta(clean_article, platform_key="default").strip()
         clean_title = self.publish_service._clip_title(self._text_cleaner.strip_prompt_leakage(chosen_title).strip())
         clean_summary = self._text_cleaner.strip_prompt_leakage(bundle.summary).strip()
         clean_comment = self._text_cleaner.strip_prompt_leakage(bundle.comment_prompt).strip()

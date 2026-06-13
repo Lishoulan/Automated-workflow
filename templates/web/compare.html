@@ -1,0 +1,369 @@
+{% extends "base.html" %}
+
+{% block title %}内容比对 | 手蓝内容工厂{% endblock %}
+
+{% block content %}
+<style>
+  .compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 22px;
+    margin-bottom: 22px;
+  }
+  .compare-pane {
+    padding: 22px;
+    border-radius: 24px;
+    background: linear-gradient(180deg, rgba(18, 34, 53, 0.95), rgba(12, 26, 41, 0.95));
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  .compare-pane-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .compare-pane-head h3 {
+    margin: 0;
+    font-family: Georgia, "Times New Roman", serif;
+  }
+  .compare-pane-content {
+    font-size: 15px;
+    line-height: 1.8;
+    word-break: break-word;
+  }
+  .compare-pane-content h1,
+  .compare-pane-content h2,
+  .compare-pane-content h3,
+  .compare-pane-content h4 {
+    margin: 18px 0 8px;
+    color: var(--accent);
+  }
+  .compare-pane-content h1 { font-size: 22px; }
+  .compare-pane-content h2 { font-size: 19px; }
+  .compare-pane-content h3 { font-size: 17px; }
+  .compare-pane-content h4 { font-size: 15px; }
+  .compare-pane-content p {
+    margin: 0 0 12px;
+  }
+  .compare-pane-content ul,
+  .compare-pane-content ol {
+    margin: 8px 0;
+    padding-left: 24px;
+  }
+  .compare-pane-content li {
+    margin: 4px 0;
+  }
+  .compare-pane-content blockquote {
+    margin: 12px 0;
+    padding: 10px 16px;
+    border-left: 3px solid var(--accent);
+    background: rgba(61, 225, 255, 0.06);
+    border-radius: 0 10px 10px 0;
+    color: var(--muted);
+  }
+  .compare-pane-content strong {
+    color: var(--text);
+  }
+  .compare-pane-content hr {
+    border: none;
+    border-top: 1px solid var(--line);
+    margin: 16px 0;
+  }
+  .compare-pane-content code {
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(7, 17, 29, 0.6);
+    font-size: 13px;
+  }
+  .compare-source-meta {
+    margin-bottom: 16px;
+    padding: 14px;
+    border-radius: 14px;
+    background: rgba(7, 17, 29, 0.54);
+    border: 1px solid var(--line);
+  }
+  .compare-source-meta p {
+    margin: 4px 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .compare-pane-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .compare-pane-label-source {
+    background: rgba(61, 225, 255, 0.1);
+    color: var(--accent);
+    border: 1px solid rgba(61, 225, 255, 0.25);
+  }
+  .compare-pane-label-result {
+    background: rgba(76, 178, 255, 0.1);
+    color: var(--accent-2);
+    border: 1px solid rgba(76, 178, 255, 0.25);
+  }
+  .compare-stats-bar {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 22px;
+    padding: 16px 22px;
+    border-radius: 18px;
+    background: linear-gradient(180deg, rgba(18, 34, 53, 0.95), rgba(12, 26, 41, 0.95));
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+  }
+  .compare-stat-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 80px;
+  }
+  .compare-stat-item span {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .compare-stat-item strong {
+    font-size: 20px;
+  }
+  @media (max-width: 1180px) {
+    .compare-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<section class="hero">
+  <div>
+    <p class="eyebrow">CONTENT COMPARE</p>
+    <h2>改写质量比对视图</h2>
+    <p class="muted">批次 {{ run_name }} · 左侧为采集原始素材，右侧为 Writer Agent 生成的最终成稿</p>
+  </div>
+  <div class="hero-stats">
+    <div class="metric-card">
+      <span>综合评分</span>
+      <strong>{{ overall_score or 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>AI 风险</span>
+      <strong>{% if ai_risk_score >= 70 %}<span style="color:var(--bad);">{{ ai_risk_score }}</span>{% elif ai_risk_score >= 40 %}<span style="color:var(--warn);">{{ ai_risk_score }}</span>{% else %}{{ ai_risk_score or 0 }}{% endif %}</strong>
+    </div>
+    <div class="metric-card">
+      <span>校验分</span>
+      <strong>{{ validation_score or 0 }}</strong>
+    </div>
+  </div>
+</section>
+
+<div class="compare-stats-bar">
+  <div class="compare-stat-item">
+    <span>素材字数</span>
+    <strong>{{ original_material|length if original_material else 0 }}</strong>
+  </div>
+  <div class="compare-stat-item">
+    <span>成稿字数</span>
+    <strong>{{ final_article|length if final_article else 0 }}</strong>
+  </div>
+  <div class="compare-stat-item">
+    <span>扩写倍率</span>
+    <strong>{% if original_material and original_material|length > 0 and final_article %}{{ '%.1f'|format(final_article|length / original_material|length) }}{% else %}--{% endif %}x</strong>
+  </div>
+  <div class="compare-stat-item">
+    <span>综合评分</span>
+    <strong>{{ overall_score or 0 }}</strong>
+  </div>
+  <div class="compare-stat-item">
+    <span>AI 风险</span>
+    <strong>{% if ai_risk_score >= 70 %}<span style="color:var(--bad);">{{ ai_risk_score }}</span>{% elif ai_risk_score >= 40 %}<span style="color:var(--warn);">{{ ai_risk_score }}</span>{% else %}{{ ai_risk_score or 0 }}{% endif %}</strong>
+  </div>
+  <div class="compare-stat-item">
+    <span>正文校验</span>
+    <strong>{{ validation_score or 0 }}</strong>
+  </div>
+  <div style="flex:1;"></div>
+  <div class="compare-stat-item" style="align-self:center;">
+    <a class="text-link" href="/runs/{{ run_name }}?account={{ account_key }}">返回批次详情</a>
+  </div>
+</div>
+
+<section class="compare-grid">
+  <div class="compare-pane">
+    <div class="compare-pane-head">
+      <div>
+        <span class="compare-pane-label compare-pane-label-source">ORIGINAL</span>
+        <h3>采集的原始素材文本</h3>
+      </div>
+      <a class="text-link" href="/runs/{{ run_name }}?account={{ account_key }}">返回批次详情</a>
+    </div>
+
+    {% if original_title %}
+    <div class="compare-source-meta">
+      <p><strong>原始标题：</strong>{{ original_title }}</p>
+      {% if original_source %}
+      <p><strong>来源：</strong>{{ original_source }}</p>
+      {% endif %}
+      {% if original_url %}
+      <p><strong>原文链接：</strong><a class="text-link" href="{{ original_url }}" target="_blank">{{ original_url[:60 }}{% if original_url|length > 60 %}...{% endif %}</a></p>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="compare-pane-content" id="original-content">
+      {% if original_material %}
+        <div id="original-raw" style="white-space:pre-wrap;">{{ original_material }}</div>
+      {% elif selected_topic %}
+        {% if selected_topic.get("snippet") %}
+        <div style="white-space:pre-wrap;">{{ selected_topic.snippet }}</div>
+        {% elif selected_topic.get("summary") %}
+        <div style="white-space:pre-wrap;">{{ selected_topic.summary }}</div>
+        {% else %}
+        <p class="empty">该批次没有保存原始素材摘要。</p>
+        {% if selected_topic.get("matched_keywords") %}
+        <div class="section-block">
+          <h4>匹配关键词</h4>
+          <div class="chips">
+            {% for kw in selected_topic.matched_keywords %}
+            <span class="chip">{{ kw }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        {% endif %}
+      {% else %}
+      <p class="empty">该批次没有关联的选题素材。</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="compare-pane">
+    <div class="compare-pane-head">
+      <div>
+        <span class="compare-pane-label compare-pane-label-result">WRITER OUTPUT</span>
+        <h3>Writer Agent 生成的最终成稿</h3>
+      </div>
+      <a class="text-link" href="/runs/{{ run_name }}?account={{ account_key }}">返回批次详情</a>
+    </div>
+
+    {% if ai_risk_score >= 70 %}
+    <div class="compare-source-meta" style="border-color:rgba(255,110,110,0.3);">
+      <p style="color:var(--bad);"><strong>AI 风险评分过高 ({{ ai_risk_score }})</strong>，该文章可能被系统自动拦截。</p>
+    </div>
+    {% elif ai_risk_score >= 40 %}
+    <div class="compare-source-meta" style="border-color:rgba(240,179,90,0.3);">
+      <p style="color:var(--warn);"><strong>AI 风险评分中等 ({{ ai_risk_score }})</strong>，建议人工复核。</p>
+    </div>
+    {% endif %}
+
+    <div class="compare-pane-content" id="final-content">
+      {% if final_article %}
+        <div id="final-raw" style="white-space:pre-wrap;">{{ final_article }}</div>
+      {% else %}
+      <p class="empty">该批次没有生成最终文章内容。</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h3>改写质量评估</h3>
+    <p>对比原始素材与最终文章的差异，评估 Writer Agent 的改写质量</p>
+  </div>
+  <div class="score-grid" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
+    <div class="score-card">
+      <span>综合评分</span>
+      <strong>{{ overall_score or 0 }}</strong>
+    </div>
+    <div class="score-card">
+      <span>AI 风险评分</span>
+      <strong>{% if ai_risk_score >= 70 %}<span style="color:var(--bad);">{{ ai_risk_score }}</span>{% elif ai_risk_score >= 40 %}<span style="color:var(--warn);">{{ ai_risk_score }}</span>{% else %}{{ ai_risk_score or 0 }}{% endif %}</strong>
+    </div>
+    <div class="score-card">
+      <span>正文校验分</span>
+      <strong>{{ validation_score or 0 }}</strong>
+    </div>
+    <div class="score-card">
+      <span>素材长度</span>
+      <strong>{{ original_material|length if original_material else 0 }} 字</strong>
+    </div>
+  </div>
+  <div class="section-block" style="margin-top:16px;">
+    <div class="meta-line">
+      <a class="text-link" href="/runs/{{ run_name }}?account={{ account_key }}">查看完整批次详情</a>
+      <a class="text-link" href="/runs?account={{ account_key }}">返回归档批次列表</a>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  function renderMarkdown(text) {
+    if (!text) return '';
+    var html = text;
+    // Escape HTML entities first
+    html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // Headers
+    html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+    // Bold and italic
+    html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    // Inline code
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Blockquotes
+    html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+    // Horizontal rules
+    html = html.replace(/^---+$/gm, '<hr>');
+    // Unordered lists (simple)
+    html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+    // Ordered lists (simple)
+    html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+    // Paragraphs - convert double newlines
+    html = html.replace(/\n\n+/g, '</p><p>');
+    // Single newlines within paragraphs
+    html = html.replace(/\n/g, '<br>');
+    // Wrap in paragraph
+    html = '<p>' + html + '</p>';
+    // Clean up empty paragraphs
+    html = html.replace(/<p><\/p>/g, '');
+    html = html.replace(/<p>(<h[1-4]>)/g, '$1');
+    html = html.replace(/(<\/h[1-4]>)<\/p>/g, '$1');
+    html = html.replace(/<p>(<hr>)<\/p>/g, '$1');
+    html = html.replace(/<p>(<ul>)/g, '$1');
+    html = html.replace(/(<\/ul>)<\/p>/g, '$1');
+    html = html.replace(/<p>(<blockquote>)/g, '$1');
+    html = html.replace(/(<\/blockquote>)<\/p>/g, '$1');
+    return html;
+  }
+
+  var originalRaw = document.getElementById('original-raw');
+  var finalRaw = document.getElementById('final-raw');
+
+  if (originalRaw && originalRaw.textContent.trim()) {
+    originalRaw.innerHTML = renderMarkdown(originalRaw.textContent);
+    originalRaw.style.whiteSpace = '';
+  }
+
+  if (finalRaw && finalRaw.textContent.trim()) {
+    finalRaw.innerHTML = renderMarkdown(finalRaw.textContent);
+    finalRaw.style.whiteSpace = '';
+  }
+})();
+</script>
+{% endblock %}

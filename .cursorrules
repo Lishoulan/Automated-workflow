@@ -1,0 +1,128 @@
+# AI Content Factory — AI-Assisted Coding Rules
+
+## Project Overview
+
+This is a multi-agent content factory that orchestrates AI agents (trend, data, writer, polish, review, title, publish-review, etc.) to produce and publish articles across platforms (Toutiao, WeChat, Douyin). It relies heavily on async I/O, Playwright browser automation, OpenAI-compatible LLM APIs, and a multi-account matrix for content isolation.
+
+---
+
+## 1. Async & Network Resilience
+
+- This project is **heavily async and network-dependent** (LLM API calls, Playwright browser sessions, RSS/HTML scraping, WeChat/Douyin API interactions).
+- Every `async` function that performs I/O **must** include a `try-except` block with structured logging.
+- Use `logging` (via `src/toutiao_content_factory/utils/logging_utils.py`) — never bare `print()` for error reporting in production code.
+- Log the operation context (account key, topic, URL, etc.) so failures are traceable across accounts.
+- Prefer `asyncio.timeout` or explicit timeout parameters over unbounded awaits.
+- When catching exceptions, log the full traceback at DEBUG level and a concise message at WARNING/ERROR level.
+
+```python
+# Good
+try:
+    result = await some_async_call()
+except httpx.TimeoutException:
+    logger.warning("Request timed out for account=%s url=%s", account_key, url)
+    raise
+except Exception as exc:
+    logger.error("Unexpected error in %s for account=%s: %s", func_name, account_key, exc)
+    raise
+
+# Bad — silent swallow or bare print
+try:
+    result = await some_async_call()
+except:
+    pass
+```
+
+---
+
+## 2. Dual Configuration: `.env` + `config.yaml`
+
+- Configuration is loaded from **both** `.env` (environment variables) and `config.yaml`, with env vars taking precedence.
+- When adding, renaming, or removing a config field, you **must** update:
+  1. The corresponding dataclass in `src/toutiao_content_factory/config.py`
+  2. The `from_dict()` classmethod that parses it from YAML
+  3. The relevant `_load_*_config*()` helper that reads env overrides
+  4. The `.env.example` file with a commented example
+  5. The `config.yaml` default payload (via `_default_config_payload()` or the actual file)
+- Account-scoped env vars follow the pattern `{BASE_NAME}__{ACCOUNT_SLUG}` (e.g., `BRAND_NAME__ROBOT_NOTES`). Use `account_env_name()` and `_env_value_scoped()` helpers.
+- Never read config directly from `os.getenv()` without also checking if the field should be account-scoped.
+
+---
+
+## 3. Multi-Account Matrix Isolation
+
+- The system runs multiple accounts (`default`, `robot_notes`, `energy_notes`, etc.) with strict content and runtime isolation.
+- **Cache, logs, browser profiles, and publish history must NEVER be shared across accounts.**
+- Each account has its own:
+  - `input_dir`, `output_dir`, `logs_dir`, `cache_dir` (resolved via `_resolve_account_path`)
+  - `browser_profile_dir` (Playwright user data, isolated per account)
+  - `history_filename` (publish history, isolated per account)
+- When adding a new feature that writes files, creates caches, or stores state:
+  - Always scope the path through `AppSettings.account_runtime_dir` or the account-specific directory fields.
+  - Never hardcode a shared path like `.runtime/some_cache.json` — use `.runtime/accounts/{slug}/some_cache.json` for non-default accounts.
+- When adding a new service or agent, ensure it accepts `account_key` or `AppSettings` and respects account boundaries.
+- The `AccountProfile` dataclass and `_load_account_profiles()` are the source of truth for account definitions. New accounts must be added under `accounts:` in `config.yaml`.
+
+---
+
+## 4. Code Style
+
+- **Python 3.10+** — use `X | Y` union syntax, `match` statements, and other modern features where appropriate.
+- **Type Hints are mandatory** for all function signatures (parameters and return types). Use `from __future__ import annotations` for forward references.
+- Prefer `dataclass(frozen=True)` for immutable config/value objects (follow existing patterns in `config.py`).
+- **Complex logic requires bilingual comments** (Chinese + English). Example:
+
+```python
+# 按账号slug隔离缓存目录，避免多账号数据混淆
+# Isolate cache directory by account slug to prevent cross-account data mixing
+cache_path = settings.cache_dir / f"topic_cache_{settings.account_slug}.json"
+```
+
+- Use `logging` with lazy formatting (`logger.info("msg %s", var)`) — never f-strings in log calls.
+- Follow existing naming conventions:
+  - `snake_case` for functions, variables, modules
+  - `PascalCase` for classes and dataclasses
+  - `UPPER_SNAKE_CASE` for constants and env var names
+- Keep files focused: one service/agent per file, matching the existing `services/` and `agents/` structure.
+
+---
+
+## 5. Playwright & Browser Automation
+
+- All Playwright interactions must have explicit timeouts and error handling.
+- Use the `browser_launch_guard` service to prevent concurrent browser launches.
+- Browser profiles are per-account — never reuse a profile across accounts.
+- After browser operations, always clean up (close pages, contexts) in `finally` blocks.
+
+---
+
+## 6. Testing
+
+- Tests live in `tests/` and use `pytest`.
+- When adding features, add tests that cover at least the happy path and one failure mode.
+- Mock external services (LLM APIs, browser automation) — never hit real APIs in tests.
+- Use `conftest.py` fixtures for shared test setup.
+
+---
+
+## 7. File Organization
+
+- `src/toutiao_content_factory/agents/` — AI agent implementations
+- `src/toutiao_content_factory/services/` — business logic and integrations
+- `src/toutiao_content_factory/utils/` — shared utilities (logging, browser, file ops)
+- `src/toutiao_content_factory/database/` — data models and persistence
+- `src/toutiao_content_factory/web/` — Flask web dashboard
+- `prompts/` — LLM prompt templates (Markdown)
+- `scripts/` — operational and debug scripts
+- `branding/` — account matrix docs and avatar assets
+
+---
+
+## 8. Do Not
+
+- Do not commit `.env` files (only `.env.example`).
+- Do not hardcode API keys, tokens, or credentials anywhere in source code.
+- Do not add new top-level Python files in the project root — use `scripts/` or `src/`.
+- Do not bypass the account isolation layer with shared global state.
+- Do not use `time.sleep()` in async code — use `asyncio.sleep()`.
+- Do not catch bare `Exception` without logging — every caught exception must be logged.

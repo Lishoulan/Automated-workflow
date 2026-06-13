@@ -3,11 +3,99 @@
 {% block title %}已发布预览 | 手蓝内容工厂{% endblock %}
 
 {% block content %}
+<style>
+  .status-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .status-dot-green { background: var(--good); box-shadow: 0 0 6px rgba(46, 211, 154, 0.5); }
+  .status-dot-red { background: var(--bad); box-shadow: 0 0 6px rgba(255, 110, 110, 0.5); }
+  .status-dot-yellow { background: var(--warn); box-shadow: 0 0 6px rgba(240, 179, 90, 0.5); }
+  .status-dot-gray { background: var(--muted); }
+
+  .status-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: default;
+  }
+  .status-indicator-success {
+    background: rgba(46, 211, 154, 0.14);
+    color: var(--good);
+    border: 1px solid rgba(46, 211, 154, 0.3);
+  }
+  .status-indicator-error {
+    background: rgba(255, 110, 110, 0.14);
+    color: var(--bad);
+    border: 1px solid rgba(255, 110, 110, 0.3);
+    position: relative;
+  }
+  .status-indicator-error[data-tooltip]:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: rgba(7, 17, 29, 0.96);
+    border: 1px solid rgba(255, 110, 110, 0.3);
+    color: #ffb1b1;
+    font-size: 12px;
+    font-weight: 400;
+    white-space: nowrap;
+    max-width: 360px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    z-index: 10;
+    pointer-events: none;
+  }
+  .status-indicator-error[data-tooltip]:hover::before {
+    content: "";
+    position: absolute;
+    bottom: calc(100% + 2px);
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: rgba(255, 110, 110, 0.3);
+    z-index: 10;
+    pointer-events: none;
+  }
+  .status-indicator-warn {
+    background: rgba(240, 179, 90, 0.14);
+    color: var(--warn);
+    border: 1px solid rgba(240, 179, 90, 0.3);
+  }
+  .status-indicator-neutral {
+    background: rgba(157, 194, 255, 0.08);
+    color: var(--muted);
+    border: 1px solid var(--line);
+  }
+
+  .article-table tbody tr.row-success {
+    border-left: 3px solid var(--good);
+  }
+  .article-table tbody tr.row-error {
+    border-left: 3px solid var(--bad);
+  }
+  .article-table tbody tr.row-warn {
+    border-left: 3px solid var(--warn);
+  }
+</style>
+
 <section class="hero">
   <div>
     <p class="eyebrow">PUBLISHED PREVIEW</p>
-    <h2>已发布文章预览</h2>
-    <p class="muted">这里展示账号 {{ account_label }} 最近实际提交到头条发布流程的标题与正文。</p>
+    <h2>文章回溯列表</h2>
+    <p class="muted">账号 {{ account_label }} 的已发布文章，含平台状态与 AI 质量评分。</p>
   </div>
   <div class="hero-stats">
     <div class="metric-card">
@@ -22,26 +110,138 @@
 </section>
 
 {% if published_articles %}
-<section class="run-table">
-  {% for item in published_articles %}
-  <article class="panel">
-    <div class="panel-head">
-      <div>
-        <h3>{{ item.title or "未命名标题" }}</h3>
-        <p>{{ item.published_at or "未记录发布时间" }} · {{ item.status or "unknown" }} · {{ item.run_name }}</p>
-      </div>
-      <div class="right-meta">
-        {% if item.pgc_id %}
-        <span class="pill pill-pending">PGC {{ item.pgc_id }}</span>
-        {% endif %}
-        <a class="text-link" href="{{ item.artifacts.run_detail }}">查看批次</a>
-        <a class="text-link" href="{{ item.artifacts.article }}" target="_blank">正文文件</a>
-        <a class="text-link" href="{{ item.artifacts.publish_result }}" target="_blank">发布结果</a>
-      </div>
-    </div>
+<section class="panel" style="overflow-x:auto;">
+  <table class="article-table">
+    <thead>
+      <tr>
+        <th>文章标题</th>
+        <th>发布时间</th>
+        <th>发布状态</th>
+        <th>平台状态</th>
+        <th>AI 风险评分</th>
+        <th>综合评分</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in published_articles %}
+      {% set is_intercepted = item.ai_risk_score >= 70 %}
+      {% set is_published = item.status in ['published', 'success', 'submitted', 'submitted_for_review', 'draft_created'] %}
+      {% set has_error = not is_published and not is_intercepted and item.status not in ['pending', 'unknown', ''] %}
+      {% if is_published %}
+        {% set row_class = 'row-success' %}
+      {% elif is_intercepted %}
+        {% set row_class = 'row-warn' %}
+      {% elif has_error %}
+        {% set row_class = 'row-error' %}
+      {% else %}
+        {% set row_class = '' %}
+      {% endif %}
 
+      <tr class="{{ row_class }}">
+        <td class="col-title">
+          <a href="{{ item.artifacts.run_detail }}">{{ item.title or "未命名标题" }}</a>
+          {% if item.topic_title %}
+          <p class="muted" style="margin:4px 0 0;font-size:12px;">选题：{{ item.topic_title }}</p>
+          {% endif %}
+        </td>
+        <td><span class="muted">{{ item.published_at or "未记录" }}</span></td>
+        <td>
+          {% if is_published %}
+          <span class="status-indicator status-indicator-success">
+            <span class="status-dot status-dot-green"></span>发布成功
+          </span>
+          {% elif is_intercepted %}
+          <span class="status-indicator status-indicator-warn">
+            <span class="status-dot status-dot-yellow"></span>风控拦截
+          </span>
+          {% elif has_error %}
+          <span class="status-indicator status-indicator-error" data-tooltip="{{ item.message or '发布失败' }}">
+            <span class="status-dot status-dot-red"></span>发布失败
+          </span>
+          {% else %}
+          <span class="status-indicator status-indicator-neutral">
+            <span class="status-dot status-dot-gray"></span>{{ item.status or "未知" }}
+          </span>
+          {% endif %}
+        </td>
+        <td>
+          <div class="platform-status-list">
+            {% if item.platform_statuses %}
+              {% for platform_key, platform_info in item.platform_statuses.items() %}
+              <span class="pill pill-{{ platform_info.tone }}">{{ platform_info.label }}: {{ platform_info.status_label }}</span>
+              {% endfor %}
+            {% else %}
+              <span class="pill pill-{{ 'success' if is_published else 'pending' }}">{{ item.status or "unknown" }}</span>
+            {% endif %}
+          </div>
+        </td>
+        <td>
+          {% if item.ai_risk_score >= 70 %}
+          <span class="risk-badge risk-badge-high">{{ item.ai_risk_score }}</span>
+          {% elif item.ai_risk_score >= 40 %}
+          <span class="risk-badge risk-badge-medium">{{ item.ai_risk_score }}</span>
+          {% elif item.ai_risk_score > 0 %}
+          <span class="risk-badge risk-badge-low">{{ item.ai_risk_score }}</span>
+          {% else %}
+          <span class="muted">--</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if item.overall_score > 0 %}
+          <strong>{{ item.overall_score }}</strong>
+          {% else %}
+          <span class="muted">--</span>
+          {% endif %}
+        </td>
+        <td>
+          <div class="meta-line">
+            <a class="text-link" href="{{ item.artifacts.compare }}">内容比对</a>
+            <a class="text-link" href="{{ item.artifacts.run_detail }}">批次详情</a>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h3>文章正文预览</h3>
+    <p>展开查看已发布文章的完整正文</p>
+  </div>
+  {% for item in published_articles %}
+  {% set is_intercepted = item.ai_risk_score >= 70 %}
+  {% set is_published = item.status in ['published', 'success', 'submitted', 'submitted_for_review', 'draft_created'] %}
+  <details class="status-card" style="margin-bottom:12px; {% if is_intercepted %}border-left:3px solid var(--warn);{% elif not is_published %}border-left:3px solid var(--bad);{% endif %}">
+    <summary style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;">
+      <strong>{{ item.title or "未命名标题" }}</strong>
+      <div class="meta-line">
+        {% if is_intercepted %}
+        <span class="status-indicator status-indicator-warn" style="font-size:11px;padding:3px 8px;">
+          <span class="status-dot status-dot-yellow"></span>风控拦截
+        </span>
+        {% elif is_published %}
+        <span class="status-indicator status-indicator-success" style="font-size:11px;padding:3px 8px;">
+          <span class="status-dot status-dot-green"></span>已发布
+        </span>
+        {% else %}
+        <span class="status-indicator status-indicator-error" style="font-size:11px;padding:3px 8px;" data-tooltip="{{ item.message or '发布失败' }}">
+          <span class="status-dot status-dot-red"></span>失败
+        </span>
+        {% endif %}
+        {% if item.ai_risk_score >= 70 %}
+        <span class="risk-badge risk-badge-high">AI风险 {{ item.ai_risk_score }}</span>
+        {% elif item.ai_risk_score >= 40 %}
+        <span class="risk-badge risk-badge-medium">AI风险 {{ item.ai_risk_score }}</span>
+        {% elif item.ai_risk_score > 0 %}
+        <span class="risk-badge risk-badge-low">AI风险 {{ item.ai_risk_score }}</span>
+        {% endif %}
+      </div>
+    </summary>
     {% if item.topic_title %}
-    <div class="section-block">
+    <div class="section-block" style="margin-top:12px;">
       <h4>对应选题</h4>
       <p class="lead">{{ item.topic_title }}</p>
       {% if item.topic_url %}
@@ -49,7 +249,6 @@
       {% endif %}
     </div>
     {% endif %}
-
     <div class="section-block">
       <h4>正文预览</h4>
       {% if item.article_paragraphs %}
@@ -60,7 +259,6 @@
       <p class="empty">没有找到已发布正文。</p>
       {% endif %}
     </div>
-
     {% if item.notes %}
     <div class="section-block">
       <h4>发布备注</h4>
@@ -71,14 +269,13 @@
       </ul>
     </div>
     {% endif %}
-
-    {% if item.message %}
+    {% if item.message and not is_published %}
     <div class="section-block">
-      <h4>平台返回</h4>
-      <p class="muted">{{ item.message }}</p>
+      <h4>错误信息</h4>
+      <p style="color:var(--bad);">{{ item.message }}</p>
     </div>
     {% endif %}
-  </article>
+  </details>
   {% endfor %}
 </section>
 {% else %}

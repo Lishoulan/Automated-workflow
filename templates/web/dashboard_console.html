@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 
 {% block title %}单账号看板 | 手蓝内容工厂{% endblock %}
 
@@ -84,7 +84,8 @@
     align-items: flex-start;
   }
   .alert-actions,
-  .retry-actions {
+  .retry-actions,
+  .lead-actions {
     display: flex;
     gap: 10px;
     align-items: center;
@@ -145,6 +146,76 @@
     max-height: 65vh;
     overflow: auto;
   }
+  .lead-grid {
+    display: grid;
+    grid-template-columns: 1.1fr 1.3fr;
+    gap: 18px;
+    margin-top: 18px;
+    margin-bottom: 0;
+  }
+  .lead-form {
+    display: grid;
+    gap: 12px;
+  }
+  .lead-form-row {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .lead-form label,
+  .lead-quick-form label {
+    display: grid;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .lead-form input,
+  .lead-form select,
+  .lead-form textarea,
+  .lead-quick-form input,
+  .lead-quick-form select,
+  .lead-quick-form textarea {
+    width: 100%;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: rgba(3, 11, 20, 0.72);
+    color: var(--text);
+    padding: 10px 12px;
+    font: inherit;
+  }
+  .lead-form textarea,
+  .lead-quick-form textarea {
+    min-height: 88px;
+    resize: vertical;
+  }
+  .lead-list {
+    display: grid;
+    gap: 14px;
+  }
+  .lead-card {
+    border-radius: 18px;
+    padding: 16px;
+    background: rgba(7, 17, 29, 0.4);
+    border: 1px solid var(--line);
+  }
+  .lead-card-head {
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+  .lead-card-head p,
+  .lead-meta p,
+  .lead-card .muted {
+    margin: 4px 0 0;
+  }
+  .lead-quick-form {
+    display: grid;
+    gap: 10px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(157, 194, 255, 0.12);
+  }
   @media (max-width: 1180px) {
     .timeline-grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -153,23 +224,65 @@
   @media (max-width: 900px) {
     .timeline-grid,
     .account-grid,
-    .two-col {
+    .two-col,
+    .lead-grid,
+    .lead-form-row {
       grid-template-columns: 1fr;
     }
     .alert-card,
     .modal-head,
-    .modal-toolbar {
+    .modal-toolbar,
+    .lead-card-head {
       flex-direction: column;
       align-items: stretch;
     }
   }
 </style>
 
+<section class="monitor-banner">
+  <div class="monitor-banner-head">
+    <p class="eyebrow">UNATTENDED MONITOR</p>
+    <h2>无人值守监控大屏</h2>
+    <p class="muted">当前账号 {{ account_label }} · 实时运营数据总览</p>
+  </div>
+  <div class="monitor-stats">
+    <div class="stat-card stat-card-collect">
+      <div class="stat-icon">&#9889;</div>
+      <div class="stat-body">
+        <span class="stat-label">今日采集热点数</span>
+        <strong class="stat-value">{{ dashboard.today_stats.today_collected }}</strong>
+      </div>
+    </div>
+    <div class="stat-card stat-card-draft">
+      <div class="stat-icon">&#9997;</div>
+      <div class="stat-body">
+        <span class="stat-label">今日成稿数</span>
+        <strong class="stat-value">{{ dashboard.today_stats.today_drafted }}</strong>
+      </div>
+    </div>
+    <div class="stat-card stat-card-publish">
+      <div class="stat-icon">&#10004;</div>
+      <div class="stat-body">
+        <span class="stat-label">今日成功发布数</span>
+        <strong class="stat-value">{{ dashboard.today_stats.today_published }}</strong>
+      </div>
+    </div>
+    <div class="stat-card stat-card-intercept">
+      <div class="stat-icon">&#9888;</div>
+      <div class="stat-body">
+        <span class="stat-label">系统拦截风控数</span>
+        <strong class="stat-value">{{ dashboard.today_stats.today_intercepted }}</strong>
+      </div>
+      <span class="stat-hint">AI 评分过高 / 风控拦截</span>
+    </div>
+  </div>
+</section>
+
 <section class="hero">
   <div>
     <p class="eyebrow">CONTROL CENTER</p>
     <h2>单账号运营看板</h2>
-    <p class="muted">当前账号为 {{ account_label }}。现在这页会直接告诉你今天跑到哪一步、哪里卡住、怎么补救，以及哪些批次可以一键补发。</p>
+    <p class="muted">当前账号是 {{ account_label }}。这页会直接告诉你今天跑到哪一步、哪里卡住、怎么补救，以及哪些批次可以一键补发。</p>
   </div>
   <div class="hero-stats">
     <div class="metric-card">
@@ -197,12 +310,516 @@
       <strong>{{ dashboard.latest_score.scores.overall_score if dashboard.latest_score and dashboard.latest_score.scores else 0 }}</strong>
     </div>
     <div class="metric-card">
-      <span>今日总消耗(元)</span>
+      <span>今日总消耗 / 元</span>
       <strong>{{ '%.4f'|format(dashboard.cost_summary.today_total_cost if dashboard.cost_summary else 0) }}</strong>
     </div>
     <div class="metric-card">
       <span>篇均成本</span>
       <strong>{{ '%.4f'|format(dashboard.cost_summary.average_cost_per_article if dashboard.cost_summary else 0) }}</strong>
+    </div>
+  </div>
+</section>
+
+<section class="panel panel-highlight">
+  <div class="panel-head">
+    <div>
+      <h3>营收驾驶舱</h3>
+      <p>内容带来的线索、成交和可售服务，都在这里汇总。</p>
+    </div>
+    <div class="meta-line wrap-line">
+      {% if dashboard.lead_assets.reply_manual %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.reply_manual }}" target="_blank">关键词回复手册</a>
+      {% endif %}
+      {% if dashboard.lead_assets.proposal_catalog %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.proposal_catalog }}" target="_blank">合作方案模板</a>
+      {% endif %}
+      {% if dashboard.lead_assets.offer_snapshot %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.offer_snapshot }}" target="_blank">报价快照</a>
+      {% endif %}
+      {% if dashboard.lead_assets.outreach_queue %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.outreach_queue }}" target="_blank">外联队列</a>
+      {% endif %}
+      {% if dashboard.lead_assets.outreach_sequences %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.outreach_sequences }}" target="_blank">外联脚本</a>
+      {% endif %}
+      {% if dashboard.lead_assets.outbound_campaign_brief %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.outbound_campaign_brief }}" target="_blank">发送简报</a>
+      {% endif %}
+      {% if dashboard.lead_assets.outbound_campaign_pack %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.outbound_campaign_pack }}" target="_blank">批量发送包</a>
+      {% endif %}
+      {% if dashboard.lead_assets.reply_triage_playbook %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.reply_triage_playbook }}" target="_blank">回复分诊</a>
+      {% endif %}
+      {% if dashboard.lead_assets.conversion_push_pack %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.conversion_push_pack }}" target="_blank">成交推进包</a>
+      {% endif %}
+      {% if dashboard.lead_assets.sales_execution_brief %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.sales_execution_brief }}" target="_blank">閿€鍞墽琛岀畝鎶?/a>
+      {% endif %}
+      {% if dashboard.lead_assets.sales_execution_dashboard %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.sales_execution_dashboard }}" target="_blank">閿€鍞墽琛岄潰鏉?/a>
+      {% endif %}
+      {% if dashboard.lead_assets.wechat_batch_messages %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.wechat_batch_messages }}" target="_blank">寰俊鎵归噺璇濇湳</a>
+      {% endif %}
+      {% if dashboard.lead_assets.email_batch_messages %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.email_batch_messages }}" target="_blank">閭欢鎵归噺璇濇湳</a>
+      {% endif %}
+      {% if dashboard.lead_assets.platform_dm_batch_messages %}
+      <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.platform_dm_batch_messages }}" target="_blank">绉佷俊鎵归噺璇濇湳</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.outreach_playbook %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.outreach_playbook }}" target="_blank">外联手册</a>
+      {% endif %}
+    </div>
+  </div>
+  <div class="hero-stats">
+    <div class="metric-card">
+      <span>累计线索</span>
+      <strong>{{ dashboard.lead_summary.total_leads or 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>已成交线索</span>
+      <strong>{{ dashboard.lead_summary.won_leads or 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>已发方案</span>
+      <strong>{{ dashboard.lead_summary.proposal_sent_leads or 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>自动挖客线索</span>
+      <strong>{{ dashboard.lead_summary.auto_generated_leads or 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>预计营收</span>
+      <strong>{{ '%.0f'|format(dashboard.lead_summary.estimated_revenue or 0) }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>已确认营收</span>
+      <strong>{{ '%.0f'|format(dashboard.lead_summary.actual_revenue or 0) }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>待跟进资产</span>
+      <strong>{{ 1 if dashboard.lead_assets.followup_queue else 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>已备好自动方案</span>
+      <strong>{{ dashboard.lead_summary.auto_proposal_ready_leads or 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>已备好外联对象</span>
+      <strong>{{ dashboard.lead_summary.outbound_ready_leads or 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>可转化线索</span>
+      <strong>{{ dashboard.lead_summary.conversion_ready_leads or 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>宸插彂澶栬仈</span>
+      <strong>{{ dashboard.lead_summary.outreach_sent_leads or 0 }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>楂樼儹鍥炲</span>
+      <strong>{{ dashboard.lead_summary.hot_reply_leads or 0 }}</strong>
+    </div>
+  </div>
+
+  <div class="lead-grid">
+    <div class="panel" style="margin-bottom: 0;">
+      <div class="panel-head">
+        <h3>录入新线索</h3>
+        <p>把评论、私信、转介绍直接落到账本里，自动进入后续跟进。</p>
+      </div>
+      <form class="lead-form" method="post" action="/actions/record-lead">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <div class="lead-form-row">
+          <label>
+            客户名称
+            <input type="text" name="lead_name" placeholder="例如：某 SaaS 团队" required>
+          </label>
+          <label>
+            联系方式
+            <input type="text" name="lead_contact" placeholder="wechat:xxx / email:xxx" required>
+          </label>
+        </div>
+        <div class="lead-form-row">
+          <label>
+            意向类型
+            <select name="lead_intent" required>
+              {% for intent in dashboard.lead_config.intents %}
+              <option value="{{ intent }}">{{ intent }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            来源
+            <select name="lead_source">
+              {% for source in dashboard.lead_config.sources %}
+              <option value="{{ source.key }}">{{ source.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <div class="lead-form-row">
+          <label>
+            预计金额
+            <input type="number" step="0.01" min="0" name="lead_estimated_value" placeholder="5000">
+          </label>
+          <label>
+            下次跟进
+            <input type="text" name="lead_next_follow_up" placeholder="2026-06-15 10:00">
+          </label>
+        </div>
+        <label>
+          备注
+          <textarea name="lead_notes" placeholder="例如：对顾问式增长陪跑有兴趣，预算 5k-8k"></textarea>
+        </label>
+        <div class="lead-actions">
+          <button class="button" type="submit">记录线索</button>
+          {% if dashboard.lead_assets.lead_ledger %}
+          <a class="button button-outline button-inline" href="{{ dashboard.lead_assets.lead_ledger }}" target="_blank">打开台账</a>
+          {% endif %}
+        </div>
+      </form>
+    </div>
+
+    <div class="panel" style="margin-bottom: 0;">
+      <div class="panel-head">
+        <h3>最近线索</h3>
+        <p>在看板里直接推进阶段、写跟进、发 proposal。</p>
+      </div>
+      {% if dashboard.recent_leads %}
+      <div class="lead-list">
+        {% for lead in dashboard.recent_leads %}
+        <article class="lead-card">
+          <div class="lead-card-head">
+            <div class="lead-meta">
+              <strong>{{ lead.name or "未命名线索" }}</strong>
+              <p>意向 {{ lead.intent or "未知" }} · 来源 {{ lead.source or "未知" }}</p>
+              <p class="muted">{{ lead.contact or "无联系方式" }}</p>
+              {% if lead.notes %}
+              <p class="muted">{{ lead.notes }}</p>
+              {% endif %}
+            </div>
+            <div class="right-meta">
+              <span class="pill pill-{{ 'approved' if lead.status == 'won' else 'pending' }}">{{ lead.status or "new" }}</span>
+              {% if lead.auto_generated %}
+              <span class="pill pill-warn">AUTO</span>
+              {% endif %}
+              {% if lead.is_auto_proposal_ready %}
+              <span class="pill pill-approved">方案已备好</span>
+              {% endif %}
+              {% if lead.actual_value %}
+              <span class="pill pill-approved">{{ '%.0f'|format(lead.actual_value) }} 元</span>
+              {% elif lead.estimated_value %}
+              <span class="pill pill-warn">预计 {{ '%.0f'|format(lead.estimated_value) }} 元</span>
+              {% endif %}
+            </div>
+          </div>
+          <div class="meta-line wrap-line" style="margin-top: 10px;">
+            <span>ID {{ lead.id }}</span>
+            {% if lead.suggested_offer_name %}
+            <span>推荐报价 {{ lead.suggested_offer_name }}</span>
+            {% endif %}
+            {% if lead.suggested_offer_price %}
+            <span>建议价格 {{ lead.suggested_offer_price }}</span>
+            {% endif %}
+            {% if lead.preferred_outreach_channel %}
+            <span>推荐渠道 {{ lead.preferred_outreach_channel }}</span>
+            {% endif %}
+            {% if lead.next_follow_up_at %}
+            <span>下次跟进 {{ lead.next_follow_up_at }}</span>
+            {% endif %}
+            {% if lead.proposal_url %}
+            <a class="text-link" href="{{ lead.proposal_url }}" target="_blank">打开方案</a>
+            {% endif %}
+          </div>
+          {% if lead.auto_generated %}
+          <div class="meta-line wrap-line" style="margin-top: 8px;">
+            <span>开场话术：我最近在跟踪「{{ (lead.name or '').replace('把热点文章变成客户开发入口：', '') }}」这类话题，看到{{ lead.customer_segment_name or '你的团队' }}很适合把这波关注度转成真实线索。</span>
+          </div>
+          {% endif %}
+
+          <form class="lead-quick-form" method="post" action="/actions/update-lead">
+            <input type="hidden" name="account" value="{{ account_key }}">
+            <input type="hidden" name="lead_id" value="{{ lead.id }}">
+            <div class="lead-form-row">
+              <label>
+                阶段
+                <select name="lead_status">
+                  {% for status in dashboard.lead_config.statuses %}
+                  <option value="{{ status }}"{% if status == lead.status %} selected{% endif %}>{{ status }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>
+                下次跟进
+                <input type="text" name="lead_next_follow_up" value="{{ lead.next_follow_up_at or '' }}" placeholder="2026-06-16 11:00">
+              </label>
+            </div>
+            <div class="lead-form-row">
+              <label>
+                预计金额
+                <input type="number" step="0.01" min="0" name="lead_estimated_value" value="{{ lead.estimated_value or '' }}">
+              </label>
+              <label>
+                实际金额
+                <input type="number" step="0.01" min="0" name="lead_actual_value" value="{{ lead.actual_value or '' }}">
+              </label>
+            </div>
+            <label>
+              跟进备注
+              <textarea name="lead_notes">{{ lead.notes or '' }}</textarea>
+            </label>
+            <div class="lead-actions">
+              <button class="button button-secondary button-inline" type="submit">更新线索</button>
+            </div>
+          </form>
+
+          <form class="lead-quick-form" method="post" action="/actions/generate-lead-proposal">
+            <input type="hidden" name="account" value="{{ account_key }}">
+            <input type="hidden" name="lead_id" value="{{ lead.id }}">
+            <div class="lead-form-row">
+              <label>
+                报价产品
+                <select name="proposal_offer_key">
+                  {% for offer in dashboard.offer_choices %}
+                  <option value="{{ offer.key }}"{% if offer.key == lead.proposal_offer_key %} selected{% endif %}>{{ offer.label }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>
+                下次跟进
+                <input type="text" name="lead_next_follow_up" value="{{ lead.next_follow_up_at or '' }}" placeholder="2026-06-18 15:00">
+              </label>
+            </div>
+            <div class="lead-form-row">
+              <label>
+                自定义价格
+                <input type="text" name="proposal_price" placeholder="如：6800 元 / 月">
+              </label>
+              <label>
+                中文报价名
+                <input type="text" name="proposal_offer_name" value="{{ lead.proposal_offer_name or '' }}" placeholder="可留空，优先用 ASCII key">
+              </label>
+            </div>
+            <label>
+              自定义范围
+              <textarea name="proposal_scope" placeholder="每行一条交付内容；留空则使用模板。"></textarea>
+            </label>
+            <div class="lead-actions">
+              <button class="button button-outline button-inline" type="submit">生成方案</button>
+            </div>
+          </form>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="empty">还没有线索。先让内容、CTA 和周报入口持续跑起来。</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="panel panel-highlight">
+  <div class="panel-head">
+    <div>
+      <h3>主动赚钱引擎</h3>
+      <p>不是只等线索进来，而是每周主动筛客户、找赞助、发外联。</p>
+    </div>
+    <div class="meta-line wrap-line">
+      {% if dashboard.revenue_engine_assets.customer_targets %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.customer_targets }}" target="_blank">客户名单</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.sponsor_targets %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.sponsor_targets }}" target="_blank">赞助名单</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.opportunity_queue_markdown %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.opportunity_queue_markdown }}" target="_blank">本周商机队列</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.opportunity_sync_report %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.opportunity_sync_report }}" target="_blank">线索同步报告</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.newsletter_offer %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.newsletter_offer }}" target="_blank">Newsletter 产品</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.deer_flow_task_pack %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.deer_flow_task_pack }}" target="_blank">deer-flow 任务包</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.prompt_optimization_pack %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.prompt_optimization_pack }}" target="_blank">Prompt 优化包</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.cloudflow_blueprint %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.cloudflow_blueprint }}" target="_blank">Cloudflow 蓝图</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.letter_campaign %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.letter_campaign }}" target="_blank">Letter 转化包</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.agennts_dispatch_queue %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.agennts_dispatch_queue }}" target="_blank">Agennts 分发队列</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.founder_profit_brief %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.founder_profit_brief }}" target="_blank">老板利润简报</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.profit_action_pack %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.profit_action_pack }}" target="_blank">利润动作包</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.profit_action_execution_report %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.profit_action_execution_report }}" target="_blank">动作执行报告</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.sponsor_outreach_log %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.sponsor_outreach_log }}" target="_blank">赞助外联日志</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.sponsor_pipeline %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.sponsor_pipeline }}" target="_blank">赞助管道</a>
+      {% endif %}
+      {% if dashboard.revenue_engine_assets.profit_loop_report %}
+      <a class="button button-outline button-inline" href="{{ dashboard.revenue_engine_assets.profit_loop_report }}" target="_blank">利润循环报告</a>
+      {% endif %}
+    </div>
+  </div>
+  <div class="grid two-col" style="margin-bottom: 0;">
+    <div class="panel" style="margin-bottom: 0;">
+      <div class="panel-head">
+        <h3>本周赚钱动作</h3>
+        <p>把内容影响力转为客户和赞助的固定动作。</p>
+      </div>
+      <ul class="bullet-list">
+        <li>每天从高热度内容里至少筛出 3 个潜在客户，优先卖诊断或研究。</li>
+        <li>每周筛出 5 个潜在赞助品牌，先从小合作包开始验证线索质量。</li>
+        <li>每周发 1 期 newsletter 样刊，用免费样刊换订阅、再用深度版换会员。</li>
+        <li>用 deer-flow 做复杂 research 与名单筛选，用 agennts/cloudflow/letter 承接分诊、调度和订阅转化。</li>
+      </ul>
+
+      {% if dashboard.opportunity_sync_report %}
+      <div class="status-stack" style="margin-top: 18px;">
+        <strong>自动挖客同步</strong>
+        <div class="status-list">
+          <div class="status-row">
+            <div>
+              <strong>本轮候选商机</strong>
+              <p>只将 `customer_pitch` 类型商机自动写入线索账本。</p>
+            </div>
+            <div class="right-meta">
+              <span class="pill pill-pending">{{ dashboard.opportunity_sync_report.candidate_count or 0 }}</span>
+            </div>
+          </div>
+          <div class="status-row">
+            <div>
+              <strong>新增线索</strong>
+              <p>本次从 revenue engine 自动挖出的新增客户机会。</p>
+            </div>
+            <div class="right-meta">
+              <span class="pill pill-approved">{{ dashboard.opportunity_sync_report.sync_result.inserted or 0 }}</span>
+            </div>
+          </div>
+          <div class="status-row">
+            <div>
+              <strong>更新线索</strong>
+              <p>已存在但被刷新内容、优先级或跟进信息的自动线索。</p>
+            </div>
+            <div class="right-meta">
+              <span class="pill pill-warn">{{ dashboard.opportunity_sync_report.sync_result.updated or 0 }}</span>
+            </div>
+          </div>
+          <div class="status-row">
+            <div>
+              <strong>自动线索池</strong>
+              <p>当前由赚钱引擎持续维护的自动生成客户线索总量。</p>
+            </div>
+            <div class="right-meta">
+              <span class="pill pill-pending">{{ dashboard.opportunity_sync_report.auto_generated_leads.open or 0 }} open / {{ dashboard.opportunity_sync_report.auto_generated_leads.total or 0 }} total</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+    <div class="panel" style="margin-bottom: 0;">
+      <div class="panel-head">
+        <h3>赚钱资产入口</h3>
+        <p>这几份文件就是你本周主动出击的操作包。</p>
+      </div>
+      <div class="status-list">
+        <div class="status-row">
+          <div>
+            <strong>客户名单</strong>
+            <p>按客户细分、推荐 offer 和开场话术整理。</p>
+          </div>
+          {% if dashboard.revenue_engine_assets.customer_targets %}
+          <a class="text-link" href="{{ dashboard.revenue_engine_assets.customer_targets }}" target="_blank">打开</a>
+          {% else %}
+          <span class="muted">未生成</span>
+          {% endif %}
+        </div>
+        <div class="status-row">
+          <div>
+            <strong>赞助名单</strong>
+            <p>按品牌类型、合作包和开场方式整理。</p>
+          </div>
+          {% if dashboard.revenue_engine_assets.sponsor_targets %}
+          <a class="text-link" href="{{ dashboard.revenue_engine_assets.sponsor_targets }}" target="_blank">打开</a>
+          {% else %}
+          <span class="muted">未生成</span>
+          {% endif %}
+        </div>
+        <div class="status-row">
+          <div>
+            <strong>本周商机队列</strong>
+            <p>按优先级整理现有线索跟进、客户开发和赞助开发动作。</p>
+          </div>
+          {% if dashboard.revenue_engine_assets.opportunity_queue_markdown %}
+          <a class="text-link" href="{{ dashboard.revenue_engine_assets.opportunity_queue_markdown }}" target="_blank">打开</a>
+          {% else %}
+          <span class="muted">未生成</span>
+          {% endif %}
+        </div>
+        <div class="status-row">
+          <div>
+            <strong>线索同步报告</strong>
+            <p>记录本轮自动挖客同步了多少客户商机进 CRM 账本。</p>
+          </div>
+          {% if dashboard.revenue_engine_assets.opportunity_sync_report %}
+          <a class="text-link" href="{{ dashboard.revenue_engine_assets.opportunity_sync_report }}" target="_blank">打开</a>
+          {% else %}
+          <span class="muted">未生成</span>
+          {% endif %}
+        </div>
+        <div class="status-row">
+          <div>
+            <strong>外联手册</strong>
+            <p>客户开发、赞助开发和 newsletter 转化脚本。</p>
+          </div>
+          {% if dashboard.revenue_engine_assets.outreach_playbook %}
+          <a class="text-link" href="{{ dashboard.revenue_engine_assets.outreach_playbook }}" target="_blank">打开</a>
+          {% else %}
+          <span class="muted">未生成</span>
+          {% endif %}
+        </div>
+        <div class="status-row">
+          <div>
+            <strong>收入信号报告</strong>
+            <p>把当前热点、关键词和高表现模式汇成商业判断。</p>
+          </div>
+          {% if dashboard.revenue_engine_assets.revenue_signal_report %}
+          <a class="text-link" href="{{ dashboard.revenue_engine_assets.revenue_signal_report }}" target="_blank">打开</a>
+          {% else %}
+          <span class="muted">未生成</span>
+          {% endif %}
+        </div>
+        <div class="status-row">
+          <div>
+            <strong>每周执行管线</strong>
+            <p>把五个项目在一周里的赚钱职责串起来。</p>
+          </div>
+          {% if dashboard.revenue_engine_assets.weekly_pipeline %}
+          <a class="text-link" href="{{ dashboard.revenue_engine_assets.weekly_pipeline }}" target="_blank">打开</a>
+          {% else %}
+          <span class="muted">未生成</span>
+          {% endif %}
+        </div>
+      </div>
     </div>
   </div>
 </section>
@@ -280,7 +897,7 @@
       <div class="status-row status-row-stack retry-run-card" id="retry-run-{{ run.name }}">
         <div>
           <strong>{{ run.selected_topic_title or run.name }}</strong>
-          <p>{{ run.name }} · 审核 {{ run.review_status }} · 就绪分 {{ run.publish_readiness_score }}</p>
+          <p>{{ run.name }} · 审核 {{ run.review_status }} · 就绪度 {{ run.publish_readiness_score }}</p>
           <div class="meta-line wrap-line">
             {% for item in run.retry_platforms %}
             <span class="pill pill-{{ item.tone }}">{{ item.label }}: {{ item.status_label }}</span>
@@ -352,7 +969,7 @@
   <div class="panel">
     <div class="panel-head">
       <h3>账号总览</h3>
-      <p>可以快速切到其他账号并查看最近状态</p>
+      <p>可以快速切到其他账号并查看最近状态。</p>
     </div>
     <div class="account-grid">
       {% for item in account_overviews %}
@@ -388,7 +1005,7 @@
   <div class="panel">
     <div class="panel-head">
       <h3>当前运行状态</h3>
-      <p>查看本账号最近一次自动化执行和平台拆分状态</p>
+      <p>查看本账号最近一次自动化执行和平台拆分状态。</p>
     </div>
     {% if dashboard.schedule_runtime %}
     <div class="schedule-runtime-card schedule-runtime-card-{{ dashboard.schedule_runtime.tone }}">
@@ -439,7 +1056,7 @@
   <div class="panel">
     <div class="panel-head">
       <h3>最近发布状态</h3>
-      <p>查看当前账号最近一次投递结果</p>
+      <p>查看当前账号最近一次投递结果。</p>
     </div>
     {% if dashboard.latest_publish.has_result %}
     <div class="status-card">
@@ -475,7 +1092,7 @@
   <div class="panel">
     <div class="panel-head">
       <h3>最近日志文件</h3>
-      <p>直接在网页里打开和筛选最近 5 次日志</p>
+      <p>直接在网页里打开和筛选最近 5 次日志。</p>
     </div>
     {% if dashboard.log_console.entries %}
     <div class="status-list">
@@ -509,7 +1126,7 @@
       <div class="status-row">
         <div>
           <strong>
-            {% if slot.slot_label == "morning" %}早间档{% elif slot.slot_label == "noon" %}午间档{% elif slot.slot_label == "evening" %}傍晚档{% else %}夜间档{% endif %}
+            {% if slot.slot_label == "morning" %}晨间档{% elif slot.slot_label == "noon" %}午间档{% elif slot.slot_label == "evening" %}傍晚档{% else %}夜间档{% endif %}
             · {{ slot.expected_time }}
           </strong>
           <p>{{ slot.updated_at or "暂无执行时间" }} · {{ slot.message }}</p>
@@ -555,7 +1172,7 @@
         <strong>{{ scores.ai_generated_risk or 0 }}</strong>
       </div>
       <div class="score-card">
-        <span>今日总消耗(元)</span>
+        <span>今日总消耗 / 元</span>
         <strong>{{ '%.4f'|format(dashboard.cost_summary.today_total_cost if dashboard.cost_summary else 0) }}</strong>
       </div>
       <div class="score-card">
@@ -599,6 +1216,14 @@
       <form method="post" action="/actions/refresh-dashboard">
         <input type="hidden" name="account" value="{{ account_key }}">
         <button class="button button-outline" type="submit">刷新首页数据</button>
+      </form>
+      <form method="post" action="/actions/build-revenue-engine">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <button class="button button-outline" type="submit">刷新赚钱引擎</button>
+      </form>
+      <form method="post" action="/actions/build-company-os">
+        <input type="hidden" name="account" value="{{ account_key }}">
+        <button class="button button-outline" type="submit">刷新公司蓝图</button>
       </form>
       <form method="post" action="/actions/publish-preflight">
         <input type="hidden" name="account" value="{{ account_key }}">
@@ -730,7 +1355,7 @@
           if (feedback) {
             feedback.textContent = `${platform} 补发已完成。`;
           }
-          button.textContent = `已补发${platform}`;
+          button.textContent = `已补发 ${platform}`;
         } catch (error) {
           if (feedback) {
             feedback.textContent = `补发失败：${error}`;
@@ -773,7 +1398,7 @@
       }
       const response = await fetch(`/api/logs/view?${params.toString()}`);
       const payload = await response.json();
-      logOutput.textContent = payload.content || "该日志暂无内容。";
+      logOutput.textContent = payload.content || "该日志暂时无内容。";
       logOutput.scrollTop = 0;
     }
 

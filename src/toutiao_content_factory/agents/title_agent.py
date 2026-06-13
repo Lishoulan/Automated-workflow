@@ -163,11 +163,6 @@ class TitleAgent(BaseAgent):
         cache_context: CacheContext,
         playbook_context: dict[str, object] | None = None,
     ) -> list[str]:
-        mode = self._content_mode(data_report)
-        if mode == "sports":
-            return self._sports_fallback_titles(content, data_report, cache_context)
-        if mode == "international":
-            return self._international_fallback_titles(content, data_report, cache_context)
         keyword = self._primary_topic_label(data_report)
         secondary = "关键环节"
         for candidate in self.clean_publish_list(data_report.focus_keywords[1:] + data_report.supply_chain_keywords[1:]):
@@ -317,6 +312,7 @@ class TitleAgent(BaseAgent):
             ]
         )
         normalized = self.clean_publish_text(text)
+        # 首先判断是否是科技相关行业（优先级更高）
         if any(token in normalized for token in ("机器人", "人形", "具身", "减速器", "灵巧手", "关节", "伺服")):
             return "AI机器人"
         if any(token in normalized for token in ("芯片", "半导体", "封测", "晶圆", "EDA", "光刻", "代工", "封测")):
@@ -327,10 +323,14 @@ class TitleAgent(BaseAgent):
             return "AI应用"
         if any(token in normalized for token in ("智能制造", "工业自动化", "PLC", "MES", "数控", "工业互联网", "工控")):
             return "工业自动化"
-        if any(token in normalized for token in self.INTERNATIONAL_TOKENS):
-            return "国际热点"
-        if any(token in normalized for token in self.SPORTS_TOKENS):
-            return "体育赛事"
+        # 只有当只有国际相关词汇，且没有科技相关词汇时，才判断为国际热点
+        tech_tokens_count = sum(1 for token in ["机器人", "芯片", "半导体", "储能", "光伏", "锂电", "电池", "AI", "大模型", "智能制造", "工业自动化"] if token in normalized)
+        if tech_tokens_count == 0:
+            # 只有国际相关词汇时
+            if any(token in normalized for token in self.INTERNATIONAL_TOKENS):
+                return "国际热点"
+            if any(token in normalized for token in self.SPORTS_TOKENS):
+                return "体育赛事"
         return "科技商业"
 
     def _adapt_playbook_titles(self, playbook_context: dict[str, object], data_report: DataReport) -> list[str]:
@@ -756,73 +756,4 @@ class TitleAgent(BaseAgent):
 
 
 
-    def _sports_fallback_titles(
-        self,
-        content: GeneratedContent,
-        data_report: DataReport,
-        cache_context: CacheContext,
-    ) -> list[str]:
-        subject = self._sports_subject_label(data_report)
-        templates = [
-            f"{subject}名单背后谁最难受",
-            f"{subject}这次到底在赌什么",
-            f"{subject}最该盯的不是热搜",
-            f"{subject}后续走势怎么变",
-            f"{subject}争议点到底在哪",
-            f"{subject}会改写比赛预期吗",
-            f"{subject}关键变量已经变了",
-            f"{subject}最影响谁的判断",
-        ]
-        angle = self.clean_publish_text(content.article_angle).strip()
-        if angle and len(angle) <= int(self.settings.publishing.title_max_length):
-            templates.append(angle)
-        return self._dedupe_titles(templates, cache_context)
 
-    def _international_fallback_titles(
-        self,
-        content: GeneratedContent,
-        data_report: DataReport,
-        cache_context: CacheContext,
-    ) -> list[str]:
-        subject = self._international_subject_label(data_report)
-        templates = [
-            f"{subject}背后谁在施压",
-            f"{subject}下一步会怎么走",
-            f"{subject}真正的信号出现了",
-            f"{subject}不只是表态那么简单",
-            f"{subject}最该盯的变量变了",
-            f"{subject}会把局势推向哪边",
-            f"{subject}市场为什么先紧张",
-            f"{subject}谈判窗口开了吗",
-        ]
-        angle = self.clean_publish_text(content.article_angle).strip()
-        if angle and len(angle) <= int(self.settings.publishing.title_max_length):
-            templates.append(angle)
-        return self._dedupe_titles(templates, cache_context)
-
-    def _sports_subject_label(self, data_report: DataReport) -> str:
-        text = self._build_combined_text(data_report)
-        if any(token in text for token in ("world cup", "世界杯")):
-            return "世界杯"
-        if any(token in text for token in ("football", "足球")):
-            return "这份名单"
-        if any(token in text for token in ("tennis", "法网")):
-            return "这次签表"
-        return "这场比赛"
-
-    def _international_subject_label(self, data_report: DataReport) -> str:
-        text = self._build_combined_text(data_report)
-        if any(token in text for token in ("tariff", "关税")):
-            return "关税风向"
-        if any(token in text for token in ("white house", "美国")):
-            return "美国表态"
-        return "这条国际消息"
-    
-    def _build_combined_text(self, data_report: DataReport) -> str:
-        """构建用于模式匹配的组合文本"""
-        return " ".join(
-            [
-                self.clean_publish_text(data_report.topic_title),
-                *self.clean_publish_list(data_report.focus_keywords + data_report.supply_chain_keywords, limit=6),
-            ]
-        ).lower()

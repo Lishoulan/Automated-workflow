@@ -1,0 +1,27 @@
+version: 1
+updated_at: "2026-06-08"
+sources:
+  - key: toutiao_comment
+    label: "头条评论"
+  - key: wechat_private
+    label: "公众号私信"
+  - key: direct_message
+    label: "私域私信"
+  - key: referral
+    label: "转介绍"
+statuses:
+  - new
+  - contacted
+  - qualified
+  - proposal_sent
+  - won
+  - lost
+intents:
+  - 周报
+  - 诊断
+  - 咨询
+  - 赞助
+default_replies:
+  周报: "感谢关注，回复你的周报样刊已经准备好了。你更关心机器人、储能还是 AI 硬件？"
+  诊断: "可以，先告诉我你现在主要做哪个平台、最近最卡的是流量、线索还是成交？"
+  咨询: "可以聊。先告诉我你的行业、当前内容渠道和你希望 30 天内得到什么结果。"

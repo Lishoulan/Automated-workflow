@@ -1,0 +1,55 @@
+﻿# Git
+.git/
+.gitignore
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Runtime data (mounted as volumes)
+output/
+logs/
+cache/
+input/
+config/accounts/
+
+# Browser profiles (mounted as volume)
+.runtime/
+
+# IDE
+.idea/
+.vscode/
+.trae/
+
+# Environment
+.env
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Docs
+*.md
+CODE_WIKI.md
+
+# Misc
+catboost_info/
+guard-smoke-*/
+SKILL.md
+zettaranc-skill-main/
+.browsers/
+
+# Temp files
+_t*.py
+_edit*.py
+_fix*.py
+_add*.py

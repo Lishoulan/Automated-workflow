@@ -1,0 +1,78 @@
+version: 1
+updated_at: "2026-06-08"
+projects:
+  - key: deer_flow
+    name: deer-flow
+    category: super_agent
+    repo_url: "https://github.com/bytedance/deer-flow"
+    confidence: high
+    integration_status: confirmed
+    role: "长周期研究、复杂任务拆解、竞争情报与增长实验编排中枢"
+    integration_mode: "外部超级代理 + 本仓库内容工厂执行层"
+    revenue_contribution:
+      - "自动生成行业研究选题与竞品追踪任务"
+      - "持续挖掘高价值客户线索、赞助机会与合作名单"
+      - "把高毛利服务拆成可复用 SOP 后持续自动执行"
+    notes:
+      - "该项目已确认可作为长时任务代理骨架。"
+      - "建议优先用于研究、销售情报、产品打磨，而不是直接替代现有发布流水线。"
+  - key: prompt_optimized
+    name: prompt-optimized
+    category: prompt_optimization
+    repo_url: "https://github.com/linshenkx/prompt-optimizer"
+    confidence: medium
+    integration_status: assumed_equivalent
+    role: "优化选题、写作、审核、转化文案等核心 Prompt 的效果"
+    integration_mode: "离线优化器 + 本仓库 prompts/ 持续迭代"
+    revenue_contribution:
+      - "提升内容点击率、完读率和转化率"
+      - "降低提示词试错成本，缩短增长实验周期"
+      - "为付费产品、销售私信、落地页生成更高转化文案"
+    notes:
+      - "用户提供的项目名为 prompt-optimized；当前先按公开生态中最接近的 prompt-optimizer 适配。"
+      - "如果你后续给出准确 repo，可直接替换 repo_url 与角色说明。"
+  - key: agennts
+    name: agennts
+    category: multi_agent
+    repo_url: ""
+    confidence: low
+    integration_status: ambiguous_name
+    role: "多角色代理协作层，预留给销售、客服、交付、复盘等岗位代理"
+    integration_mode: "适配层预留"
+    revenue_contribution:
+      - "承接私域咨询分诊、客户问答、售前资格筛选"
+      - "把一人公司的重复沟通环节自动化"
+      - "把爆款内容延展为咨询交付与客户成功流程"
+    notes:
+      - "公开仓库中未能唯一确认同名项目。"
+      - "当前先保留为可替换适配位，不阻塞整体系统落地。"
+  - key: cloudflow
+    name: cloudflow
+    category: orchestration
+    repo_url: ""
+    confidence: low
+    integration_status: ambiguous_name
+    role: "云端编排、定时任务、跨系统数据流与告警调度层"
+    integration_mode: "适配层预留"
+    revenue_contribution:
+      - "把内容、分发、线索、通知、报表统一到可观测调度系统"
+      - "降低单机运行与人工盯盘成本"
+      - "为后续 SaaS 化或代运营服务留出可扩展基础设施"
+    notes:
+      - "公开生态中的 cloudflow 同名项目较多，暂未唯一锁定。"
+      - "在准确 repo 未确认前，先用现有脚本调度与本地自动化承接。"
+  - key: letter
+    name: letter
+    category: newsletter
+    repo_url: ""
+    confidence: low
+    integration_status: ambiguous_name
+    role: "邮件简报、订阅沉淀、线索培育与付费转化通道"
+    integration_mode: "适配层预留"
+    revenue_contribution:
+      - "把平台流量沉淀为自有订阅资产"
+      - "承接赞助位、会员、行业内参与顾问服务转化"
+      - "形成平台外的可复用用户关系资产"
+    notes:
+      - "公开仓库中未能唯一确认对应项目。"
+      - "当前先在公司操作系统里把 newsletter 作为核心变现环节设计出来。"

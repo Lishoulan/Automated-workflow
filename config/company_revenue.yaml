@@ -1,0 +1,70 @@
+version: 1
+updated_at: "2026-06-08"
+lead_magnet:
+  name: "行业情报周报"
+  promise: "每周提炼赛道热点、公司动作、关键数据与值得跟踪的投资/商业信号。"
+  delivery: "公众号 / 私域 / 邮件简报"
+  signup_call_to_action: "如果你想拿到完整版周报或咨询合作，可以私信我关键词：周报。"
+core_offers:
+  - key: research_sprint
+    name: "行业研究定制"
+    price: "1999-4999元 / 份"
+    target_customer: "想快速理解赛道、竞品和关键变量的企业主 / 从业者"
+    delivery: "定制研究报告 + 30 分钟解读"
+  - key: content_diagnosis
+    name: "内容代运营诊断"
+    price: "999-2999元 / 次"
+    target_customer: "已有账号但增长停滞的企业或个人 IP"
+    delivery: "选题、标题、分发、转化链路诊断"
+  - key: growth_advisory
+    name: "顾问式增长陪跑"
+    price: "5000-20000元 / 月"
+    target_customer: "希望把内容变成线索和客户的团队"
+    delivery: "周会 + SOP + 自动化运营搭建建议"
+cta_blocks:
+  default:
+    heading: "如果你想把信息差变成结果"
+    bullets:
+      - "回复“周报”，领取我的行业情报周报样刊。"
+      - "回复“诊断”，我会给你一份内容增长问题清单。"
+      - "回复“咨询”，可以聊定制研究、代运营或顾问合作。"
+    closing: "做内容的目的不是多发几篇，而是把注意力沉淀成资产，再把资产变成收入。"
+  wechat:
+    heading: "想继续深聊这条赛道？"
+    bullets:
+      - "关键词“周报”：获取行业情报周报样刊。"
+      - "关键词“咨询”：获取定制研究或顾问合作说明。"
+      - "关键词“诊断”：获取内容增长诊断清单。"
+    closing: "如果你是企业方或操盘手，这类服务通常比单篇爆文更值钱。"
+sales_playbook:
+  qualification_questions:
+    - "你当前最想解决的是流量、线索，还是成交？"
+    - "你所在行业 / 赛道是什么？"
+    - "你现在已经在做哪些内容渠道？"
+    - "你最希望 30 天内看到什么结果？"
+  conversion_script:
+    - "先确认对方卡点，再推荐最小可成交产品。"
+    - "优先卖诊断或研究，不要一上来推长期陪跑。"
+    - "如果对方已经有团队和预算，再升级到顾问式合作。"
+proposal_templates:
+  - offer_key: research_sprint
+    offer_name: "行业研究定制"
+    scope:
+      - "围绕指定赛道或公司输出一份定制研究报告。"
+      - "梳理关键变量、竞争格局、数据口径和后续跟踪点。"
+      - "附带一次 30 分钟线上解读。"
+    delivery_time: "3-5 个工作日"
+  - offer_key: content_diagnosis
+    offer_name: "内容代运营诊断"
+    scope:
+      - "审视当前内容渠道、选题机制、标题策略和转化链路。"
+      - "给出可执行优化清单。"
+      - "交付一份诊断报告和一次复盘沟通。"
+    delivery_time: "2-3 个工作日"
+  - offer_key: growth_advisory
+    offer_name: "顾问式增长陪跑"
+    scope:
+      - "每周固定复盘与策略会。"
+      - "共建自动化运营 SOP。"
+      - "按月追踪流量、线索和成交结果。"
+    delivery_time: "按月持续交付"

@@ -3,6 +3,21 @@
 {% block title %}归档批次 | 手蓝内容工厂{% endblock %}
 
 {% block content %}
+<style>
+  .run-status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+  .run-status-dot-green { background: var(--good); box-shadow: 0 0 4px rgba(46, 211, 154, 0.5); }
+  .run-status-dot-red { background: var(--bad); box-shadow: 0 0 4px rgba(255, 110, 110, 0.5); }
+  .run-status-dot-yellow { background: var(--warn); box-shadow: 0 0 4px rgba(240, 179, 90, 0.5); }
+  .run-status-dot-gray { background: var(--muted); }
+</style>
+
 <section class="panel">
   <div class="panel-head">
     <h2>归档批次</h2>
@@ -11,16 +26,38 @@
   {% if runs %}
   <div class="run-table">
     {% for run in runs %}
-    <a href="/runs/{{ run.name }}?account={{ account_key }}" class="run-row">
+    {% set is_intercepted = run.ai_risk >= 70 or run.recommended_action in ['reject', 'blocked', 'auto_rejected'] %}
+    {% set is_published = run.review_status in ['approved', 'published'] or run.has_publish %}
+    {% set has_failed = run.review_status in ['rejected', 'failed', 'error'] %}
+    <a href="/runs/{{ run.name }}?account={{ account_key }}" class="run-row" style="{% if is_intercepted %}border-left:3px solid var(--warn);{% elif has_failed %}border-left:3px solid var(--bad);{% elif is_published %}border-left:3px solid var(--good);{% endif %}">
       <div>
         <strong>{{ run.selected_topic_title or run.name }}</strong>
         <p>{{ run.created_at }} · {{ run.recommended_action }} · 发布包{% if run.has_publish %}已生成{% else %}未生成{% endif %}</p>
       </div>
       <div class="right-meta">
-        <span class="pill pill-{{ run.review_status }}">{{ run.review_status }}</span>
+        {% if is_intercepted %}
+        <span class="pill pill-warn"><span class="run-status-dot run-status-dot-yellow"></span>风控拦截</span>
+        {% elif has_failed %}
+        <span class="pill pill-error"><span class="run-status-dot run-status-dot-red"></span>{{ run.review_status }}</span>
+        {% elif is_published %}
+        <span class="pill pill-success"><span class="run-status-dot run-status-dot-green"></span>已通过</span>
+        {% else %}
+        <span class="pill pill-{{ run.review_status }}"><span class="run-status-dot run-status-dot-gray"></span>{{ run.review_status }}</span>
+        {% endif %}
         <span class="score">综合 {{ run.overall_score }}</span>
-        <span class="score">校验 {{ run.validation_score }}</span>
-        <span class="score">发布 {{ run.publish_readiness_score }}</span>
+        {% if run.ai_risk >= 70 %}
+        <span class="risk-badge risk-badge-high">AI风险 {{ run.ai_risk }}</span>
+        {% elif run.ai_risk >= 40 %}
+        <span class="risk-badge risk-badge-medium">AI风险 {{ run.ai_risk }}</span>
+        {% elif run.ai_risk > 0 %}
+        <span class="risk-badge risk-badge-low">AI风险 {{ run.ai_risk }}</span>
+        {% endif %}
+        {% if run.latest_platform_status %}
+          {% for pk, pv in run.latest_platform_status.items() %}
+          <span class="pill pill-{{ pv.tone }}">{{ pv.label }}</span>
+          {% endfor %}
+        {% endif %}
+        <a class="text-link" href="/runs/{{ run.name }}/compare?account={{ account_key }}" onclick="event.stopPropagation();">内容比对</a>
       </div>
     </a>
     {% endfor %}

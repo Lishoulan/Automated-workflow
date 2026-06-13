@@ -432,6 +432,85 @@ def create_app(project_root: Path, account_key: str | None = None) -> FastAPI:
     def refresh_dashboard(account: str = Form(default=DEFAULT_ACCOUNT_KEY)):
         return redirect("/dashboard", "首页数据已刷新。", account)
 
+    @app.post("/actions/build-revenue-engine")
+    def build_revenue_engine(account: str = Form(default=DEFAULT_ACCOUNT_KEY)):
+        ctx = get_account_context(account)
+        ctx.app_service.build_revenue_engine()
+        return redirect("/dashboard", "主动赚钱引擎已刷新。", ctx.settings.account_key)
+
+    @app.post("/actions/build-company-os")
+    def build_company_os(account: str = Form(default=DEFAULT_ACCOUNT_KEY)):
+        ctx = get_account_context(account)
+        ctx.app_service.build_company_os()
+        return redirect("/dashboard", "公司操作系统蓝图已刷新。", ctx.settings.account_key)
+
+    @app.post("/actions/record-lead")
+    def record_lead(
+        account: str = Form(default=DEFAULT_ACCOUNT_KEY),
+        lead_name: str = Form(...),
+        lead_contact: str = Form(...),
+        lead_intent: str = Form(...),
+        lead_source: str = Form(default="direct_message"),
+        lead_notes: str = Form(default=""),
+        lead_estimated_value: float = Form(default=0.0),
+        lead_next_follow_up: str = Form(default=""),
+    ):
+        ctx = get_account_context(account)
+        ctx.app_service.record_lead(
+            name=lead_name,
+            contact=lead_contact,
+            intent=lead_intent,
+            source=lead_source,
+            notes=lead_notes,
+            estimated_value=lead_estimated_value,
+            next_follow_up_at=lead_next_follow_up,
+        )
+        return redirect("/dashboard", "新线索已记录。", ctx.settings.account_key)
+
+    @app.post("/actions/update-lead")
+    def update_lead(
+        account: str = Form(default=DEFAULT_ACCOUNT_KEY),
+        lead_id: str = Form(...),
+        lead_status: str = Form(default=""),
+        lead_notes: str = Form(default=""),
+        lead_estimated_value: str = Form(default=""),
+        lead_actual_value: str = Form(default=""),
+        lead_next_follow_up: str = Form(default=""),
+    ):
+        ctx = get_account_context(account)
+        estimated_value = float(lead_estimated_value) if str(lead_estimated_value).strip() else None
+        actual_value = float(lead_actual_value) if str(lead_actual_value).strip() else None
+        ctx.app_service.update_lead(
+            lead_id=lead_id,
+            status=lead_status or None,
+            notes=lead_notes or None,
+            estimated_value=estimated_value,
+            actual_value=actual_value,
+            next_follow_up_at=lead_next_follow_up or None,
+        )
+        return redirect("/dashboard", f"线索 {lead_id} 已更新。", ctx.settings.account_key)
+
+    @app.post("/actions/generate-lead-proposal")
+    def generate_lead_proposal(
+        account: str = Form(default=DEFAULT_ACCOUNT_KEY),
+        lead_id: str = Form(...),
+        proposal_offer_key: str = Form(default=""),
+        proposal_offer_name: str = Form(default=""),
+        proposal_price: str = Form(default=""),
+        proposal_scope: str = Form(default=""),
+        lead_next_follow_up: str = Form(default=""),
+    ):
+        ctx = get_account_context(account)
+        ctx.app_service.generate_lead_proposal(
+            lead_id=lead_id,
+            offer_key=proposal_offer_key,
+            offer_name=proposal_offer_name,
+            custom_price=proposal_price,
+            custom_scope=proposal_scope,
+            next_follow_up_at=lead_next_follow_up,
+        )
+        return redirect("/dashboard", f"线索 {lead_id} 的方案已生成。", ctx.settings.account_key)
+
     @app.post("/actions/publish-preflight")
     def publish_preflight(account: str = Form(default=DEFAULT_ACCOUNT_KEY)):
         ctx = get_account_context(account)

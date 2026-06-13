@@ -1,0 +1,364 @@
+# Centralized selector registry for all platform RPA automation.
+# Organized by platform and page/dialog.
+# When a platform updates its UI, only this file needs to change.
+
+# ========================================================================
+# WeChat (微信公众号)
+# ========================================================================
+wechat:
+  login_page:
+    username_input:
+      - "input[name='account']"
+      - "input[type='text']"
+    password_input:
+      - "input[name='password']"
+      - "input[type='password']"
+    login_button:
+      - "a.btn_login"
+      - "button:has-text('登录')"
+    qrcode_container:
+      - ".qrcode"
+      - "div.qrcode-img"
+    qrcode_image:
+      - 'img[src*="/cgi-bin/verifyqrcode"]'
+    account_input:
+      - 'input[name="account"]'
+    password_input_direct:
+      - 'input[type="password"]'
+    login_page_text:
+      - "text=微信公众平台"
+      - "text=扫码登录"
+
+  home_page:
+    content_management_menu:
+      - "a:has-text('内容管理')"
+      - "a[href*='appmsg']"
+      - "text=内容管理"
+    draft_menu:
+      - "a:has-text('草稿箱')"
+      - "a[href*='appmsgt']"
+      - "text=草稿箱"
+
+  draft_list_page:
+    new_article_button:
+      - "a.weui-desktop-btn__content"
+      - "a:has-text('新的创作')"
+      - "a:has-text('写文章')"
+      - "button:has-text('新建')"
+    article_title_link:
+      - "a.article_title"
+      - "td a"
+    draft_title_cover:
+      - ".weui-desktop-publish__cover__title"
+    draft_title_link:
+      - "a.weui-desktop-publish__cover__title"
+    search_input:
+      - "input[placeholder*='搜索']"
+      - "input[placeholder*='标题']"
+      - "input[type='search']"
+
+  editor_page:
+    title_input:
+      - "#title"
+      - "input#title"
+      - "input[placeholder*='标题']"
+    editor_area:
+      - ".ProseMirror"
+      - "#edui1_body"
+      - "div.edui-body-container"
+      - "div[contenteditable='true']"
+    cover_button:
+      - ".js_cover"
+      - "a:has-text('封面')"
+      - "span:has-text('选择封面')"
+    cover_btn_area:
+      - ".js_cover_btn_area"
+    cover_file_input:
+      - '.js_cover_btn_area input[type="file"]'
+      - '#js_cover_area input[type="file"]'
+      - '.select-cover__btn input[type="file"]'
+      - 'input[type="file"][accept*="image"]'
+    digest_input:
+      - "#digest"
+      - "textarea#digest"
+      - "textarea[placeholder*='摘要']"
+    author_input:
+      - "#author"
+      - "input#author"
+    save_button:
+      - "#js_submit"
+      - "button:has-text('保存')"
+      - "a:has-text('保存')"
+    publish_button:
+      - "#js_send"
+      - "#js_submit button"
+      - "button.mass_send"
+      - ".tool_area_wrp .btn_default"
+      - '.tool_area_wrp button[type="button"]'
+    image_library_link:
+      - ".js_imagedialog"
+
+  cover_dialog:
+    upload_tab:
+      - "a:has-text('上传')"
+      - "li:has-text('上传')"
+    file_input:
+      - "input[type='file'][accept*='image']"
+      - "input[type='file']"
+    select_existing_tab:
+      - "a:has-text('从正文选择')"
+      - "li:has-text('从正文选择')"
+    crop_confirm_button:
+      - ".js_crop_confirm"
+      - "button:has-text('完成裁剪')"
+      - "button:has-text('确定')"
+      - "a:has-text('完成')"
+    cover_confirm_button:
+      - ".js_cover_confirm"
+      - "button:has-text('确定')"
+      - "a:has-text('确定')"
+    upload_file_text_button:
+      - "text=上传文件"
+      - "text=上传图片"
+      - "text=本地上传"
+    image_item:
+      - ".img_item"
+      - ".image_item"
+      - ".pic_item"
+      - "[class*='img_item']"
+    confirm_button:
+      - "button:has-text('确定')"
+    cover_area_has_image:
+      - ".js_cover_btn_area"
+    choose_cover_text:
+      - "text=选择封面"
+      - "text=拖拽或选择封面"
+
+  publish_dialog:
+    dialog_wrapper:
+      - ".weui-desktop-dialog__wrp"
+      - "div[role='dialog']"
+      - ".weui-dialog"
+    dialog_inner:
+      - ".weui-desktop-dialog"
+    confirm_publish_button:
+      - ".mass_send_dialog .btn_primary"
+      - ".mass_send_dialog .weui-desktop-btn_primary"
+      - ".dialog_op .btn_primary"
+      - ".popover .btn_primary.jsPopoverBt"
+      - "button:has-text('群发')"
+      - "button:has-text('确认')"
+      - "a:has-text('确认')"
+    continue_publish_button:
+      - 'button:has-text("继续发表")'
+    cancel_button:
+      - "button:has-text('取消')"
+      - "a:has-text('取消')"
+    success_indicator:
+      - "text=发布成功"
+      - "text=已发送"
+      - ".weui-desktop-toast__content"
+    success_toast:
+      - ".weui-desktop-toast"
+      - "[class*='toast']"
+      - "[class*='success']"
+    page_tips:
+      - ".page_tips"
+      - ".global_error"
+      - ".toast"
+
+  dismiss_dialog:
+    dialog_close_button:
+      - ".weui-desktop-dialog__close-btn"
+    img_picker_close:
+      - ".weui-desktop-dialog_img-picker .weui-desktop-dialog__close-btn"
+    img_picker:
+      - ".weui-desktop-dialog_img-picker"
+
+  original_declaration:
+    original_checkbox:
+      - "label:has-text('原创')"
+      - "label:has-text('声明原创')"
+      - "label:has-text('原创声明')"
+      - ".weui-desktop-form__check-label:has-text('原创')"
+      - "[role='checkbox']:has-text('原创')"
+      - "text=原创"
+
+  # WeChat constant tuples
+  session_ready_markers:
+    - "草稿箱"
+    - "新建图文"
+    - "素材管理"
+    - "发表记录"
+    - "首页"
+  login_url_markers:
+    - "/cgi-bin/loginpage"
+    - "/cgi-bin/home?t=home/login"
+  dismiss_keywords:
+    - "切换账号"
+    - "实名"
+    - "退出登录"
+    - "插件"
+    - "安全隐患"
+  dismiss_actions:
+    - "我知道了"
+    - "取消"
+    - "关闭"
+  publish_confirm_texts:
+    - "确定"
+    - "确认"
+    - "继续发布"
+    - "确认发布"
+    - "发表"
+  publish_button_texts:
+    - "发表"
+    - "发布"
+    - "群发"
+    - "提交"
+    - "确认发布"
+  success_markers:
+    - "发表成功"
+    - "发布成功"
+    - "群发成功"
+    - "已发送"
+    - "发布完成"
+
+# ========================================================================
+# Toutiao (今日头条)
+# ========================================================================
+toutiao:
+  home_page:
+    new_post_button:
+      - "a:has-text('发文')"
+      - "button:has-text('发文')"
+      - "a:has-text('写文章')"
+      - "button:has-text('写文章')"
+      - "text=发布文章"
+
+  editor_page:
+    title_input:
+      - ".left-column .publish-editor-title-wrapper textarea"
+      - ".publish-editor-title-wrapper textarea"
+      - ".assistant-title .title-wrapper textarea"
+      - ".publish-editor-title textarea"
+      - ".editor-title textarea"
+      - "textarea[autocomplete='off'][placeholder]"
+      - "textarea[placeholder*='标题']"
+      - "textarea"
+      - "input[placeholder*='标题']"
+      - "input[type='text']"
+    article_editor:
+      - ".left-column div.ProseMirror"
+      - ".syl-editor-wrap div.ProseMirror"
+      - ".syl-editor .ProseMirror"
+      - "div.ProseMirror"
+      - "div[contenteditable='true'][role='textbox']"
+      - "div[contenteditable='true'][data-placeholder*='正文']"
+      - "div[contenteditable='true']"
+    draft_status:
+      - ".publish-footer .footer-tip-save"
+      - ".footer-draft-save .footer-tip-save"
+      - ".footer-tip-save"
+    cover_upload:
+      - "input[type='file'][accept*='image']"
+      - "input[type='file']"
+    image_insert_button:
+      - ".publish-editor .syl-editor-toolbar.visible.inline .syl-toolbar-tool.image button.syl-toolbar-button"
+      - ".publish-editor .syl-editor-toolbar.visible.inline .syl-toolbar-tool.image button"
+      - ".publish-editor .syl-editor-toolbar.visible.inline .syl-toolbar-tool.image"
+      - ".syl-editor-toolbar.visible.inline .syl-toolbar-tool.image button.syl-toolbar-button"
+      - ".syl-editor-toolbar.visible.inline .syl-toolbar-tool.image button"
+      - ".syl-editor-toolbar.visible.inline .syl-toolbar-tool.image"
+      - ".syl-editor-toolbar.visible .syl-toolbar-tool.image button.syl-toolbar-button"
+      - ".syl-editor-toolbar.visible .syl-toolbar-tool.image button"
+      - ".syl-toolbar-tool.image .syl-toolbar-button"
+      - ".syl-toolbar-tool.image button"
+      - ".syl-toolbar-tool.image"
+      - "[data-e2e='insertImage-btn']"
+      - "[data-e2e='editorInsertImage-btn']"
+      - ".syl-toolbar button[aria-label*='Image']"
+      - ".syl-toolbar button[aria-label*='image']"
+      - ".syl-toolbar button[aria-label*='图片']"
+      - ".editor-toolbar button[aria-label*='Image']"
+      - ".editor-toolbar button[aria-label*='image']"
+      - ".editor-toolbar button[aria-label*='图片']"
+      - "button[aria-label*='Image']"
+      - "button[aria-label*='image']"
+      - "button[aria-label*='图片']"
+      - "button:has-text('图片')"
+    publish_button:
+      - "button:has-text('发布')"
+      - "button:has-text('确认发布')"
+      - "button:has-text('发表')"
+      - "text=发布"
+    confirm_publish_button:
+      - "button:has-text('确认')"
+      - "button:has-text('继续发布')"
+      - "button:has-text('我知道了')"
+    success_indicator:
+      - "text=发布成功"
+      - "text=提交成功"
+      - "text=审核中"
+      - "text=已提交"
+    ai_drawer_mask:
+      - "div.byte-drawer-mask"
+      - "div.byte-drawer-wrapper.ai-assistant-drawer div.byte-drawer-mask"
+    ai_drawer_close:
+      - ".ai-assistant-drawer button[aria-label='关闭']"
+      - ".ai-assistant-drawer .close-btn"
+      - ".ai-assistant-drawer .byte-drawer-close"
+      - ".ai-assistant-drawer button:has-text('关闭')"
+      - ".ai-assistant-drawer [class*='close']"
+
+# ========================================================================
+# Douyin (抖音)
+# ========================================================================
+douyin:
+  article_page:
+    publish_menu_button:
+      - "#douyin-creator-master-side-upload-wrap button"
+      - "#douyin-creator-master-side-upload"
+    start_button:
+      - "button.container-drag-btn-hcUuRC"
+    title_input:
+      - "input[placeholder*='文章标题']"
+      - "input[placeholder*='请输入文章标题']"
+    summary_input:
+      - "input[placeholder*='内容摘要']"
+      - "input[placeholder*='精彩部分']"
+    editor_area:
+      - "div.tiptap.ProseMirror[contenteditable='true']"
+      - "div[contenteditable='true'][role='textbox']"
+    head_image_upload:
+      - "div.uploadButton-B4xMQ2"
+      - "div.emptyHeadImage-YXPBGr"
+    no_head_image_toggle:
+      - "label:has-text('无文章头图')"
+      - "span:has-text('无文章头图')"
+    publish_button:
+      - "button.button-dhlUZE.primary-cECiOJ"
+      - "button:has-text('发布')"
+    success_indicator:
+      - "text=发布成功"
+      - "text=已发布"
+      - "text=发布完成"
+    agreement_dialog:
+      - "div[class*='agreement']"
+
+  # Douyin constant tuples
+  login_markers:
+    - "创作者登录"
+    - "登录或注册即代表同意"
+    - "用户协议"
+    - "隐私政策"
+    - "千万创作者邀你同行"
+    - "创作者登录 / 机构登录"
+    - "创作者登录/机构登录"
+  publish_failure_hints:
+    - "请上传封面图"
+    - "请上传图片"
+    - "请填写文章标题"
+    - "请填写文章正文"
+    - "请完善"
+    - "不能为空"
+    - "发布失败"

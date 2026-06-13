@@ -1,0 +1,91 @@
+version: 1
+updated_at: "2026-06-08"
+target_customer_segments:
+  - key: ai_founder_team
+    name: "AI 创始团队 / 内容负责人"
+    pains:
+      - "有技术和产品，但缺稳定的内容获客系统。"
+      - "内容发了不少，线索和成交转化弱。"
+    recommended_offer_key: growth_advisory
+    outreach_channel: "公众号私信 / 微信 / 邮件"
+    qualifying_signal:
+      - "持续发布 AI、机器人、产业评论类内容。"
+      - "有明确的商业化诉求或 B2B 销售场景。"
+  - key: industrial_research_team
+    name: "产业研究 / 投资研究团队"
+    pains:
+      - "热点更新快，人工追踪成本高。"
+      - "需要更高密度的赛道情报和竞品梳理。"
+    recommended_offer_key: research_sprint
+    outreach_channel: "邮件 / 微信 / 研究简报内嵌 CTA"
+    qualifying_signal:
+      - "关注 AI 硬件、机器人、储能、新能源等赛道。"
+      - "已有研究需求，但内部内容供给不足。"
+  - key: growth_stalled_brand
+    name: "增长停滞的企业账号"
+    pains:
+      - "账号在更新，但阅读、评论和咨询都不稳定。"
+      - "团队不知道该优化选题、标题还是转化链路。"
+    recommended_offer_key: content_diagnosis
+    outreach_channel: "头条私信 / 微信 / 诊断清单入口"
+    qualifying_signal:
+      - "近 30 天仍在发文，但缺高表现内容。"
+      - "愿意为诊断和代运营优化付费。"
+sponsor_archetypes:
+  - key: ai_tool_vendor
+    name: "AI 工具 / SaaS 厂商"
+    sponsor_fit:
+      - "受众与产业内容读者高度重合。"
+      - "适合通过观点内容承接线索。"
+    package_name: "周报赞助 + 深度内容共创"
+    package_price: "5000-20000元 / 期"
+  - key: hardware_supplier
+    name: "机器人 / 芯片 / 硬件供应链厂商"
+    sponsor_fit:
+      - "适合在行业观察和案例内容里做品牌露出。"
+      - "读者更偏从业者和决策者，适合 B2B 外联。"
+    package_name: "案例共创 + 产业白皮书联名"
+    package_price: "10000-50000元 / 项目"
+  - key: training_service
+    name: "培训 / 咨询 / 服务型机构"
+    sponsor_fit:
+      - "能与内容工厂形成互补成交。"
+      - "适合通过社群、直播、讲座联合获客。"
+    package_name: "活动合作 + 私域联合转化"
+    package_price: "3000-15000元 / 场"
+outreach_sequences:
+  consult:
+    - "先引用对方最近的内容/观点，证明不是群发。"
+    - "指出一个具体增长卡点，再给一个很小的切入口。"
+    - "优先成交诊断或研究，不直接硬推长期服务。"
+  sponsor:
+    - "先讲受众画像和内容场景，再讲赞助位。"
+    - "给出一个最小合作包和可复用素材形式。"
+    - "把赞助包装成线索获取，而不是单纯曝光。"
+  newsletter:
+    - "用免费样刊换订阅。"
+    - "用连续 3 期行业判断换会员或社群转化。"
+    - "在高热度选题后追加深度版 CTA。"
+newsletter:
+  product_name: "行业情报周报"
+  cadence: "weekly"
+  free_call_to_action: "回复“周报”领取免费样刊。"
+  paid_call_to_action: "升级为会员，获取完整版情报、客户名单和赞助监测。"
+deer_flow_playbooks:
+  - key: sponsor_prospecting
+    objective: "持续寻找最匹配当前内容赛道的赞助商和合作品牌。"
+  - key: customer_prospecting
+    objective: "持续寻找最可能购买研究、诊断和陪跑服务的客户。"
+  - key: weekly_intelligence
+    objective: "每周自动汇总高价值热点、观点和赞助线索，用于 newsletter 与销售。"
+agent_roles:
+  agennts:
+    - "售前分诊代理"
+    - "赞助合作代理"
+    - "客户成功 / 跟进代理"
+  cloudflow:
+    - "调度日报、周报和商机扫描任务"
+    - "串联内容、线索、通知和复盘产物"
+  letter:
+    - "将热点内容沉淀为 newsletter 与会员产品"
+    - "承接赞助位、订阅转化和续费提醒"

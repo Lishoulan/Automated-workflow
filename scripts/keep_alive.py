@@ -20,7 +20,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.config import load_settings
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
 
 
@@ -39,8 +39,9 @@ def _keep_alive_toutiao(settings: AppSettings, logger: logging.Logger, headless:
     """访问头条创作者平台刷新Cookie。"""
     from playwright.sync_api import sync_playwright
 
-    profile_dir = settings.publishing.browser_profile_dir or settings.account_runtime_dir / "toutiao_profile"
-    profile_dir = Path(profile_dir)
+    profile_dir = Path(settings.publishing.user_data_dir)
+    if not profile_dir.is_absolute():
+        profile_dir = PROJECT_ROOT / profile_dir
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     prepare_browser_profile(
@@ -92,8 +93,9 @@ def _keep_alive_wechat_135(settings: AppSettings, logger: logging.Logger, headle
     """访问135编辑器刷新Cookie。"""
     from playwright.sync_api import sync_playwright
 
-    profile_dir = settings.wechat.editor_135_profile_dir or settings.account_runtime_dir / "editor_135_profile"
-    profile_dir = Path(profile_dir)
+    profile_dir = Path(settings.wechat.editor_135_profile_dir)
+    if not profile_dir.is_absolute():
+        profile_dir = PROJECT_ROOT / profile_dir
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     prepare_browser_profile(
@@ -158,7 +160,8 @@ def main():
 
     # 加载配置
     os.environ.setdefault("TOUTIAO_ACCOUNT", args.account)
-    settings = AppSettings()
+    project_root = PROJECT_ROOT
+    settings = load_settings(project_root, account_key=args.account)
 
     # 云端默认headless
     headless = args.headless or bool(settings.publishing.headless)

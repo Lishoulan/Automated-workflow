@@ -314,6 +314,30 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Inject cross-platform cookies
+        run: |
+          echo "Checking for exported cookies..."
+          COOKIES_FILE=""
+          # 优先从 GitHub Release 下载
+          if gh release download browser-profiles-v1 --repo Lishoulan/Automated-workflow \
+              --pattern "exported_cookies.json" --dir /tmp/ 2>/dev/null; then
+            COOKIES_FILE="/tmp/exported_cookies.json"
+          fi
+          # 也检查本地文件
+          if [ -f ".runtime/automation/exported_cookies.json" ]; then
+            COOKIES_FILE=".runtime/automation/exported_cookies.json"
+          fi
+          if [ -n "$COOKIES_FILE" ]; then
+            echo "Injecting cookies from: $COOKIES_FILE"
+            python scripts/inject_cookies.py --input "$COOKIES_FILE" --headless \
+              --account ${{ github.event.inputs.account || 'default' }} || true
+          else
+            echo "No exported cookies found, skipping injection."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
       - name: Keep browser sessions alive
         run: |
           echo "Refreshing browser cookies to prevent session expiry..."
@@ -373,13 +397,22 @@ jobs:
         if: success()
         run: |
           echo "Updating browser profile seed with fresh cookies..."
-          python scripts/pack_browser_profiles.py
+          PYTHONUTF8=1 python scripts/pack_browser_profiles.py || true
           if [ -f "browser_profiles_seed.tar.gz" ]; then
             echo "Uploading updated profile seed to GitHub Release..."
             gh release upload browser-profiles-v1 browser_profiles_seed.tar.gz --clobber --repo Lishoulan/Automated-workflow
             echo "Profile seed updated successfully."
           else
             echo "No profile seed generated, skipping upload."
+          fi
+          # 导出明文 Cookie 供下次云端注入
+          echo "Exporting plaintext cookies for cross-platform injection..."
+          python scripts/export_cookies.py --headless --account ${{ github.event.inputs.account || 'default' }} || true
+          if [ -f ".runtime/automation/exported_cookies.json" ]; then
+            gh release upload browser-profiles-v1 .runtime/automation/exported_cookies.json --clobber --repo Lishoulan/Automated-workflow
+            echo "Exported cookies uploaded successfully."
+          else
+            echo "No exported cookies, skipping upload."
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

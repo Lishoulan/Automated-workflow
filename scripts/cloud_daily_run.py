@@ -205,6 +205,7 @@ def _configure_cloud_env(account_key: str) -> None:
     # --- 发布配置 ---
     os.environ.setdefault("TOUTIAO_PUBLISH_ENABLED", "1")
     os.environ.setdefault("TOUTIAO_AUTO_PUBLISH", "1")  # 云端自动发布
+    os.environ.setdefault("TOUTIAO_DRAFT_ONLY", "1")  # 草稿模式优先，稳定后改为 0
 
     # 云端浏览器登录 session 管理：
     # GitHub Actions 通过 cache 持久化 .runtime/ 目录来保持登录状态。
@@ -230,6 +231,7 @@ def _configure_cloud_env(account_key: str) -> None:
     _logger.info("  TOUTIAO_BROWSER_PROFILE_DIR = %s", os.environ.get("TOUTIAO_BROWSER_PROFILE_DIR"))
     _logger.info("  DOUYIN_PUBLISH_CHANNEL = %s", os.environ.get("DOUYIN_PUBLISH_CHANNEL"))
     _logger.info("  TOUTIAO_ACCOUNT = %s", os.environ.get("TOUTIAO_ACCOUNT"))
+    _logger.info("  TOUTIAO_DRAFT_ONLY = %s", os.environ.get("TOUTIAO_DRAFT_ONLY", "1"))
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +277,40 @@ def _ensure_playwright_browsers() -> bool:
     except Exception as exc:
         _logger.error("Playwright chromium 安装异常: %s", exc)
         return False
+
+
+# ---------------------------------------------------------------------------
+# 发布结果摘要输出
+# ---------------------------------------------------------------------------
+def _print_publish_summary() -> None:
+    """读取并输出本次运行的发布结果摘要。"""
+    result_path = PROJECT_ROOT / "output" / "automation" / "last_daily_run_result.json"
+    if not result_path.exists():
+        _logger.info("未找到 last_daily_run_result.json，跳过发布摘要")
+        return
+
+    try:
+        import json as _json
+        data = _json.loads(result_path.read_text(encoding="utf-8"))
+        _logger.info("=" * 60)
+        _logger.info("发布结果摘要:")
+        _logger.info("  账号: %s", data.get("account_key", "-"))
+        _logger.info("  状态: %s", data.get("status", "-"))
+        _logger.info("  消息: %s", data.get("message", "-"))
+        _logger.info("  选题: %s", data.get("run_name", "-"))
+        _logger.info("  标题: %s", data.get("selected_title", "-"))
+        _logger.info("  审核: %s", data.get("review_status", "-"))
+        _logger.info("  头条: %s", data.get("publish_status", "-") or "-")
+        _logger.info("  微信: %s", data.get("wechat_status", "-") or "-")
+        if data.get("publish_url"):
+            _logger.info("  头条链接: %s", data["publish_url"])
+        if data.get("wechat_publish_url"):
+            _logger.info("  微信链接: %s", data["wechat_publish_url"])
+        if data.get("error"):
+            _logger.warning("  错误: %s", data["error"])
+        _logger.info("=" * 60)
+    except Exception as exc:
+        _logger.warning("读取发布结果摘要失败: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +475,7 @@ def main() -> int:
                 _logger.info("云端定时执行成功完成 (exit_code=%d)", exit_code)
                 # 主 pipeline 成功后运行 AiToEarn 集成模块
                 _run_extra_modules(account_key)
+                _print_publish_summary()
                 return exit_code
 
             # 检查是否是 PlatformAuthError，如果是则禁用失败平台并重试

@@ -35,7 +35,8 @@ build/
 guard-smoke-*/
 config/guard-*/
 
-SKILL.md
+# 根目录的 SKILL.md（非 .qoder/skills/ 下的）
+/SKILL.md
 zettaranc-skill-main/
 
 # 临时调试文件

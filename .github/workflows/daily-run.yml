@@ -87,10 +87,11 @@ jobs:
       CACHE_SIMILARITY_THRESHOLD: ${{ secrets.CACHE_SIMILARITY_THRESHOLD || '0.82' }}
       LOG_LEVEL: INFO
 
-      # 头条发布（云端只生成内容，不发布，由本地脚本完成）
-      TOUTIAO_PUBLISH_ENABLED: "0"
-      TOUTIAO_AUTO_PUBLISH: "0"
-      TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS: ${{ secrets.TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS || '6' }}
+      # 头条发布（云端启用发布，草稿模式优先，profile 不存在时自动降级）
+      TOUTIAO_PUBLISH_ENABLED: "1"
+      TOUTIAO_AUTO_PUBLISH: "1"
+      TOUTIAO_DRAFT_ONLY: "1"
+      TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS: ${{ secrets.TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS || '3' }}
       TOUTIAO_AIGC_DECLARATION_ENABLED: "1"
       TOUTIAO_PUBLISH_PLATFORM: toutiao
       TOUTIAO_PUBLISH_BASE_URL: https://mp.toutiao.com/

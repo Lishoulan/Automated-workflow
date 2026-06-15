@@ -17,6 +17,7 @@ from toutiao_content_factory.services.multi_platform_publisher import (
     PlatformPublisher,
     PublishResult,
 )
+from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -114,78 +115,81 @@ class ZhihuPublisher(PlatformPublisher):
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self.settings.publishing.headless,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                timeout = max(self.settings.publishing.wait_timeout_ms, 15000)
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=self.settings.publishing.headless,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    timeout = max(self.settings.publishing.wait_timeout_ms, 15000)
 
-                # 1. 导航到写作页面
-                page.goto(self.PUBLISH_URL, wait_until="domcontentloaded", timeout=timeout)
-                page.wait_for_timeout(2000)
+                    # 1. 导航到写作页面
+                    page.goto(self.PUBLISH_URL, wait_until="domcontentloaded", timeout=timeout)
+                    page.wait_for_timeout(2000)
 
-                # 检查登录状态
-                if self._looks_like_login_page(page):
+                    # 检查登录状态
+                    if self._looks_like_login_page(page):
+                        return PublishResult(
+                            success=False,
+                            platform="zhihu",
+                            error="知乎未登录，请先运行交互式登录完成认证。",
+                        )
+
+                    # 2. 填写标题
+                    self._fill_title(page, title)
+
+                    # 3. 填写正文
+                    self._fill_content(page, content)
+
+                    # 4. 上传封面图
+                    cover_image = images[0] if images else None
+                    if cover_image:
+                        uploaded = self._upload_cover_image(page, cover_image)
+                        if uploaded:
+                            self.logger.info("知乎封面图上传成功")
+                        else:
+                            self.logger.warning("知乎封面图上传失败，继续发布流程")
+
+                    # 5. 添加话题/标签
+                    if tags:
+                        self._add_topics(page, tags)
+
+                    # 6. 点击发布
+                    self._click_publish(page)
+
+                    # 7. 等待发布成功
+                    if self._wait_for_success(page):
+                        permalink = page.url
+                        post_id = self._extract_post_id(permalink)
+                        self.logger.info("知乎文章发布成功: %s", permalink)
+                        return PublishResult(
+                            success=True,
+                            post_id=post_id,
+                            permalink=permalink,
+                            platform="zhihu",
+                        )
+
                     return PublishResult(
                         success=False,
                         platform="zhihu",
-                        error="知乎未登录，请先运行交互式登录完成认证。",
+                        error="知乎文章发布未检测到成功标识，请手动确认。",
                     )
 
-                # 2. 填写标题
-                self._fill_title(page, title)
-
-                # 3. 填写正文
-                self._fill_content(page, content)
-
-                # 4. 上传封面图
-                cover_image = images[0] if images else None
-                if cover_image:
-                    uploaded = self._upload_cover_image(page, cover_image)
-                    if uploaded:
-                        self.logger.info("知乎封面图上传成功")
-                    else:
-                        self.logger.warning("知乎封面图上传失败，继续发布流程")
-
-                # 5. 添加话题/标签
-                if tags:
-                    self._add_topics(page, tags)
-
-                # 6. 点击发布
-                self._click_publish(page)
-
-                # 7. 等待发布成功
-                if self._wait_for_success(page):
-                    permalink = page.url
-                    post_id = self._extract_post_id(permalink)
-                    self.logger.info("知乎文章发布成功: %s", permalink)
+                except Exception as exc:
+                    self.logger.exception("知乎文章发布异常")
                     return PublishResult(
-                        success=True,
-                        post_id=post_id,
-                        permalink=permalink,
+                        success=False,
                         platform="zhihu",
+                        error=str(exc),
                     )
+                finally:
+                    browser.close()
 
-                return PublishResult(
-                    success=False,
-                    platform="zhihu",
-                    error="知乎文章发布未检测到成功标识，请手动确认。",
-                )
-
-            except Exception as exc:
-                self.logger.exception("知乎文章发布异常")
-                return PublishResult(
-                    success=False,
-                    platform="zhihu",
-                    error=str(exc),
-                )
-            finally:
-                browser.close()
+        return run_sync_playwright_safe(_run, timeout=300)
 
     def check_login_status(self) -> bool:
         """检查知乎登录状态，返回 True 表示已登录。"""
@@ -203,48 +207,51 @@ class ZhihuPublisher(PlatformPublisher):
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=True,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto("https://www.zhihu.com/", wait_until="domcontentloaded", timeout=15000)
-                page.wait_for_timeout(3000)
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=True,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    page.goto("https://www.zhihu.com/", wait_until="domcontentloaded", timeout=15000)
+                    page.wait_for_timeout(3000)
 
-                # 检查是否存在登录按钮（未登录时出现）
-                with self._suppress_timeout():
-                    login_button = page.locator(
-                        "button:has-text('登录'), "
-                        "a:has-text('登录'), "
-                        "button.SignContainer-accountLogin"
-                    )
-                    if login_button.first.count() > 0:
-                        return False
+                    # 检查是否存在登录按钮（未登录时出现）
+                    with self._suppress_timeout():
+                        login_button = page.locator(
+                            "button:has-text('登录'), "
+                            "a:has-text('登录'), "
+                            "button.SignContainer-accountLogin"
+                        )
+                        if login_button.first.count() > 0:
+                            return False
 
-                # 检查是否有用户头像（已登录时出现）
-                with self._suppress_timeout():
-                    avatar = page.locator(
-                        "img.AppHeader-userAvatar, "
-                        "img.UserAvatar, "
-                        "button.AppHeader-profile"
-                    )
-                    if avatar.first.count() > 0:
-                        return True
+                    # 检查是否有用户头像（已登录时出现）
+                    with self._suppress_timeout():
+                        avatar = page.locator(
+                            "img.AppHeader-userAvatar, "
+                            "img.UserAvatar, "
+                            "button.AppHeader-profile"
+                        )
+                        if avatar.first.count() > 0:
+                            return True
 
-                # 尝试访问专栏写作页面
-                page.goto(self.PUBLISH_URL, wait_until="domcontentloaded", timeout=15000)
-                page.wait_for_timeout(2000)
-                return not self._looks_like_login_page(page)
+                    # 尝试访问专栏写作页面
+                    page.goto(self.PUBLISH_URL, wait_until="domcontentloaded", timeout=15000)
+                    page.wait_for_timeout(2000)
+                    return not self._looks_like_login_page(page)
 
-            except Exception:
-                self.logger.debug("知乎登录状态检查异常", exc_info=True)
-                return False
-            finally:
-                browser.close()
+                except Exception:
+                    self.logger.debug("知乎登录状态检查异常", exc_info=True)
+                    return False
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=300)
 
     def login_interactive(self) -> dict:
         """交互式登录知乎，打开浏览器等待用户手动完成登录。
@@ -265,49 +272,52 @@ class ZhihuPublisher(PlatformPublisher):
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=False,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto("https://www.zhihu.com/signin", wait_until="domcontentloaded", timeout=15000)
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=False,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    page.goto("https://www.zhihu.com/signin", wait_until="domcontentloaded", timeout=15000)
 
-                print("")
-                print("请在打开的浏览器窗口中完成知乎登录。")
-                print("登录成功后此窗口将自动检测，最长等待 10 分钟。")
+                    print("")
+                    print("请在打开的浏览器窗口中完成知乎登录。")
+                    print("登录成功后此窗口将自动检测，最长等待 10 分钟。")
 
-                deadline = time.time() + 600
-                while time.time() < deadline:
-                    page.wait_for_timeout(2000)
-                    if not self._looks_like_login_page(page):
-                        # 再确认一次：访问首页检查用户头像
-                        page.goto("https://www.zhihu.com/", wait_until="domcontentloaded", timeout=10000)
+                    deadline = time.time() + 600
+                    while time.time() < deadline:
                         page.wait_for_timeout(2000)
                         if not self._looks_like_login_page(page):
-                            return {
-                                "success": True,
-                                "profile_dir": str(profile_dir),
-                                "current_url": page.url,
-                            }
-                    print(f"等待知乎登录完成... 当前 URL: {page.url}")
+                            # 再确认一次：访问首页检查用户头像
+                            page.goto("https://www.zhihu.com/", wait_until="domcontentloaded", timeout=10000)
+                            page.wait_for_timeout(2000)
+                            if not self._looks_like_login_page(page):
+                                return {
+                                    "success": True,
+                                    "profile_dir": str(profile_dir),
+                                    "current_url": page.url,
+                                }
+                        print(f"等待知乎登录完成... 当前 URL: {page.url}")
 
-                return {
-                    "success": False,
-                    "error": "知乎登录超时（10 分钟），请重试。",
-                    "current_url": page.url,
-                }
+                    return {
+                        "success": False,
+                        "error": "知乎登录超时（10 分钟），请重试。",
+                        "current_url": page.url,
+                    }
 
-            except Exception as exc:
-                return {
-                    "success": False,
-                    "error": str(exc),
-                }
-            finally:
-                browser.close()
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "error": str(exc),
+                    }
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=600)
 
     # ── 内部方法 ────────────────────────────────────────────────
 

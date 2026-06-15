@@ -13,6 +13,7 @@ from typing import Any
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
 from toutiao_content_factory.services.multi_platform_publisher import PlatformPublisher, PublishResult
+from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -173,83 +174,86 @@ class BilibiliPublisher(PlatformPublisher):
         clipped_title = self._clip_title(title)
         adapted_content = self.adapt_content(content, "bilibili")
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self._get_headless(),
-                channel=self._get_channel(),
-                executable_path=self._get_executable_path(),
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto(
-                    self.PUBLISH_URL,
-                    wait_until="domcontentloaded",
-                    timeout=max(self._get_timeout_ms(), 20000),
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=self._get_headless(),
+                    channel=self._get_channel(),
+                    executable_path=self._get_executable_path(),
                 )
-                page.wait_for_timeout(2000)
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    page.goto(
+                        self.PUBLISH_URL,
+                        wait_until="domcontentloaded",
+                        timeout=max(self._get_timeout_ms(), 20000),
+                    )
+                    page.wait_for_timeout(2000)
 
-                # 检查登录态
-                self._ensure_logged_in(page)
+                    # 检查登录态
+                    self._ensure_logged_in(page)
 
-                # 填写标题
-                self._fill_title(page, clipped_title)
-                self.logger.info("Bilibili: 标题已填写 — %s", clipped_title)
+                    # 填写标题
+                    self._fill_title(page, clipped_title)
+                    self.logger.info("Bilibili: 标题已填写 — %s", clipped_title)
 
-                # 填写正文
-                self._fill_content(page, adapted_content)
-                self.logger.info("Bilibili: 正文已填写（%d 字）", len(adapted_content))
+                    # 填写正文
+                    self._fill_content(page, adapted_content)
+                    self.logger.info("Bilibili: 正文已填写（%d 字）", len(adapted_content))
 
-                # 上传封面图
-                cover_image = self._resolve_cover_image(images)
-                if cover_image is not None:
-                    self._upload_cover(page, cover_image)
-                    self.logger.info("Bilibili: 封面图已上传 — %s", cover_image.name)
-                else:
-                    self.logger.info("Bilibili: 无封面图，跳过上传")
+                    # 上传封面图
+                    cover_image = self._resolve_cover_image(images)
+                    if cover_image is not None:
+                        self._upload_cover(page, cover_image)
+                        self.logger.info("Bilibili: 封面图已上传 — %s", cover_image.name)
+                    else:
+                        self.logger.info("Bilibili: 无封面图，跳过上传")
 
-                # 设置分类
-                target_category = category or self.DEFAULT_CATEGORY
-                self._set_category(page, target_category)
-                self.logger.info("Bilibili: 分类已设置 — %s", target_category)
+                    # 设置分类
+                    target_category = category or self.DEFAULT_CATEGORY
+                    self._set_category(page, target_category)
+                    self.logger.info("Bilibili: 分类已设置 — %s", target_category)
 
-                # 添加标签
-                if tags:
-                    self._add_tags(page, tags)
-                    self.logger.info("Bilibili: 标签已添加 — %s", ", ".join(tags))
+                    # 添加标签
+                    if tags:
+                        self._add_tags(page, tags)
+                        self.logger.info("Bilibili: 标签已添加 — %s", ", ".join(tags))
 
-                # 点击发布
-                before_url = page.url
-                self._click_publish(page)
-                self.logger.info("Bilibili: 已点击发布按钮")
+                    # 点击发布
+                    before_url = page.url
+                    self._click_publish(page)
+                    self.logger.info("Bilibili: 已点击发布按钮")
 
-                # 等待成功指示
-                success = self._wait_for_success(page, before_url)
-                if not success:
-                    failure_msg = self._build_failure_message(page)
+                    # 等待成功指示
+                    success = self._wait_for_success(page, before_url)
+                    if not success:
+                        failure_msg = self._build_failure_message(page)
+                        return PublishResult(
+                            success=False,
+                            platform="bilibili",
+                            error=failure_msg,
+                        )
+
+                    result = PublishResult(
+                        success=True,
+                        platform="bilibili",
+                        permalink=page.url,
+                    )
+                    self.logger.info("Bilibili: 文章发布成功 — %s", page.url)
+                    return result
+
+                except Exception as exc:
+                    self._capture_debug_artifacts(page, {"title": clipped_title, "error": str(exc)})
                     return PublishResult(
                         success=False,
                         platform="bilibili",
-                        error=failure_msg,
+                        error=str(exc),
                     )
+                finally:
+                    browser.close()
 
-                result = PublishResult(
-                    success=True,
-                    platform="bilibili",
-                    permalink=page.url,
-                )
-                self.logger.info("Bilibili: 文章发布成功 — %s", page.url)
-                return result
-
-            except Exception as exc:
-                self._capture_debug_artifacts(page, {"title": clipped_title, "error": str(exc)})
-                return PublishResult(
-                    success=False,
-                    platform="bilibili",
-                    error=str(exc),
-                )
-            finally:
-                browser.close()
+        return run_sync_playwright_safe(_run, timeout=300)
 
     def check_login_status(self) -> bool:
         """导航到 bilibili.com 并检查是否已登录。"""
@@ -258,52 +262,55 @@ class BilibiliPublisher(PlatformPublisher):
         profile_dir = self._resolve_browser_profile_dir()
         profile_dir.mkdir(parents=True, exist_ok=True)
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=True,
-                channel=self._get_channel(),
-                executable_path=self._get_executable_path(),
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto(
-                    "https://www.bilibili.com/",
-                    wait_until="domcontentloaded",
-                    timeout=15000,
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=True,
+                    channel=self._get_channel(),
+                    executable_path=self._get_executable_path(),
                 )
-                page.wait_for_timeout(2000)
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    page.goto(
+                        "https://www.bilibili.com/",
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+                    page.wait_for_timeout(2000)
 
-                # 检查页面中是否有登录态标识
-                is_logged_in = page.evaluate(
-                    """
-                    () => {
-                        // 方式1：检查顶部导航栏用户头像
-                        const avatar = document.querySelector('.header-avatar-wrap, .bili-avatar, .user-con .avatar, .nav-user-info');
-                        if (avatar) return true;
+                    # 检查页面中是否有登录态标识
+                    is_logged_in = page.evaluate(
+                        """
+                        () => {
+                            // 方式1：检查顶部导航栏用户头像
+                            const avatar = document.querySelector('.header-avatar-wrap, .bili-avatar, .user-con .avatar, .nav-user-info');
+                            if (avatar) return true;
 
-                        // 方式2：检查 cookie 中的 DedeUserID
-                        const cookies = document.cookie;
-                        if (cookies.includes('DedeUserID=') && !cookies.includes('DedeUserID=deleted')) {
-                            return true;
+                            // 方式2：检查 cookie 中的 DedeUserID
+                            const cookies = document.cookie;
+                            if (cookies.includes('DedeUserID=') && !cookies.includes('DedeUserID=deleted')) {
+                                return true;
+                            }
+
+                            // 方式3：检查页面中是否有登录按钮（有则说明未登录）
+                            const loginBtn = document.querySelector('.header-login-entry, .btn-login, a:has-text("登录")');
+                            if (loginBtn) return false;
+
+                            return false;
                         }
+                        """
+                    )
+                    self.logger.info("Bilibili: 登录状态检查结果 — %s", "已登录" if is_logged_in else "未登录")
+                    return bool(is_logged_in)
 
-                        // 方式3：检查页面中是否有登录按钮（有则说明未登录）
-                        const loginBtn = document.querySelector('.header-login-entry, .btn-login, a:has-text("登录")');
-                        if (loginBtn) return false;
+                except Exception as exc:
+                    self.logger.warning("Bilibili: 登录状态检查异常 — %s", exc)
+                    return False
+                finally:
+                    browser.close()
 
-                        return false;
-                    }
-                    """
-                )
-                self.logger.info("Bilibili: 登录状态检查结果 — %s", "已登录" if is_logged_in else "未登录")
-                return bool(is_logged_in)
-
-            except Exception as exc:
-                self.logger.warning("Bilibili: 登录状态检查异常 — %s", exc)
-                return False
-            finally:
-                browser.close()
+        return run_sync_playwright_safe(_run, timeout=300)
 
     def login_interactive(self) -> dict:
         """打开 Bilibili 登录页面，等待用户扫码登录。
@@ -325,76 +332,79 @@ class BilibiliPublisher(PlatformPublisher):
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=False,
-                channel=self._get_channel(),
-                executable_path=self._get_executable_path(),
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto(
-                    "https://passport.bilibili.com/login",
-                    wait_until="domcontentloaded",
-                    timeout=15000,
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=False,
+                    channel=self._get_channel(),
+                    executable_path=self._get_executable_path(),
                 )
-
-                print("")
-                print("请在打开的浏览器窗口中完成 Bilibili 登录（扫码或账号密码）。")
-                print("系统将自动检测登录状态，最长等待 10 分钟。")
-                print("")
-
-                deadline = time.time() + 600
-                while time.time() < deadline:
-                    page.wait_for_timeout(3000)
-
-                    # 登录成功后通常会跳转到首页或创作中心
-                    current_url = page.url.lower()
-                    if "passport.bilibili.com/login" not in current_url:
-                        self.logger.info("Bilibili: 登录成功，当前页面 — %s", page.url)
-                        return {
-                            "success": True,
-                            "profile_dir": str(profile_dir),
-                            "current_url": page.url,
-                        }
-
-                    # 尝试通过 cookie 判断
-                    has_user_cookie = page.evaluate(
-                        """
-                        () => {
-                            const cookies = document.cookie;
-                            return cookies.includes('DedeUserID=') && !cookies.includes('DedeUserID=deleted');
-                        }
-                        """
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    page.goto(
+                        "https://passport.bilibili.com/login",
+                        wait_until="domcontentloaded",
+                        timeout=15000,
                     )
-                    if has_user_cookie:
-                        self.logger.info("Bilibili: 检测到登录 Cookie，登录成功")
-                        return {
-                            "success": True,
-                            "profile_dir": str(profile_dir),
-                            "current_url": page.url,
-                        }
 
-                    if page.is_closed():
-                        return {
-                            "success": False,
-                            "error": "浏览器窗口已关闭",
-                        }
+                    print("")
+                    print("请在打开的浏览器窗口中完成 Bilibili 登录（扫码或账号密码）。")
+                    print("系统将自动检测登录状态，最长等待 10 分钟。")
+                    print("")
 
-                return {
-                    "success": False,
-                    "error": "登录超时（10 分钟），请重试",
-                }
+                    deadline = time.time() + 600
+                    while time.time() < deadline:
+                        page.wait_for_timeout(3000)
 
-            except Exception as exc:
-                self.logger.exception("Bilibili: 交互式登录异常")
-                return {
-                    "success": False,
-                    "error": str(exc),
-                }
-            finally:
-                browser.close()
+                        # 登录成功后通常会跳转到首页或创作中心
+                        current_url = page.url.lower()
+                        if "passport.bilibili.com/login" not in current_url:
+                            self.logger.info("Bilibili: 登录成功，当前页面 — %s", page.url)
+                            return {
+                                "success": True,
+                                "profile_dir": str(profile_dir),
+                                "current_url": page.url,
+                            }
+
+                        # 尝试通过 cookie 判断
+                        has_user_cookie = page.evaluate(
+                            """
+                            () => {
+                                const cookies = document.cookie;
+                                return cookies.includes('DedeUserID=') && !cookies.includes('DedeUserID=deleted');
+                            }
+                            """
+                        )
+                        if has_user_cookie:
+                            self.logger.info("Bilibili: 检测到登录 Cookie，登录成功")
+                            return {
+                                "success": True,
+                                "profile_dir": str(profile_dir),
+                                "current_url": page.url,
+                            }
+
+                        if page.is_closed():
+                            return {
+                                "success": False,
+                                "error": "浏览器窗口已关闭",
+                            }
+
+                    return {
+                        "success": False,
+                        "error": "登录超时（10 分钟），请重试",
+                    }
+
+                except Exception as exc:
+                    self.logger.exception("Bilibili: 交互式登录异常")
+                    return {
+                        "success": False,
+                        "error": str(exc),
+                    }
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=600)
 
     # ------------------------------------------------------------------
     # 内部辅助方法

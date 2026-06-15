@@ -347,96 +347,99 @@ class PublishService:
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=False,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-                viewport={"width": 1920, "height": 1080},
-                screen={"width": 1920, "height": 1080},
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                diagnostic_events: list[dict[str, Any]] = []
-                self._install_publish_diagnostic_capture(page, diagnostic_events)
-                page.goto(
-                    target_url,
-                    wait_until="domcontentloaded",
-                    timeout=self.settings.publishing.wait_timeout_ms,
+        def _run() -> dict[str, str]:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=False,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                    viewport={"width": 1920, "height": 1080},
+                    screen={"width": 1920, "height": 1080},
                 )
-                page.wait_for_timeout(2500)
-                print("")
-                print("Browser launched for Toutiao login session initialization.")
-                print(f"Profile dir: {profile_dir}")
-                print("Log in to your Toutiao creator account in the opened browser window.")
-                print("Make sure the account can actually open the article publish page.")
-                print("This window will keep polling automatically for up to 10 minutes.")
-                print("If login succeeds, navigate to the Toutiao article publish page and wait for the preflight summary.")
-
-                deadline = datetime.now().timestamp() + 600
-                next_status_print_at = 0.0
-                preflight_summary: dict[str, Any] | None = None
-
-                while datetime.now().timestamp() < deadline:
-                    if page.is_closed():
-                        raise RuntimeError("The browser window was closed before login initialization finished.")
-
-                    try:
-                        diagnostics = self._build_publish_diagnostics(diagnostic_events)
-                        preflight_summary = self._build_preflight_summary_from_diagnostics(page.url, diagnostics)
-                    except Exception:
-                        preflight_summary = None
-
-                    if preflight_summary and not preflight_summary.get("blocking_flags"):
-                        break
-
-                    now_ts = datetime.now().timestamp()
-                    if now_ts >= next_status_print_at:
-                        current_url = page.url if not page.is_closed() else ""
-                        blockers = []
-                        if preflight_summary:
-                            blockers = [str(item) for item in preflight_summary.get("blocking_flags", [])]
-                        status_line = "Waiting for a publish-capable Toutiao session"
-                        if current_url:
-                            status_line += f". Current URL: {current_url}"
-                        if blockers:
-                            status_line += f" | blockers: {'; '.join(blockers[:3])}"
-                        print(status_line)
-                        next_status_print_at = now_ts + 15
-
-                    page.wait_for_timeout(3000)
-
-                if not preflight_summary or preflight_summary.get("blocking_flags"):
-                    export_paths = self._write_preflight_summary(preflight_summary or {})
-                    self._append_notification(
-                        level="warn",
-                        title="Publish login required",
-                        message="Toutiao login session initialization timed out before the account became publish-capable.",
-                        notification_type="publish_login_required",
-                        data={
-                            "account_key": self.settings.account_key,
-                            "platform": self.settings.publishing.platform,
-                            "current_url": page.url,
-                            **{name: str(path) for name, path in export_paths.items()},
-                        },
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    diagnostic_events: list[dict[str, Any]] = []
+                    self._install_publish_diagnostic_capture(page, diagnostic_events)
+                    page.goto(
+                        target_url,
+                        wait_until="domcontentloaded",
+                        timeout=self.settings.publishing.wait_timeout_ms,
                     )
-                    raise RuntimeError(
-                        "Login session initialization timed out before the account reached a publish-capable state. "
-                        f"Current URL: {page.url}. Preflight summary saved to: {export_paths.get('publish_preflight')}"
-                    )
+                    page.wait_for_timeout(2500)
+                    print("")
+                    print("Browser launched for Toutiao login session initialization.")
+                    print(f"Profile dir: {profile_dir}")
+                    print("Log in to your Toutiao creator account in the opened browser window.")
+                    print("Make sure the account can actually open the article publish page.")
+                    print("This window will keep polling automatically for up to 10 minutes.")
+                    print("If login succeeds, navigate to the Toutiao article publish page and wait for the preflight summary.")
 
-                export_paths = self._write_preflight_summary(preflight_summary)
-                print("")
-                print("Publish preflight summary:")
-                print(json.dumps(preflight_summary, ensure_ascii=False, indent=2))
-                return {
-                    "profile_dir": str(profile_dir),
-                    "current_url": page.url,
-                    **{name: str(path) for name, path in export_paths.items()},
-                }
-            finally:
-                browser.close()
+                    deadline = datetime.now().timestamp() + 600
+                    next_status_print_at = 0.0
+                    preflight_summary: dict[str, Any] | None = None
+
+                    while datetime.now().timestamp() < deadline:
+                        if page.is_closed():
+                            raise RuntimeError("The browser window was closed before login initialization finished.")
+
+                        try:
+                            diagnostics = self._build_publish_diagnostics(diagnostic_events)
+                            preflight_summary = self._build_preflight_summary_from_diagnostics(page.url, diagnostics)
+                        except Exception:
+                            preflight_summary = None
+
+                        if preflight_summary and not preflight_summary.get("blocking_flags"):
+                            break
+
+                        now_ts = datetime.now().timestamp()
+                        if now_ts >= next_status_print_at:
+                            current_url = page.url if not page.is_closed() else ""
+                            blockers = []
+                            if preflight_summary:
+                                blockers = [str(item) for item in preflight_summary.get("blocking_flags", [])]
+                            status_line = "Waiting for a publish-capable Toutiao session"
+                            if current_url:
+                                status_line += f". Current URL: {current_url}"
+                            if blockers:
+                                status_line += f" | blockers: {'; '.join(blockers[:3])}"
+                            print(status_line)
+                            next_status_print_at = now_ts + 15
+
+                        page.wait_for_timeout(3000)
+
+                    if not preflight_summary or preflight_summary.get("blocking_flags"):
+                        export_paths = self._write_preflight_summary(preflight_summary or {})
+                        self._append_notification(
+                            level="warn",
+                            title="Publish login required",
+                            message="Toutiao login session initialization timed out before the account became publish-capable.",
+                            notification_type="publish_login_required",
+                            data={
+                                "account_key": self.settings.account_key,
+                                "platform": self.settings.publishing.platform,
+                                "current_url": page.url,
+                                **{name: str(path) for name, path in export_paths.items()},
+                            },
+                        )
+                        raise RuntimeError(
+                            "Login session initialization timed out before the account reached a publish-capable state. "
+                            f"Current URL: {page.url}. Preflight summary saved to: {export_paths.get('publish_preflight')}"
+                        )
+
+                    export_paths = self._write_preflight_summary(preflight_summary)
+                    print("")
+                    print("Publish preflight summary:")
+                    print(json.dumps(preflight_summary, ensure_ascii=False, indent=2))
+                    return {
+                        "profile_dir": str(profile_dir),
+                        "current_url": page.url,
+                        **{name: str(path) for name, path in export_paths.items()},
+                    }
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=600)
 
     def collect_preflight_summary(self) -> dict[str, Any]:
         with self._publish_session_lock("preflight collection"):
@@ -462,45 +465,48 @@ class PublishService:
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self.settings.publishing.headless,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-                viewport={"width": 1920, "height": 1080},
-                screen={"width": 1920, "height": 1080},
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                diagnostic_events: list[dict[str, Any]] = []
-                self._install_publish_diagnostic_capture(page, diagnostic_events)
-                self._goto_publish_page(page, publish_url)
-                page.wait_for_timeout(2500)
-                notes: list[str] = []
-                self._dismiss_ai_assistant_drawer(page, notes)
-                self._wait_for_publish_editor_ready(page)
-                self._permanently_hide_ai_assistant(page, notes)
-                diagnostics = self._build_publish_diagnostics(diagnostic_events)
-                summary = self._build_preflight_summary_from_diagnostics(page.url, diagnostics)
-                if summary.get("blocking_flags") and self._page_looks_publish_capable(page):
-                    summary["blocking_flags"] = [
-                        item
-                        for item in list(summary.get("blocking_flags", []))
-                        if item != "Current browser session does not appear to have an accessible Toutiao publish page."
-                    ]
-                    warnings = list(summary.get("warnings", []))
-                    warnings.append("Diagnostics API was incomplete, but the publish editor DOM was detected.")
-                    summary["warnings"] = self._unique_texts(warnings)
-                return summary
-            except Exception as exc:
-                return {
-                    "blocking_flags": [f"Publish preflight failed: {self._clean_visible_text(exc)}"],
-                    "warnings": [],
-                    "diagnostics": {},
-                }
-            finally:
-                browser.close()
+        def _run() -> dict[str, Any]:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=self.settings.publishing.headless,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                    viewport={"width": 1920, "height": 1080},
+                    screen={"width": 1920, "height": 1080},
+                )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    diagnostic_events: list[dict[str, Any]] = []
+                    self._install_publish_diagnostic_capture(page, diagnostic_events)
+                    self._goto_publish_page(page, publish_url)
+                    page.wait_for_timeout(2500)
+                    notes: list[str] = []
+                    self._dismiss_ai_assistant_drawer(page, notes)
+                    self._wait_for_publish_editor_ready(page)
+                    self._permanently_hide_ai_assistant(page, notes)
+                    diagnostics = self._build_publish_diagnostics(diagnostic_events)
+                    summary = self._build_preflight_summary_from_diagnostics(page.url, diagnostics)
+                    if summary.get("blocking_flags") and self._page_looks_publish_capable(page):
+                        summary["blocking_flags"] = [
+                            item
+                            for item in list(summary.get("blocking_flags", []))
+                            if item != "Current browser session does not appear to have an accessible Toutiao publish page."
+                        ]
+                        warnings = list(summary.get("warnings", []))
+                        warnings.append("Diagnostics API was incomplete, but the publish editor DOM was detected.")
+                        summary["warnings"] = self._unique_texts(warnings)
+                    return summary
+                except Exception as exc:
+                    return {
+                        "blocking_flags": [f"Publish preflight failed: {self._clean_visible_text(exc)}"],
+                        "warnings": [],
+                        "diagnostics": {},
+                    }
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=120)
 
     def export_preflight_summary(self) -> dict[str, Path]:
         summary = self.collect_preflight_summary()

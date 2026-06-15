@@ -18,6 +18,7 @@ from toutiao_content_factory.constants.selectors import (
 )
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
+from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -60,43 +61,46 @@ class DouyinPublishService:
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self.settings.douyin.headless,
-                channel=self.settings.douyin.channel or None,
-                executable_path=self.settings.douyin.executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto(
-                    self.settings.douyin.publish_url,
-                    wait_until="domcontentloaded",
-                    timeout=max(self.settings.douyin.wait_timeout_ms, 20000),
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=self.settings.douyin.headless,
+                    channel=self.settings.douyin.channel or None,
+                    executable_path=self.settings.douyin.executable_path or None,
                 )
-                print("")
-                print("Log in to your Douyin creator account in the opened browser window.")
-                print("Make sure the account can actually open the article publish page.")
-                print("This window will keep polling automatically for up to 10 minutes.")
-                deadline = time.time() + 600
-                while time.time() < deadline:
-                    summary = self._collect_preflight_summary(page)
-                    blockers = summary.get("blocking_flags", [])
-                    if not blockers:
-                        result = {
-                            "profile_dir": str(profile_dir),
-                            "current_url": page.url,
-                            "publish_preflight": str(self._write_publish_preflight(summary)),
-                        }
-                        return result
-                    print(
-                        "Waiting for a Douyin publish-capable session. "
-                        f"Current URL: {page.url} | blockers: {' | '.join(str(item) for item in blockers)}"
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    page.goto(
+                        self.settings.douyin.publish_url,
+                        wait_until="domcontentloaded",
+                        timeout=max(self.settings.douyin.wait_timeout_ms, 20000),
                     )
-                    page.wait_for_timeout(1500)
-                raise RuntimeError("Douyin login session was not confirmed within 10 minutes.")
-            finally:
-                browser.close()
+                    print("")
+                    print("Log in to your Douyin creator account in the opened browser window.")
+                    print("Make sure the account can actually open the article publish page.")
+                    print("This window will keep polling automatically for up to 10 minutes.")
+                    deadline = time.time() + 600
+                    while time.time() < deadline:
+                        summary = self._collect_preflight_summary(page)
+                        blockers = summary.get("blocking_flags", [])
+                        if not blockers:
+                            result = {
+                                "profile_dir": str(profile_dir),
+                                "current_url": page.url,
+                                "publish_preflight": str(self._write_publish_preflight(summary)),
+                            }
+                            return result
+                        print(
+                            "Waiting for a Douyin publish-capable session. "
+                            f"Current URL: {page.url} | blockers: {' | '.join(str(item) for item in blockers)}"
+                        )
+                        page.wait_for_timeout(1500)
+                    raise RuntimeError("Douyin login session was not confirmed within 10 minutes.")
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=600)
 
     def prepare_run(self, run_dir: Path) -> dict[str, Path]:
         publish_dir = run_dir / self.settings.review.publish_dirname
@@ -176,86 +180,89 @@ class DouyinPublishService:
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self.settings.douyin.headless,
-                channel=self.settings.douyin.channel or None,
-                executable_path=self.settings.douyin.executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto(
-                    self.settings.douyin.publish_url,
-                    wait_until="domcontentloaded",
-                    timeout=max(self.settings.douyin.wait_timeout_ms, 20000),
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=self.settings.douyin.headless,
+                    channel=self.settings.douyin.channel or None,
+                    executable_path=self.settings.douyin.executable_path or None,
                 )
-                notes: list[str] = [f"Opened publish page: {page.url}"]
-                self._open_article_editor(page)
-                notes.append(f"Entered article editor: {page.url}")
-                self._fill_article_title(page, str(payload.get("title", "")).strip())
-                self._fill_article_summary(page, str(payload.get("summary", "")).strip())
-                self._fill_article_body(page, str(payload.get("article", "")).strip())
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    page.goto(
+                        self.settings.douyin.publish_url,
+                        wait_until="domcontentloaded",
+                        timeout=max(self.settings.douyin.wait_timeout_ms, 20000),
+                    )
+                    notes: list[str] = [f"Opened publish page: {page.url}"]
+                    self._open_article_editor(page)
+                    notes.append(f"Entered article editor: {page.url}")
+                    self._fill_article_title(page, str(payload.get("title", "")).strip())
+                    self._fill_article_summary(page, str(payload.get("summary", "")).strip())
+                    self._fill_article_body(page, str(payload.get("article", "")).strip())
 
-                cover_path = self._coerce_existing_path(payload.get("cover_image_path"))
-                if cover_path is not None:
-                    self._apply_article_head_image(page, cover_path)
-                    notes.append(f"Uploaded article head image: {cover_path.name}")
-                elif self._set_no_head_image(page):
-                    notes.append("Switched to no-head-image mode because no cover image was found.")
-                else:
-                    notes.append("No cover image was found and no-head-image toggle was not changed.")
+                    cover_path = self._coerce_existing_path(payload.get("cover_image_path"))
+                    if cover_path is not None:
+                        self._apply_article_head_image(page, cover_path)
+                        notes.append(f"Uploaded article head image: {cover_path.name}")
+                    elif self._set_no_head_image(page):
+                        notes.append("Switched to no-head-image mode because no cover image was found.")
+                    else:
+                        notes.append("No cover image was found and no-head-image toggle was not changed.")
 
-                before_url = page.url
-                self._click_article_publish(page)
-                if not self._wait_for_publish_success(page, before_url):
-                    raise RuntimeError(self._build_publish_failure_message(page))
+                    before_url = page.url
+                    self._click_article_publish(page)
+                    if not self._wait_for_publish_success(page, before_url):
+                        raise RuntimeError(self._build_publish_failure_message(page))
 
-                result_payload = {
-                    "published_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "platform": "douyin",
-                    "publish_type": "article",
-                    "run_dir": str(run_dir),
-                    "status": "published",
-                    "title": str(payload.get("title", "")).strip(),
-                    "summary": str(payload.get("summary", "")).strip(),
-                    "body_length": len(str(payload.get("article", "")).strip()),
-                    "external_url": page.url,
-                    "notes": notes,
-                }
-                result_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-                self._append_history(result_payload)
-                self.logger.info("Douyin article publish finished for run: %s", run_dir)
-                return {
-                    **prepared,
-                    "douyin_publish_result": result_path,
-                    "douyin_history": self.history_path,
-                }
-            except Exception as exc:
-                debug_dir = self._capture_debug_artifacts(page, {"payload_path": str(payload_path), "payload": payload})
-                failure_payload = {
-                    "published_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "platform": "douyin",
-                    "publish_type": "article",
-                    "run_dir": str(run_dir),
-                    "status": "failed",
-                    "title": str(payload.get("title", "")).strip(),
-                    "summary": str(payload.get("summary", "")).strip(),
-                    "body_length": len(str(payload.get("article", "")).strip()),
-                    "external_url": page.url,
-                    "error": str(exc),
-                    "debug_bundle_dir": str(debug_dir.resolve(strict=False)),
-                    "debug_artifacts": self._serialize_debug_artifacts(debug_dir),
-                }
-                debug_artifacts = failure_payload.get("debug_artifacts", {}) if isinstance(failure_payload.get("debug_artifacts"), dict) else {}
-                if debug_artifacts.get("screenshot"):
-                    failure_payload["screenshot_path"] = debug_artifacts["screenshot"]
-                if debug_artifacts.get("page_html"):
-                    failure_payload["dom_path"] = debug_artifacts["page_html"]
-                result_path.write_text(json.dumps(failure_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-                raise RuntimeError(f"Douyin publish failed: {exc}. Debug files saved to: {debug_dir}") from exc
-            finally:
-                browser.close()
+                    result_payload = {
+                        "published_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "platform": "douyin",
+                        "publish_type": "article",
+                        "run_dir": str(run_dir),
+                        "status": "published",
+                        "title": str(payload.get("title", "")).strip(),
+                        "summary": str(payload.get("summary", "")).strip(),
+                        "body_length": len(str(payload.get("article", "")).strip()),
+                        "external_url": page.url,
+                        "notes": notes,
+                    }
+                    result_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    self._append_history(result_payload)
+                    self.logger.info("Douyin article publish finished for run: %s", run_dir)
+                    return {
+                        **prepared,
+                        "douyin_publish_result": result_path,
+                        "douyin_history": self.history_path,
+                    }
+                except Exception as exc:
+                    debug_dir = self._capture_debug_artifacts(page, {"payload_path": str(payload_path), "payload": payload})
+                    failure_payload = {
+                        "published_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "platform": "douyin",
+                        "publish_type": "article",
+                        "run_dir": str(run_dir),
+                        "status": "failed",
+                        "title": str(payload.get("title", "")).strip(),
+                        "summary": str(payload.get("summary", "")).strip(),
+                        "body_length": len(str(payload.get("article", "")).strip()),
+                        "external_url": page.url,
+                        "error": str(exc),
+                        "debug_bundle_dir": str(debug_dir.resolve(strict=False)),
+                        "debug_artifacts": self._serialize_debug_artifacts(debug_dir),
+                    }
+                    debug_artifacts = failure_payload.get("debug_artifacts", {}) if isinstance(failure_payload.get("debug_artifacts"), dict) else {}
+                    if debug_artifacts.get("screenshot"):
+                        failure_payload["screenshot_path"] = debug_artifacts["screenshot"]
+                    if debug_artifacts.get("page_html"):
+                        failure_payload["dom_path"] = debug_artifacts["page_html"]
+                    result_path.write_text(json.dumps(failure_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    raise RuntimeError(f"Douyin publish failed: {exc}. Debug files saved to: {debug_dir}") from exc
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=300)
 
     def _ensure_enabled(self) -> None:
         if not self.settings.douyin.enabled:

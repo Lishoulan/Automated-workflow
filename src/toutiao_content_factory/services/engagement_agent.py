@@ -17,6 +17,7 @@ from typing import Any
 
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.services.multi_platform_publisher import PlatformPublisher
+from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 
 
 # ---------------------------------------------------------------------------
@@ -177,14 +178,15 @@ class EngagementAgent:
         # 4. 在单次浏览器会话中批量执行点赞和评论
         consecutive_failures = 0
         max_consecutive_failures = 3  # 连续失败3次则停止
-        try:
+
+        def _run():
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as pw:
                 browser = self._launch_browser(pw, platform, account_id)
                 if browser is None:
                     self.logger.warning("浏览器启动失败，跳过互动")
-                    return []
+                    return [], [], 0, 0
 
                 # 4a. 执行点赞
                 like_count_today = self._count_today_actions("like")
@@ -229,11 +231,16 @@ class EngagementAgent:
                     self._random_delay(min_s=8.0, max_s=25.0)
 
                 browser.close()
+                return items_to_like, items_to_comment, remaining_likes, remaining_comments
 
+        try:
+            items_to_like, items_to_comment, remaining_likes, remaining_comments = run_sync_playwright_safe(_run, timeout=600)
         except ImportError:
             self.logger.warning("Playwright 未安装，跳过互动")
+            items_to_like, items_to_comment, remaining_likes, remaining_comments = [], [], 0, 0
         except Exception as exc:
             self.logger.error("互动执行异常: %s", exc)
+            items_to_like, items_to_comment, remaining_likes, remaining_comments = [], [], 0, 0
 
         self.logger.info(
             "每日互动完成: 点赞 %d / %d, 评论 %d / %d",
@@ -366,7 +373,8 @@ class EngagementAgent:
         改进：直接访问头条搜索页面，从HTML中提取真实文章URL。
         """
         items: list[dict] = []
-        try:
+
+        def _run():
             from playwright.sync_api import sync_playwright
             import re
 
@@ -424,10 +432,16 @@ class EngagementAgent:
                         self.logger.debug("搜索关键词 %s 失败: %s", keyword, exc)
 
                 browser.close()
+                return items
+
+        try:
+            items = run_sync_playwright_safe(_run, timeout=300)
         except ImportError:
             self.logger.warning("Playwright 未安装，无法扫描目标内容")
+            items = []
         except Exception as exc:
             self.logger.error("扫描目标内容异常: %s", exc)
+            items = []
 
         # 去重
         seen: set[str] = set()
@@ -574,7 +588,8 @@ class EngagementAgent:
     def _fetch_own_comments(self, platform: str, account_id: str) -> list[dict]:
         """获取自己文章的近期评论。"""
         comments: list[dict] = []
-        try:
+
+        def _run():
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as pw:
@@ -608,10 +623,16 @@ class EngagementAgent:
                             })
 
                 browser.close()
+                return comments
+
+        try:
+            comments = run_sync_playwright_safe(_run, timeout=300)
         except ImportError:
             self.logger.warning("Playwright 未安装，无法获取评论")
+            comments = []
         except Exception as exc:
             self.logger.error("获取自身评论异常: %s", exc)
+            comments = []
 
         return comments
 

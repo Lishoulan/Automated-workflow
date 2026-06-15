@@ -15,6 +15,7 @@ from toutiao_content_factory.services.multi_platform_publisher import (
     PlatformPublisher,
     PublishResult,
 )
+from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -103,68 +104,71 @@ class XiaohongshuPublisher(PlatformPublisher):
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self.settings.publishing.headless,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                timeout = max(self.settings.publishing.wait_timeout_ms, 15000)
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=self.settings.publishing.headless,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    timeout = max(self.settings.publishing.wait_timeout_ms, 15000)
 
-                page.goto(self.CREATOR_URL, wait_until="domcontentloaded", timeout=timeout)
-                page.wait_for_timeout(2000)
+                    page.goto(self.CREATOR_URL, wait_until="domcontentloaded", timeout=timeout)
+                    page.wait_for_timeout(2000)
 
-                if self._looks_like_login_page(page):
+                    if self._looks_like_login_page(page):
+                        return PublishResult(
+                            success=False,
+                            platform="xiaohongshu",
+                            error="小红书未登录，请先运行交互式登录完成认证。",
+                        )
+
+                    # 上传图片（小红书必须先上传图片）
+                    if images:
+                        self._upload_images(page, images[:9], timeout)
+
+                    # 填写标题
+                    self._fill_title(page, title, timeout)
+
+                    # 填写正文 + 标签
+                    formatted_tags = self._format_xhs_tags(tags or [])
+                    body = self._clip_text(content, 1000)
+                    if formatted_tags:
+                        body = f"{body}\n\n{formatted_tags}"
+                    self._fill_content(page, body, timeout)
+
+                    # 点击发布
+                    self._click_publish(page)
+
+                    # 等待成功
+                    if self._wait_for_success(page):
+                        self.logger.info("小红书笔记发布成功")
+                        return PublishResult(
+                            success=True,
+                            platform="xiaohongshu",
+                            permalink=page.url,
+                        )
+
                     return PublishResult(
                         success=False,
                         platform="xiaohongshu",
-                        error="小红书未登录，请先运行交互式登录完成认证。",
+                        error="小红书笔记发布未检测到成功标识，请手动确认。",
                     )
 
-                # 上传图片（小红书必须先上传图片）
-                if images:
-                    self._upload_images(page, images[:9], timeout)
-
-                # 填写标题
-                self._fill_title(page, title, timeout)
-
-                # 填写正文 + 标签
-                formatted_tags = self._format_xhs_tags(tags or [])
-                body = self._clip_text(content, 1000)
-                if formatted_tags:
-                    body = f"{body}\n\n{formatted_tags}"
-                self._fill_content(page, body, timeout)
-
-                # 点击发布
-                self._click_publish(page)
-
-                # 等待成功
-                if self._wait_for_success(page):
-                    self.logger.info("小红书笔记发布成功")
+                except Exception as exc:
+                    self.logger.exception("小红书笔记发布异常")
                     return PublishResult(
-                        success=True,
+                        success=False,
                         platform="xiaohongshu",
-                        permalink=page.url,
+                        error=str(exc),
                     )
+                finally:
+                    browser.close()
 
-                return PublishResult(
-                    success=False,
-                    platform="xiaohongshu",
-                    error="小红书笔记发布未检测到成功标识，请手动确认。",
-                )
-
-            except Exception as exc:
-                self.logger.exception("小红书笔记发布异常")
-                return PublishResult(
-                    success=False,
-                    platform="xiaohongshu",
-                    error=str(exc),
-                )
-            finally:
-                browser.close()
+        return run_sync_playwright_safe(_run, timeout=300)
 
     def check_login_status(self) -> bool:
         """检查小红书登录状态。"""
@@ -182,23 +186,26 @@ class XiaohongshuPublisher(PlatformPublisher):
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=True,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=15000)
-                page.wait_for_timeout(3000)
-                return not self._looks_like_login_page(page)
-            except Exception:
-                self.logger.debug("小红书登录状态检查异常", exc_info=True)
-                return False
-            finally:
-                browser.close()
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=True,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=15000)
+                    page.wait_for_timeout(3000)
+                    return not self._looks_like_login_page(page)
+                except Exception:
+                    self.logger.debug("小红书登录状态检查异常", exc_info=True)
+                    return False
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=300)
 
     def login_interactive(self) -> dict:
         """交互式登录小红书，打开浏览器等待用户手动完成登录。"""
@@ -215,49 +222,52 @@ class XiaohongshuPublisher(PlatformPublisher):
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=False,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=15000)
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=False,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=15000)
 
-                print("")
-                print("请在打开的浏览器窗口中完成小红书登录。")
-                print("登录成功后此窗口将自动检测，最长等待 10 分钟。")
+                    print("")
+                    print("请在打开的浏览器窗口中完成小红书登录。")
+                    print("登录成功后此窗口将自动检测，最长等待 10 分钟。")
 
-                deadline = time.time() + 600
-                while time.time() < deadline:
-                    page.wait_for_timeout(2000)
-                    if not self._looks_like_login_page(page):
-                        # 二次确认：访问创作者页面
-                        page.goto(self.CREATOR_URL, wait_until="domcontentloaded", timeout=10000)
+                    deadline = time.time() + 600
+                    while time.time() < deadline:
                         page.wait_for_timeout(2000)
                         if not self._looks_like_login_page(page):
-                            return {
-                                "success": True,
-                                "profile_dir": str(profile_dir),
-                                "current_url": page.url,
-                            }
-                    print(f"等待小红书登录完成... 当前 URL: {page.url}")
+                            # 二次确认：访问创作者页面
+                            page.goto(self.CREATOR_URL, wait_until="domcontentloaded", timeout=10000)
+                            page.wait_for_timeout(2000)
+                            if not self._looks_like_login_page(page):
+                                return {
+                                    "success": True,
+                                    "profile_dir": str(profile_dir),
+                                    "current_url": page.url,
+                                }
+                        print(f"等待小红书登录完成... 当前 URL: {page.url}")
 
-                return {
-                    "success": False,
-                    "error": "小红书登录超时（10 分钟），请重试。",
-                    "current_url": page.url,
-                }
+                    return {
+                        "success": False,
+                        "error": "小红书登录超时（10 分钟），请重试。",
+                        "current_url": page.url,
+                    }
 
-            except Exception as exc:
-                return {
-                    "success": False,
-                    "error": str(exc),
-                }
-            finally:
-                browser.close()
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "error": str(exc),
+                    }
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=600)
 
     # ── 内部方法 ────────────────────────────────────────────────
 

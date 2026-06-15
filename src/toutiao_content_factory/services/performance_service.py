@@ -13,6 +13,7 @@ from typing import Any
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import ArticlePerformance, PublishRecord, WorkflowResult
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
+from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 
 try:
     from playwright.sync_api import sync_playwright
@@ -139,44 +140,45 @@ class PerformanceService:
             guard_summary.get("elapsed_ms"),
         )
 
-        with sync_playwright() as playwright:  # pragma: no cover - browser/runtime dependent
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=False,
-                channel=channel or None,
-                executable_path=executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                page.set_default_timeout(timeout_ms)
-                for url in urls:
-                    if not url:
-                        continue
-                    if not self._open_target_with_retry(
-                        page=page,
-                        platform=platform,
-                        url=url,
-                        timeout_ms=timeout_ms,
-                    ):
-                        continue
+        def _run():
+            with sync_playwright() as playwright:  # pragma: no cover - browser/runtime dependent
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=False,
+                    channel=channel or None,
+                    executable_path=executable_path or None,
+                )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    page.set_default_timeout(timeout_ms)
+                    for url in urls:
+                        if not url:
+                            continue
+                        if not self._open_target_with_retry(
+                            page=page,
+                            platform=platform,
+                            url=url,
+                            timeout_ms=timeout_ms,
+                        ):
+                            continue
 
-                    rows = self._extract_metric_rows(page, row_selectors)
-                    if not rows:
-                        self.logger.warning(
-                            "%s performance page did not expose metric rows yet. If a captcha is visible, complete it in the browser window and rerun.",
-                            platform,
-                        )
-                    parsed = self._normalize_metric_rows(rows)
-                    recent = [item for item in parsed if self._is_recent_or_unknown(item.publish_date)]
-                    if recent:
-                        metrics = self._dedupe_metrics(recent)
-                        break
-                    if parsed and not metrics:
-                        metrics = self._dedupe_metrics(parsed)
-            finally:
-                browser.close()
+                        rows = self._extract_metric_rows(page, row_selectors)
+                        if not rows:
+                            self.logger.warning(
+                                "%s performance page did not expose metric rows yet. If a captcha is visible, complete it in the browser window and rerun.",
+                                platform,
+                            )
+                        parsed = self._normalize_metric_rows(rows)
+                        recent = [item for item in parsed if self._is_recent_or_unknown(item.publish_date)]
+                        if recent:
+                            return self._dedupe_metrics(recent)
+                        if parsed:
+                            return self._dedupe_metrics(parsed)
+                finally:
+                    browser.close()
+            return metrics
 
-        return metrics
+        return run_sync_playwright_safe(_run, timeout=300)
 
     def _open_target_with_retry(
         self,

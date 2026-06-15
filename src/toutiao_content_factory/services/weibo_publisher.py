@@ -13,6 +13,7 @@ from typing import Any
 
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
+from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 from toutiao_content_factory.services.multi_platform_publisher import (
     PlatformPublisher,
     PublishResult,
@@ -141,33 +142,36 @@ class WeiboPublisher(PlatformPublisher):
 
         is_short = len(content) < self.SHORT_CONTENT_THRESHOLD
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self.settings.publishing.headless,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                timeout = max(self.settings.publishing.wait_timeout_ms, 15000)
-
-                if is_short:
-                    result = self._publish_short_content(page, title, content, images, tags, timeout)
-                else:
-                    result = self._publish_long_content(page, title, content, images, tags, timeout)
-
-                return result
-
-            except Exception as exc:
-                self.logger.exception("微博文章发布异常")
-                return PublishResult(
-                    success=False,
-                    platform="weibo",
-                    error=str(exc),
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=self.settings.publishing.headless,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
                 )
-            finally:
-                browser.close()
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    timeout = max(self.settings.publishing.wait_timeout_ms, 15000)
+
+                    if is_short:
+                        result = self._publish_short_content(page, title, content, images, tags, timeout)
+                    else:
+                        result = self._publish_long_content(page, title, content, images, tags, timeout)
+
+                    return result
+
+                except Exception as exc:
+                    self.logger.exception("微博文章发布异常")
+                    return PublishResult(
+                        success=False,
+                        platform="weibo",
+                        error=str(exc),
+                    )
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=300)
 
     def check_login_status(self) -> bool:
         """检查微博登录状态，返回 True 表示已登录。"""
@@ -185,46 +189,49 @@ class WeiboPublisher(PlatformPublisher):
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=True,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto(self.PUBLISH_URL, wait_until="domcontentloaded", timeout=15000)
-                page.wait_for_timeout(3000)
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=True,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    page.goto(self.PUBLISH_URL, wait_until="domcontentloaded", timeout=15000)
+                    page.wait_for_timeout(3000)
 
-                # 检查是否有登录按钮
-                with self._suppress_timeout():
-                    login_button = page.locator(
-                        "a:has-text('登录'), "
-                        "button:has-text('登录'), "
-                        "a[node-type='loginBtn']"
-                    )
-                    if login_button.first.count() > 0:
-                        return False
+                    # 检查是否有登录按钮
+                    with self._suppress_timeout():
+                        login_button = page.locator(
+                            "a:has-text('登录'), "
+                            "button:has-text('登录'), "
+                            "a[node-type='loginBtn']"
+                        )
+                        if login_button.first.count() > 0:
+                            return False
 
-                # 检查是否有用户头像/昵称
-                with self._suppress_timeout():
-                    user_element = page.locator(
-                        "img.W_face, "
-                        "a[node-type='userNick'], "
-                        "div.WB_miniblog a[nm], "
-                        "img[class*='avatar']"
-                    )
-                    if user_element.first.count() > 0:
-                        return True
+                    # 检查是否有用户头像/昵称
+                    with self._suppress_timeout():
+                        user_element = page.locator(
+                            "img.W_face, "
+                            "a[node-type='userNick'], "
+                            "div.WB_miniblog a[nm], "
+                            "img[class*='avatar']"
+                        )
+                        if user_element.first.count() > 0:
+                            return True
 
-                return not self._looks_like_login_page(page)
+                    return not self._looks_like_login_page(page)
 
-            except Exception:
-                self.logger.debug("微博登录状态检查异常", exc_info=True)
-                return False
-            finally:
-                browser.close()
+                except Exception:
+                    self.logger.debug("微博登录状态检查异常", exc_info=True)
+                    return False
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=300)
 
     def login_interactive(self) -> dict:
         """交互式登录微博，打开浏览器等待用户手动完成登录。
@@ -245,52 +252,55 @@ class WeiboPublisher(PlatformPublisher):
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=False,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto(
-                    "https://weibo.com/login.php",
-                    wait_until="domcontentloaded",
-                    timeout=15000,
+        def _run():
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=False,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
                 )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    page.goto(
+                        "https://weibo.com/login.php",
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
 
-                print("")
-                print("请在打开的浏览器窗口中完成微博登录。")
-                print("登录成功后此窗口将自动检测，最长等待 10 分钟。")
+                    print("")
+                    print("请在打开的浏览器窗口中完成微博登录。")
+                    print("登录成功后此窗口将自动检测，最长等待 10 分钟。")
 
-                deadline = time.time() + 600
-                while time.time() < deadline:
-                    page.wait_for_timeout(2000)
-                    if not self._looks_like_login_page(page):
-                        page.goto(self.PUBLISH_URL, wait_until="domcontentloaded", timeout=10000)
+                    deadline = time.time() + 600
+                    while time.time() < deadline:
                         page.wait_for_timeout(2000)
                         if not self._looks_like_login_page(page):
-                            return {
-                                "success": True,
-                                "profile_dir": str(profile_dir),
-                                "current_url": page.url,
-                            }
-                    print(f"等待微博登录完成... 当前 URL: {page.url}")
+                            page.goto(self.PUBLISH_URL, wait_until="domcontentloaded", timeout=10000)
+                            page.wait_for_timeout(2000)
+                            if not self._looks_like_login_page(page):
+                                return {
+                                    "success": True,
+                                    "profile_dir": str(profile_dir),
+                                    "current_url": page.url,
+                                }
+                        print(f"等待微博登录完成... 当前 URL: {page.url}")
 
-                return {
-                    "success": False,
-                    "error": "微博登录超时（10 分钟），请重试。",
-                    "current_url": page.url,
-                }
+                    return {
+                        "success": False,
+                        "error": "微博登录超时（10 分钟），请重试。",
+                        "current_url": page.url,
+                    }
 
-            except Exception as exc:
-                return {
-                    "success": False,
-                    "error": str(exc),
-                }
-            finally:
-                browser.close()
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "error": str(exc),
+                    }
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=600)
 
     # ── 短内容发布 ──────────────────────────────────────────────
 

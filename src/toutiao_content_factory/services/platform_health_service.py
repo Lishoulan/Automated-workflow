@@ -8,6 +8,7 @@ from typing import Any
 
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile, check_cookie_health
+from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 from toutiao_content_factory.utils.browser_utils import apply_stealth, BrowserTimeout  # noqa: E501
 
 try:
@@ -323,58 +324,62 @@ class PlatformHealthService:
             }
 
         profile_dir.mkdir(parents=True, exist_ok=True)
-        page = None
-        browser = None
-        try:
-            prepare_browser_profile(
-                profile_dir=profile_dir,
-                project_root=self.settings.project_root,
-                logger=self.logger,
-                label="platform-health:wechat",
-                extra_paths=[self.settings.account_runtime_dir],
-            )
-            # 云端 headless 环境下必须使用 headless=True，否则无显示器会失败
-            headless = bool(self.settings.wechat.headless) if hasattr(self.settings.wechat, 'headless') else bool(self.settings.publishing.headless)
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=headless,
-                    channel=self.settings.publishing.channel or None,
-                    executable_path=self.settings.publishing.executable_path or None,
-                )
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                self.wechat_publish_service._open_wechat_backend(page)
-                page.wait_for_timeout(1500)
 
-                diagnostics["current_url"] = str(getattr(page, "url", "") or "")
-                diagnostics["login_page_detected"] = bool(self.wechat_publish_service._is_login_page(page))
-                diagnostics["session_ready"] = bool(self.wechat_publish_service._browser_session_ready(page))
-                diagnostics["visible_markers"] = self._extract_wechat_visible_markers(page)
+        prepare_browser_profile(
+            profile_dir=profile_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            label="platform-health:wechat",
+            extra_paths=[self.settings.account_runtime_dir],
+        )
+        # 云端 headless 环境下必须使用 headless=True，否则无显示器会失败
+        headless = bool(self.settings.wechat.headless) if hasattr(self.settings.wechat, 'headless') else bool(self.settings.publishing.headless)
 
-                if diagnostics["login_page_detected"]:
-                    blockers.append("微信公众号后台需要重新登录，检测到扫码/登录页。")
-                    self._capture_and_notify_qrcode(page, "wechat")
-                elif not diagnostics["session_ready"]:
-                    blockers.append("微信公众号后台未检测到可用登录态，未发现头像/草稿箱/素材管理等后台标识。")
-                    self._capture_and_notify_qrcode(page, "wechat")
+        def _run():
+            browser = None
+            try:
+                with sync_playwright() as playwright:
+                    browser = playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(profile_dir),
+                        headless=headless,
+                        channel=self.settings.publishing.channel or None,
+                        executable_path=self.settings.publishing.executable_path or None,
+                    )
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    self.wechat_publish_service._open_wechat_backend(page)
+                    page.wait_for_timeout(1500)
 
-                snapshot = {
-                    "generated_at": self._now(),
-                    "current_url": diagnostics["current_url"],
-                    "state": "ready" if not blockers else "login_required",
-                    "blocking_flags": blockers,
-                    "warnings": warnings,
-                    "diagnostics": diagnostics,
-                }
-                preflight_path.parent.mkdir(parents=True, exist_ok=True)
-                preflight_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-                diagnostics["browser_preflight_path"] = str(preflight_path)
-        except Exception as exc:
-            blockers.append(f"WeChat browser login preflight failed: {exc}")
-        finally:
-            with suppress(Exception):
-                if browser is not None:
-                    browser.close()
+                    diagnostics["current_url"] = str(getattr(page, "url", "") or "")
+                    diagnostics["login_page_detected"] = bool(self.wechat_publish_service._is_login_page(page))
+                    diagnostics["session_ready"] = bool(self.wechat_publish_service._browser_session_ready(page))
+                    diagnostics["visible_markers"] = self._extract_wechat_visible_markers(page)
+
+                    if diagnostics["login_page_detected"]:
+                        blockers.append("微信公众号后台需要重新登录，检测到扫码/登录页。")
+                        self._capture_and_notify_qrcode(page, "wechat")
+                    elif not diagnostics["session_ready"]:
+                        blockers.append("微信公众号后台未检测到可用登录态，未发现头像/草稿箱/素材管理等后台标识。")
+                        self._capture_and_notify_qrcode(page, "wechat")
+
+                    snapshot = {
+                        "generated_at": self._now(),
+                        "current_url": diagnostics["current_url"],
+                        "state": "ready" if not blockers else "login_required",
+                        "blocking_flags": blockers,
+                        "warnings": warnings,
+                        "diagnostics": diagnostics,
+                    }
+                    preflight_path.parent.mkdir(parents=True, exist_ok=True)
+                    preflight_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+                    diagnostics["browser_preflight_path"] = str(preflight_path)
+            except Exception as exc:
+                blockers.append(f"WeChat browser login preflight failed: {exc}")
+            finally:
+                with suppress(Exception):
+                    if browser is not None:
+                        browser.close()
+
+        run_sync_playwright_safe(_run, timeout=300)
 
         if preflight_path.exists():
             try:
@@ -415,53 +420,58 @@ class PlatformHealthService:
 
         profile_dir = self.toutiao_publish_service._resolve_profile_dir()
         profile_dir.mkdir(parents=True, exist_ok=True)
-        browser = None
-        try:
-            prepare_browser_profile(
-                profile_dir=profile_dir,
-                project_root=self.settings.project_root,
-                logger=self.logger,
-                label="platform-health:toutiao",
-                extra_paths=[self.settings.account_runtime_dir],
-            )
-            # 云端 headless 环境下必须使用 headless=True，否则无显示器会失败
-            headless = bool(self.settings.publishing.headless)
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=headless,
-                    channel=self.settings.publishing.channel or None,
-                    executable_path=self.settings.publishing.executable_path or None,
-                )
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                probe_url = (
-                    self.settings.publishing.publish_url
-                    or self.settings.publishing.base_url
-                    or "https://mp.toutiao.com/profile_v4/graphic/publish"
-                )
-                self.toutiao_publish_service._goto_publish_page(page, probe_url)
-                page.wait_for_timeout(2500)
 
-                diagnostics["current_url"] = str(getattr(page, "url", "") or "")
-                diagnostics["visible_markers"] = self._extract_toutiao_visible_markers(page)
-                diagnostics["login_page_detected"] = self._toutiao_login_page_detected(page)
-                diagnostics["session_ready"] = self._toutiao_session_ready(page)
+        prepare_browser_profile(
+            profile_dir=profile_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            label="platform-health:toutiao",
+            extra_paths=[self.settings.account_runtime_dir],
+        )
+        # 云端 headless 环境下必须使用 headless=True，否则无显示器会失败
+        headless = bool(self.settings.publishing.headless)
 
-                # If we reached the publish page without a login redirect, consider the session valid
-                current_url = diagnostics["current_url"].lower()
-                on_publish_page = "graphic/publish" in current_url or "profile_v4" in current_url
-                if diagnostics["login_page_detected"]:
-                    blockers.append("Toutiao creator center requires re-login; login page or timeout dialog detected.")
-                    self._capture_and_notify_qrcode(page, "toutiao")
-                elif not diagnostics["session_ready"] and not on_publish_page:
-                    blockers.append("Toutiao creator center did not expose expected logged-in markers such as avatar or creator workspace navigation.")
-                    self._capture_and_notify_qrcode(page, "toutiao")
-        except Exception as exc:
-            blockers.append(f"Toutiao browser login preflight failed: {exc}")
-        finally:
-            with suppress(Exception):
-                if browser is not None:
-                    browser.close()
+        def _run():
+            browser = None
+            try:
+                with sync_playwright() as playwright:
+                    browser = playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(profile_dir),
+                        headless=headless,
+                        channel=self.settings.publishing.channel or None,
+                        executable_path=self.settings.publishing.executable_path or None,
+                    )
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    probe_url = (
+                        self.settings.publishing.publish_url
+                        or self.settings.publishing.base_url
+                        or "https://mp.toutiao.com/profile_v4/graphic/publish"
+                    )
+                    self.toutiao_publish_service._goto_publish_page(page, probe_url)
+                    page.wait_for_timeout(2500)
+
+                    diagnostics["current_url"] = str(getattr(page, "url", "") or "")
+                    diagnostics["visible_markers"] = self._extract_toutiao_visible_markers(page)
+                    diagnostics["login_page_detected"] = self._toutiao_login_page_detected(page)
+                    diagnostics["session_ready"] = self._toutiao_session_ready(page)
+
+                    # If we reached the publish page without a login redirect, consider the session valid
+                    current_url = diagnostics["current_url"].lower()
+                    on_publish_page = "graphic/publish" in current_url or "profile_v4" in current_url
+                    if diagnostics["login_page_detected"]:
+                        blockers.append("Toutiao creator center requires re-login; login page or timeout dialog detected.")
+                        self._capture_and_notify_qrcode(page, "toutiao")
+                    elif not diagnostics["session_ready"] and not on_publish_page:
+                        blockers.append("Toutiao creator center did not expose expected logged-in markers such as avatar or creator workspace navigation.")
+                        self._capture_and_notify_qrcode(page, "toutiao")
+            except Exception as exc:
+                blockers.append(f"Toutiao browser login preflight failed: {exc}")
+            finally:
+                with suppress(Exception):
+                    if browser is not None:
+                        browser.close()
+
+        run_sync_playwright_safe(_run, timeout=300)
 
         return {
             "blocking_flags": blockers,

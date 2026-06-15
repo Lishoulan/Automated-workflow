@@ -46,6 +46,7 @@ from toutiao_content_factory.services.html_anything_service import HtmlAnythingS
 from toutiao_content_factory.services.wechat_layout_engine import MarkdownToWechatConverter
 from toutiao_content_factory.services.anti_ai_flavor import AntiAIFlavorPipeline
 from toutiao_content_factory.services.wechat_135editor_service import Editor135Service
+from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -1080,53 +1081,56 @@ class WechatPublishService:
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self.settings.publishing.headless,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
-            page = None
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                self._open_wechat_backend(page)
-                self._raise_if_session_expired(page)
-                token = self._extract_token(page)
-
-                app_msg_id = self._browser_create_draft(
-                    page, token, title, summary, article_html, cover_path,
+        def _run() -> dict[str, Any]:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=self.settings.publishing.headless,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
                 )
+                page = None
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    self._open_wechat_backend(page)
+                    self._raise_if_session_expired(page)
+                    token = self._extract_token(page)
 
-                if not app_msg_id:
-                    self.logger.info("Falling back to editor-based draft creation.")
-                    app_msg_id = self._browser_create_draft_via_editor(
+                    app_msg_id = self._browser_create_draft(
                         page, token, title, summary, article_html, cover_path,
                     )
 
-                if app_msg_id:
-                    self.logger.info("Draft saved with appMsgId=%s, skipping publish (draft-only mode).", app_msg_id)
-                else:
-                    self.logger.info("Draft saved (no appMsgId), skipping publish (draft-only mode).")
+                    if not app_msg_id:
+                        self.logger.info("Falling back to editor-based draft creation.")
+                        app_msg_id = self._browser_create_draft_via_editor(
+                            page, token, title, summary, article_html, cover_path,
+                        )
 
-                result = {
-                    "status": "draft_saved",
-                    "method": "browser_only",
-                    "title": title,
-                    "publish_url": page.url,
-                    "app_msg_id": app_msg_id or "",
-                }
-                return result
-            except SessionExpiredException:
-                self.logger.error("微信公众号 SessionExpiredException: 登录态已失效，需要重新登录")
-                raise
-            except Exception as exc:
-                debug_dir = self._capture_browser_debug_artifacts(page, {"title": title, "method": "browser_only"})
-                raise RuntimeError(
-                    f"WeChat browser-only publish failed: {self._clean_visible_text(exc)}. Debug files saved to: {debug_dir}"
-                ) from exc
-            finally:
-                browser.close()
+                    if app_msg_id:
+                        self.logger.info("Draft saved with appMsgId=%s, skipping publish (draft-only mode).", app_msg_id)
+                    else:
+                        self.logger.info("Draft saved (no appMsgId), skipping publish (draft-only mode).")
+
+                    result = {
+                        "status": "draft_saved",
+                        "method": "browser_only",
+                        "title": title,
+                        "publish_url": page.url,
+                        "app_msg_id": app_msg_id or "",
+                    }
+                    return result
+                except SessionExpiredException:
+                    self.logger.error("微信公众号 SessionExpiredException: 登录态已失效，需要重新登录")
+                    raise
+                except Exception as exc:
+                    debug_dir = self._capture_browser_debug_artifacts(page, {"title": title, "method": "browser_only"})
+                    raise RuntimeError(
+                        f"WeChat browser-only publish failed: {self._clean_visible_text(exc)}. Debug files saved to: {debug_dir}"
+                    ) from exc
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=300)
 
     def _extract_token(self, page) -> str:
         token_match = re.search(r"token=(\d+)", page.url)
@@ -1777,41 +1781,44 @@ class WechatPublishService:
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self.settings.publishing.headless,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
-            page = None
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                self._open_wechat_backend(page)
-                self._open_wechat_draft_box(page)
-                self._open_wechat_draft_by_title(page, title)
-                self._click_publish_button_on_wechat_page(page)
-                original_declared = self._confirm_wechat_publish_dialog(page)
-                self._wait_for_wechat_publish_success(page)
-                result = {
-                    "status": "submitted",
-                    "method": "browser",
-                    "draft_media_id": draft_media_id,
-                    "title": title,
-                    "publish_url": page.url,
-                    "original_declared": original_declared,
-                }
-                return result
-            except SessionExpiredException:
-                self.logger.error("微信公众号 SessionExpiredException: 登录态已失效，需要重新登录")
-                raise
-            except Exception as exc:
-                debug_dir = self._capture_browser_debug_artifacts(page, {"draft_media_id": draft_media_id, "title": title})
-                raise RuntimeError(
-                    f"WeChat browser publish failed: {self._clean_visible_text(exc)}. Debug files saved to: {debug_dir}"
-                ) from exc
-            finally:
-                browser.close()
+        def _run() -> dict[str, Any]:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=self.settings.publishing.headless,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                )
+                page = None
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    self._open_wechat_backend(page)
+                    self._open_wechat_draft_box(page)
+                    self._open_wechat_draft_by_title(page, title)
+                    self._click_publish_button_on_wechat_page(page)
+                    original_declared = self._confirm_wechat_publish_dialog(page)
+                    self._wait_for_wechat_publish_success(page)
+                    result = {
+                        "status": "submitted",
+                        "method": "browser",
+                        "draft_media_id": draft_media_id,
+                        "title": title,
+                        "publish_url": page.url,
+                        "original_declared": original_declared,
+                    }
+                    return result
+                except SessionExpiredException:
+                    self.logger.error("微信公众号 SessionExpiredException: 登录态已失效，需要重新登录")
+                    raise
+                except Exception as exc:
+                    debug_dir = self._capture_browser_debug_artifacts(page, {"draft_media_id": draft_media_id, "title": title})
+                    raise RuntimeError(
+                        f"WeChat browser publish failed: {self._clean_visible_text(exc)}. Debug files saved to: {debug_dir}"
+                    ) from exc
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=300)
 
     def _open_wechat_backend(self, page) -> None:
         page.goto(

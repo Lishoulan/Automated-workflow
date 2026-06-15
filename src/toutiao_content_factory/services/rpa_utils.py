@@ -1,10 +1,12 @@
 """RPA 反风控工具集 — Stealth 模式、拟人化交互、智能定位降级、Cookie 自愈、调试告警"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -756,3 +758,37 @@ def safe_fill(
     raise SafeInteractionError(
         f"safe_fill failed for '{desc}' on {platform} after {max_retries} attempts: {last_exc}"
     )
+
+
+# ============================================================================
+# 7) asyncio 兼容的 sync_playwright 调用
+# ============================================================================
+
+def run_sync_playwright_safe(fn: Callable[[], Any], timeout: int = 300) -> Any:
+    """在可能存在 asyncio 事件循环的环境中安全调用 sync_playwright。
+
+    当调用方已经在 asyncio 事件循环内（如 FastAPI / cloud_daily_run），
+    直接使用 sync_playwright 会报错：
+      "It looks like you are using Playwright Sync API inside the asyncio loop."
+
+    此函数检测当前是否在 asyncio 循环中，如果是则在新线程中运行，
+    否则直接调用。
+
+    Args:
+        fn: 包含 sync_playwright 调用的无参可调用对象
+        timeout: 线程执行超时秒数
+
+    Returns:
+        fn 的返回值
+    """
+    try:
+        asyncio.get_running_loop()
+        in_async_loop = True
+    except RuntimeError:
+        in_async_loop = False
+
+    if in_async_loop:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(fn).result(timeout=timeout)
+    else:
+        return fn()

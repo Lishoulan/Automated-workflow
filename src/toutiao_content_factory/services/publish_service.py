@@ -21,6 +21,7 @@ from toutiao_content_factory.services.article_sanitizer import clean_article_tex
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
+from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -578,56 +579,41 @@ class PublishService:
             extra_paths=[self.settings.account_runtime_dir],
         )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self.settings.publishing.headless,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-                viewport={"width": 1920, "height": 1080},
-                screen={"width": 1920, "height": 1080},
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                publish_events: list[dict[str, Any]] = []
-                diagnostic_events: list[dict[str, Any]] = []
-                self._install_publish_event_capture(page, publish_events)
-                self._install_publish_diagnostic_capture(page, diagnostic_events)
-
-                self._goto_publish_page(page, publish_url)
-                page.wait_for_timeout(1500)
-
-                self._check_toutiao_login(page, notes)
-
-                if self.settings.publishing.base_url not in page.url:
-                    notes.append(f"Current page redirected to: {page.url}")
-
-                publish_editor_url = self.settings.publishing.publish_url or self.DEFAULT_PUBLISH_URL
-                if "/profile_v4/graphic/publish" not in page.url:
-                    if not self._maybe_click(page, selectors.get("new_post_button", [])):
-                        notes.append("New post button not clicked. Falling back to direct publish URL.")
-                        self._goto_publish_page(page, publish_editor_url)
-                        page.wait_for_timeout(1500)
-
-                self._dismiss_ai_assistant_drawer(page, notes)
-                self._wait_for_publish_editor_ready(page)
-                self._permanently_hide_ai_assistant(page, notes)
-                title_selector = self._resolve_editor_selector(
-                    page,
-                    selectors.get("title_input", []),
-                    self.DEFAULT_TITLE_SELECTORS,
+        def _run() -> dict[str, Any]:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=self.settings.publishing.headless,
+                    channel=self.settings.publishing.channel or None,
+                    executable_path=self.settings.publishing.executable_path or None,
+                    viewport={"width": 1920, "height": 1080},
+                    screen={"width": 1920, "height": 1080},
                 )
-                editor_selector = self._resolve_editor_selector(
-                    page,
-                    selectors.get("article_editor", []),
-                    self.DEFAULT_EDITOR_SELECTORS,
-                )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    publish_events: list[dict[str, Any]] = []
+                    diagnostic_events: list[dict[str, Any]] = []
+                    self._install_publish_event_capture(page, publish_events)
+                    self._install_publish_diagnostic_capture(page, diagnostic_events)
 
-                if (not title_selector or not editor_selector) and page.url != publish_editor_url:
-                    notes.append("Editor selectors not found on current page. Retrying publish URL directly.")
-                    self._goto_publish_page(page, publish_editor_url)
+                    self._goto_publish_page(page, publish_url)
                     page.wait_for_timeout(1500)
+
+                    self._check_toutiao_login(page, notes)
+
+                    if self.settings.publishing.base_url not in page.url:
+                        notes.append(f"Current page redirected to: {page.url}")
+
+                    publish_editor_url = self.settings.publishing.publish_url or self.DEFAULT_PUBLISH_URL
+                    if "/profile_v4/graphic/publish" not in page.url:
+                        if not self._maybe_click(page, selectors.get("new_post_button", [])):
+                            notes.append("New post button not clicked. Falling back to direct publish URL.")
+                            self._goto_publish_page(page, publish_editor_url)
+                            page.wait_for_timeout(1500)
+
+                    self._dismiss_ai_assistant_drawer(page, notes)
                     self._wait_for_publish_editor_ready(page)
+                    self._permanently_hide_ai_assistant(page, notes)
                     title_selector = self._resolve_editor_selector(
                         page,
                         selectors.get("title_input", []),
@@ -639,189 +625,207 @@ class PublishService:
                         self.DEFAULT_EDITOR_SELECTORS,
                     )
 
-                if not title_selector or not editor_selector:
-                    diagnostics = self._build_publish_diagnostics(diagnostic_events)
-                    debug_dir = self._capture_debug_artifacts(
-                        page,
-                        extra_payload={
-                            "publish_events": publish_events,
-                            "publish_diagnostics": diagnostics,
-                        },
+                    if (not title_selector or not editor_selector) and page.url != publish_editor_url:
+                        notes.append("Editor selectors not found on current page. Retrying publish URL directly.")
+                        self._goto_publish_page(page, publish_editor_url)
+                        page.wait_for_timeout(1500)
+                        self._wait_for_publish_editor_ready(page)
+                        title_selector = self._resolve_editor_selector(
+                            page,
+                            selectors.get("title_input", []),
+                            self.DEFAULT_TITLE_SELECTORS,
+                        )
+                        editor_selector = self._resolve_editor_selector(
+                            page,
+                            selectors.get("article_editor", []),
+                            self.DEFAULT_EDITOR_SELECTORS,
+                        )
+
+                    if not title_selector or not editor_selector:
+                        diagnostics = self._build_publish_diagnostics(diagnostic_events)
+                        debug_dir = self._capture_debug_artifacts(
+                            page,
+                            extra_payload={
+                                "publish_events": publish_events,
+                                "publish_diagnostics": diagnostics,
+                            },
+                        )
+                        raise RuntimeError(
+                            "Could not locate title/editor selectors. "
+                            f"Current URL: {page.url}. Debug files saved to: {debug_dir}"
+                        )
+
+                    draft_watch_start = len(publish_events)
+                    title_locator = page.locator(title_selector).first
+                    editor_locator = page.locator(editor_selector).first
+                    self._retry_playwright_action(
+                        lambda: self._set_editor_content(page, editor_selector, article, notes),
+                        description="set_editor_content",
                     )
-                    raise RuntimeError(
-                        "Could not locate title/editor selectors. "
-                        f"Current URL: {page.url}. Debug files saved to: {debug_dir}"
+                    self._retry_playwright_action(
+                        lambda: self._set_title_content(page, title_locator, title, notes),
+                        description="set_title_content",
                     )
-
-                draft_watch_start = len(publish_events)
-                title_locator = page.locator(title_selector).first
-                editor_locator = page.locator(editor_selector).first
-                self._retry_playwright_action(
-                    lambda: self._set_editor_content(page, editor_selector, article, notes),
-                    description="set_editor_content",
-                )
-                self._retry_playwright_action(
-                    lambda: self._set_title_content(page, title_locator, title, notes),
-                    description="set_title_content",
-                )
-                self._nudge_editor_to_trigger_autosave(page, editor_selector, notes)
-                self._apply_default_work_declarations(page, notes)
-                self._apply_safe_publish_options(page, notes, declare_first_release=declare_first_release)
-                self._finalize_editor_state(page, title_locator, editor_selector, title, notes)
-                cover_path = self._resolve_toutiao_cover_asset(run_dir, notes)
-                cover_mode = self._resolve_cover_mode(cover_path) if cover_path is not None else "none"
-                if cover_mode == "single" and cover_path is not None:
-                    self._apply_cover_image(page, cover_path, notes)
-                else:
-                    self._ensure_no_cover_mode(page, notes)
-                self._stabilize_publish_form(page, notes)
-
-                diagnostics = self._build_publish_diagnostics(diagnostic_events)
-                preflight_blockers = self._format_publish_diagnostic_blockers(diagnostics)
-                if preflight_blockers:
-                    notes.append(f"Publish preflight: {preflight_blockers.strip()}")
-
-                if not draft_only:
-                    self._install_save_mode_override(page, notes)
                     self._nudge_editor_to_trigger_autosave(page, editor_selector, notes)
+                    self._apply_default_work_declarations(page, notes)
+                    self._apply_safe_publish_options(page, notes, declare_first_release=declare_first_release)
+                    self._finalize_editor_state(page, title_locator, editor_selector, title, notes)
+                    cover_path = self._resolve_toutiao_cover_asset(run_dir, notes)
+                    cover_mode = self._resolve_cover_mode(cover_path) if cover_path is not None else "none"
+                    if cover_mode == "single" and cover_path is not None:
+                        self._apply_cover_image(page, cover_path, notes)
+                    else:
+                        self._ensure_no_cover_mode(page, notes)
+                    self._stabilize_publish_form(page, notes)
 
-                if not self._wait_for_draft_save(
-                    page,
-                    publish_events,
-                    notes,
-                    start_index=draft_watch_start,
-                    expect_save_mode_1=not draft_only,
-                ):
-                    notes.append("Draft autosave was not confirmed. Continuing with a direct publish attempt.")
+                    diagnostics = self._build_publish_diagnostics(diagnostic_events)
+                    preflight_blockers = self._format_publish_diagnostic_blockers(diagnostics)
+                    if preflight_blockers:
+                        notes.append(f"Publish preflight: {preflight_blockers.strip()}")
 
-                if draft_only:
-                    notes.append("Draft-only mode enabled. Stopped after draft autosave confirmation.")
-                    return {
-                        "status": "draft_saved",
-                        "published_at": datetime.now().isoformat(timespec="seconds"),
-                        "external_url": page.url,
-                        "notes": self._finalize_notes(notes),
-                        "cover_mode": cover_mode,
-                        "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
-                        "backend_response_summary": {},
-                        "publish_request_summary": {
-                            "url": page.url,
-                            "save_mode": "draft_only",
-                        },
-                    }
+                    if not draft_only:
+                        self._install_save_mode_override(page, notes)
+                        self._nudge_editor_to_trigger_autosave(page, editor_selector, notes)
 
-                submitted_event = self._latest_publish_event(
-                    publish_events,
-                    start_index=draft_watch_start,
-                    save_mode=1,
-                    success_only=False,
-                )
-                if submitted_event:
-                    response_json = submitted_event.get("response_json") or {}
-                    pgc_id = str((response_json.get("data") or {}).get("pgc_id", "0") or "0")
-                    if pgc_id != "0":
-                        self._disable_save_mode_override(page, notes)
-                        notes.append("Draft save auto-submitted article for review on Toutiao. Skipping manual publish click.")
-                        publish_verified = self._verify_toutiao_publish_success(page, title, notes)
+                    if not self._wait_for_draft_save(
+                        page,
+                        publish_events,
+                        notes,
+                        start_index=draft_watch_start,
+                        expect_save_mode_1=not draft_only,
+                    ):
+                        notes.append("Draft autosave was not confirmed. Continuing with a direct publish attempt.")
+
+                    if draft_only:
+                        notes.append("Draft-only mode enabled. Stopped after draft autosave confirmation.")
                         return {
-                            "status": "submitted_for_review",
+                            "status": "draft_saved",
                             "published_at": datetime.now().isoformat(timespec="seconds"),
                             "external_url": page.url,
                             "notes": self._finalize_notes(notes),
                             "cover_mode": cover_mode,
                             "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
-                            "backend_response_summary": self._compact_backend_response(response_json),
+                            "backend_response_summary": {},
                             "publish_request_summary": {
-                                "url": str(submitted_event.get("url", page.url)),
-                                "save_mode": "draft_auto_submitted",
-                                "pgc_id": pgc_id,
+                                "url": page.url,
+                                "save_mode": "draft_only",
                             },
-                            "publish_verified": publish_verified,
                         }
 
-                self._dismiss_ai_assistant_drawer(page, notes)
-                page.wait_for_timeout(700)
-                try:
-                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    page.wait_for_timeout(500)
-                except Exception:
-                    pass
-                notes.append("Waited briefly before clicking the primary publish action.")
-                debug_dir = self._capture_debug_artifacts(page, extra_payload={"notes": notes})
-                notes.append(f"Debug snapshot saved to {debug_dir}")
-                preview_start_index = len(publish_events)
-                if not self._click_immediate_publish_button(
-                    page,
-                    selectors.get("publish_button", []),
-                    notes,
-                ):
-                    debug_dir2 = self._capture_debug_artifacts(page, extra_payload={"notes": notes, "button_click_notes": notes[-20:]})
-                    raise RuntimeError(f"Publish button not found. Update selectors in config.yaml. Debug: {debug_dir2}")
+                    submitted_event = self._latest_publish_event(
+                        publish_events,
+                        start_index=draft_watch_start,
+                        save_mode=1,
+                        success_only=False,
+                    )
+                    if submitted_event:
+                        response_json = submitted_event.get("response_json") or {}
+                        pgc_id = str((response_json.get("data") or {}).get("pgc_id", "0") or "0")
+                        if pgc_id != "0":
+                            self._disable_save_mode_override(page, notes)
+                            notes.append("Draft save auto-submitted article for review on Toutiao. Skipping manual publish click.")
+                            publish_verified = self._verify_toutiao_publish_success(page, title, notes)
+                            return {
+                                "status": "submitted_for_review",
+                                "published_at": datetime.now().isoformat(timespec="seconds"),
+                                "external_url": page.url,
+                                "notes": self._finalize_notes(notes),
+                                "cover_mode": cover_mode,
+                                "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
+                                "backend_response_summary": self._compact_backend_response(response_json),
+                                "publish_request_summary": {
+                                    "url": str(submitted_event.get("url", page.url)),
+                                    "save_mode": "draft_auto_submitted",
+                                    "pgc_id": pgc_id,
+                                },
+                                "publish_verified": publish_verified,
+                            }
 
-                page.wait_for_timeout(600)
-                publish_start_index = self._complete_publish_confirmation_flow(
-                    page,
-                    publish_events,
-                    notes,
-                    fallback_start_index=preview_start_index,
-                )
-
-                publish_event = self._wait_for_publish_submit(page, publish_events, publish_start_index)
-                response_payload = publish_event.get("response_json")
-                if not self._publish_response_is_success(response_payload):
-                    diagnostics = self._build_publish_diagnostics(diagnostic_events)
-                    debug_dir = self._capture_debug_artifacts(
+                    self._dismiss_ai_assistant_drawer(page, notes)
+                    page.wait_for_timeout(700)
+                    try:
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        page.wait_for_timeout(500)
+                    except Exception:
+                        pass
+                    notes.append("Waited briefly before clicking the primary publish action.")
+                    debug_dir = self._capture_debug_artifacts(page, extra_payload={"notes": notes})
+                    notes.append(f"Debug snapshot saved to {debug_dir}")
+                    preview_start_index = len(publish_events)
+                    if not self._click_immediate_publish_button(
                         page,
-                        extra_payload={
-                            "publish_events": publish_events,
-                            "failed_publish_event": publish_event,
-                            "publish_diagnostics": diagnostics,
+                        selectors.get("publish_button", []),
+                        notes,
+                    ):
+                        debug_dir2 = self._capture_debug_artifacts(page, extra_payload={"notes": notes, "button_click_notes": notes[-20:]})
+                        raise RuntimeError(f"Publish button not found. Update selectors in config.yaml. Debug: {debug_dir2}")
+
+                    page.wait_for_timeout(600)
+                    publish_start_index = self._complete_publish_confirmation_flow(
+                        page,
+                        publish_events,
+                        notes,
+                        fallback_start_index=preview_start_index,
+                    )
+
+                    publish_event = self._wait_for_publish_submit(page, publish_events, publish_start_index)
+                    response_payload = publish_event.get("response_json")
+                    if not self._publish_response_is_success(response_payload):
+                        diagnostics = self._build_publish_diagnostics(diagnostic_events)
+                        debug_dir = self._capture_debug_artifacts(
+                            page,
+                            extra_payload={
+                                "publish_events": publish_events,
+                                "failed_publish_event": publish_event,
+                                "publish_diagnostics": diagnostics,
+                            },
+                        )
+                        code, message = self._extract_publish_error(response_payload)
+                        blocker_text = self._format_publish_diagnostic_blockers(diagnostics)
+                        raise RuntimeError(
+                            f"Toutiao publish rejected the submission. code={code}, message={message}. "
+                            f"{blocker_text}"
+                            f"Debug files saved to: {debug_dir}"
+                        )
+
+                    success_selector = self._wait_for_any(page, selectors.get("success_indicator", []))
+                    if success_selector:
+                        notes.append(f"Detected success indicator: {success_selector}")
+                    else:
+                        notes.append("Backend accepted the publish request, but no explicit success toast was detected.")
+
+                    publish_verified = self._verify_toutiao_publish_success(page, title, notes)
+
+                    return {
+                        "status": "submitted_for_review",
+                        "published_at": datetime.now().isoformat(timespec="seconds"),
+                        "external_url": page.url,
+                        "notes": self._finalize_notes(notes),
+                        "cover_mode": cover_mode,
+                        "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
+                        "backend_response_summary": self._compact_backend_response(response_payload),
+                        "publish_request_summary": {
+                            "url": str(publish_event.get("url", "")),
+                            "save_mode": publish_event.get("save_mode"),
                         },
+                        "publish_verified": publish_verified,
+                    }
+                except PlatformUIUpdateException as pue:
+                    self.logger.error(
+                        "PlatformUIUpdateException: %s - %s",
+                        pue.element_desc, pue.message
                     )
-                    code, message = self._extract_publish_error(response_payload)
-                    blocker_text = self._format_publish_diagnostic_blockers(diagnostics)
-                    raise RuntimeError(
-                        f"Toutiao publish rejected the submission. code={code}, message={message}. "
-                        f"{blocker_text}"
-                        f"Debug files saved to: {debug_dir}"
+                    debug_url = pue.debug_screenshot or pue.debug_dom_path or ""
+                    self._notify_ui_alert(
+                        f"[URGENT] UI Change - {pue.platform}",
+                        f"Element: {pue.element_desc}\n"
+                        f"Attempts: {len(pue.attempted_selectors)} strategies failed"
                     )
+                    raise
+                finally:
+                    browser.close()
 
-                success_selector = self._wait_for_any(page, selectors.get("success_indicator", []))
-                if success_selector:
-                    notes.append(f"Detected success indicator: {success_selector}")
-                else:
-                    notes.append("Backend accepted the publish request, but no explicit success toast was detected.")
-
-                publish_verified = self._verify_toutiao_publish_success(page, title, notes)
-
-                return {
-                    "status": "submitted_for_review",
-                    "published_at": datetime.now().isoformat(timespec="seconds"),
-                    "external_url": page.url,
-                    "notes": self._finalize_notes(notes),
-                    "cover_mode": cover_mode,
-                    "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
-                    "backend_response_summary": self._compact_backend_response(response_payload),
-                    "publish_request_summary": {
-                        "url": str(publish_event.get("url", "")),
-                        "save_mode": publish_event.get("save_mode"),
-                    },
-                    "publish_verified": publish_verified,
-                }
-            except PlatformUIUpdateException as pue:
-                self.logger.error(
-                    "PlatformUIUpdateException: %s - %s",
-                    pue.element_desc, pue.message
-                )
-                debug_url = pue.debug_screenshot or pue.debug_dom_path or ""
-                self._notify_ui_alert(
-                    f"[URGENT] UI Change - {pue.platform}",
-                    f"Element: {pue.element_desc}\n"
-                    f"Attempts: {len(pue.attempted_selectors)} strategies failed"
-                )
-                raise
-            finally:
-                browser.close()
+        return run_sync_playwright_safe(_run, timeout=600)
 
     def _retry_playwright_action(self, action_fn, description: str, max_retries: int = 2) -> None:
         last_exc: Exception | None = None

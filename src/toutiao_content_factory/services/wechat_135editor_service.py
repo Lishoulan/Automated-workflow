@@ -18,7 +18,6 @@ import json
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -33,6 +32,7 @@ from toutiao_content_factory.constants.selectors import (
     EDITOR_135_SYNC_SUCCESS_MARKERS,
 )
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
+from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -142,20 +142,7 @@ class Editor135Service:
                 finally:
                     browser.close()
 
-        import asyncio
-        try:
-            asyncio.get_running_loop()
-            in_async_loop = True
-        except RuntimeError:
-            in_async_loop = False
-
-        if in_async_loop:
-            # We are inside an asyncio event loop — run in a separate thread.
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(_run_in_thread).result(timeout=120)
-        else:
-            # No running event loop — safe to call directly.
-            return _run_in_thread()
+        return run_sync_playwright_safe(_run_in_thread, timeout=120)
 
     def initialize_login_session(self) -> dict[str, str]:
         """初始化135编辑器登录会话。打开浏览器让用户手动登录。"""

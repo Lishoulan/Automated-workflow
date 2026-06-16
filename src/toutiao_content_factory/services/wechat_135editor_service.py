@@ -225,17 +225,23 @@ class Editor135Service:
         """
         import json as _json
 
-        # 查找 cookies 文件
+        # 查找 cookies 文件（多个候选路径）
         candidates = [
             self.settings.account_runtime_dir / "automation" / "exported_cookies.json",
+            self.settings.project_root / ".runtime" / "automation" / "exported_cookies.json",
         ]
         cookies_file = None
         for c in candidates:
             if c.exists():
                 cookies_file = c
+                self.logger.info("找到导出 Cookie 文件: %s", c)
                 break
+            else:
+                self.logger.info("Cookie 文件不存在: %s", c)
 
         if not cookies_file:
+            self.logger.warning("未找到导出 Cookie 文件，跳过运行时注入 (搜索路径: %s)",
+                                [str(c) for c in candidates])
             return  # 无导出文件，跳过注入
 
         try:

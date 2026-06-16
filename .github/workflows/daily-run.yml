@@ -332,6 +332,8 @@ jobs:
             # 复制到 .runtime/automation/ 供后续服务运行时注入使用
             mkdir -p .runtime/automation
             cp "$COOKIES_FILE" .runtime/automation/exported_cookies.json 2>/dev/null || true
+            echo "Verifying cookie file copy..."
+            ls -la .runtime/automation/exported_cookies.json 2>/dev/null || echo "WARNING: cookie file not found at .runtime/automation/"
             python scripts/inject_cookies.py --input "$COOKIES_FILE" --headless \
               --account ${{ github.event.inputs.account || 'default' }} || true
           else

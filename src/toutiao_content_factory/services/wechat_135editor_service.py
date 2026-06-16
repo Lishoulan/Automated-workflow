@@ -102,6 +102,9 @@ class Editor135Service:
                 )
                 page = None
                 try:
+                    # 注入导出的明文 Cookie（解决跨平台 DPAPI 加密不兼容）
+                    self._inject_exported_cookies(browser, "135editor")
+
                     page = browser.pages[0] if browser.pages else browser.new_page()
 
                     # Step 1: 打开135编辑器
@@ -213,6 +216,59 @@ class Editor135Service:
         if profile_value.startswith(".runtime") or profile_value.startswith(".runtime\\"):
             return self.settings.project_root / profile_value
         return self.settings.account_runtime_dir / profile_value
+
+    def _inject_exported_cookies(self, browser_ctx, platform: str) -> None:
+        """从 exported_cookies.json 注入明文 Cookie 到浏览器上下文。
+
+        解决 Windows DPAPI 加密的 Cookie 在 Linux 云端无法解密的问题。
+        在浏览器打开后、页面导航前注入，确保 Cookie 在运行时生效。
+        """
+        import json as _json
+
+        # 查找 cookies 文件
+        candidates = [
+            self.settings.account_runtime_dir / "automation" / "exported_cookies.json",
+        ]
+        cookies_file = None
+        for c in candidates:
+            if c.exists():
+                cookies_file = c
+                break
+
+        if not cookies_file:
+            return  # 无导出文件，跳过注入
+
+        try:
+            data = _json.loads(cookies_file.read_text(encoding="utf-8"))
+            platform_data = data.get("platforms", {}).get(platform, {})
+            cookies = platform_data.get("cookies", [])
+
+            if not cookies:
+                return
+
+            injectable = []
+            for c in cookies:
+                cookie = {
+                    "name": c["name"],
+                    "value": c["value"],
+                    "domain": c["domain"],
+                    "path": c["path"],
+                }
+                if c.get("expires", -1) > 0:
+                    cookie["expires"] = c["expires"]
+                if c.get("httpOnly"):
+                    cookie["httpOnly"] = True
+                if c.get("secure"):
+                    cookie["secure"] = True
+                if c.get("sameSite") in ("Strict", "Lax", "None"):
+                    cookie["sameSite"] = c["sameSite"]
+                injectable.append(cookie)
+
+            if injectable:
+                browser_ctx.add_cookies(injectable)
+                self.logger.info("运行时注入 %s Cookie: %d 个", platform, len(injectable))
+        except Exception as exc:
+            self.logger.warning("注入导出 Cookie 失败 (非致命): %s", exc)
 
     def _open_editor(self, page) -> None:
         """打开135编辑器编辑页面。"""

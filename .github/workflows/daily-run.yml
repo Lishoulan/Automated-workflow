@@ -123,23 +123,6 @@ jobs:
       WECHAT_EDITOR_135_PROFILE_DIR: .runtime/editor_135_profile
       WECHAT_BROWSER_PROFILE_DIR: .runtime/wechat_profile
 
-      # 抖音发布（云端只做内容生成，发布由本地脚本完成）
-      DOUYIN_ENABLED: "0"
-      DOUYIN_AUTO_PUBLISH: "0"
-      DOUYIN_NICHE: ${{ secrets.DOUYIN_NICHE || '' }}
-      DOUYIN_PUBLISH_MODE: browser
-      DOUYIN_DAILY_POST_TARGET: ${{ secrets.DOUYIN_DAILY_POST_TARGET || '3' }}
-      DOUYIN_BASE_URL: https://creator.douyin.com/
-      DOUYIN_PUBLISH_URL: https://creator.douyin.com/creator-micro/content/upload
-      DOUYIN_BROWSER_PROFILE_DIR: .runtime/douyin_profile
-      DOUYIN_PUBLISH_CHANNEL: chromium
-      DOUYIN_PUBLISH_HEADLESS: "1"
-      DOUYIN_PUBLISH_TIMEOUT_MS: ${{ secrets.DOUYIN_PUBLISH_TIMEOUT_MS || '20000' }}
-      DOUYIN_PUBLISH_HISTORY_FILE: douyin_publish_history.json
-      DOUYIN_TITLE_MAX_LENGTH: "30"
-      DOUYIN_CAPTION_MAX_LENGTH: "220"
-      DOUYIN_MAX_IMAGES: "3"
-
       # MD2WeChat
       MD2WECHAT_BASE_URL: ${{ secrets.MD2WECHAT_BASE_URL || 'https://www.md2wechat.com/api/v1' }}
       MD2WECHAT_THEME: ${{ secrets.MD2WECHAT_THEME || 'default' }}
@@ -166,7 +149,6 @@ jobs:
       # ---- 新平台发布配置（AiToEarn 集成） ----
       BILIBILI_ENABLED: ${{ secrets.BILIBILI_ENABLED || '0' }}
       ZHIHU_ENABLED: ${{ secrets.ZHIHU_ENABLED || '0' }}
-      WEIBO_ENABLED: ${{ secrets.WEIBO_ENABLED || '0' }}
       XIAOHONGSHU_ENABLED: ${{ secrets.XIAOHONGSHU_ENABLED || '0' }}
 
       # ---- 互动 Agent 配置 ----
@@ -343,6 +325,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
 
+      - name: Get runner public IP
+        run: |
+          echo "=== Runner Public IP (add to WeChat IP whitelist) ==="
+          RUNNER_IP=$(curl -s ifconfig.me)
+          echo "RUNNER_IP=$RUNNER_IP"
+          echo "Runner IP: $RUNNER_IP"
+          echo "请将此 IP 添加到微信公众平台后台 → 设置与开发 → 基本配置 → IP白名单"
+          echo "======================================================="
+        continue-on-error: true
+
       - name: Keep browser sessions alive
         run: |
           echo "Refreshing browser cookies to prevent session expiry..."
@@ -410,14 +402,14 @@ jobs:
           else
             echo "No profile seed generated, skipping upload."
           fi
-          # 导出明文 Cookie 供下次云端注入
-          echo "Exporting plaintext cookies for cross-platform injection..."
-          python scripts/export_cookies.py --headless --account ${{ github.event.inputs.account || 'default' }} || true
-          if [ -f ".runtime/automation/exported_cookies.json" ]; then
-            gh release upload browser-profiles-v1 .runtime/automation/exported_cookies.json --clobber --repo Lishoulan/Automated-workflow
-            echo "Exported cookies uploaded successfully."
+          # 注意：不在云端重新导出 cookies，因为云端 session 可能已过期
+          # 只下载用户本地导出的最新 cookies（由用户在本地运行 export_cookies.py 后上传）
+          echo "Checking for fresh cookies from GitHub Release..."
+          if gh release download browser-profiles-v1 --repo Lishoulan/Automated-workflow \
+              --pattern "exported_cookies.json" --dir /tmp/fresh_cookies/ 2>/dev/null; then
+            echo "Using fresh cookies from release (uploaded by local export)."
           else
-            echo "No exported cookies, skipping upload."
+            echo "No fresh cookies found in release. Cloud-exported cookies will NOT be uploaded (may be stale)."
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

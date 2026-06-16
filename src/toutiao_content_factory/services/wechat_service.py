@@ -905,6 +905,9 @@ class WechatPublishService:
         return self._read_json_response(request)
 
     def _read_json_response(self, request: Request) -> dict[str, Any]:
+        # Cloudflare Worker 代理需要 User-Agent，否则被 Bot 检测拦截
+        if not request.has_header("User-Agent"):
+            request.add_header("User-Agent", "WechatProxy/1.0")
         # Serv00 代理密钥
         wechat = self.settings.wechat
         if wechat.serv00_proxy_enabled and wechat.serv00_proxy_secret:
@@ -953,30 +956,45 @@ class WechatPublishService:
         else:
             base = wechat.api_base_url.rstrip("/")
         url = f"{base}/cgi-bin/token?{query}"
-        request = Request(url)
-        try:
-            payload = self._read_json_response(request)
-        except RuntimeError as exc:
-            payload_text = str(exc)
-            if "40164" in payload_text and "invalid ip" in payload_text.lower():
-                ip_address = self._extract_invalid_ip(payload_text)
-                message = (
-                    f"[WeChat] 微信公众号 API 调用被白名单拦截，当前本机出口 IP: {ip_address or 'unknown'}。"
-                    "请前往微信公众平台后台更新接口白名单。"
-                )
-                self.logger.warning(message)
-                raise WechatIpWhitelistBlockedException(message, ip_address=ip_address) from exc
-            if "40125" in payload_text and "invalid appsecret" in payload_text.lower():
-                from toutiao_content_factory.exceptions import WechatAuthError
-                message = (
-                    "[WeChat] 微信公众号 AppSecret 验证失败 (errcode=40125)。"
-                    "请检查: 1) WECHAT_APP_ID 和 WECHAT_APP_SECRET 是否正确; "
-                    "2) 微信后台是否已重置 AppSecret; "
-                    "3) .env 文件中是否有拼写错误或多余空格。"
-                )
-                self.logger.error(message)
-                raise WechatAuthError(message) from exc
-            raise
+
+        # Cloudflare Worker 代理出口 IP 不固定，遇到 40164 时自动重试
+        max_retries = 5 if wechat.serv00_proxy_enabled else 1
+        last_exc = None
+        for attempt in range(1, max_retries + 1):
+            request = Request(url)
+            try:
+                payload = self._read_json_response(request)
+            except RuntimeError as exc:
+                payload_text = str(exc)
+                if "40164" in payload_text and "invalid ip" in payload_text.lower():
+                    ip_address = self._extract_invalid_ip(payload_text)
+                    last_exc = exc
+                    if attempt < max_retries:
+                        self.logger.warning(
+                            "[WeChat] IP 白名单拦截 (attempt %d/%d), 出口 IP: %s, 自动重试...",
+                            attempt, max_retries, ip_address or "unknown",
+                        )
+                        time.sleep(1)
+                        continue
+                    message = (
+                        f"[WeChat] 微信公众号 API 调用被白名单拦截（已重试 {max_retries} 次），"
+                        f"当前出口 IP: {ip_address or 'unknown'}。"
+                        "请前往微信公众平台后台更新接口白名单。"
+                    )
+                    self.logger.warning(message)
+                    raise WechatIpWhitelistBlockedException(message, ip_address=ip_address) from exc
+                if "40125" in payload_text and "invalid appsecret" in payload_text.lower():
+                    from toutiao_content_factory.exceptions import WechatAuthError
+                    message = (
+                        "[WeChat] 微信公众号 AppSecret 验证失败 (errcode=40125)。"
+                        "请检查: 1) WECHAT_APP_ID 和 WECHAT_APP_SECRET 是否正确; "
+                        "2) 微信后台是否已重置 AppSecret; "
+                        "3) .env 文件中是否有拼写错误或多余空格。"
+                    )
+                    self.logger.error(message)
+                    raise WechatAuthError(message) from exc
+                raise
+            break
         token = str(payload.get("access_token", "")).strip()
         expires_in = int(payload.get("expires_in", 7200) or 7200)
         if not token:

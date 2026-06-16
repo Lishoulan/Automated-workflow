@@ -18,22 +18,12 @@ PLATFORM_RULES: dict[str, dict] = {
     "wechat": {
         "max_length": 20000,
     },
-    "douyin": {
-        "max_length": 3000,
-        "tag_prefix": "#",
-        "tag_suffix": " ",
-    },
     "bilibili": {
         "max_length": 25000,
         "tag_suffix": ",",
     },
     "zhihu": {
         "max_length": 50000,
-    },
-    "weibo": {
-        "max_length": 2000,
-        "tag_prefix": "#",
-        "tag_suffix": "#",
     },
     "xiaohongshu": {
         "max_length": 1000,

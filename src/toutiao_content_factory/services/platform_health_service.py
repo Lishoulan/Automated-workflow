@@ -25,14 +25,12 @@ class PlatformHealthService:
         *,
         toutiao_publish_service,
         wechat_publish_service,
-        douyin_publish_service,
         notification_service=None,
     ) -> None:
         self.settings = settings
         self.logger = logger
         self.toutiao_publish_service = toutiao_publish_service
         self.wechat_publish_service = wechat_publish_service
-        self.douyin_publish_service = douyin_publish_service
         self.notification_service = notification_service
 
     def collect(self) -> dict[str, Any]:
@@ -43,7 +41,6 @@ class PlatformHealthService:
             "platforms": {
                 "toutiao": self._collect_toutiao(),
                 "wechat": self._collect_wechat(),
-                "douyin": self._collect_douyin(),
             },
         }
         payload["blocking_flags"] = self._collect_global_blockers(payload["platforms"])
@@ -67,7 +64,6 @@ class PlatformHealthService:
         platforms: dict[str, Any] = {
             "toutiao": self._quick_check_toutiao(),
             "wechat": self._quick_check_wechat(),
-            "douyin": self._quick_check_douyin(),
         }
         blocking_platforms = self._collect_required_auth_failures(platforms)
         blocking_flags = self._collect_global_blockers(platforms)
@@ -151,29 +147,6 @@ class PlatformHealthService:
         return {
             "enabled": True,
             "required": True,
-            "status": "blocked" if blockers else "ready",
-            "blocking_flags": self._unique_texts(blockers),
-            "warnings": self._unique_texts(warnings),
-        }
-
-    def _quick_check_douyin(self) -> dict[str, Any]:
-        if not self.settings.douyin.enabled:
-            return {"enabled": False, "required": False, "status": "disabled", "blocking_flags": [], "warnings": []}
-        blockers: list[str] = []
-        warnings: list[str] = []
-        preflight_path = self.settings.automation_dir / "douyin_publish_preflight.json"
-        if preflight_path.exists():
-            try:
-                cached = json.loads(preflight_path.read_text(encoding="utf-8"))
-                if isinstance(cached, dict) and cached.get("blocking_flags"):
-                    blockers.extend(cached.get("blocking_flags", []))
-            except Exception:
-                warnings.append("Douyin preflight file exists but could not be parsed.")
-        else:
-            warnings.append("Douyin preflight file not found.")
-        return {
-            "enabled": True,
-            "required": bool(self.settings.douyin.auto_publish),
             "status": "blocked" if blockers else "ready",
             "blocking_flags": self._unique_texts(blockers),
             "warnings": self._unique_texts(warnings),
@@ -270,31 +243,6 @@ class PlatformHealthService:
             "warnings": self._unique_texts(warnings),
             "diagnostics": diagnostics,
         }
-
-    def _collect_douyin(self) -> dict[str, Any]:
-        if not self.settings.douyin.enabled:
-            return {"enabled": False, "required": False, "status": "disabled", "blocking_flags": [], "warnings": []}
-        preflight_path = self.settings.automation_dir / "douyin_publish_preflight.json"
-        payload: dict[str, Any] = {
-            "enabled": True,
-            "required": bool(self.settings.douyin.auto_publish),
-            "status": "ready",
-            "blocking_flags": [],
-            "warnings": [],
-            "diagnostics": {},
-        }
-        if preflight_path.exists():
-            try:
-                cached = json.loads(preflight_path.read_text(encoding="utf-8"))
-                payload.update(cached if isinstance(cached, dict) else {})
-                payload["status"] = "blocked" if payload.get("blocking_flags") else "ready"
-            except Exception:
-                payload["warnings"].append("Douyin preflight file exists but could not be parsed.")
-        else:
-            payload["warnings"].append("Douyin preflight file not found. Re-run --init-douyin-login if auto publish is needed.")
-        payload["blocking_flags"] = self._unique_texts(list(payload.get("blocking_flags", [])))
-        payload["warnings"] = self._unique_texts(list(payload.get("warnings", [])))
-        return payload
 
     def _probe_wechat_login_state(self) -> dict[str, Any]:
         profile_dir = self.wechat_publish_service._resolve_browser_profile_dir()

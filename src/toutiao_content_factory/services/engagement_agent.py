@@ -715,12 +715,7 @@ class EngagementAgent:
 
     def _resolve_browser_profile(self, platform: str, account_id: str) -> Path | None:
         """解析浏览器 profile 目录。"""
-        if platform == "toutiao":
-            raw = self.settings.publishing.user_data_dir
-        elif platform == "douyin":
-            raw = self.settings.douyin.user_data_dir
-        else:
-            raw = self.settings.publishing.user_data_dir
+        raw = self.settings.publishing.user_data_dir
 
         if not raw:
             return None
@@ -733,8 +728,6 @@ class EngagementAgent:
         """构建平台搜索 URL。"""
         urls = {
             "toutiao": "https://www.toutiao.com/search/",
-            "douyin": "https://www.douyin.com/search/",
-            "weibo": "https://s.weibo.com/",
             "zhihu": "https://www.zhihu.com/search",
             "bilibili": "https://search.bilibili.com/",
         }
@@ -744,8 +737,6 @@ class EngagementAgent:
         """构建评论管理页面 URL。"""
         urls = {
             "toutiao": "https://mp.toutiao.com/profile_v4/graphic/comments",
-            "douyin": "https://creator.douyin.com/creator-micro/content/manage",
-            "weibo": "https://weibo.com/comments",
             "zhihu": "https://www.zhihu.com/notifications",
             "bilibili": "https://member.bilibili.com/platform/upload-manager/article",
         }
@@ -755,8 +746,6 @@ class EngagementAgent:
         """将相对 URL 解析为绝对 URL。"""
         bases = {
             "toutiao": "https://www.toutiao.com",
-            "douyin": "https://www.douyin.com",
-            "weibo": "https://weibo.com",
             "zhihu": "https://www.zhihu.com",
             "bilibili": "https://www.bilibili.com",
         }

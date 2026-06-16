@@ -428,52 +428,6 @@ class WechatSettings:
         )
 
 
-@dataclass(frozen=True)
-class DouyinSettings:
-    enabled: bool
-    auto_publish: bool
-    niche: str
-    publish_mode: str
-    daily_post_target: int
-    base_url: str
-    publish_url: str
-    user_data_dir: str
-    channel: str
-    executable_path: str
-    headless: bool
-    wait_timeout_ms: int
-    history_filename: str
-    title_max_length: int
-    caption_max_length: int
-    max_images: int
-    selectors: dict[str, list[str]]
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "DouyinSettings":
-        selectors = {
-            str(key): [str(item) for item in value]
-            for key, value in dict(payload.get("selectors", {})).items()
-        }
-        return cls(
-            enabled=bool(payload.get("enabled", False)),
-            auto_publish=bool(payload.get("auto_publish", False)),
-            niche=str(payload.get("niche", "未设置")).strip() or "未设置",
-            publish_mode=str(payload.get("publish_mode", "browser")).strip() or "browser",
-            daily_post_target=int(payload.get("daily_post_target", 3)),
-            base_url=str(payload.get("base_url", "https://creator.douyin.com/")).strip(),
-            publish_url=str(payload.get("publish_url", "https://creator.douyin.com/creator-micro/content/upload")).strip(),
-            user_data_dir=str(payload.get("user_data_dir", ".runtime/douyin_profile")).strip(),
-            channel=str(payload.get("channel", "msedge")).strip(),
-            executable_path=str(payload.get("executable_path", "")).strip(),
-            headless=bool(payload.get("headless", False)),
-            wait_timeout_ms=int(payload.get("wait_timeout_ms", 20000)),
-            history_filename=str(payload.get("history_filename", "douyin_publish_history.json")).strip(),
-            title_max_length=int(payload.get("title_max_length", 30)),
-            caption_max_length=int(payload.get("caption_max_length", 220)),
-            max_images=int(payload.get("max_images", 3)),
-            selectors=selectors,
-        )
-
 
 class AccountProfile(BaseModel):
     """账号配置模型，带数据校验。"""
@@ -576,7 +530,6 @@ class AppSettings:
     review: ReviewSettings
     publishing: PublishSettings
     wechat: WechatSettings
-    douyin: DouyinSettings
     account_profiles: dict[str, AccountProfile]
     raw_account_profiles: dict[str, dict[str, Any]]
     available_account_keys: list[str]
@@ -602,7 +555,6 @@ class AppSettings:
     # Multi-platform publishing
     bilibili_enabled: bool = False
     zhihu_enabled: bool = False
-    weibo_enabled: bool = False
     xiaohongshu_enabled: bool = False
     youtube_enabled: bool = False
     # Engagement agent
@@ -692,13 +644,12 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     review_config = ReviewSettings.from_dict(merged_payload.get("review", {}))
     publishing_config = PublishSettings.from_dict(merged_payload.get("publishing", {}))
     wechat_config = WechatSettings.from_dict(merged_payload.get("wechat", {}))
-    douyin_config = DouyinSettings.from_dict(merged_payload.get("douyin", {}))
 
     is_default_account = account_profile.key == DEFAULT_ACCOUNT_KEY
     default_style = os.getenv("DEFAULT_STYLE", str(merged_payload.get("writing", {}).get("default_style", "deep_industry_analysis")))
 
     # Resolve account paths
-    paths = _load_account_paths(project_root, account_profile, is_default_account, publishing_config, douyin_config)
+    paths = _load_account_paths(project_root, account_profile, is_default_account, publishing_config)
 
     # Build final settings using helper functions
     model_overrides = _load_model_config(merged_payload)
@@ -707,7 +658,6 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     review_final = _load_review_config(merged_payload, review_config)
     publishing_final = _load_publishing_config_final(merged_payload, account_profile, is_default_account, automation_config, publishing_config, paths)
     wechat_final = _load_wechat_config_final(merged_payload, account_profile, wechat_config)
-    douyin_final = _load_douyin_config_final(merged_payload, account_profile, douyin_config, paths)
     image_final = _load_image_config(merged_payload, image_config)
 
     return AppSettings(
@@ -744,7 +694,6 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         review=review_final,
         publishing=publishing_final,
         wechat=wechat_final,
-        douyin=douyin_final,
         account_profiles=raw_account_profiles,
         raw_account_profiles={
             key: {
@@ -781,7 +730,6 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         # Multi-platform publishing
         bilibili_enabled=_env_flag("BILIBILI_ENABLED", False),
         zhihu_enabled=_env_flag("ZHIHU_ENABLED", False),
-        weibo_enabled=_env_flag("WEIBO_ENABLED", False),
         xiaohongshu_enabled=_env_flag("XIAOHONGSHU_ENABLED", False),
         youtube_enabled=_env_flag("YOUTUBE_ENABLED", False),
         # Engagement agent
@@ -908,7 +856,6 @@ def _load_account_paths(
     account_profile: AccountProfile,
     is_default_account: bool,
     publishing_config: PublishSettings,
-    douyin_config: DouyinSettings,
 ) -> dict[str, Any]:
     input_dir = _resolve_account_path(
         project_root=project_root,
@@ -953,22 +900,6 @@ def _load_account_paths(
         or (os.getenv("TOUTIAO_PUBLISH_HISTORY_FILE") if is_default_account else None)
         or publishing_config.history_filename
     )
-    default_douyin_profile_relative = (
-        ".runtime/douyin_profile"
-        if is_default_account
-        else f".runtime/accounts/{account_profile.slug}/douyin_profile"
-    )
-    douyin_profile_value = (
-        os.getenv(account_env_name("DOUYIN_BROWSER_PROFILE_DIR", account_profile.key))
-        or (os.getenv("DOUYIN_BROWSER_PROFILE_DIR") if is_default_account else None)
-        or douyin_config.user_data_dir
-        or default_douyin_profile_relative
-    )
-    douyin_history_value = (
-        os.getenv(account_env_name("DOUYIN_PUBLISH_HISTORY_FILE", account_profile.key))
-        or (os.getenv("DOUYIN_PUBLISH_HISTORY_FILE") if is_default_account else None)
-        or douyin_config.history_filename
-    )
     return {
         "input_dir": input_dir,
         "output_dir": output_dir,
@@ -976,8 +907,6 @@ def _load_account_paths(
         "cache_dir": cache_dir,
         "browser_profile_value": browser_profile_value,
         "publish_history_value": publish_history_value,
-        "douyin_profile_value": douyin_profile_value,
-        "douyin_history_value": douyin_history_value,
     }
 
 
@@ -1068,51 +997,6 @@ def _load_wechat_config_final(
         editor_135_base_url=os.getenv("WECHAT_EDITOR_135_BASE_URL", wechat_config.editor_135_base_url),
         editor_135_profile_dir=os.getenv("WECHAT_EDITOR_135_PROFILE_DIR", wechat_config.editor_135_profile_dir),
         builtin_theme=os.getenv("WECHAT_BUILTIN_THEME", wechat_config.builtin_theme),
-    )
-
-
-def _load_douyin_config_final(
-    merged_payload: dict[str, Any],
-    account_profile: AccountProfile,
-    douyin_config: DouyinSettings,
-    paths: dict[str, Any],
-) -> DouyinSettings:
-    return DouyinSettings(
-        enabled=_env_flag_scoped("DOUYIN_ENABLED", account_profile.key, douyin_config.enabled),
-        auto_publish=_env_flag_scoped("DOUYIN_AUTO_PUBLISH", account_profile.key, douyin_config.auto_publish),
-        niche=_env_value_scoped("DOUYIN_NICHE", account_profile.key, douyin_config.niche),
-        publish_mode=_env_value_scoped("DOUYIN_PUBLISH_MODE", account_profile.key, douyin_config.publish_mode),
-        daily_post_target=int(
-            _env_value_scoped("DOUYIN_DAILY_POST_TARGET", account_profile.key, str(douyin_config.daily_post_target))
-        ),
-        base_url=_env_value_scoped("DOUYIN_BASE_URL", account_profile.key, douyin_config.base_url),
-        publish_url=_env_value_scoped("DOUYIN_PUBLISH_URL", account_profile.key, douyin_config.publish_url),
-        user_data_dir=paths["douyin_profile_value"],
-        channel=_env_value_scoped("DOUYIN_PUBLISH_CHANNEL", account_profile.key, douyin_config.channel),
-        executable_path=_env_value_scoped(
-            "DOUYIN_BROWSER_EXECUTABLE",
-            account_profile.key,
-            douyin_config.executable_path,
-        ),
-        headless=_env_flag_scoped("DOUYIN_PUBLISH_HEADLESS", account_profile.key, douyin_config.headless),
-        wait_timeout_ms=int(
-            _env_value_scoped("DOUYIN_PUBLISH_TIMEOUT_MS", account_profile.key, str(douyin_config.wait_timeout_ms))
-        ),
-        history_filename=paths["douyin_history_value"],
-        title_max_length=int(
-            _env_value_scoped("DOUYIN_TITLE_MAX_LENGTH", account_profile.key, str(douyin_config.title_max_length))
-        ),
-        caption_max_length=int(
-            _env_value_scoped(
-                "DOUYIN_CAPTION_MAX_LENGTH",
-                account_profile.key,
-                str(douyin_config.caption_max_length),
-            )
-        ),
-        max_images=int(
-            _env_value_scoped("DOUYIN_MAX_IMAGES", account_profile.key, str(douyin_config.max_images))
-        ),
-        selectors=douyin_config.selectors,
     )
 
 
@@ -1521,45 +1405,6 @@ def _default_config_payload() -> dict[str, Any]:
             "editor_135_enabled": True,
             "editor_135_base_url": "https://www.135editor.com",
             "editor_135_profile_dir": ".runtime/editor_135_profile",
-        },
-        "douyin": {
-            "enabled": False,
-            "auto_publish": False,
-            "niche": "未设置",
-            "publish_mode": "browser",
-            "daily_post_target": 3,
-            "base_url": "https://creator.douyin.com/",
-            "publish_url": "https://creator.douyin.com/creator-micro/content/upload",
-            "user_data_dir": ".runtime/douyin_profile",
-            "channel": "msedge",
-            "executable_path": "",
-            "headless": False,
-            "wait_timeout_ms": 20000,
-            "history_filename": "douyin_publish_history.json",
-            "title_max_length": 30,
-            "caption_max_length": 220,
-            "max_images": 3,
-            "selectors": {
-                "caption_input": [
-                    "textarea[placeholder*='添加作品描述']",
-                    "textarea[placeholder*='描述']",
-                    "div[contenteditable='true']"
-                ],
-                "image_upload": [
-                    "input[type='file'][accept*='image']",
-                    "input[type='file']"
-                ],
-                "publish_button": [
-                    "button:has-text('发布')",
-                    "button:has-text('发布作品')",
-                    "div[role='button']:has-text('发布')"
-                ],
-                "success_indicator": [
-                    "text=发布成功",
-                    "text=已发布",
-                    "text=提交成功"
-                ]
-            }
         },
         "styles": _default_style_payloads(),
         "enhanced_insights": {

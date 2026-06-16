@@ -1,4 +1,4 @@
-"""交互式登录脚本 — 逐个登录微博/知乎/小红书，保存浏览器profile。"""
+"""交互式登录脚本 — 逐个登录知乎/小红书，保存浏览器profile。"""
 
 import os
 import sys
@@ -20,19 +20,6 @@ def _init_settings():
     from toutiao_content_factory.config import load_settings
     return load_settings(Path(project_root), account_key="robot_notes")
 
-
-def login_weibo(settings):
-    """登录微博。"""
-    from toutiao_content_factory.services.weibo_publisher import WeiboPublisher
-    import logging
-    logger = logging.getLogger("login.weibo")
-    publisher = WeiboPublisher(settings, logger=logger)
-    print("\n" + "=" * 60)
-    print("  微博登录")
-    print("=" * 60)
-    result = publisher.login_interactive()
-    print(f"微博登录结果: {result}")
-    return result.get("success", False)
 
 
 def login_zhihu(settings):
@@ -140,14 +127,12 @@ def main():
     if len(sys.argv) > 1:
         platforms = [a.lower() for a in sys.argv[1:]]
     else:
-        platforms = ["weibo", "zhihu", "xiaohongshu"]
+        platforms = ["zhihu", "xiaohongshu"]
 
     results = {}
 
     for platform in platforms:
-        if platform in ("weibo", "微博"):
-            results["微博"] = login_weibo(settings)
-        elif platform in ("zhihu", "知乎"):
+        if platform in ("zhihu", "知乎"):
             results["知乎"] = login_zhihu(settings)
         elif platform in ("xiaohongshu", "小红书", "xhs"):
             results["小红书"] = login_xiaohongshu(settings)
@@ -163,11 +148,10 @@ def main():
 
     # 检查profile目录
     print("\n浏览器profile保存位置:")
-    from toutiao_content_factory.services.weibo_publisher import WeiboPublisher
     from toutiao_content_factory.services.zhihu_publisher import ZhihuPublisher
     from toutiao_content_factory.services.xiaohongshu_publisher import XiaohongshuPublisher
 
-    for name, cls in [("微博", WeiboPublisher), ("知乎", ZhihuPublisher), ("小红书", XiaohongshuPublisher)]:
+    for name, cls in [("知乎", ZhihuPublisher), ("小红书", XiaohongshuPublisher)]:
         pub = cls(settings)
         pdir = pub._resolve_browser_profile_dir()
         exists = "存在" if pdir.exists() else "不存在"

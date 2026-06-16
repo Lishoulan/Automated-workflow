@@ -73,7 +73,7 @@ def normalize_runtime_status(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(platforms, dict):
         platforms = {}
     normalized_platforms: dict[str, dict[str, str]] = {}
-    for key in ("toutiao", "wechat", "douyin"):
+    for key in ("toutiao", "wechat"):
         item = platforms.get(key, {}) if isinstance(platforms.get(key), dict) else {}
         normalized_platforms[key] = {
             "status": str(item.get("status", "idle") or "idle"),

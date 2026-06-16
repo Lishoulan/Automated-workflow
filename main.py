@@ -110,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--health-preflight",
         action="store_true",
-        help="Run a unified platform session health preflight for Toutiao / WeChat / Douyin.",
+        help="Run a unified platform session health preflight for Toutiao / WeChat.",
     )
     parser.add_argument(
         "--init-publish-login",
@@ -126,21 +126,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--init-135editor-login",
         action="store_true",
         help="Initialize the persistent 135 Editor browser login session for WeChat publishing.",
-    )
-    parser.add_argument(
-        "--init-douyin-login",
-        action="store_true",
-        help="Initialize the persistent Douyin creator browser login session.",
-    )
-    parser.add_argument(
-        "--prepare-douyin-run",
-        action="store_true",
-        help="Prepare Douyin title/caption/image payloads from an approved run.",
-    )
-    parser.add_argument(
-        "--publish-douyin-run",
-        action="store_true",
-        help="Publish a prepared approved run to Douyin using the saved browser session.",
     )
     parser.add_argument(
         "--prepare-wechat-launch-day",
@@ -350,7 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--engagement", action="store_true", help="Run daily engagement agent (like, comment, follow).")
     parser.add_argument("--engagement-mine-topics", action="store_true", help="Mine comments for topic ideas.")
     parser.add_argument("--multi-publish", action="store_true", help="Publish to all enabled platforms.")
-    parser.add_argument("--platforms", type=str, default=None, help="Comma-separated list of platforms for --multi-publish (e.g., bilibili,zhihu,weibo).")
+    parser.add_argument("--platforms", type=str, default=None, help="Comma-separated list of platforms for --multi-publish (e.g., bilibili,zhihu).")
     parser.add_argument("--matrix-dashboard", action="store_true", help="Show matrix operations dashboard.")
     parser.add_argument("--monetization-sync", action="store_true", help="Sync monetization data and generate revenue report.")
     return parser
@@ -406,15 +391,12 @@ def main() -> int:
         from toutiao_content_factory.services.multi_platform_publisher import MultiPlatformPublisher
         from toutiao_content_factory.services.bilibili_publisher import BilibiliPublisher
         from toutiao_content_factory.services.zhihu_publisher import ZhihuPublisher
-        from toutiao_content_factory.services.weibo_publisher import WeiboPublisher
         from toutiao_content_factory.services.xiaohongshu_publisher import XiaohongshuPublisher
         mpp = MultiPlatformPublisher(settings, logger)
         if settings.bilibili_enabled:
             mpp.register_publisher("bilibili", BilibiliPublisher(settings, logger))
         if settings.zhihu_enabled:
             mpp.register_publisher("zhihu", ZhihuPublisher(settings, logger))
-        if settings.weibo_enabled:
-            mpp.register_publisher("weibo", WeiboPublisher(settings, logger))
         if settings.xiaohongshu_enabled:
             mpp.register_publisher("xiaohongshu", XiaohongshuPublisher(settings, logger))
         platforms = args.platforms.split(",") if args.platforms else None
@@ -481,21 +463,6 @@ def main() -> int:
             if args.init_135editor_login:
                 init_result = app_service.initialize_135editor_login()
                 _print_export_summary("135 Editor login session initialized.", init_result)
-                return 0
-
-            if args.init_douyin_login:
-                init_result = app_service.initialize_douyin_publish_login()
-                _print_export_summary("Douyin login session initialized.", init_result)
-                return 0
-
-            if args.prepare_douyin_run:
-                result = app_service.prepare_douyin_run(args.run_dir)
-                _print_export_summary("Douyin publish package prepared.", result)
-                return 0
-
-            if args.publish_douyin_run:
-                result = app_service.publish_douyin_run(args.run_dir)
-                _print_export_summary("Run submitted to Douyin.", result)
                 return 0
 
             if args.prepare_wechat_launch_day is not None:
@@ -979,9 +946,6 @@ def _is_review_or_publish_action(args: argparse.Namespace) -> bool:
             args.init_publish_login,
             args.init_wechat_login,
             args.init_135editor_login,
-            args.init_douyin_login,
-            args.prepare_douyin_run,
-            args.publish_douyin_run,
             args.prepare_wechat_launch_day is not None,
             args.prepare_wechat_launch_week,
             args.generate_images_run,

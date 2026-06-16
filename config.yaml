@@ -285,24 +285,6 @@
     "editor_135_profile_dir": ".runtime/editor_135_profile",
     "builtin_theme": "tech_blue"
   },
-  "douyin": {
-    "enabled": false,
-    "auto_publish": true,
-    "niche": "??",
-    "publish_mode": "browser",
-    "daily_post_target": 10,
-    "base_url": "https://creator.douyin.com/",
-    "publish_url": "https://creator.douyin.com/creator-micro/content/upload",
-    "user_data_dir": ".runtime/douyin_profile",
-    "channel": "msedge",
-    "executable_path": "",
-    "headless": false,
-    "wait_timeout_ms": 20000,
-    "history_filename": "douyin_publish_history.json",
-    "title_max_length": 30,
-    "caption_max_length": 220,
-    "max_images": 3
-  },
   "styles": {
     "deep_industry_analysis": {
       "label": "深度行业分析风",

@@ -36,7 +36,6 @@ class PipelineStage(str, Enum):
 class PublishPlatform(str, Enum):
     TOUTIAO = "toutiao"
     WECHAT = "wechat"
-    DOUYIN = "douyin"
 
     @classmethod
     def _missing_(cls, value: Any) -> PublishPlatform:
@@ -127,7 +126,6 @@ class RunRecord(SQLModel, table=True):
     # Platform publish status
     toutiao_status: str = Field(default="", max_length=32)
     wechat_status: str = Field(default="", max_length=32)
-    douyin_status: str = Field(default="", max_length=32)
     toutiao_url: str = Field(default="", max_length=1024)
 
     # Debug info

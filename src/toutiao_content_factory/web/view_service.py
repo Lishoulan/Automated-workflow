@@ -581,7 +581,7 @@ class WebViewService:
                 workflow_errors = data.get("workflow_errors", []) if isinstance(data.get("workflow_errors"), list) else []
                 all_messages.extend(str(error_text) for error_text in workflow_errors)
         all_messages.extend(self._collect_workflow_error_text(workflow_report))
-        for platform_name in ("toutiao", "wechat", "douyin"):
+        for platform_name in ("toutiao", "wechat"):
             payload = platforms.get(platform_name, {}) if isinstance(platforms, dict) else {}
             if isinstance(payload, dict):
                 all_messages.extend(str(item) for item in payload.get("blocking_flags", []) if str(item).strip())
@@ -711,7 +711,6 @@ class WebViewService:
         checks = [
             ("toutiao", "头条"),
             ("wechat", "公众号"),
-            ("douyin", "抖音"),
         ]
         workflow_errors = "\n".join(self._collect_workflow_error_text(workflow_report)).lower()
         for key, label in checks:
@@ -813,7 +812,7 @@ class WebViewService:
 
         platform_cards: list[dict[str, str]] = []
         platforms = scheduled_status.get("platforms", {}) if isinstance(scheduled_status.get("platforms"), dict) else {}
-        for key, title in (("toutiao", "今日头条"), ("wechat", "公众号"), ("douyin", "抖音")):
+        for key, title in (("toutiao", "今日头条"), ("wechat", "公众号")):
             item = platforms.get(key)
             if not isinstance(item, dict):
                 continue
@@ -1536,7 +1535,7 @@ class WebViewService:
     def build_health_panel(self, platform_health: dict[str, Any]) -> dict[str, Any]:
         items: list[dict[str, Any]] = []
         platforms = platform_health.get("platforms", {}) if isinstance(platform_health, dict) else {}
-        for key, label in (("toutiao", "今日头条"), ("wechat", "公众号"), ("douyin", "抖音")):
+        for key, label in (("toutiao", "今日头条"), ("wechat", "公众号")):
             payload = platforms.get(key)
             if not isinstance(payload, dict):
                 continue
@@ -1690,7 +1689,6 @@ class WebViewService:
         specs = [
             ("toutiao", "头条", publish_root / "publish_result.json", publish_root.exists()),
             ("wechat", "公众号", publish_root / "wechat" / "wechat_publish_result.json", (publish_root / "wechat").exists()),
-            ("douyin", "抖音", publish_root / "douyin" / "douyin_publish_result.json", (publish_root / "douyin").exists()),
         ]
         retry_platforms: list[dict[str, str]] = []
         latest_platform_status: dict[str, dict[str, str]] = {}

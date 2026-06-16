@@ -9,7 +9,7 @@ PythonAnywhere 免费版不支持 Playwright/headless browser，
   - 微信公众号 API 发布（需要 WECHAT_APP_ID/WECHAT_SECRET）
   - 图片生成（renderer 模式，不依赖浏览器）
 
-头条/抖音的浏览器自动发布不在此脚本范围内。
+头条的浏览器自动发布不在此脚本范围内。
 
 使用方法：
   1. 在 PythonAnywhere 上克隆项目
@@ -46,15 +46,11 @@ os.environ["PYTHONUTF8"] = "1"
 # ---------------------------------------------------------------------------
 os.environ["TOUTIAO_PUBLISH_HEADLESS"] = "1"
 os.environ["TOUTIAO_PUBLISH_CHANNEL"] = "chromium"
-os.environ["DOUYIN_PUBLISH_CHANNEL"] = "chromium"
 os.environ["TOUTIAO_BROWSER_EXECUTABLE"] = ""
-os.environ["DOUYIN_BROWSER_EXECUTABLE"] = ""
 
 # PythonAnywhere 无法运行浏览器，禁用浏览器发布
 os.environ["TOUTIAO_PUBLISH_ENABLED"] = "0"
 os.environ["TOUTIAO_AUTO_PUBLISH"] = "0"
-os.environ["DOUYIN_ENABLED"] = "0"
-os.environ["DOUYIN_AUTO_PUBLISH"] = "0"
 
 # 微信 API 发布不需要浏览器，保持启用
 # （前提是 WECHAT_APP_ID 和 WECHAT_APP_SECRET 已配置，

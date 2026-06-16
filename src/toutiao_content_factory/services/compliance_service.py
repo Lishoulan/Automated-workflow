@@ -27,15 +27,11 @@ def is_wechat_aigc_declaration_enabled() -> bool:
     return _is_platform_aigc_enabled("wechat")
 
 
-def is_douyin_aigc_declaration_enabled() -> bool:
-    return _is_platform_aigc_enabled("douyin")
-
 
 def get_max_daily_posts(platform: str = "toutiao") -> int:
     env_map = {
         "toutiao": "TOUTIAO_MAX_DAILY_POSTS",
         "wechat": "WECHAT_MAX_DAILY_POSTS",
-        "douyin": "DOUYIN_MAX_DAILY_POSTS",
     }
     env_key = env_map.get(platform, "TOUTIAO_MAX_DAILY_POSTS")
     return int(os.getenv(env_key, "2").strip() or "2")

@@ -38,12 +38,6 @@ def mock_wechat_service() -> MagicMock:
 
 
 @pytest.fixture()
-def mock_douyin_service() -> MagicMock:
-    svc = MagicMock()
-    return svc
-
-
-@pytest.fixture()
 def mock_notification_service() -> MagicMock:
     svc = MagicMock()
     svc.notify_urgent = MagicMock()
@@ -55,7 +49,6 @@ def health_service(
     app_settings: AppSettings,
     mock_toutiao_service: MagicMock,
     mock_wechat_service: MagicMock,
-    mock_douyin_service: MagicMock,
     mock_notification_service: MagicMock,
 ) -> PlatformHealthService:
     return PlatformHealthService(
@@ -63,7 +56,6 @@ def health_service(
         logger=logging.getLogger("test_health"),
         toutiao_publish_service=mock_toutiao_service,
         wechat_publish_service=mock_wechat_service,
-        douyin_publish_service=mock_douyin_service,
         notification_service=mock_notification_service,
     )
 
@@ -80,7 +72,7 @@ class TestQuickHealthCheck:
     def test_all_platforms_disabled(self, mock_cookie_health, health_service):
         """当所有平台都禁用时，不应有阻塞平台。"""
         mock_cookie_health.return_value = {"healthy": True}
-        # 默认 app_settings 中 publishing.enabled=False, wechat.enabled=False, douyin.enabled=False
+        # 默认 app_settings 中 publishing.enabled=False, wechat.enabled=False
         result = health_service.quick_health_check()
 
         assert result["blocking_platforms"] == []
@@ -139,38 +131,6 @@ class TestQuickHealthCheck:
         assert "wechat" in result["blocking_platforms"]
         assert result["platforms"]["wechat"]["status"] == "blocked"
 
-    @patch("toutiao_content_factory.services.platform_health_service.check_cookie_health")
-    def test_douyin_enabled_no_preflight(self, mock_cookie_health, health_service, app_settings):
-        """Douyin 启用但没有 preflight 文件时，不应阻塞（仅警告）。"""
-        mock_cookie_health.return_value = {"healthy": True}
-        object.__setattr__(app_settings.douyin, "enabled", True)
-        object.__setattr__(app_settings.douyin, "auto_publish", False)
-
-        result = health_service.quick_health_check()
-
-        # auto_publish=False 时 douyin 不是 required，不应阻塞
-        assert "douyin" not in result["blocking_platforms"]
-
-    @patch("toutiao_content_factory.services.platform_health_service.check_cookie_health")
-    def test_douyin_auto_publish_with_blocking_preflight(self, mock_cookie_health, health_service, app_settings, tmp_path):
-        """Douyin 启用自动发布且 preflight 有阻塞标记时，应阻塞。"""
-        mock_cookie_health.return_value = {"healthy": True}
-        object.__setattr__(app_settings.douyin, "enabled", True)
-        object.__setattr__(app_settings.douyin, "auto_publish", True)
-
-        # 创建一个带有 blocking_flags 的 preflight 文件
-        automation_dir = app_settings.output_dir / "automation"
-        automation_dir.mkdir(parents=True, exist_ok=True)
-        preflight_path = automation_dir / "douyin_publish_preflight.json"
-        preflight_path.write_text(
-            json.dumps({"blocking_flags": ["Cookie expired"], "warnings": []}),
-            encoding="utf-8",
-        )
-
-        result = health_service.quick_health_check()
-
-        assert "douyin" in result["blocking_platforms"]
-        assert result["platforms"]["douyin"]["status"] == "blocked"
 
 
 # ---------------------------------------------------------------------------
@@ -245,12 +205,10 @@ class TestCollectGlobalBlockers:
         platforms = {
             "toutiao": {"enabled": True, "blocking_flags": ["cookie expired"]},
             "wechat": {"enabled": True, "blocking_flags": ["token invalid"]},
-            "douyin": {"enabled": False, "blocking_flags": ["should be ignored"]},
         }
         result = health_service._collect_global_blockers(platforms)
         assert "toutiao: cookie expired" in result
         assert "wechat: token invalid" in result
-        assert "douyin: should be ignored" not in result
 
     def test_no_blockers(self, health_service):
         platforms = {

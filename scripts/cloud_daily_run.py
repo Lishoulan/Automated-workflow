@@ -140,7 +140,6 @@ def _is_auth_error() -> bool:
 _PLATFORM_ENV_MAP = {
     "wechat": "WECHAT",
     "toutiao": "TOUTIAO",
-    "douyin": "DOUYIN",
 }
 
 
@@ -188,24 +187,20 @@ def _configure_cloud_env(account_key: str) -> None:
     os.environ.setdefault("TOUTIAO_PUBLISH_HEADLESS", "1")
     os.environ.setdefault("TOUTIAO_BROWSER_EXECUTABLE", "")
 
-    # 抖音浏览器同样适配
-    douyin_channel = "chromium" if is_linux else os.environ.get("DOUYIN_PUBLISH_CHANNEL", "msedge")
-    os.environ.setdefault("DOUYIN_PUBLISH_CHANNEL", douyin_channel)
-    os.environ.setdefault("DOUYIN_PUBLISH_HEADLESS", "1")
-    os.environ.setdefault("DOUYIN_BROWSER_EXECUTABLE", "")
-
     # --- 浏览器 profile 持久化到 .runtime/ ---
     os.environ.setdefault("TOUTIAO_BROWSER_PROFILE_DIR", ".runtime/toutiao_profile")
-    os.environ.setdefault("DOUYIN_BROWSER_PROFILE_DIR", ".runtime/douyin_profile")
     os.environ.setdefault("WECHAT_EDITOR_135_PROFILE_DIR", ".runtime/editor_135_profile")
 
     # 确保 .runtime 目录存在
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
     # --- 发布配置 ---
-    os.environ.setdefault("TOUTIAO_PUBLISH_ENABLED", "1")
-    os.environ.setdefault("TOUTIAO_AUTO_PUBLISH", "1")  # 云端自动发布
-    os.environ.setdefault("TOUTIAO_DRAFT_ONLY", "1")  # 草稿模式优先，稳定后改为 0
+    # 云端只生成内容，不发布。发布留给本地 one_click_publish.ps1
+    # 如果环境变量已设置为 "0"（来自 workflow），setdefault 不会覆盖
+    os.environ.setdefault("TOUTIAO_PUBLISH_ENABLED", "0")
+    os.environ.setdefault("TOUTIAO_AUTO_PUBLISH", "0")
+    os.environ.setdefault("TOUTIAO_DRAFT_ONLY", "1")
+    os.environ.setdefault("WECHAT_AUTO_PUBLISH", "0")
 
     # 云端浏览器登录 session 管理：
     # GitHub Actions 通过 cache 持久化 .runtime/ 目录来保持登录状态。
@@ -217,7 +212,6 @@ def _configure_cloud_env(account_key: str) -> None:
     wechat_profile_dir = ".runtime/editor_135_profile" if wechat_135_enabled else ".runtime/wechat_profile"
     _check_and_disable_browser_platform("WECHAT", wechat_profile_dir)
     _check_and_disable_browser_platform("TOUTIAO", ".runtime/toutiao_profile")
-    _check_and_disable_browser_platform("DOUYIN", ".runtime/douyin_profile")
 
     # --- 账号 ---
     os.environ.setdefault("TOUTIAO_ACCOUNT", account_key)
@@ -229,7 +223,6 @@ def _configure_cloud_env(account_key: str) -> None:
     _logger.info("  TOUTIAO_PUBLISH_CHANNEL = %s", os.environ.get("TOUTIAO_PUBLISH_CHANNEL"))
     _logger.info("  TOUTIAO_PUBLISH_HEADLESS = %s", os.environ.get("TOUTIAO_PUBLISH_HEADLESS"))
     _logger.info("  TOUTIAO_BROWSER_PROFILE_DIR = %s", os.environ.get("TOUTIAO_BROWSER_PROFILE_DIR"))
-    _logger.info("  DOUYIN_PUBLISH_CHANNEL = %s", os.environ.get("DOUYIN_PUBLISH_CHANNEL"))
     _logger.info("  TOUTIAO_ACCOUNT = %s", os.environ.get("TOUTIAO_ACCOUNT"))
     _logger.info("  TOUTIAO_DRAFT_ONLY = %s", os.environ.get("TOUTIAO_DRAFT_ONLY", "1"))
 

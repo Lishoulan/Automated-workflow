@@ -10,8 +10,6 @@ Migration note:
     wechat_service.py JS evaluate blocks.
   - Toutiao selectors previously lived as class constants in
     publish_service.py.
-  - Douyin selectors previously lived as class constants in
-    douyin_service.py.
   - Those inline usages are now replaced with references to this module.
 
 Data loading:
@@ -454,52 +452,6 @@ _DEFAULTS: dict[str, Any] = {
             },
         ),
     },
-    "douyin": {
-        "article_page": PageSelectors(
-            name="douyin_article",
-            selectors={
-                "publish_menu_button": [
-                    "#douyin-creator-master-side-upload-wrap button",
-                    "#douyin-creator-master-side-upload",
-                ],
-                "start_button": [
-                    "button.container-drag-btn-hcUuRC",
-                ],
-                "title_input": [
-                    "input[placeholder*='文章标题']",
-                    "input[placeholder*='请输入文章标题']",
-                ],
-                "summary_input": [
-                    "input[placeholder*='内容摘要']",
-                    "input[placeholder*='精彩部分']",
-                ],
-                "editor_area": [
-                    "div.tiptap.ProseMirror[contenteditable='true']",
-                    "div[contenteditable='true'][role='textbox']",
-                ],
-                "head_image_upload": [
-                    "div.uploadButton-B4xMQ2",
-                    "div.emptyHeadImage-YXPBGr",
-                ],
-                "no_head_image_toggle": [
-                    "label:has-text('无文章头图')",
-                    "span:has-text('无文章头图')",
-                ],
-                "publish_button": [
-                    "button.button-dhlUZE.primary-cECiOJ",
-                    "button:has-text('发布')",
-                ],
-                "success_indicator": [
-                    "text=发布成功",
-                    "text=已发布",
-                    "text=发布完成",
-                ],
-                "agreement_dialog": [
-                    "div[class*='agreement']",
-                ],
-            },
-        ),
-    },
     "editor_135": {
         "login_page": PageSelectors(
             name="editor_135_login",
@@ -605,26 +557,6 @@ _DEFAULT_CONSTANTS: dict[str, dict[str, tuple[str, ...]]] = {
         "publish_button_texts": ("发表", "发布", "群发", "提交", "确认发布"),
         "success_markers": ("发表成功", "发布成功", "群发成功", "已发送", "发布完成"),
     },
-    "douyin": {
-        "login_markers": (
-            "创作者登录",
-            "登录或注册即代表同意",
-            "用户协议",
-            "隐私政策",
-            "千万创作者邀你同行",
-            "创作者登录 / 机构登录",
-            "创作者登录/机构登录",
-        ),
-        "publish_failure_hints": (
-            "请上传封面图",
-            "请上传图片",
-            "请填写文章标题",
-            "请填写文章正文",
-            "请完善",
-            "不能为空",
-            "发布失败",
-        ),
-    },
     "editor_135": {
         "session_ready_markers": ("135编辑器", "我的文章", "保存同步", "模板中心"),
         "login_url_markers": ("/login", "/user/login"),
@@ -710,16 +642,6 @@ TOUTIAO_EDITOR_PAGE = _resolved["toutiao"]["editor_page"]
 
 
 # ========================================================================
-# Douyin (抖音) — module-level constants
-# ========================================================================
-
-DOUYIN_ARTICLE_PAGE = _resolved["douyin"]["article_page"]
-
-DOUYIN_LOGIN_MARKERS = _resolved_constants["douyin"]["login_markers"]
-DOUYIN_PUBLISH_FAILURE_HINTS = _resolved_constants["douyin"]["publish_failure_hints"]
-
-
-# ========================================================================
 # 135 Editor (135编辑器) — module-level constants
 # ========================================================================
 
@@ -756,14 +678,6 @@ def get_toutiao_page(page_name: str) -> PageSelectors | None:
     pages = {
         "home": TOUTIAO_HOME_PAGE,
         "editor": TOUTIAO_EDITOR_PAGE,
-    }
-    return pages.get(page_name)
-
-
-def get_douyin_page(page_name: str) -> PageSelectors | None:
-    """Look up a Douyin page selector set by name."""
-    pages = {
-        "article": DOUYIN_ARTICLE_PAGE,
     }
     return pages.get(page_name)
 

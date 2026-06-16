@@ -33,7 +33,6 @@ from toutiao_content_factory.agents import BenchmarkMonitorAgent, SampleCollecto
 from toutiao_content_factory.services.wechat_service import WechatIpWhitelistBlockedException, WechatPublishService
 from toutiao_content_factory.services.wechat_launch_service import WechatLaunchService
 from toutiao_content_factory.services.image_generation_service import ImageGenerationService
-from toutiao_content_factory.services.douyin_service import DouyinPublishService
 from toutiao_content_factory.services.topic_pool_service import TopicPoolService
 from toutiao_content_factory.services.platform_health_service import PlatformHealthService
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
@@ -54,7 +53,6 @@ class ContentFactoryAppService:
         self.wechat_service = WechatPublishService(settings, logger)
         self.wechat_launch_service = WechatLaunchService(settings, logger)
         self.image_generation_service = ImageGenerationService(settings, logger)
-        self.douyin_service = DouyinPublishService(settings, logger)
         self.growth_ops_service = GrowthOpsService(settings, logger)
         self.topic_pool_service = TopicPoolService(settings, logger)
         self.content_guard_service = ContentGuardService(settings, logger)
@@ -74,7 +72,6 @@ class ContentFactoryAppService:
             logger,
             toutiao_publish_service=self.review_service.publish_service,
             wechat_publish_service=self.wechat_service,
-            douyin_publish_service=self.douyin_service,
             notification_service=self.notification_service,
         )
         self.circuit_breaker = PlatformCircuitBreaker()
@@ -868,7 +865,6 @@ class ContentFactoryAppService:
             "platform_health.json",
             "publish_preflight.json",
             "wechat_publish_preflight.json",
-            "douyin_publish_preflight.json",
             "last_wechat_publish_result.json",
         ]:
             path = automation_dir / name
@@ -890,7 +886,6 @@ class ContentFactoryAppService:
                 "platforms": {
                     "toutiao": {"status": "idle", "last_run": "", "message": ""},
                     "wechat": {"status": "idle", "last_run": "", "message": ""},
-                    "douyin": {"status": "idle", "last_run": "", "message": ""},
                 },
             },
             "platform_health.json": {
@@ -901,7 +896,6 @@ class ContentFactoryAppService:
             },
             "publish_preflight.json": {},
             "wechat_publish_preflight.json": {},
-            "douyin_publish_preflight.json": {},
             "last_wechat_publish_result.json": {},
         }
         for name, payload in clean_payloads.items():
@@ -983,40 +977,19 @@ class ContentFactoryAppService:
         result = self.wechat_service.initialize_135editor_login_session()
         return {name: str(value) for name, value in result.items()}
 
-    def initialize_douyin_publish_login(self) -> dict[str, str]:
-        result = self.douyin_service.initialize_login_session()
-        return {name: str(value) for name, value in result.items()}
-
-    def prepare_douyin_run(self, run_dir: str | None = None) -> dict[str, str]:
-        resolved = self.review_service.resolve_run_dir(run_dir)
-        result = self.douyin_service.prepare_run(resolved)
-        exported = {name: str(path) for name, path in result.items()}
-        exported["resolved_run_dir"] = str(resolved)
-        return exported
-
-    def publish_douyin_run(self, run_dir: str | None = None) -> dict[str, str]:
-        resolved = self.review_service.resolve_run_dir(run_dir)
-        result = self.douyin_service.publish_run(resolved)
-        exported = {name: str(path) for name, path in result.items()}
-        exported["resolved_run_dir"] = str(resolved)
-        return exported
-
     def retry_platform_publish(self, run_dir: str | None, platform: str) -> dict[str, str]:
         resolved = self.review_service.resolve_run_dir(run_dir)
         platform_key = str(platform or "").strip().lower()
-        if platform_key not in {"toutiao", "wechat", "douyin"}:
+        if platform_key not in {"toutiao", "wechat"}:
             raise ValueError(f"Unsupported retry platform: {platform}")
 
         if platform_key == "toutiao":
             result = self.review_service.publish_run(resolved)
             platform_snapshot = self._load_toutiao_publish_snapshot(resolved)
-        elif platform_key == "wechat":
+        else:
             result = self.wechat_service.publish_run(resolved, submit=self.settings.wechat.auto_publish)
             platform_snapshot = self._load_wechat_publish_snapshot(resolved)
             self._write_latest_wechat_automation_snapshot(resolved)
-        else:
-            result = self.douyin_service.publish_run(resolved)
-            platform_snapshot = self._load_douyin_publish_snapshot(resolved)
 
         exported = {name: str(path) for name, path in result.items()}
         exported["resolved_run_dir"] = str(resolved)
@@ -1924,26 +1897,7 @@ class ContentFactoryAppService:
                     if self._is_session_expired_error(exc):
                         self._notify_session_expired("Toutiao", exc)
 
-        if self.settings.douyin.enabled and self.settings.douyin.auto_publish:
-            if self.circuit_breaker.is_open("douyin"):
-                self.logger.warning("Douyin publish skipped: circuit breaker is open for douyin.")
-                platform_results["douyin"] = {"status": "circuit_open", "error": "Circuit breaker is open for douyin"}
-            else:
-                try:
-                    douyin_exports = self.publish_douyin_run(str(run_dir))
-                    exported_files.update(douyin_exports)
-                    platform_results["douyin"] = self._load_douyin_publish_snapshot(run_dir)
-                    self.circuit_breaker.record_success("douyin")
-                except Exception as exc:
-                    self.circuit_breaker.record_failure("douyin")
-                    message = f"Douyin publish failed: {exc}"
-                    platform_errors.append(message)
-                    platform_results["douyin"] = {"status": "failed", "error": str(exc)}
-                    self.logger.exception(message)
-                    if self._is_session_expired_error(exc):
-                        self._notify_session_expired("Douyin", exc)
-
-        # ── 多平台发布（微博 / 知乎 / 小红书） ──
+        # ── 多平台发布（知乎 / 小红书） ──
         self._publish_to_extra_platforms(
             run_dir, platform_results, platform_errors, exported_files
         )
@@ -1957,7 +1911,7 @@ class ContentFactoryAppService:
         platform_errors: list[str],
         exported_files: dict[str, str],
     ) -> None:
-        """发布文章到微博/知乎/小红书等额外平台。"""
+        """发布文章到知乎/小红书等额外平台。"""
         # 读取文章内容
         article_path = run_dir / "article.md"
         title_path = run_dir / self.settings.review.publish_dirname / "title.txt"
@@ -1990,31 +1944,6 @@ class ContentFactoryAppService:
                 tag = line.strip().lstrip("#").strip()
                 if tag:
                     tags.append(tag)
-
-        # 微博
-        if self.settings.weibo_enabled:
-            try:
-                from toutiao_content_factory.services.weibo_publisher import WeiboPublisher
-                publisher = WeiboPublisher(self.settings, self.logger)
-                result = publisher.publish_article(
-                    title=article_title,
-                    content=article_content,
-                    images=images,
-                    tags=tags,
-                )
-                platform_results["weibo"] = {
-                    "status": "success" if result.success else "failed",
-                    "permalink": result.permalink,
-                    "error": result.error,
-                }
-                if result.success:
-                    self.logger.info("微博发布成功: %s", result.permalink)
-                else:
-                    platform_errors.append(f"微博发布失败: {result.error}")
-            except Exception as exc:
-                platform_errors.append(f"微博发布异常: {exc}")
-                platform_results["weibo"] = {"status": "failed", "error": str(exc)}
-                self.logger.exception("微博发布异常")
 
         # 知乎
         if self.settings.zhihu_enabled:
@@ -2115,19 +2044,6 @@ class ContentFactoryAppService:
             "draft_media_id": draft_media_id,
         }
 
-    def _load_douyin_publish_snapshot(self, run_dir: Path) -> dict[str, object]:
-        result_path = run_dir / self.settings.review.publish_dirname / "douyin" / "douyin_publish_result.json"
-        if not result_path.exists():
-            return {"status": "missing"}
-        payload = _safe_json_loads(result_path.read_text(encoding="utf-8"), default={})
-        if not isinstance(payload, dict):
-            return {"status": "invalid"}
-        return {
-            "status": str(payload.get("status", "")).strip() or "submitted",
-            "external_url": str(payload.get("external_url", "")).strip(),
-            "image_count": int(payload.get("image_count", 0) or 0),
-        }
-
     def _write_latest_wechat_automation_snapshot(self, run_dir: Path) -> Path:
         source_path = run_dir / self.settings.review.publish_dirname / "wechat" / "wechat_publish_result.json"
         snapshot_path = self.settings.automation_dir / "last_wechat_publish_result.json"
@@ -2167,7 +2083,7 @@ class ContentFactoryAppService:
     ) -> dict[str, dict[str, object]]:
         existing = payload.get("platforms", {}) if isinstance(payload.get("platforms"), dict) else {}
         result: dict[str, dict[str, object]] = {}
-        for key in ("toutiao", "wechat", "douyin"):
+        for key in ("toutiao", "wechat"):
             previous = existing.get(key, {}) if isinstance(existing.get(key), dict) else {}
             result[key] = {
                 "status": str(previous.get("status", "idle") or "idle"),
@@ -2239,9 +2155,6 @@ class ContentFactoryAppService:
             payload["wechat_submit_status"] = str(platform_snapshot.get("submit_status", "")).strip()
             payload["wechat_publish_url"] = str(platform_snapshot.get("external_url", "")).strip()
             payload["wechat_draft_media_id"] = str(platform_snapshot.get("draft_media_id", "")).strip()
-        elif platform == "douyin":
-            payload["douyin_status"] = platform_status
-            payload["douyin_publish_url"] = str(platform_snapshot.get("external_url", "")).strip()
 
         if "resolved_run_dir" in exported:
             payload["resolved_run_dir"] = exported["resolved_run_dir"]
@@ -2337,12 +2250,6 @@ class ContentFactoryAppService:
             if self.settings.wechat.enabled:
                 object.__setattr__(self.settings.wechat, "enabled", False)
             degraded.append("wechat")
-        if "douyin" in blocking_platforms:
-            if self.settings.douyin.auto_publish:
-                object.__setattr__(self.settings.douyin, "auto_publish", False)
-            if self.settings.douyin.enabled:
-                object.__setattr__(self.settings.douyin, "enabled", False)
-            degraded.append("douyin")
         if degraded:
             self.logger.warning(
                 "已将以下平台降级（禁用发布）: %s",
@@ -2360,7 +2267,6 @@ class ContentFactoryAppService:
         platform_labels = {
             "toutiao": "Toutiao",
             "wechat": "WeChat OA",
-            "douyin": "Douyin",
         }
         readable_platforms = [platform_labels.get(item, item) for item in blocking_platforms]
         platform_messages: list[str] = []
@@ -2529,7 +2435,6 @@ class ContentFactoryAppService:
         platform_labels = {
             "toutiao": "Toutiao",
             "wechat": "WeChat OA",
-            "douyin": "Douyin",
         }
         readable_platforms = [platform_labels.get(p, p) for p in blocking_platforms]
         message = (

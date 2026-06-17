@@ -20,7 +20,7 @@ except ImportError:
     ProxyHandler = None
     build_opener = None
 
-from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.config import AppSettings, RPAResilienceSettings
 from toutiao_content_factory.constants.selectors import (
     WECHAT_LOGIN_PAGE,
     WECHAT_EDITOR_PAGE,
@@ -51,9 +51,14 @@ from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
+    from playwright.sync_api import Error as PlaywrightError
 except ModuleNotFoundError:  # pragma: no cover - optional dependency fallback
     PlaywrightTimeoutError = Exception
+    PlaywrightError = Exception
     sync_playwright = None
+
+# 模块 A 合并新增：tenacity 动态重试装饰器
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 
 class WechatIpWhitelistBlockedException(RuntimeError):
@@ -74,6 +79,54 @@ class WechatPublishService:
         self._access_token: str | None = None
         self._access_token_expires_at = 0.0
         self._editor_135_service = Editor135Service(settings, logger)
+        # 模块 A 合并新增：读取 rpa_resilience 配置，若无则使用默认值（向下兼容）
+        self.rpa_config = getattr(settings, "rpa_resilience", RPAResilienceSettings())
+
+    def _get_retry_decorator(self):
+        """模块 A 合并新增：动态生成基于配置的 tenacity 重试装饰器。"""
+        return retry(
+            stop=stop_after_attempt(self.rpa_config.max_retries),
+            wait=wait_exponential(
+                multiplier=self.rpa_config.retry_backoff_seconds,
+                min=2,
+                max=10,
+            ),
+            retry=retry_if_exception_type((PlaywrightError, TimeoutError, PlaywrightTimeoutError)),
+            reraise=True,
+            before_sleep=lambda retry_state: self.logger.warning(
+                f"RPA 操作失败，正在进行第 {retry_state.attempt_number} 次重试..."
+            ),
+        )
+
+    def _defend_popups(self, page) -> int:
+        """模块 A 合并新增：主动拦截并关闭微信后台的干扰弹窗。
+
+        返回关闭的弹窗数量。
+        """
+        if not self.rpa_config.popup_defense_enabled:
+            return 0
+
+        closed_count = 0
+        popup_selectors = [
+            "text='我知道了'",
+            "text='确定'",
+            ".modal-close",
+            ".dialog-close-btn",
+            "text='关闭'",
+            ".editor-guide-close",
+            "text='下次再说'",
+        ]
+
+        for selector in popup_selectors:
+            try:
+                element = page.locator(selector).first
+                if element.is_visible(timeout=500):
+                    element.click()
+                    closed_count += 1
+                    self.logger.info(f"弹窗防御机制：成功关闭弹窗 [{selector}]")
+            except Exception:
+                continue
+        return closed_count
 
     def publish_run(self, run_dir: Path, submit: bool = False) -> dict[str, Path]:
         self._ensure_enabled()

@@ -17,3 +17,8 @@ pydantic>=2.0.0
 sqlmodel>=0.0.22
 
 httpx>=0.27.0
+
+# 模块 B：内容守卫 SimHash 分词与查重优化
+jieba>=0.42.1
+# 模块 C：演进规则相似度快速匹配
+rapidfuzz>=3.8.0

@@ -43,6 +43,8 @@ class ExtractionResult:
     word_target: int = 0
     evidence_items: list[dict[str, str]] = field(default_factory=list)
     source_summaries: list[dict[str, str]] = field(default_factory=list)
+    # 模块 C 合并新增：演进规则提取结果（向下兼容，旧序列化文件无此字段时默认空列表）
+    extracted_rules: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ExtractionResult":
@@ -74,6 +76,7 @@ class ExtractionResult:
             word_target=int(payload.get("word_target", 0)),
             evidence_items=list(payload.get("evidence_items", [])),
             source_summaries=list(payload.get("source_summaries", [])),
+            extracted_rules=list(payload.get("extracted_rules", [])),
         )
 
 
@@ -176,6 +179,8 @@ class ContentScore:
     publish_risk_flags: list[str] = field(default_factory=list)
     publish_recommendation: str = "manual_review"
     publish_notes: list[str] = field(default_factory=list)
+    # 模块 B 合并新增：内容守卫标记（向下兼容，旧序列化文件无此字段时默认空列表）
+    guard_flags: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ContentScore":
@@ -193,6 +198,7 @@ class ContentScore:
             publish_risk_flags=list(payload.get("publish_risk_flags", [])),
             publish_recommendation=str(payload.get("publish_recommendation", "manual_review")),
             publish_notes=list(payload.get("publish_notes", [])),
+            guard_flags=list(payload.get("guard_flags", [])),
         )
 
 

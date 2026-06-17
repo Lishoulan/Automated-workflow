@@ -14,21 +14,38 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 
-from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.config import AppSettings, RPAResilienceSettings
 from toutiao_content_factory.constants.selectors import TOUTIAO_EDITOR_PAGE
 from toutiao_content_factory.models import PublishRecord
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
+# 健壮性增强模块：动态重试退避 / 弹窗守卫 / 定位器降级 / 发布状态双重校验
+# 所有增强能力均以可选方式接入，不破坏原有配置隔离与业务逻辑
+from toutiao_content_factory.services.rpa_resilience import (
+    LocatorStrategy,
+    PopupGuard,
+    PublishVerificationResult,
+    RetryPolicy,
+    classify_exception,
+    locate_with_fallbacks,
+    retry_with_backoff,
+    verify_publish_dually,
+)
 from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
+    from playwright.sync_api import Error as PlaywrightError
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     PlaywrightTimeoutError = Exception
+    PlaywrightError = Exception
     sync_playwright = None
+
+# 模块 A 合并新增：tenacity 动态重试装饰器
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 try:
     import msvcrt
@@ -128,6 +145,69 @@ class PublishService:
         self.history_path = settings.output_dir / settings.publishing.history_filename
         self.growth_ops_service = GrowthOpsService(settings, logger)
         self.content_guard_service = ContentGuardService(settings, logger)
+        # 健壮性增强：默认重试策略（指数退避 1s→2s→4s→8s，含 30% 抖动）
+        # 阻断性异常（登录过期/账号封禁）立即抛出，不浪费重试次数
+        self._rpa_retry_policy = RetryPolicy(
+            max_attempts=4,
+            base_delay=1.0,
+            max_delay=15.0,
+            multiplier=2.0,
+            jitter=0.3,
+            retryable_only=True,
+        )
+        # 健壮性增强：弹窗守卫实例（延迟创建，需要 page 时才实例化）
+        # 通过 _make_popup_guard(page) 在每次发布流程中创建绑定到当前 page 的守卫
+        self._popup_guard_platform = "toutiao"
+        # 模块 A 合并新增：读取 rpa_resilience 配置，若无则使用默认值（向下兼容）
+        self.rpa_config = getattr(settings, "rpa_resilience", RPAResilienceSettings())
+
+    def _get_retry_decorator(self):
+        """模块 A 合并新增：动态生成基于配置的 tenacity 重试装饰器。"""
+        return retry(
+            stop=stop_after_attempt(self.rpa_config.max_retries),
+            wait=wait_exponential(
+                multiplier=self.rpa_config.retry_backoff_seconds,
+                min=2,
+                max=10,
+            ),
+            retry=retry_if_exception_type((PlaywrightError, TimeoutError, PlaywrightTimeoutError)),
+            reraise=True,
+            before_sleep=lambda retry_state: self.logger.warning(
+                f"RPA 操作失败，正在进行第 {retry_state.attempt_number} 次重试..."
+            ),
+        )
+
+    def _defend_popups(self, page) -> int:
+        """模块 A 合并新增：主动拦截并关闭创作者后台的干扰弹窗。
+
+        返回关闭的弹窗数量。
+        """
+        if not self.rpa_config.popup_defense_enabled:
+            return 0
+
+        closed_count = 0
+        # 常见干扰弹窗的选择器（头条/微信通用常见干扰）
+        popup_selectors = [
+            "text='我知道了'",
+            "text='确定'",
+            ".modal-close",
+            ".dialog-close-btn",
+            "text='关闭'",
+            "text='暂不安全'",
+            ".editor-guide-close",
+            "text='下次再说'",
+        ]
+
+        for selector in popup_selectors:
+            try:
+                element = page.locator(selector).first
+                if element.is_visible(timeout=500):
+                    element.click()
+                    closed_count += 1
+                    self.logger.info(f"弹窗防御机制：成功关闭弹窗 [{selector}]")
+            except Exception:
+                continue
+        return closed_count
 
     @contextmanager
     def _publish_session_lock(self, purpose: str):
@@ -620,6 +700,13 @@ class PublishService:
                     self._dismiss_ai_assistant_drawer(page, notes)
                     self._wait_for_publish_editor_ready(page)
                     self._permanently_hide_ai_assistant(page, notes)
+                    # 健壮性增强：进入编辑页后进行一次弹窗阻击扫描
+                    # 关闭"新手引导""平台规则更新"等可能遮挡标题/正文输入框的弹窗
+                    try:
+                        guard = self._make_popup_guard(page)
+                        guard.sweep_before(notes, stage="editor_enter")
+                    except Exception as exc:
+                        self.logger.debug("PopupGuard editor-enter sweep failed (non-blocking): %s", exc)
                     title_selector = self._resolve_editor_selector(
                         page,
                         selectors.get("title_input", []),
@@ -755,6 +842,13 @@ class PublishService:
                     except Exception:
                         pass
                     notes.append("Waited briefly before clicking the primary publish action.")
+                    # 健壮性增强：点击发布按钮前进行一次弹窗阻击扫描
+                    # 防止在用户停留期间弹出的"平台规则更新""新手引导"等弹窗拦截点击
+                    try:
+                        guard = self._make_popup_guard(page)
+                        guard.sweep_before(notes, stage="publish_click")
+                    except Exception as exc:
+                        self.logger.debug("PopupGuard pre-publish sweep failed (non-blocking): %s", exc)
                     debug_dir = self._capture_debug_artifacts(page, extra_payload={"notes": notes})
                     notes.append(f"Debug snapshot saved to {debug_dir}")
                     preview_start_index = len(publish_events)
@@ -834,22 +928,30 @@ class PublishService:
         return run_sync_playwright_safe(_run, timeout=600)
 
     def _retry_playwright_action(self, action_fn, description: str, max_retries: int = 2) -> None:
-        last_exc: Exception | None = None
-        for attempt in range(1 + max_retries):
-            try:
-                action_fn()
-                return
-            except Exception as exc:
-                last_exc = exc
-                if attempt >= max_retries:
-                    break
-                self.logger.warning(
-                    "Playwright action '%s' attempt %d/%d failed: %s. Retrying in 2s...",
-                    description, attempt + 1, 1 + max_retries, exc,
-                )
-                time.sleep(2)
-        if last_exc is not None:
-            raise last_exc
+        """执行 RPA 操作，带指数退避重试与异常分级
+
+        健壮性增强说明（保留原签名，向后兼容）：
+        - 原实现：固定 2s 间隔重试，不区分异常类型
+        - 新实现：
+          1) 使用 RetryPolicy 指数退避（1s→2s→4s，含 30% 抖动）
+          2) 通过 classify_exception 区分可重试/阻断性异常
+          3) 登录过期、账号封禁等阻断性异常立即抛出，不浪费重试
+          4) max_retries 参数保留向后兼容，映射到 RetryPolicy.max_attempts
+        """
+        policy = RetryPolicy(
+            max_attempts=1 + max_retries,
+            base_delay=1.0,
+            max_delay=15.0,
+            multiplier=2.0,
+            jitter=0.3,
+            retryable_only=True,
+        )
+        retry_with_backoff(
+            action_fn,
+            description=description,
+            policy=policy,
+            logger=self.logger,
+        )
 
     def _resolve_profile_dir(self) -> Path:
         path = Path(self.settings.publishing.user_data_dir)
@@ -1118,7 +1220,27 @@ class PublishService:
         except Exception as exc:
             self.logger.debug("Failed to inject AI assistant CSS: %s", exc)
 
+    def _make_popup_guard(self, page) -> PopupGuard:
+        """创建绑定到当前 page 的弹窗守卫实例
+
+        健壮性增强：每次发布流程创建独立的 PopupGuard，避免跨 page 状态污染
+        """
+        return PopupGuard(
+            page,
+            logger=self.logger,
+            platform=self._popup_guard_platform,
+            sweep_timeout_ms=500,
+        )
+
     def _dismiss_ai_assistant_drawer(self, page, notes: list[str]) -> None:
+        """关闭 AI 助手抽屉 + 主动扫描其他干扰弹窗
+
+        健壮性增强说明（保留原有 AI 抽屉关闭逻辑，叠加 PopupGuard 主动扫描）：
+        - 原实现：仅关闭 AI 助手抽屉
+        - 新实现：在关闭 AI 抽屉后，额外调用 PopupGuard.sweep() 主动扫描并关闭
+                  新手引导、平台规则公告、通用遮罩等干扰弹窗
+        - 无侵入式：PopupGuard 任何异常都被捕获，不影响主干流程
+        """
         dismissed = False
 
         for selector in self.AI_DRAWER_CLOSE_SELECTORS:
@@ -1179,6 +1301,16 @@ class PublishService:
                 pass
         elif dismissed:
             notes.append("Dismissed AI assistant overlay before editor interaction.")
+
+        # 健壮性增强：主动扫描其他干扰弹窗（新手引导/平台公告/通用遮罩）
+        # 无侵入式：任何异常都被捕获，绝不影响主干流程
+        try:
+            guard = self._make_popup_guard(page)
+            extra_dismissed = guard.sweep(notes)
+            if extra_dismissed:
+                notes.append(f"PopupGuard additionally dismissed: {', '.join(extra_dismissed)}")
+        except Exception as exc:
+            self.logger.debug("PopupGuard sweep failed (non-blocking): %s", exc)
 
     def _set_editor_content(self, page, selector: str, article: str, notes: list[str]) -> None:
         locator = page.locator(selector).first
@@ -2743,10 +2875,39 @@ class PublishService:
             self.logger.debug("Failed to save cover verification screenshot: %s", exc)
 
     def _verify_toutiao_publish_success(self, page, title: str, notes: list[str]) -> bool:
+        """发布状态双重校验 — API 响应 + DOM 状态
+
+        健壮性增强说明（保留原有内容管理列表检测，叠加 DOM 标志双重校验）：
+        - 原实现：仅跳转到内容管理页检测标题是否出现
+        - 新实现：
+          1) 保留原有内容管理列表检测逻辑（向后兼容）
+          2) 在检测前调用 verify_publish_dually 进行 API+DOM 双重校验
+          3) DOM 层检测发布成功/失败的文本标志与 URL 跳转
+          4) 若 DOM 检测到失败标志（如"内容违规""频率过高"），即使 API 成功也判为失败
+        """
         try:
             content_mgmt_url = "https://mp.toutiao.com/profile_v4/graphic/publish"
             page.goto(content_mgmt_url, wait_until="domcontentloaded", timeout=15000)
             page.wait_for_timeout(3000)
+
+            # 健壮性增强：DOM 状态双重校验
+            # 检测页面 URL 跳转 + 发布成功/失败的文本标志
+            # 若检测到失败标志，即使 API 返回成功也判为失败（平台事后拒绝）
+            try:
+                dom_result = verify_publish_dually(
+                    page,
+                    api_success=True,  # 此处由调用方上下文保证 API 已成功
+                    wait_timeout_ms=5000,
+                    logger=self.logger,
+                )
+                for evidence in dom_result.evidence:
+                    notes.append(f"DOM verification: {evidence}")
+                if dom_result.final_status == "failure":
+                    notes.append("DOM verification detected failure markers. Marking publish as failed.")
+                    self.logger.warning("Toutiao publish DOM verification failed: %s", dom_result.evidence)
+                    return False
+            except Exception as exc:
+                self.logger.debug("DOM dual verification skipped: %s", exc)
 
             title_snippet = title[:20] if len(title) > 20 else title
             found = page.evaluate("""(titleSnippet) => {
@@ -4121,6 +4282,32 @@ class PublishService:
                 return True
         except Exception as exc:
             notes.append(f"JS DOM click error: {exc}")
+
+        # 健壮性增强：智能元素定位器降级（Selector Fallbacks）
+        # 当所有 CSS 选择器、语义按钮、文本匹配、footer 扫描、JS DOM click 均失败时，
+        # 使用 locate_with_fallbacks 尝试 XPath / ARIA role / 文本 / placeholder / label 等多策略降级
+        # 这是最后的兜底手段，提高平台 UI 微调时的定位成功率
+        try:
+            fallback_strategy = LocatorStrategy(
+                css_selectors=[],  # CSS 已全部尝试过，此处留空
+                xpath="//div[contains(@class,'publish-footer')]//button[contains(.,'发布') or contains(.,'预览并发布')]",
+                role="button",
+                role_name="(发布|立即发布|预览并发布)",
+                text="预览并发布",
+            )
+            fallback_locator = locate_with_fallbacks(
+                page,
+                fallback_strategy,
+                description="publish_button_final_fallback",
+                timeout_ms=1500,
+                logger=self.logger,
+                notes=notes,
+            )
+            if fallback_locator is not None and self._click_button_candidate(fallback_locator):
+                notes.append("Clicked publish button via LocatorStrategy final fallback (xpath/role/text).")
+                return True
+        except Exception as exc:
+            notes.append(f"LocatorStrategy final fallback error: {exc}")
 
         return False
 

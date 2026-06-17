@@ -1,68 +1,354 @@
+"""内容安全守卫与文本合规组件。
+
+本模块在文章发布前执行三道防线：
+1. AC 自动机（Aho-Corasick）敏感词扫描 —— 支持增量更新与上下文语境放行；
+2. SimHash + LSH 分桶的轻量查重引擎 —— 将全量比对降至平均 O(1)；
+3. 精细化 AI 痕迹评分 —— 多维度词频密度 + 每千字归一化。
+
+仅依赖标准库，保证轻量部署环境可用。
+"""
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
-from collections import Counter, deque
+import threading
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 
 
+# ============================================================================
+# 1) AC 自动机（TrieTree）—— 内存与吞吐量优化 + 增量更新 + 上下文语境识别
+# ============================================================================
+
+
 @dataclass(slots=True)
 class TrieNode:
+    """AC 自动机节点。
+
+    优化点：
+    - ``slots=True`` 降低实例内存开销；
+    - ``outputs`` 用 ``set`` 存“直接结束”于本节点的敏感词，去重 O(1)；
+    - ``matched`` 预计算“直接 + fail 链继承”的命中词元组，搜索时无需回溯 fail 链。
+    """
+
     children: dict[str, "TrieNode"] = field(default_factory=dict)
     fail: "TrieNode | None" = None
-    outputs: list[str] = field(default_factory=list)
+    outputs: set[str] = field(default_factory=set)
+    matched: tuple[str, ...] = ()
+
+
+@dataclass(slots=True)
+class ExclusionRule:
+    """敏感词上下文放行规则。
+
+    当 ``word`` 命中时，若其紧邻上下文满足规则则放行：
+    - ``prefixes``: 命中位置**前方**文本以其中任一字符串结尾 → 触发；
+    - ``suffixes``: 命中位置**后方**文本以其中任一字符串开头 → 触发；
+    - ``mode``: ``"any"``（默认）前/后缀任一命中即放行；``"all"`` 须同时命中。
+
+    示例：``ExclusionRule("自杀", prefixes=("非",))`` 可放行“非自杀式袭击”中的“自杀”。
+    """
+
+    word: str
+    prefixes: tuple[str, ...] = ()
+    suffixes: tuple[str, ...] = ()
+    mode: str = "any"
+
+
+@dataclass(slots=True)
+class MatchHit:
+    """一次命中的敏感词及其在文本中的区间 [start, end)。"""
+
+    word: str
+    start: int
+    end: int
 
 
 class SensitiveWordTrie:
-    def __init__(self, words: list[str] | tuple[str, ...]) -> None:
+    """AC 自动机敏感词匹配器。
+
+    相比原实现的关键优化：
+    1. 节点 ``__slots__`` + ``set`` outputs，降低内存与去重成本；
+    2. ``matched`` 预计算继承输出，搜索为单次 O(N) 遍历，无 fail 链回溯开销；
+    3. ``add_word`` / ``remove_word`` 增量更新 —— 仅按需惰性重建 fail 链，
+       无需每次重建整棵 Trie（插入/删除本身 O(L)，L 为词长）；
+    4. ``find_all_with_positions`` 返回命中位置，配合 ``ExclusionRule`` 实现上下文放行。
+    """
+
+    def __init__(self, words: Iterable[str] | None = None) -> None:
         self.root = TrieNode()
-        self.words = [str(word).strip() for word in words if str(word).strip()]
-        self._build()
+        self._word_set: set[str] = set()
+        self._fail_dirty: bool = False
+        self._lock = threading.RLock()
+        cleaned = [str(w).strip() for w in (words or ()) if str(w).strip()]
+        with self._lock:
+            for w in cleaned:
+                self._insert_word(w)
+            if cleaned:
+                self._rebuild_fail_links()
+                self._fail_dirty = False
 
-    def _build(self) -> None:
-        for word in self.words:
-            node = self.root
-            for char in word:
-                node = node.children.setdefault(char, TrieNode())
-            if word not in node.outputs:
-                node.outputs.append(word)
+    # ---- 增量更新 API ----
+    def add_word(self, word: str) -> bool:
+        """增量新增敏感词，仅标记 fail 链为脏，下次搜索前惰性重建。"""
+        word = str(word).strip()
+        if not word:
+            return False
+        with self._lock:
+            if word in self._word_set:
+                return False
+            self._insert_word(word)
+            self._word_set.add(word)
+            self._fail_dirty = True
+            return True
 
+    def remove_word(self, word: str) -> bool:
+        """增量移除敏感词并剪枝空分支，仅标记 fail 链为脏。"""
+        word = str(word).strip()
+        if not word:
+            return False
+        with self._lock:
+            if word not in self._word_set:
+                return False
+            self._remove_word(word)
+            self._word_set.discard(word)
+            self._fail_dirty = True
+            return True
+
+    def words(self) -> list[str]:
+        return sorted(self._word_set)
+
+    def __len__(self) -> int:
+        return len(self._word_set)
+
+    def __contains__(self, word: str) -> bool:
+        return str(word).strip() in self._word_set
+
+    # ---- 内部插入 / 删除 ----
+    def _insert_word(self, word: str) -> None:
+        node = self.root
+        for char in word:
+            node = node.children.setdefault(char, TrieNode())
+        node.outputs.add(word)
+
+    def _remove_word(self, word: str) -> None:
+        path: list[TrieNode] = [self.root]
+        node = self.root
+        for char in word:
+            if char not in node.children:
+                return
+            node = node.children[char]
+            path.append(node)
+        node.outputs.discard(word)
+        # 自底向上剪枝：既无子节点也无直接输出的节点可删除
+        for i in range(len(word), 0, -1):
+            cur = path[i]
+            if cur.children or cur.outputs:
+                break
+            parent = path[i - 1]
+            del parent.children[word[i - 1]]
+
+    # ---- fail 链构建（惰性）----
+    def _ensure_fail_links(self) -> None:
+        if not self._fail_dirty:
+            return
+        with self._lock:
+            if not self._fail_dirty:
+                return
+            self._rebuild_fail_links()
+            self._fail_dirty = False
+
+    def _rebuild_fail_links(self) -> None:
+        """重建 fail 链与 ``matched`` 预计算。
+
+        复杂度 O(节点总数)，但仅在词库变更后触发一次；Trie 结构本身保持不变。
+        BFS 顺序保证 ``child.fail`` 的 ``matched`` 先于 ``child`` 计算完成。
+        """
+        root = self.root
+        root.fail = None
+        root.matched = tuple(root.outputs)
         queue: deque[TrieNode] = deque()
-        for child in self.root.children.values():
-            child.fail = self.root
+        for child in root.children.values():
+            child.fail = root
+            child.matched = tuple(child.outputs)
             queue.append(child)
-
         while queue:
             node = queue.popleft()
             for char, child in node.children.items():
                 fail = node.fail
                 while fail is not None and char not in fail.children:
                     fail = fail.fail
-                child.fail = fail.children[char] if fail and char in fail.children else self.root
-                if child.fail.outputs:
-                    child.outputs.extend(item for item in child.fail.outputs if item not in child.outputs)
+                child.fail = fail.children[char] if (fail is not None and char in fail.children) else root
+                inherited = child.fail.matched
+                child.matched = tuple(child.outputs) + inherited if child.outputs else inherited
                 queue.append(child)
 
+    # ---- 搜索 ----
     def find_all(self, text: str) -> list[str]:
-        node = self.root
-        matches: list[str] = []
-        for char in text:
-            while node is not self.root and char not in node.children:
-                node = node.fail or self.root
-            if char in node.children:
-                node = node.children[char]
+        """向后兼容：返回所有命中词（含跨位置重复）。"""
+        return [hit.word for hit in self.find_all_with_positions(text)]
+
+    def find_all_with_positions(self, text: str) -> list[MatchHit]:
+        """返回带位置的命中列表，供上下文放行规则使用。"""
+        if not text:
+            return []
+        self._ensure_fail_links()
+        root = self.root
+        node = root
+        hits: list[MatchHit] = []
+        for idx, char in enumerate(text):
+            while node is not root and char not in node.children:
+                node = node.fail or root
+            child = node.children.get(char)
+            if child is not None:
+                node = child
             else:
-                node = self.root
-            if node.outputs:
-                matches.extend(node.outputs)
-        return matches
+                node = root
+            if node.matched:
+                for word in node.matched:
+                    start = idx - len(word) + 1
+                    hits.append(MatchHit(word=word, start=start, end=idx + 1))
+        return hits
+
+
+# ============================================================================
+# 2) SimHash + LSH 分桶的轻量查重引擎
+# ============================================================================
+
+
+class SimHashIndex:
+    """基于 SimHash + LSH 分桶的轻量查重索引。
+
+    - 64 位指纹，8 个 8-bit band。查询时仅在共享至少一个 band 的候选上做精细比对，
+      平均检索 O(1)，最坏 O(N)（N 为历史文章数）。
+    - 海明距离阈值 ``hamming_threshold`` 用于近重复硬判定。
+    - 指纹用 ``hashlib.md5`` 生成，跨进程稳定（不依赖 PYTHONHASHSEED）。
+    """
+
+    BITS = 64
+    NUM_BANDS = 8
+    BAND_BITS = BITS // NUM_BANDS  # 8
+
+    def __init__(self, hamming_threshold: int = 3) -> None:
+        self.hamming_threshold = hamming_threshold
+        self._band_masks = tuple(
+            ((1 << self.BAND_BITS) - 1) << (b * self.BAND_BITS) for b in range(self.NUM_BANDS)
+        )
+        self._band_shifts = tuple(b * self.BAND_BITS for b in range(self.NUM_BANDS))
+        self._buckets: list[dict[int, list[int]]] = [defaultdict(list) for _ in range(self.NUM_BANDS)]
+        self._fingerprints: list[int] = []
+        self._items: list[dict[str, Any]] = []
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    @staticmethod
+    def _hash64(token: str) -> int:
+        digest = hashlib.md5(token.encode("utf-8")).digest()
+        return int.from_bytes(digest[:8], "little")
+
+    def compute(self, tokens: Iterable[str]) -> int:
+        """对 token 序列计算 64 位 SimHash 指纹。"""
+        v = [0] * self.BITS
+        for token in tokens:
+            h = self._hash64(token)
+            for i in range(self.BITS):
+                if h & (1 << i):
+                    v[i] += 1
+                else:
+                    v[i] -= 1
+        fp = 0
+        for i in range(self.BITS):
+            if v[i] > 0:
+                fp |= (1 << i)
+        return fp
+
+    def add(self, tokens: Iterable[str], item: dict[str, Any]) -> int:
+        """加入一篇文章，返回其索引。"""
+        fp = self.compute(tokens)
+        idx = len(self._items)
+        self._items.append(item)
+        self._fingerprints.append(fp)
+        for b in range(self.NUM_BANDS):
+            key = (fp & self._band_masks[b]) >> self._band_shifts[b]
+            self._buckets[b][key].append(idx)
+        return idx
+
+    def item(self, idx: int) -> dict[str, Any]:
+        return self._items[idx]
+
+    def fingerprint(self, idx: int) -> int:
+        return self._fingerprints[idx]
+
+    def hamming(self, fp_a: int, fp_b: int) -> int:
+        return (fp_a ^ fp_b).bit_count()
+
+    def query_candidates(self, fp: int) -> list[int]:
+        """返回所有与 ``fp`` 共享至少一个 band 的候选索引（去重）。"""
+        seen: set[int] = set()
+        for b in range(self.NUM_BANDS):
+            key = (fp & self._band_masks[b]) >> self._band_shifts[b]
+            bucket = self._buckets[b].get(key)
+            if bucket:
+                seen.update(bucket)
+        return list(seen)
+
+
+# ============================================================================
+# 2.5) LightSimHash —— 纯 Python 轻量 SimHash（模块 B 合并新增）
+# ============================================================================
+
+
+class LightSimHash:
+    """纯 Python 实现的轻量 SimHash 指纹。
+
+    使用 hashlib.md5 代替 murmurhash，避免 Windows 下 C 扩展编译依赖。
+    用于 ContentGuardService 的 history_hashes 快速近重复判定。
+    """
+
+    def __init__(self, text: str, f: int = 64) -> None:
+        self.f = f
+        self.value = self._simhash(text)
+
+    def _simhash(self, text: str) -> int:
+        tokens = re.findall(r"[\u4e00-\u9fa5]+|\w+", text)
+        if not tokens:
+            return 0
+        v = [0] * self.f
+        for token in tokens:
+            h = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16)
+            for i in range(self.f):
+                if (h >> i) & 1:
+                    v[i] += 1
+                else:
+                    v[i] -= 1
+        fingerprint = 0
+        for i in range(self.f):
+            if v[i] >= 0:
+                fingerprint |= 1 << i
+        return fingerprint
+
+    def similarity(self, other: "LightSimHash") -> float:
+        """计算海明距离并转换为 0.0 ~ 1.0 的相似度。"""
+        x = self.value ^ other.value
+        ans = 0
+        while x:
+            ans += 1
+            x &= x - 1
+        return 1.0 - (ans / self.f)
+
+
+# ============================================================================
+# 3) ContentGuardService —— 整合三道防线
+# ============================================================================
 
 
 class ContentGuardService:
@@ -73,6 +359,12 @@ class ContentGuardService:
     REVIEW_REJECTED_STATUS = "rejected"
     REVIEW_REJECTED_LABEL = "审核驳回（需人工干预）"
     REVIEW_REJECTED_ACTION = "manual_intervention_required"
+
+    # SimHash 近重复硬判定阈值（海明距离 ≤ 此值视为近重复）
+    SIMHASH_HAMMING_THRESHOLD = 3
+    # 历史库规模 ≤ 此值时走全量精确比对，保证小库零假阴；超过则走 LSH 候选检索
+    FULL_SCAN_MAX_N = 64
+
     DEFAULT_BAD_WORDS = (
         "# 本地敏感词/违禁词词库，1 行 1 个词，支持中文、英文、数字组合",
         "# 以 # 开头的行会被忽略",
@@ -95,6 +387,7 @@ class ContentGuardService:
         },
     }
 
+    # AI 陈词模板（兜底，运行时会与 config/ai_cliche_words.txt 合并）
     AI_CLICHE_PHRASES = (
         "在当今快节奏的社会中",
         "不可否认的是",
@@ -129,18 +422,102 @@ class ContentGuardService:
         "蓬勃发展",
     )
 
+    # AI 高频过渡 / 结构词（段落骨架同质化信号）
+    AI_TRANSITION_PHRASES = (
+        "首先",
+        "其次",
+        "再次",
+        "最后",
+        "一方面",
+        "另一方面",
+        "与此同时",
+        "不仅如此",
+        "更为重要的是",
+        "总的来说",
+        "从另一个角度看",
+        "换言之",
+        "由此看来",
+        "由此可见",
+    )
+
+    # AI/互联网黑话密度词（空泛抽象信号）
+    AI_BUZZWORD_PHRASES = (
+        "双刃剑",
+        "深入探讨",
+        "深度解析",
+        "一文读懂",
+        "干货满满",
+        "赋能",
+        "抓手",
+        "闭环",
+        "链路",
+        "颗粒度",
+        "底层逻辑",
+        "顶层设计",
+        "降本增效",
+        "破局",
+        "重塑",
+        "颠覆",
+        "赛道",
+        "风口",
+        "红利",
+        "生态",
+        "矩阵",
+        "沉淀",
+        "打磨",
+        "迭代",
+        "对标",
+        "拉齐",
+        "对齐",
+        "组合拳",
+        "护城河",
+        "基本盘",
+        "第二增长曲线",
+    )
+
+    # 上下文放行默认规则（可在 config/exclusion_rules.txt 覆盖/扩展）
+    DEFAULT_EXCLUSION_RULES = (
+        ExclusionRule(word="自杀", prefixes=("非",), mode="any"),
+    )
+
+    NUMBER_PATTERN = re.compile(
+        r"\d+(?:\.\d+)?(?:%|倍|年|亿元|亿美元|万元|万台|万辆|万套|万吨|GW|MW|kW|GWh|MWh|kWh)"
+    )
+    _ASCII_TOKEN_PATTERN = re.compile(r"[a-z0-9%]{2,}")
+    _NON_WORD_REPLACE_PATTERN = re.compile(r"[a-z0-9%]+")
+    _WHITESPACE_PATTERN = re.compile(r"\s+")
+    _INVALID_CHAR_PATTERN = re.compile(r"[^\w\u4e00-\u9fff%]")
+    _SINGLE_DIGIT_PATTERN = re.compile(r"\d")
+
     def __init__(self, settings: AppSettings, logger) -> None:
         self.settings = settings
         self.logger = logger
+        # 模块 B 合并新增：读取 content_guard 配置（若无则使用默认值，向下兼容）
+        self.guard_config = getattr(settings, "content_guard", None)
         self.report_path = self.settings.automation_dir / "content_guard_report.json"
-        self.bad_words_path = self.settings.project_root / "config" / "bad_words.txt"
+        # 敏感词路径优先从 content_guard 配置读取，兜底原有默认路径
+        if self.guard_config and getattr(self.guard_config, "sensitive_words_path", ""):
+            self.bad_words_path = self.settings.project_root / self.guard_config.sensitive_words_path
+        else:
+            self.bad_words_path = self.settings.project_root / "config" / "bad_words.txt"
         self._ensure_bad_words_file()
         self.bad_words = self._load_bad_words()
         self.bad_words_trie = SensitiveWordTrie(self.bad_words)
+        self.exclusion_rules = self._load_exclusion_rules()
+        self.ai_cliche_phrases = self._load_ai_cliche_phrases()
         self.quality_checker = ArticleQualityChecker()
+        # 查重索引缓存：signature -> (corpus, SimHashIndex)
+        self._corpus_cache: dict[str, Any] = {}
+        self._cache_lock = threading.RLock()
+        # 模块 B 合并新增：LightSimHash 历史指纹缓存（近15天文章）
+        self.history_hashes: list[LightSimHash] = []
+
+    # ----------------------------------------------------------------------
+    # 对外主流程
+    # ----------------------------------------------------------------------
 
     def evaluate_candidate_topic(self, *, topic_title: str, topic_url: str = "") -> dict[str, Any]:
-        corpus = self._load_recent_published_corpus()
+        corpus, _ = self._get_corpus_and_index()
         raw_text = " ".join(part for part in (topic_title, topic_url) if part)
         target_text = self._normalize_text(raw_text)
         bad_words = self.scan_text(raw_text)
@@ -160,16 +537,15 @@ class ContentGuardService:
         if not target_text or not corpus:
             return self._empty_report()
 
-        best_match: dict[str, Any] | None = None
-        best_score = 0.0
-        for item in corpus:
-            score = self._cosine_similarity(target_text, str(item.get("text", "")))
-            if score > best_score:
-                best_score = score
-                best_match = item
-
-        blocked = bool(best_match and best_score >= self.TOPIC_SIMILARITY_THRESHOLD)
+        best_match, best_score, best_hamming = self._find_best_match(target_text)
+        blocked = bool(best_match and best_score >= self.TOPIC_SIMILARITY_THRESHOLD) or (
+            best_hamming <= self.SIMHASH_HAMMING_THRESHOLD
+        )
         warnings = self._build_similarity_warnings(best_match, best_score, self.TOPIC_SIMILARITY_THRESHOLD)
+        if best_hamming <= self.SIMHASH_HAMMING_THRESHOLD:
+            warnings.append(
+                f"SimHash 海明距离 {best_hamming} ≤ {self.SIMHASH_HAMMING_THRESHOLD}，判定为近重复选题。"
+            )
 
         high_risk = self._check_high_risk_categories(raw_text)
         if high_risk["blocked"]:
@@ -184,6 +560,8 @@ class ContentGuardService:
             "blocked": blocked,
             "similarity": round(best_score, 4),
             "threshold": self.TOPIC_SIMILARITY_THRESHOLD,
+            "simhash_hamming_distance": best_hamming,
+            "simhash_hamming_threshold": self.SIMHASH_HAMMING_THRESHOLD,
             "matched_run_dir": str(best_match.get("run_dir", "")) if best_match else "",
             "matched_title": str(best_match.get("title", "")) if best_match else "",
             "warnings": warnings,
@@ -200,7 +578,7 @@ class ContentGuardService:
 
         raw_text = "\n".join(part for part in (title, article) if part)
         target_text = self._normalize_text(raw_text)
-        corpus = self._load_recent_published_corpus(exclude_run_dir=run_dir)
+        corpus, _ = self._get_corpus_and_index()
         bad_words = self.scan_text(raw_text)
         if bad_words["blocked"]:
             report = self._empty_report(mode="run")
@@ -224,17 +602,16 @@ class ContentGuardService:
             self._write_report(report, run_dir=run_dir)
             return report
 
-        best_match: dict[str, Any] | None = None
-        best_score = 0.0
-        for item in corpus:
-            score = self._cosine_similarity(target_text, str(item.get("text", "")))
-            if score > best_score:
-                best_score = score
-                best_match = item
-
+        best_match, best_score, best_hamming = self._find_best_match(target_text, exclude_run_dir=run_dir)
         ai_risk = self._estimate_ai_giness(title, article)
-        blocked = bool(best_match and best_score >= self.RUN_SIMILARITY_THRESHOLD)
+        blocked = bool(best_match and best_score >= self.RUN_SIMILARITY_THRESHOLD) or (
+            best_hamming <= self.SIMHASH_HAMMING_THRESHOLD
+        )
         warnings = self._build_similarity_warnings(best_match, best_score, self.RUN_SIMILARITY_THRESHOLD)
+        if best_hamming <= self.SIMHASH_HAMMING_THRESHOLD:
+            warnings.append(
+                f"SimHash 海明距离 {best_hamming} ≤ {self.SIMHASH_HAMMING_THRESHOLD}，判定为近重复文章。"
+            )
         warnings.extend(self._build_ai_risk_warnings(ai_risk))
         # 数据引用校验
         number_warnings = self._check_number_attribution(article, run_dir)
@@ -246,6 +623,8 @@ class ContentGuardService:
             "blocked": blocked,
             "similarity": round(best_score, 4),
             "threshold": self.RUN_SIMILARITY_THRESHOLD,
+            "simhash_hamming_distance": best_hamming,
+            "simhash_hamming_threshold": self.SIMHASH_HAMMING_THRESHOLD,
             "matched_run_dir": str(best_match.get("run_dir", "")) if best_match else "",
             "matched_title": str(best_match.get("title", "")) if best_match else "",
             "run_dir": str(run_dir),
@@ -306,19 +685,268 @@ class ContentGuardService:
             } if quality_result else {},
         }
 
+    # ----------------------------------------------------------------------
+    # 敏感词扫描（上下文语境放行）
+    # ----------------------------------------------------------------------
+
     def scan_text(self, text: str) -> dict[str, Any]:
         normalized = self._normalize_text(text)
         if not normalized or not self.bad_words:
             return {"blocked": False, "matched_words": [], "warnings": []}
-        matches = self.bad_words_trie.find_all(normalized)
-        deduped = self._unique_texts(matches)
-        if not deduped:
+        hits = self.bad_words_trie.find_all_with_positions(normalized)
+        hits = self._filter_with_exclusions(hits, normalized)
+        matched = self._unique_texts([hit.word for hit in hits])
+        if not matched:
             return {"blocked": False, "matched_words": [], "warnings": []}
         return {
             "blocked": True,
-            "matched_words": deduped,
-            "warnings": [f"红线警告：命中本地敏感词/违禁词 -> {', '.join(deduped[:10])}"],
+            "matched_words": matched,
+            "warnings": [f"红线警告：命中本地敏感词/违禁词 -> {', '.join(matched[:10])}"],
         }
+
+    def _filter_with_exclusions(self, hits: list[MatchHit], text: str) -> list[MatchHit]:
+        """根据 ``exclusion_rules`` 对命中结果做上下文放行。"""
+        if not self.exclusion_rules:
+            return hits
+        kept: list[MatchHit] = []
+        for hit in hits:
+            rules = self.exclusion_rules.get(hit.word)
+            if not rules:
+                kept.append(hit)
+                continue
+            suppressed = False
+            for rule in rules:
+                prefix_hit = False
+                if rule.prefixes:
+                    for p in rule.prefixes:
+                        if text[max(0, hit.start - len(p)):hit.start] == p:
+                            prefix_hit = True
+                            break
+                suffix_hit = False
+                if rule.suffixes:
+                    for s in rule.suffixes:
+                        if text[hit.end:hit.end + len(s)] == s:
+                            suffix_hit = True
+                            break
+                if rule.mode == "all":
+                    if rule.prefixes and rule.suffixes:
+                        cond = prefix_hit and suffix_hit
+                    elif rule.prefixes:
+                        cond = prefix_hit
+                    else:
+                        cond = suffix_hit
+                else:
+                    cond = prefix_hit or suffix_hit
+                if cond:
+                    suppressed = True
+                    break
+            if not suppressed:
+                kept.append(hit)
+        return kept
+
+    # ----------------------------------------------------------------------
+    # 敏感词词库增量管理
+    # ----------------------------------------------------------------------
+
+    def reload_bad_words(self) -> list[str]:
+        """重载敏感词文件，对差集做增量增删，避免整树重建。"""
+        new_words = self._load_bad_words()
+        new_set = set(new_words)
+        old_set = set(self.bad_words)
+        for word in old_set - new_set:
+            self.bad_words_trie.remove_word(word)
+        for word in new_set - old_set:
+            self.bad_words_trie.add_word(word)
+        self.bad_words = new_words
+        return self.bad_words
+
+    def add_sensitive_word(self, word: str) -> bool:
+        normalized = self._normalize_text(word)
+        if not normalized:
+            return False
+        if self.bad_words_trie.add_word(normalized):
+            if normalized not in self.bad_words:
+                self.bad_words.append(normalized)
+            return True
+        return False
+
+    def remove_sensitive_word(self, word: str) -> bool:
+        normalized = self._normalize_text(word)
+        if not normalized:
+            return False
+        if self.bad_words_trie.remove_word(normalized):
+            if normalized in self.bad_words:
+                self.bad_words.remove(normalized)
+            return True
+        return False
+
+    def add_exclusion_rule(self, rule: ExclusionRule) -> None:
+        self.exclusion_rules.setdefault(rule.word, []).append(rule)
+
+    # ----------------------------------------------------------------------
+    # 查重：SimHash + LSH 候选检索 + 余弦 rerank
+    # ----------------------------------------------------------------------
+
+    def _corpus_signature(self) -> tuple[tuple[str, float], ...]:
+        runs_root = self.settings.runs_dir
+        if not runs_root.exists():
+            return ()
+        items: list[tuple[str, float]] = []
+        for run_dir in runs_root.iterdir():
+            if not run_dir.is_dir():
+                continue
+            try:
+                items.append((run_dir.name, run_dir.stat().st_mtime))
+            except OSError:
+                continue
+        return tuple(sorted(items))
+
+    def _get_corpus_and_index(self) -> tuple[list[dict[str, Any]], SimHashIndex]:
+        """加载历史发布语料并构建/复用 SimHash 索引（按目录签名缓存）。"""
+        with self._cache_lock:
+            sig = self._corpus_signature()
+            cached = self._corpus_cache.get("entry")
+            if cached is None or cached[0] != sig:
+                corpus = self._load_recent_published_corpus()
+                index = SimHashIndex(hamming_threshold=self.SIMHASH_HAMMING_THRESHOLD)
+                for item in corpus:
+                    tokens = self._tokenize(str(item.get("text", "")))
+                    index.add(tokens, item)
+                self._corpus_cache["entry"] = (sig, corpus, index)
+                return corpus, index
+            return cached[1], cached[2]
+
+    def _find_best_match(
+        self,
+        target_text: str,
+        *,
+        exclude_run_dir: Path | None = None,
+    ) -> tuple[dict[str, Any] | None, float, int]:
+        """返回 (最佳匹配项, 余弦相似度, 最小海明距离)。
+
+        - 历史库 ≤ ``FULL_SCAN_MAX_N``：全量精确比对，零假阴；
+        - 否则：LSH 候选检索 O(1) 平均 + 余弦 rerank，最坏 O(N)。
+        """
+        corpus, index = self._get_corpus_and_index()
+        if not corpus:
+            return None, 0.0, index.BITS
+
+        target_tokens = self._tokenize(target_text)
+        target_fp = index.compute(target_tokens)
+        exclude_resolved = exclude_run_dir.resolve() if exclude_run_dir is not None else None
+
+        best_match: dict[str, Any] | None = None
+        best_score = 0.0
+        best_hamming = index.BITS
+
+        if len(corpus) <= self.FULL_SCAN_MAX_N:
+            indices: Iterable[int] = range(len(corpus))
+        else:
+            indices = index.query_candidates(target_fp)
+
+        for idx in indices:
+            item = index.item(idx)
+            if self._is_excluded_item(item, exclude_resolved):
+                continue
+            score = self._cosine_similarity(target_text, str(item.get("text", "")))
+            if score > best_score:
+                best_score = score
+                best_match = item
+            h = index.hamming(target_fp, index.fingerprint(idx))
+            if h < best_hamming:
+                best_hamming = h
+        return best_match, best_score, best_hamming
+
+    def _is_excluded_item(self, item: dict[str, Any], exclude_resolved: Path | None) -> bool:
+        if exclude_resolved is None:
+            return False
+        try:
+            return Path(str(item.get("run_dir", ""))).resolve() == exclude_resolved
+        except Exception:
+            return False
+
+    # ----------------------------------------------------------------------
+    # AI 痕迹评分（精细化）
+    # ----------------------------------------------------------------------
+
+    def _estimate_ai_giness(self, title: str, article: str) -> float:
+        """精细化“去 AI 味”评分。
+
+        维度（权重和为 1.0）：
+        - 段落开头重复率 0.22
+        - AI 陈词密度      0.25
+        - 过渡结构词密度   0.18
+        - 互联网黑话密度   0.15
+        - 感叹号密度       0.10
+        - 缺乏实据（数字/引语越少分越高）0.10
+
+        所有密度按“每千字命中数”归一化，避免长文本被低估。
+        """
+        text = str(article or "")
+        full_text = "\n".join(part for part in (title, article) if part)
+        normalized = self._normalize_text(full_text)
+        if not normalized:
+            return 0.0
+
+        paragraphs = [item.strip() for item in text.splitlines() if item.strip()]
+        char_count = max(len(normalized), 1)
+        kchars = max(char_count / 1000.0, 1.0)
+
+        repeated_openers = self._repeated_paragraph_opener_ratio(paragraphs)
+        cliche_density = self._phrase_density_per_kchars(full_text, self.ai_cliche_phrases, kchars)
+        transition_density = self._phrase_density_per_kchars(full_text, self.AI_TRANSITION_PHRASES, kchars)
+        buzzword_density = self._phrase_density_per_kchars(full_text, self.AI_BUZZWORD_PHRASES, kchars)
+        exclamation_ratio = min(text.count("！") / max(len(paragraphs), 1), 1.0)
+        number_ratio = min(len(self._SINGLE_DIGIT_PATTERN.findall(full_text)) / char_count * 20, 1.0)
+        quote_ratio = min((full_text.count("“") + full_text.count("\"")) / max(len(paragraphs), 1), 1.0)
+        evidence_ratio = min(1.0, number_ratio + quote_ratio * 0.5)
+
+        risk = (
+            0.22 * repeated_openers
+            + 0.25 * cliche_density
+            + 0.18 * transition_density
+            + 0.15 * buzzword_density
+            + 0.10 * exclamation_ratio
+            + 0.10 * max(0.0, 1.0 - evidence_ratio)
+        )
+        return round(max(0.0, min(risk, 1.0)), 4)
+
+    def _phrase_density_per_kchars(
+        self, text: str, phrases: tuple[str, ...], kchars: float
+    ) -> float:
+        """每千字命中密度，3 次/千字即满档。"""
+        if not phrases:
+            return 0.0
+        lowered = str(text or "")
+        hits = sum(lowered.count(phrase) for phrase in phrases)
+        return min(hits / kchars / 3.0, 1.0)
+
+    def _repeated_paragraph_opener_ratio(self, paragraphs: list[str]) -> float:
+        if len(paragraphs) < 3:
+            return 0.0
+        openers = [self._normalize_text(item)[:8] for item in paragraphs if self._normalize_text(item)]
+        if len(openers) < 3:
+            return 0.0
+        counts = Counter(openers)
+        repeated = sum(value for value in counts.values() if value > 1)
+        return min(repeated / len(openers), 1.0)
+
+    def _phrase_density(self, text: str, phrases: tuple[str, ...]) -> float:
+        """旧版固定阈值密度（保留向后兼容）。"""
+        lowered = str(text or "")
+        hits = sum(lowered.count(phrase) for phrase in phrases)
+        return min(hits / 6, 1.0)
+
+    def _classify_ai_risk(self, score: float) -> str:
+        if score >= self.AI_RISK_THRESHOLD:
+            return "high"
+        if score >= self.HUMAN_REVIEW_THRESHOLD:
+            return "medium"
+        return "low"
+
+    # ----------------------------------------------------------------------
+    # 审核 / 报告辅助
+    # ----------------------------------------------------------------------
 
     def build_review_rejection_payload(
         self,
@@ -396,6 +1024,53 @@ class ContentGuardService:
             if normalized:
                 words.append(normalized)
         return self._unique_texts(words)
+
+    def _load_exclusion_rules(self) -> dict[str, list[ExclusionRule]]:
+        rules: dict[str, list[ExclusionRule]] = {}
+        for rule in self.DEFAULT_EXCLUSION_RULES:
+            rules.setdefault(rule.word, []).append(rule)
+        path = self.settings.project_root / "config" / "exclusion_rules.txt"
+        if path.exists():
+            try:
+                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    # 格式：word|prefix1,prefix2|suffix1,suffix2|mode
+                    parts = line.split("|")
+                    word = parts[0].strip()
+                    if not word:
+                        continue
+                    prefixes = (
+                        tuple(p.strip() for p in parts[1].split(",") if p.strip())
+                        if len(parts) > 1 and parts[1].strip()
+                        else ()
+                    )
+                    suffixes = (
+                        tuple(s.strip() for s in parts[2].split(",") if s.strip())
+                        if len(parts) > 2 and parts[2].strip()
+                        else ()
+                    )
+                    mode = parts[3].strip() if len(parts) > 3 and parts[3].strip() in ("any", "all") else "any"
+                    rules.setdefault(word, []).append(
+                        ExclusionRule(word=word, prefixes=prefixes, suffixes=suffixes, mode=mode)
+                    )
+            except Exception:
+                pass
+        return rules
+
+    def _load_ai_cliche_phrases(self) -> tuple[str, ...]:
+        phrases: set[str] = set(self.AI_CLICHE_PHRASES)
+        path = self.settings.project_root / "config" / "ai_cliche_words.txt"
+        if path.exists():
+            try:
+                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    word = line.strip()
+                    if word and not word.startswith("#"):
+                        phrases.add(word)
+            except Exception:
+                pass
+        return tuple(phrases)
 
     def _load_recent_published_corpus(self, *, exclude_run_dir: Path | None = None) -> list[dict[str, Any]]:
         runs_root = self.settings.runs_dir
@@ -479,61 +1154,6 @@ class ContentGuardService:
         except ValueError:
             return None
 
-    def _estimate_ai_giness(self, title: str, article: str) -> float:
-        text = str(article or "")
-        full_text = "\n".join(part for part in (title, article) if part)
-        normalized = self._normalize_text(full_text)
-        if not normalized:
-            return 0.0
-
-        paragraphs = [item.strip() for item in text.splitlines() if item.strip()]
-        repeated_openers = self._repeated_paragraph_opener_ratio(paragraphs)
-        marketing_phrases = self._phrase_density(
-            full_text,
-            (
-                "值得关注",
-                "不难发现",
-                "需要注意",
-                "从这个角度看",
-                "总体来看",
-                "换句话说",
-                "最后",
-                "首先",
-                "其次",
-                "再次",
-            ),
-        )
-        exclamation_ratio = min(text.count("！") / max(len(paragraphs), 1), 1.0)
-        number_ratio = min(len(self._SINGLE_DIGIT_PATTERN.findall(full_text)) / max(len(normalized), 1) * 20, 1.0)
-        quote_ratio = min((full_text.count("“") + full_text.count("\"")) / max(len(paragraphs), 1), 1.0)
-        cliche_density = self._phrase_density(full_text, self.AI_CLICHE_PHRASES)
-        risk = 0.34 * repeated_openers + 0.28 * marketing_phrases + 0.20 * exclamation_ratio
-        risk += 0.18 * max(0.0, 1.0 - min(1.0, number_ratio + quote_ratio * 0.35))
-        risk += 0.18 * cliche_density
-        return round(max(0.0, min(risk, 1.0)), 4)
-
-    def _repeated_paragraph_opener_ratio(self, paragraphs: list[str]) -> float:
-        if len(paragraphs) < 3:
-            return 0.0
-        openers = [self._normalize_text(item)[:8] for item in paragraphs if self._normalize_text(item)]
-        if len(openers) < 3:
-            return 0.0
-        counts = Counter(openers)
-        repeated = sum(value for value in counts.values() if value > 1)
-        return min(repeated / len(openers), 1.0)
-
-    def _phrase_density(self, text: str, phrases: tuple[str, ...]) -> float:
-        lowered = str(text or "")
-        hits = sum(lowered.count(phrase) for phrase in phrases)
-        return min(hits / 6, 1.0)
-
-    def _classify_ai_risk(self, score: float) -> str:
-        if score >= self.AI_RISK_THRESHOLD:
-            return "high"
-        if score >= self.HUMAN_REVIEW_THRESHOLD:
-            return "medium"
-        return "low"
-
     def _build_similarity_warnings(
         self,
         best_match: dict[str, Any] | None,
@@ -594,18 +1214,6 @@ class ContentGuardService:
             result.append(text)
         return result
 
-    NUMBER_PATTERN = re.compile(
-        r"\d+(?:\.\d+)?(?:%|倍|年|亿元|亿美元|万元|万台|万辆|万套|万吨|GW|MW|kW|GWh|MWh|kWh)"
-    )
-    # 预编译 tokenize 相关的正则表达式
-    _ASCII_TOKEN_PATTERN = re.compile(r"[a-z0-9%]{2,}")
-    _NON_WORD_REPLACE_PATTERN = re.compile(r"[a-z0-9%]+")
-    # 预编译 normalize_text 相关的正则表达式
-    _WHITESPACE_PATTERN = re.compile(r"\s+")
-    _INVALID_CHAR_PATTERN = re.compile(r"[^\w\u4e00-\u9fff%]")
-    # 预编译数字模式
-    _SINGLE_DIGIT_PATTERN = re.compile(r"\d")
-
     def _check_number_attribution(self, article_text: str, run_dir: Path) -> list[str]:
         """检查文章中的数字是否在原始素材中有对应出处"""
         warnings: list[str] = []
@@ -646,6 +1254,8 @@ class ContentGuardService:
             "blocked": False,
             "similarity": 0.0,
             "threshold": 0.0,
+            "simhash_hamming_distance": SimHashIndex.BITS,
+            "simhash_hamming_threshold": self.SIMHASH_HAMMING_THRESHOLD,
             "matched_run_dir": "",
             "matched_title": "",
             "warnings": [],
@@ -659,31 +1269,31 @@ class ContentGuardService:
 
     def _now(self) -> str:
         return datetime.now().isoformat(timespec="seconds")
-    
+
     def _load_title_and_article(self, run_dir: Path) -> tuple[str, str]:
         """从运行目录中加载标题和文章内容"""
         publish_dir = run_dir / self.settings.review.publish_dirname
         article_path = publish_dir / "article.md"
         title_path = publish_dir / "title.txt"
-        
+
         if not article_path.exists():
             article_path = run_dir / "article.md"
         if not title_path.exists():
             title_path = run_dir / "titles.txt"
-        
+
         title = ""
         article = ""
-        
+
         if title_path.exists():
             try:
                 title = title_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[0].strip()
             except Exception:
                 pass
-        
+
         if article_path.exists():
             try:
                 article = article_path.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 pass
-        
+
         return title, article

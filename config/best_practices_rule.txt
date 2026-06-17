@@ -1,0 +1,37 @@
+[
+  {
+    "rule_id": "RULE_001",
+    "category": "headline",
+    "rule": "避免在标题中使用'惊爆'、'炸裂'、'不可思议'等营销套话，采用[好奇型]与[理性型]结合的双标题模式。",
+    "weight": 0.8,
+    "trigger_patterns": ["营销", "标题", "爆款"]
+  },
+  {
+    "rule_id": "RULE_002",
+    "category": "evidence",
+    "rule": "正文前10%必须包含至少一个具体数字证据或公司主体锚点，增加信息密度与可信度。",
+    "weight": 0.9,
+    "trigger_patterns": ["开头", "证据", "数据"]
+  },
+  {
+    "rule_id": "RULE_003",
+    "category": "opening_hook",
+    "rule": "开头前两句必须给出问题、反常识判断或具体结果，禁止空泛导语。",
+    "weight": 0.85,
+    "trigger_patterns": ["开头", "钩子", "第一句"]
+  },
+  {
+    "rule_id": "RULE_004",
+    "category": "paragraph_density",
+    "rule": "正文每段控制在2到3句，避免大段密集排版，用短段落制造节奏顿挫感。",
+    "weight": 0.7,
+    "trigger_patterns": ["段落", "排版", "疏密"]
+  },
+  {
+    "rule_id": "RULE_005",
+    "category": "closing_interaction",
+    "rule": "结尾必须抛出一个具体问题，引导读者站队或补充观点，禁止总结式收束。",
+    "weight": 0.65,
+    "trigger_patterns": ["结尾", "互动", "提问"]
+  }
+]

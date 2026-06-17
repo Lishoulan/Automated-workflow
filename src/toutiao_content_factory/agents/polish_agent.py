@@ -75,6 +75,15 @@ class PolishAgent(BaseAgent):
         cache_context: CacheContext,
         revision_focus: list[str] | None = None,
     ) -> dict[str, object]:
+        # 动态筛选 TOP 3 规则，用于门控校对
+        active_rules = self.select_top_rules(
+            industry=self.clean_publish_text(data_report.focus_industry).strip(),
+            keywords=data_report.focus_keywords + data_report.supply_chain_keywords,
+            content_format=data_report.content_format or "deep_analysis",
+            limit=3,
+        )
+        rule_block = self.format_dynamic_rules_block(active_rules)
+
         prompt = self.render_prompt(
             "polish_prompt.md",
             platform=self.settings.platform,
@@ -89,6 +98,8 @@ class PolishAgent(BaseAgent):
             summary=content.summary,
         )
         prompt = prompt + self.ANTI_AI_FLAVOR_APPENDIX
+        if rule_block:
+            prompt = prompt + "\n\n" + rule_block + "\n请在润色时严格执行以上规则。"
         payload = self.request_json("你是 PolishAgent，只输出 JSON。", prompt)
         if payload:
             polished = str(payload.get("polished_article", "")).strip()
@@ -96,11 +107,36 @@ class PolishAgent(BaseAgent):
                 original_chars = len(content.article.replace("\n", "").replace(" ", ""))
                 article = self._finalize_article(polished, data_report, trend_report, revision_focus=revision_focus, original_char_count=original_chars)
                 validation_notes, validation_score = self._validate_article(article, data_report, trend_report)
+
+                # 规则契合度门控校对
+                conformance_notes, conformance_score, needs_repolish = self._check_rule_conformance(
+                    article, active_rules
+                )
                 model_notes = self._clean_list(payload.get("validation_notes"), 8)
+                all_notes = self.unique(model_notes + validation_notes + conformance_notes)[:10]
+
+                # 若契合度过低且需要二次润色，触发门控
+                if needs_repolish and self.openai_service.available:
+                    repolish_article = self._repolish_for_rules(article, active_rules, conformance_notes)
+                    if repolish_article:
+                        article = self._finalize_article(
+                            repolish_article, data_report, trend_report,
+                            revision_focus=revision_focus, original_char_count=original_chars,
+                        )
+                        # 二次校验
+                        re_notes, re_score = self._validate_article(article, data_report, trend_report)
+                        all_notes = self.unique(all_notes + re_notes)[:10]
+                        validation_score = max(validation_score, re_score)
+                        all_notes.append("已触发规则契合度二次润色，草稿已修正。")
+
                 return {
                     "polished_article": article,
-                    "validation_notes": self.unique(model_notes + validation_notes)[:8],
-                    "validation_score": max(self._bound_score(payload.get("validation_score", 0)), validation_score),
+                    "validation_notes": all_notes,
+                    "validation_score": max(
+                        self._bound_score(payload.get("validation_score", 0)),
+                        validation_score,
+                        conformance_score,
+                    ),
                 }
         return self._fallback(content, trend_report, data_report, revision_focus=revision_focus)
 
@@ -118,6 +154,189 @@ class PolishAgent(BaseAgent):
             "validation_notes": validation_notes,
             "validation_score": validation_score,
         }
+
+    def _check_rule_conformance(
+        self,
+        article: str,
+        rules: list[dict],
+    ) -> tuple[list[str], int, bool]:
+        """规则契合度门控校对：检查草稿是否切实执行了注入的规则。
+
+        返回：(契合度备注列表, 契合度分数 0-100, 是否需要二次润色)
+        """
+        if not rules or not article:
+            return [], 80, False
+
+        notes: list[str] = []
+        total_penalty = 0.0
+        max_penalty = 0.0
+        failed_rules: list[dict] = []
+
+        for rule in rules:
+            penalty = float(rule.get("penalty_weight", 0.5))
+            max_penalty += penalty
+            category = rule.get("category", "")
+            rule_id = rule.get("rule_id", "")
+            title = rule.get("title", "")
+
+            passed, issue = self._check_single_rule(article, rule)
+            if passed:
+                notes.append(f"[规则契合] {rule_id} {category}: 通过 - {title[:30]}")
+            else:
+                total_penalty += penalty
+                failed_rules.append(rule)
+                notes.append(f"[规则违背] {rule_id} {category}: {issue}")
+
+        # 契合度分数 = 100 - (累计违背惩罚 / 最大惩罚) * 100
+        if max_penalty > 0:
+            conformance_score = max(0, int(100 - (total_penalty / max_penalty) * 100))
+        else:
+            conformance_score = 80
+
+        # 若存在权重 >= 0.8 的规则被违背，或契合度低于 60，触发二次润色
+        needs_repolish = any(
+            float(r.get("penalty_weight", 0)) >= 0.8 for r in failed_rules
+        ) or conformance_score < 60
+
+        if needs_repolish:
+            notes.append(f"[门控触发] 契合度 {conformance_score}/100，将进行规则二次润色。")
+
+        return notes, conformance_score, needs_repolish
+
+    def _check_single_rule(self, article: str, rule: dict) -> tuple[bool, str]:
+        """检查单条规则的执行情况，返回 (是否通过, 问题描述)。"""
+        category = rule.get("category", "")
+        title = rule.get("title", "")
+        paragraphs = [p.strip() for p in article.split("\n\n") if p.strip()]
+
+        if category == "opening_hook":
+            # 检查开头前两句是否有钩子（疑问句/反差数据/反直觉判断）
+            if not paragraphs:
+                return False, "文章为空，无法检查开头钩子。"
+            first_para = paragraphs[0]
+            sentences = re.split(r"[。！？!?]", first_para)
+            first_two = "".join(sentences[:2])
+            has_question = "？" in first_para or "?" in first_para
+            has_number = bool(re.search(r"\d+(?:%|倍|亿|万|元)", first_para))
+            has_contrast = any(k in first_para for k in ("但", "反而", "却", "不是", "而是", "然而"))
+            if not (has_question or has_number or has_contrast):
+                return False, "开头前两句缺少疑问句、反差数据或反直觉判断。"
+            return True, ""
+
+        if category == "title_attraction":
+            # 标题规则在正文中较难直接检查，检查是否有冲突感表达
+            if not paragraphs:
+                return False, "文章为空。"
+            return True, ""
+
+        if category == "paragraph_density":
+            # 检查是否存在过长段落（超过 165 字）
+            long_paragraphs = [p for p in paragraphs if len(p.replace(" ", "")) > 165]
+            if long_paragraphs:
+                return False, f"存在 {len(long_paragraphs)} 个过长段落（超过165字），需拆短。"
+            return True, ""
+
+        if category == "data_anchor":
+            # 检查是否包含具体数字
+            numbers = re.findall(r"\d+(?:\.\d+)?(?:%|倍|亿元|亿|万元|万亿|GW|GWh|MW|万台|万套)", article)
+            if len(numbers) < 1:
+                return False, "正文缺少具体数字锚点。"
+            return True, ""
+
+        if category == "conflict_design":
+            # 检查是否有冲突/争议表达
+            conflict_tokens = ("但", "反而", "却", "不是", "而是", "然而", "风险", "前提是", "如果")
+            if not any(token in article for token in conflict_tokens):
+                return False, "正文缺少冲突感或风险边界讨论。"
+            return True, ""
+
+        if category == "closing_interaction":
+            # 检查结尾是否有互动问题
+            if not paragraphs:
+                return False, "文章为空。"
+            closing = paragraphs[-1]
+            if "？" not in closing and "?" not in closing:
+                return False, "结尾缺少开放式互动问题。"
+            return True, ""
+
+        if category == "anti_ai_flavor":
+            # 检查是否包含 AI 套话
+            ai_phrases = ("综上所述", "不可否认", "值得注意的是", "不难发现", "众所周知", "毋庸置疑")
+            found = [p for p in ai_phrases if p in article]
+            if found:
+                return False, f"正文仍含AI套话: {'、'.join(found)}。"
+            return True, ""
+
+        # 默认通过
+        return True, ""
+
+    def _repolish_for_rules(
+        self,
+        article: str,
+        rules: list[dict],
+        conformance_notes: list[str],
+    ) -> str:
+        """规则契合度二次润色：针对违背的规则生成具体修正指令并调用 LLM。"""
+        if not rules or not article:
+            return ""
+
+        # 构建二次润色指令
+        failed_notes = [n for n in conformance_notes if n.startswith("[规则违背]")]
+        if not failed_notes:
+            return ""
+
+        rule_instructions: list[str] = []
+        for rule in rules:
+            rule_id = rule.get("rule_id", "")
+            title = rule.get("title", "")
+            positive = rule.get("positive_example", "")
+            negative = rule.get("negative_example", "")
+            instruction = f"- {rule_id}: {title}"
+            if positive:
+                instruction += f"（参考正面示例: {positive}）"
+            if negative:
+                instruction += f"（避免负面示例: {negative}）"
+            rule_instructions.append(instruction)
+
+        system_prompt = (
+            "你是 PolishAgent 的规则契合度校对器。"
+            "你的任务是根据以下规则对文章进行二次润色，确保每条规则都被严格执行。"
+            "只输出修正后的完整正文，不要输出 JSON 或解释。"
+        )
+        user_prompt = (
+            "<evolution_rules>\n"
+            "以下规则必须严格执行：\n"
+            f"{chr(10).join(rule_instructions)}\n"
+            "</evolution_rules>\n\n"
+            "<conformance_issues>\n"
+            f"{chr(10).join(failed_notes)}\n"
+            "</conformance_issues>\n\n"
+            "<source_document label=\"待润色文章\">\n"
+            f"{self.sanitize_source_document(article)}\n"
+            "</source_document>\n\n"
+            "请根据规则和契合度问题，对文章进行最小化修正：\n"
+            "1. 只修改违背规则的部分，保留已通过的内容。\n"
+            "2. 不要改变文章的核心观点和数据。\n"
+            "3. 不要增加素材中没有的新数据。\n"
+            "4. 输出纯正文，不要包含 JSON、markdown 标题符号或解释。"
+        )
+
+        try:
+            result = self.openai_service.create_json_completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+            # 尝试从 JSON 中提取，或直接使用返回文本
+            if isinstance(result, dict):
+                polished = str(result.get("polished_article") or result.get("article") or result.get("content") or "").strip()
+            else:
+                polished = str(result or "").strip()
+            if polished and len(polished) > len(article) * 0.5:
+                return polished
+        except Exception as exc:
+            self.logger.warning("规则契合度二次润色失败: %s", exc)
+
+        return ""
 
     def _finalize_article(
         self,

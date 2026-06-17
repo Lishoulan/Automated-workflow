@@ -31,7 +31,7 @@ import json
 import os
 import platform
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -495,6 +495,81 @@ class StyleProfile(BaseModel):
         )
 
 
+# ============================================================================
+# 模块 A/B/C 合并新增配置结构（全部遵循 .get 兼容规则，向下兼容）
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class RPAResilienceSettings:
+    """模块 A：RPA 浏览器发布稳定性配置。"""
+    max_retries: int = 3
+    retry_backoff_seconds: int = 2
+    popup_defense_enabled: bool = True
+    navigation_timeout_ms: int = 30000
+    stale_element_retry: int = 2
+    crash_recovery_enabled: bool = True
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RPAResilienceSettings":
+        if not data:
+            return cls()
+        return cls(
+            max_retries=data.get("max_retries", 3),
+            retry_backoff_seconds=data.get("retry_backoff_seconds", 2),
+            popup_defense_enabled=data.get("popup_defense_enabled", True),
+            navigation_timeout_ms=data.get("navigation_timeout_ms", 30000),
+            stale_element_retry=data.get("stale_element_retry", 2),
+            crash_recovery_enabled=data.get("crash_recovery_enabled", True),
+        )
+
+
+@dataclass(frozen=True)
+class ContentGuardSettings:
+    """模块 B：内容安全守卫与查重配置。"""
+    sensitive_words_path: str = "config/bad_words.txt"
+    ai_cliche_words_path: str = "config/ai_cliche_words.txt"
+    simhash_threshold: float = 0.82
+    dedup_cache_size: int = 5000
+    scan_timeout_seconds: int = 10
+    parallel_scan_enabled: bool = True
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ContentGuardSettings":
+        if not data:
+            return cls()
+        return cls(
+            sensitive_words_path=data.get("sensitive_words_path", "config/bad_words.txt"),
+            ai_cliche_words_path=data.get("ai_cliche_words_path", "config/ai_cliche_words.txt"),
+            simhash_threshold=data.get("simhash_threshold", 0.82),
+            dedup_cache_size=data.get("dedup_cache_size", 5000),
+            scan_timeout_seconds=data.get("scan_timeout_seconds", 10),
+            parallel_scan_enabled=data.get("parallel_scan_enabled", True),
+        )
+
+
+@dataclass(frozen=True)
+class EvolutionSettings:
+    """模块 C：自我演进闭环与规则动态注入配置。"""
+    best_practices_rule_path: str = "config/best_practices_rule.txt"
+    rule_injection_weight: float = 0.3
+    auto_rule_refresh: bool = True
+    rule_cache_ttl_seconds: int = 3600
+    min_rule_confidence: float = 0.6
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "EvolutionSettings":
+        if not data:
+            return cls()
+        return cls(
+            best_practices_rule_path=data.get("best_practices_rule_path", "config/best_practices_rule.txt"),
+            rule_injection_weight=data.get("rule_injection_weight", 0.3),
+            auto_rule_refresh=data.get("auto_rule_refresh", True),
+            rule_cache_ttl_seconds=data.get("rule_cache_ttl_seconds", 3600),
+            min_rule_confidence=data.get("min_rule_confidence", 0.6),
+        )
+
+
 @dataclass
 class AppSettings:
     project_root: Path
@@ -568,6 +643,10 @@ class AppSettings:
     cpe_enabled: bool = False
     # Matrix operations
     matrix_enabled: bool = False
+    # ---- 模块 A/B/C 合并新增配置字段（带默认值，向下兼容） ----
+    rpa_resilience: RPAResilienceSettings = field(default_factory=RPAResilienceSettings)
+    content_guard: ContentGuardSettings = field(default_factory=ContentGuardSettings)
+    evolution: EvolutionSettings = field(default_factory=EvolutionSettings)
 
     def ensure_directories(self) -> None:
         for directory in (
@@ -644,6 +723,11 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     review_config = ReviewSettings.from_dict(merged_payload.get("review", {}))
     publishing_config = PublishSettings.from_dict(merged_payload.get("publishing", {}))
     wechat_config = WechatSettings.from_dict(merged_payload.get("wechat", {}))
+
+    # 模块 A/B/C 合并新增配置加载（全部通过 from_dict 兜底默认值，向下兼容）
+    rpa_resilience_config = RPAResilienceSettings.from_dict(merged_payload.get("rpa_resilience", {}))
+    content_guard_config = ContentGuardSettings.from_dict(merged_payload.get("content_guard", {}))
+    evolution_config = EvolutionSettings.from_dict(merged_payload.get("evolution", {}))
 
     is_default_account = account_profile.key == DEFAULT_ACCOUNT_KEY
     default_style = os.getenv("DEFAULT_STYLE", str(merged_payload.get("writing", {}).get("default_style", "deep_industry_analysis")))
@@ -743,6 +827,10 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         cpe_enabled=_env_flag("CPE_ENABLED", False),
         # Matrix operations
         matrix_enabled=_env_flag("MATRIX_ENABLED", False),
+        # 模块 A/B/C 合并新增配置
+        rpa_resilience=rpa_resilience_config,
+        content_guard=content_guard_config,
+        evolution=evolution_config,
     )
 
 

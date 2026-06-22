@@ -450,6 +450,9 @@ class TopicCollectionService:
             raise HTTPError(url, 403, "Domain blacklisted", {}, None)
 
         retry_delays = (0.0, 1.2, 3.0)
+        configured_timeout = max(8, int(self.topic_settings.request_timeout_seconds))
+        # In GitHub Actions, fail fast on flaky sources so one slow site does not stall the whole run.
+        request_timeout = min(15, configured_timeout) if os.getenv("GITHUB_ACTIONS") else configured_timeout
         last_error: Exception | None = None
         for attempt, delay in enumerate(retry_delays, start=1):
             if delay > 0:
@@ -467,7 +470,7 @@ class TopicCollectionService:
                 with urlopen(
                     request,
                     context=self._ssl_context,
-                    timeout=max(30, self.topic_settings.request_timeout_seconds),
+                    timeout=request_timeout,
                 ) as response:
                     raw = response.read()
                     charset = encoding or response.headers.get_content_charset()

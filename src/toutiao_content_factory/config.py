@@ -689,11 +689,19 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     env_path = project_root / ".env"
     if not env_path.exists():
         import sys
-        print(
-            f"[WARNING] .env file not found at {env_path}. "
-            "Copy .env.example to .env and fill in your API keys.",
-            file=sys.stderr,
-        )
+        in_github_actions = str(os.getenv("GITHUB_ACTIONS", "")).strip().lower() == "true"
+        if in_github_actions:
+            print(
+                f"[INFO] .env file not found at {env_path}. "
+                "Continuing because GitHub Actions injects secrets via workflow env.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[WARNING] .env file not found at {env_path}. "
+                "Copy .env.example to .env and fill in your API keys.",
+                file=sys.stderr,
+            )
     load_dotenv(env_path)
 
     config_path = project_root / "config.yaml"

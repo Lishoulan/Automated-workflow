@@ -18,9 +18,14 @@ from toutiao_content_factory.config import AppSettings, RPAResilienceSettings
 from toutiao_content_factory.constants.selectors import TOUTIAO_EDITOR_PAGE
 from toutiao_content_factory.models import PublishRecord
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
-from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
+from toutiao_content_factory.services.browser_launch_guard import (
+    ensure_browser_session_ready,
+    prepare_browser_profile,
+)
+from toutiao_content_factory.services.compliance_service import get_proxy_server
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
+from toutiao_content_factory.services.notification_service import NotificationService
 # 健壮性增强模块：动态重试退避 / 弹窗守卫 / 定位器降级 / 发布状态双重校验
 # 所有增强能力均以可选方式接入，不破坏原有配置隔离与业务逻辑
 from toutiao_content_factory.services.rpa_resilience import (
@@ -34,6 +39,7 @@ from toutiao_content_factory.services.rpa_resilience import (
     verify_publish_dually,
 )
 from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
+from toutiao_content_factory.utils.browser_utils import apply_stealth, build_persistent_context_options
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -145,6 +151,10 @@ class PublishService:
         self.history_path = settings.output_dir / settings.publishing.history_filename
         self.growth_ops_service = GrowthOpsService(settings, logger)
         self.content_guard_service = ContentGuardService(settings, logger)
+        self.notification_service = NotificationService(
+            dict(os.environ),
+            fallback_log_dir=str(self.settings.output_dir / "automation"),
+        )
         # 健壮性增强：默认重试策略（指数退避 1s→2s→4s→8s，含 30% 抖动）
         # 阻断性异常（登录过期/账号封禁）立即抛出，不浪费重试次数
         self._rpa_retry_policy = RetryPolicy(
@@ -160,6 +170,90 @@ class PublishService:
         self._popup_guard_platform = "toutiao"
         # 模块 A 合并新增：读取 rpa_resilience 配置，若无则使用默认值（向下兼容）
         self.rpa_config = getattr(settings, "rpa_resilience", RPAResilienceSettings())
+
+    def _launch_persistent_browser(self, playwright, *, profile_dir: Path):
+        proxy_server = get_proxy_server()
+        launch_options, fingerprint = build_persistent_context_options(
+            account_key=self.settings.account_key,
+            profile_dir=profile_dir,
+            proxy_server=proxy_server,
+            headless=self.settings.publishing.headless,
+            channel=self.settings.publishing.channel or None,
+            executable_path=self.settings.publishing.executable_path or None,
+            timezone_id="Asia/Shanghai",
+            locale="zh-CN",
+        )
+        browser = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            **launch_options,
+        )
+        apply_stealth(browser, fingerprint=fingerprint)
+        return browser
+
+    def _toutiao_login_page_detected(self, page) -> bool:
+        current_url = str(getattr(page, "url", "") or "")
+        login_indicators = ("/login", "/passport", "/auth/login", "sso.toutiao.com")
+        if any(indicator in current_url for indicator in login_indicators):
+            return True
+        try:
+            return bool(page.evaluate("""() => {
+                const selectors = [
+                    'input[name="account"]',
+                    'input[type="password"]',
+                    '.login-container',
+                    '[class*="login-form"]'
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) return true;
+                    }
+                }
+                return false;
+            }"""))
+        except Exception:
+            return False
+
+    def _toutiao_session_ready(self, page) -> bool:
+        current_url = str(getattr(page, "url", "") or "").lower()
+        return not self._toutiao_login_page_detected(page) and (
+            "graphic/publish" in current_url or "profile_v4" in current_url or "mp.toutiao.com" in current_url
+        )
+
+    def _ensure_browser_session_ready(self, browser, page, probe_url: str) -> dict[str, Any]:
+        summary = ensure_browser_session_ready(
+            browser_context=browser,
+            page=page,
+            platform="Toutiao",
+            profile_dir=self._resolve_profile_dir(),
+            account_runtime_dir=self.settings.account_runtime_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            probe_url=probe_url,
+            login_detected_fn=self._toutiao_login_page_detected,
+            session_ready_fn=self._toutiao_session_ready,
+            notification_service=self.notification_service,
+            navigate_fn=lambda target_page, url: self._goto_publish_page(target_page, url),
+            goto_timeout_ms=max(self.settings.publishing.wait_timeout_ms, 30000),
+        )
+        if summary.get("login_detected") or not summary.get("session_ready"):
+            self._append_notification(
+                level="warn",
+                title="Toutiao session invalid",
+                message=(
+                    f"Toutiao browser session is invalid and requires manual QR login. "
+                    f"Current URL: {summary.get('current_url', '')}"
+                ),
+                notification_type="toutiao_session_invalid",
+                data=summary,
+            )
+            raise RuntimeError(
+                "Toutiao browser session is invalid or expired. "
+                f"Current URL: {summary.get('current_url', '')}. "
+                "Operator has been notified to refresh the login session."
+            )
+        return summary
 
     def _get_retry_decorator(self):
         """模块 A 合并新增：动态生成基于配置的 tenacity 重试装饰器。"""
@@ -429,27 +523,36 @@ class PublishService:
 
         def _run() -> dict[str, str]:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=False,
-                    channel=self.settings.publishing.channel or None,
-                    executable_path=self.settings.publishing.executable_path or None,
-                    viewport={"width": 1920, "height": 1080},
-                    screen={"width": 1920, "height": 1080},
-                )
+                browser = self._launch_persistent_browser(playwright, profile_dir=profile_dir)
                 try:
                     page = browser.pages[0] if browser.pages else browser.new_page()
                     diagnostic_events: list[dict[str, Any]] = []
                     self._install_publish_diagnostic_capture(page, diagnostic_events)
-                    page.goto(
-                        target_url,
-                        wait_until="domcontentloaded",
-                        timeout=self.settings.publishing.wait_timeout_ms,
+                    session_summary = ensure_browser_session_ready(
+                        browser_context=browser,
+                        page=page,
+                        platform="Toutiao",
+                        profile_dir=self._resolve_profile_dir(),
+                        account_runtime_dir=self.settings.account_runtime_dir,
+                        project_root=self.settings.project_root,
+                        logger=self.logger,
+                        probe_url=target_url,
+                        login_detected_fn=self._toutiao_login_page_detected,
+                        session_ready_fn=self._toutiao_session_ready,
+                        notification_service=self.notification_service,
+                        navigate_fn=lambda target_page, url: self._goto_publish_page(target_page, url),
+                        goto_timeout_ms=max(self.settings.publishing.wait_timeout_ms, 30000),
                     )
-                    page.wait_for_timeout(2500)
+                    if session_summary.get("session_ready"):
+                        return {
+                            "profile_dir": str(profile_dir),
+                            "current_url": page.url,
+                            "state": "ready",
+                        }
                     print("")
                     print("Browser launched for Toutiao login session initialization.")
                     print(f"Profile dir: {profile_dir}")
+                    print("Session is not ready. Notification has been sent to the operator.")
                     print("Log in to your Toutiao creator account in the opened browser window.")
                     print("Make sure the account can actually open the article publish page.")
                     print("This window will keep polling automatically for up to 10 minutes.")
@@ -547,14 +650,7 @@ class PublishService:
 
         def _run() -> dict[str, Any]:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=self.settings.publishing.headless,
-                    channel=self.settings.publishing.channel or None,
-                    executable_path=self.settings.publishing.executable_path or None,
-                    viewport={"width": 1920, "height": 1080},
-                    screen={"width": 1920, "height": 1080},
-                )
+                browser = self._launch_persistent_browser(playwright, profile_dir=profile_dir)
                 try:
                     page = browser.pages[0] if browser.pages else browser.new_page()
                     diagnostic_events: list[dict[str, Any]] = []
@@ -667,16 +763,10 @@ class PublishService:
 
         def _run() -> dict[str, Any]:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=self.settings.publishing.headless,
-                    channel=self.settings.publishing.channel or None,
-                    executable_path=self.settings.publishing.executable_path or None,
-                    viewport={"width": 1920, "height": 1080},
-                    screen={"width": 1920, "height": 1080},
-                )
+                browser = self._launch_persistent_browser(playwright, profile_dir=profile_dir)
                 try:
                     page = browser.pages[0] if browser.pages else browser.new_page()
+                    self._ensure_browser_session_ready(browser, page, publish_url)
                     publish_events: list[dict[str, Any]] = []
                     diagnostic_events: list[dict[str, Any]] = []
                     self._install_publish_event_capture(page, publish_events)

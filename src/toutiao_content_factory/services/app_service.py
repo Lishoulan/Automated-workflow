@@ -1796,7 +1796,9 @@ class ContentFactoryAppService:
                 platform_results["wechat"] = {"status": "circuit_open", "error": "Circuit breaker is open for wechat"}
             else:
                 try:
-                    wechat_exports = self.publish_wechat_run(str(run_dir), submit=True)
+                    wechat_result = self.wechat_service.publish_run_via_135(run_dir, submit=True)
+                    wechat_exports = {name: str(path) for name, path in wechat_result.items()}
+                    wechat_exports["resolved_run_dir"] = str(run_dir)
                     exported_files.update(wechat_exports)
                     platform_results["wechat"] = self._load_wechat_publish_snapshot(run_dir)
                     snapshot_path = self._write_latest_wechat_automation_snapshot(run_dir)

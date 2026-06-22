@@ -48,6 +48,21 @@ class MonetizationService:
             cta_lines.extend(["", closing])
         return clean_article + "\n" + "\n".join(cta_lines).rstrip() + "\n"
 
+    def get_cta_payload(self, *, platform_key: str = "default") -> dict[str, Any]:
+        payload = self._load_payload()
+        cta_blocks = payload.get("cta_blocks", {}) if isinstance(payload, dict) else {}
+        block = cta_blocks.get(platform_key) or cta_blocks.get("default") or {}
+        heading = str(block.get("heading", "")).strip()
+        bullets = [str(item).strip() for item in block.get("bullets", []) if str(item).strip()]
+        closing = str(block.get("closing", "")).strip()
+        return {
+            "platform_key": platform_key,
+            "marker": self.CTA_MARKER,
+            "heading": heading,
+            "bullets": bullets,
+            "closing": closing,
+        }
+
     def export_assets(self) -> dict[str, Path]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         payload = self._load_payload()

@@ -4,8 +4,9 @@ import json
 import logging
 import os
 import time
+from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     import psutil
@@ -261,3 +262,275 @@ def check_cookie_health(profile_dir: Path, *, max_age_hours: float = 72.0) -> di
         "has_local_storage": has_local_storage,
         "profile_dir": str(resolved),
     }
+
+
+def backup_browser_storage_state(
+    browser_context: Any,
+    *,
+    platform: str,
+    profile_dir: Path,
+    account_runtime_dir: Path,
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    backup_root = account_runtime_dir / "automation" / "browser_state"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    latest_path = backup_root / f"{platform}_storage_state.json"
+    timestamp_path = backup_root / f"{platform}_storage_state_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    try:
+        payload = browser_context.storage_state()
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+        latest_path.write_text(serialized, encoding="utf-8")
+        timestamp_path.write_text(serialized, encoding="utf-8")
+        logger.info(
+            "Browser session backup saved for %s: latest=%s snapshot=%s",
+            platform,
+            latest_path,
+            timestamp_path,
+        )
+        return {
+            "saved": True,
+            "latest_path": str(latest_path),
+            "snapshot_path": str(timestamp_path),
+            "cookie_count": len(payload.get("cookies", [])) if isinstance(payload, dict) else 0,
+            "profile_dir": str(profile_dir),
+        }
+    except Exception as exc:
+        logger.warning("Failed to back up browser storage state for %s: %s", platform, exc)
+        return {
+            "saved": False,
+            "error": str(exc),
+            "profile_dir": str(profile_dir),
+        }
+
+
+def restore_cookies_from_backup(
+    browser_context: Any,
+    *,
+    platform: str,
+    profile_dir: Path,
+    account_runtime_dir: Path,
+    project_root: Path,
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    candidates = _cookie_backup_candidates(
+        platform=platform,
+        profile_dir=profile_dir,
+        account_runtime_dir=account_runtime_dir,
+        project_root=project_root,
+    )
+    for candidate in candidates:
+        payload = _load_cookie_backup_payload(candidate, platform=platform, logger=logger)
+        cookies = payload.get("cookies", [])
+        if not cookies:
+            continue
+        try:
+            with suppress(Exception):
+                browser_context.clear_cookies()
+            browser_context.add_cookies(cookies)
+            logger.info("Restored %d cookies for %s from %s", len(cookies), platform, candidate)
+            return {
+                "restored": True,
+                "source": str(candidate),
+                "cookie_count": len(cookies),
+                "format": payload.get("format", "unknown"),
+            }
+        except Exception as exc:
+            logger.warning("Cookie restore failed from %s: %s", candidate, exc)
+    return {
+        "restored": False,
+        "source": "",
+        "cookie_count": 0,
+    }
+
+
+def ensure_browser_session_ready(
+    *,
+    browser_context: Any,
+    page: Any,
+    platform: str,
+    profile_dir: Path,
+    account_runtime_dir: Path,
+    project_root: Path,
+    logger: logging.Logger,
+    probe_url: str,
+    login_detected_fn: Callable[[Any], bool],
+    session_ready_fn: Callable[[Any], bool],
+    notification_service: Any | None = None,
+    navigate_fn: Callable[[Any, str], None] | None = None,
+    goto_timeout_ms: int = 30000,
+) -> dict[str, Any]:
+    summary = {
+        "platform": platform,
+        "probe_url": probe_url,
+        "profile_dir": str(profile_dir),
+        "restored": False,
+        "cookie_restore_source": "",
+        "cookie_restore_count": 0,
+        "current_url": "",
+        "login_detected": False,
+        "session_ready": False,
+        "healed": False,
+    }
+    if probe_url:
+        _navigate(page, probe_url, navigate_fn=navigate_fn, timeout_ms=goto_timeout_ms)
+        with suppress(Exception):
+            page.wait_for_timeout(1200)
+    summary.update(_inspect_session_state(page, login_detected_fn=login_detected_fn, session_ready_fn=session_ready_fn))
+    if summary["session_ready"] and not summary["login_detected"]:
+        backup_browser_storage_state(
+            browser_context,
+            platform=platform,
+            profile_dir=profile_dir,
+            account_runtime_dir=account_runtime_dir,
+            logger=logger,
+        )
+        return summary
+
+    restore_result = restore_cookies_from_backup(
+        browser_context,
+        platform=platform,
+        profile_dir=profile_dir,
+        account_runtime_dir=account_runtime_dir,
+        project_root=project_root,
+        logger=logger,
+    )
+    summary["restored"] = bool(restore_result.get("restored"))
+    summary["cookie_restore_source"] = str(restore_result.get("source", "") or "")
+    summary["cookie_restore_count"] = int(restore_result.get("cookie_count", 0) or 0)
+    if summary["restored"]:
+        if probe_url:
+            _navigate(page, probe_url, navigate_fn=navigate_fn, timeout_ms=goto_timeout_ms)
+            with suppress(Exception):
+                page.wait_for_timeout(1500)
+        summary.update(_inspect_session_state(page, login_detected_fn=login_detected_fn, session_ready_fn=session_ready_fn))
+        if summary["session_ready"] and not summary["login_detected"]:
+            summary["healed"] = True
+            backup_browser_storage_state(
+                browser_context,
+                platform=platform,
+                profile_dir=profile_dir,
+                account_runtime_dir=account_runtime_dir,
+                logger=logger,
+            )
+            return summary
+
+    message = (
+        f"{platform} browser session is invalid for account profile {profile_dir}.\n"
+        f"Probe URL: {probe_url}\n"
+        f"Current URL: {summary.get('current_url', '')}\n"
+        f"Cookie restore attempted: {'yes' if summary['restored'] else 'no'}\n"
+        f"Restore source: {summary.get('cookie_restore_source', '') or 'none'}\n"
+        "Action required: operator should reopen the platform and scan login QR code."
+    )
+    logger.warning(message)
+    if notification_service is not None:
+        try:
+            notification_service.notify_urgent(f"[URGENT] {platform} session invalid", message)
+        except Exception as exc:
+            logger.warning("Failed to send %s session notification: %s", platform, exc)
+    return summary
+
+
+def _cookie_backup_candidates(
+    *,
+    platform: str,
+    profile_dir: Path,
+    account_runtime_dir: Path,
+    project_root: Path,
+) -> list[Path]:
+    backup_root = account_runtime_dir / "automation" / "browser_state"
+    candidates = [
+        backup_root / f"{platform}_storage_state.json",
+        account_runtime_dir / "automation" / "exported_cookies.json",
+        project_root / ".runtime" / "automation" / "exported_cookies.json",
+        profile_dir / "storage_state.json",
+        profile_dir / "cookie_backup.json",
+    ]
+    if backup_root.exists():
+        candidates.extend(sorted(backup_root.glob(f"{platform}_storage_state_*.json"), key=lambda p: p.stat().st_mtime, reverse=True))
+    return [candidate for candidate in candidates if candidate.exists()]
+
+
+def _load_cookie_backup_payload(path: Path, *, platform: str, logger: logging.Logger) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.debug("Skipping unreadable cookie backup %s: %s", path, exc)
+        return {}
+
+    if isinstance(payload, dict) and isinstance(payload.get("cookies"), list):
+        return {
+            "cookies": _normalize_cookies(payload.get("cookies", [])),
+            "format": "storage_state",
+        }
+    if isinstance(payload, dict):
+        platform_data = payload.get("platforms", {}).get(platform, {})
+        if isinstance(platform_data, dict) and isinstance(platform_data.get("cookies"), list):
+            return {
+                "cookies": _normalize_cookies(platform_data.get("cookies", [])),
+                "format": "exported_cookies",
+            }
+    return {}
+
+
+def _normalize_cookies(raw_cookies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in raw_cookies:
+        if not isinstance(item, dict):
+            continue
+        cookie = {
+            "name": str(item.get("name", "")).strip(),
+            "value": str(item.get("value", "")).strip(),
+            "domain": str(item.get("domain", "")).strip(),
+            "path": str(item.get("path", "/") or "/").strip(),
+        }
+        if not cookie["name"] or not cookie["domain"]:
+            continue
+        expires = item.get("expires")
+        if isinstance(expires, (int, float)) and expires > 0:
+            cookie["expires"] = expires
+        if item.get("httpOnly"):
+            cookie["httpOnly"] = True
+        if item.get("secure"):
+            cookie["secure"] = True
+        same_site = str(item.get("sameSite", "")).strip()
+        if same_site in {"Lax", "None", "Strict"}:
+            cookie["sameSite"] = same_site
+        normalized.append(cookie)
+    return normalized
+
+
+def _inspect_session_state(
+    page: Any,
+    *,
+    login_detected_fn: Callable[[Any], bool],
+    session_ready_fn: Callable[[Any], bool],
+) -> dict[str, Any]:
+    current_url = ""
+    with suppress(Exception):
+        current_url = str(getattr(page, "url", "") or "")
+    login_detected = False
+    session_ready = False
+    with suppress(Exception):
+        login_detected = bool(login_detected_fn(page))
+    with suppress(Exception):
+        session_ready = bool(session_ready_fn(page))
+    return {
+        "current_url": current_url,
+        "login_detected": login_detected,
+        "session_ready": session_ready,
+    }
+
+
+def _default_navigate(page: Any, url: str, *, timeout_ms: int = 30000) -> None:
+    page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+
+
+def _navigate(page: Any, url: str, *, navigate_fn: Callable[[Any, str], None] | None, timeout_ms: int) -> None:
+    if navigate_fn is None:
+        _default_navigate(page, url, timeout_ms=timeout_ms)
+        return
+    try:
+        navigate_fn(page, url, timeout_ms=timeout_ms)
+    except TypeError:
+        navigate_fn(page, url)

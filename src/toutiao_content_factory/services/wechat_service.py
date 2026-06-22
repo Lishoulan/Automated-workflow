@@ -39,14 +39,17 @@ from toutiao_content_factory.constants.selectors import (
 )
 from toutiao_content_factory.exceptions import SessionExpiredException
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
-from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
+from toutiao_content_factory.services.browser_launch_guard import ensure_browser_session_ready, prepare_browser_profile
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.md2wechat_service import Md2WechatService
 from toutiao_content_factory.services.html_anything_service import HtmlAnythingService
-from toutiao_content_factory.services.wechat_layout_engine import MarkdownToWechatConverter
+from toutiao_content_factory.services.monetization_service import MonetizationService
+from toutiao_content_factory.services.notification_service import NotificationService
+from toutiao_content_factory.services.wechat_layout_engine import MarkdownToWechatConverter, append_wechat_footer
 from toutiao_content_factory.services.anti_ai_flavor import AntiAIFlavorPipeline
 from toutiao_content_factory.services.wechat_135editor_service import Editor135Service
 from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
+from toutiao_content_factory.utils.browser_utils import apply_stealth, build_persistent_context_options
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -75,12 +78,58 @@ class WechatPublishService:
         self.history_path = settings.output_dir / settings.wechat.history_filename
         self.md2wechat_service = Md2WechatService(settings, logger)
         self.html_anything_service = HtmlAnythingService(settings, logger)
+        self.monetization_service = MonetizationService(settings, logger)
+        self.notification_service = NotificationService(
+            dict(os.environ),
+            fallback_log_dir=str(self.settings.output_dir / "automation"),
+        )
         self.growth_ops_service = GrowthOpsService(settings, logger)
         self._access_token: str | None = None
         self._access_token_expires_at = 0.0
         self._editor_135_service = Editor135Service(settings, logger)
         # 模块 A 合并新增：读取 rpa_resilience 配置，若无则使用默认值（向下兼容）
         self.rpa_config = getattr(settings, "rpa_resilience", RPAResilienceSettings())
+
+    def _launch_persistent_browser(self, playwright, *, profile_dir: Path):
+        launch_options, fingerprint = build_persistent_context_options(
+            account_key=f"{self.settings.account_key}-wechat",
+            profile_dir=profile_dir,
+            headless=self.settings.publishing.headless,
+            channel=self.settings.publishing.channel or None,
+            executable_path=self.settings.publishing.executable_path or None,
+            timezone_id="Asia/Shanghai",
+            locale="zh-CN",
+        )
+        browser = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            **launch_options,
+        )
+        apply_stealth(browser, fingerprint=fingerprint)
+        return browser
+
+    def _ensure_browser_session_ready(self, browser, page, probe_url: str) -> dict[str, Any]:
+        summary = ensure_browser_session_ready(
+            browser_context=browser,
+            page=page,
+            platform="WeChat",
+            profile_dir=self._resolve_browser_profile_dir(),
+            account_runtime_dir=self.settings.account_runtime_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            probe_url=probe_url,
+            login_detected_fn=self._is_login_page,
+            session_ready_fn=self._browser_session_ready,
+            notification_service=self.notification_service,
+            navigate_fn=lambda target_page, _url: self._open_wechat_backend(target_page),
+            goto_timeout_ms=max(self.settings.publishing.wait_timeout_ms, 20000),
+        )
+        if summary.get("login_detected") or not summary.get("session_ready"):
+            raise RuntimeError(
+                "WeChat browser session is invalid or expired. "
+                f"Current URL: {summary.get('current_url', '')}. "
+                "Operator has been notified to refresh the QR login."
+            )
+        return summary
 
     def _get_retry_decorator(self):
         """模块 A 合并新增：动态生成基于配置的 tenacity 重试装饰器。"""
@@ -128,7 +177,7 @@ class WechatPublishService:
                 continue
         return closed_count
 
-    def publish_run(self, run_dir: Path, submit: bool = False) -> dict[str, Path]:
+    def publish_run(self, run_dir: Path, submit: bool = False, force_editor_135: bool = False) -> dict[str, Path]:
         self._ensure_enabled()
         publish_dir = run_dir / self.settings.review.publish_dirname
         if not publish_dir.exists():
@@ -176,18 +225,21 @@ class WechatPublishService:
         inline_image_urls: list[str] = []
         draft_media_id = ""
 
-        try:
-            access_token = self._get_access_token()
-            thumb_media_id = self._upload_cover_material(access_token, cover_path)
-            inline_image_urls = [self._upload_inline_image(access_token, path) for path in inline_image_paths]
-            api_available = True
-            self.logger.info("WeChat API available, using API + browser hybrid mode.")
-        except WechatIpWhitelistBlockedException as exc:
-            self.logger.warning(
-                "WeChat API blocked by IP whitelist, falling back to browser-only mode: %s", exc
-            )
-        except Exception as exc:
-            self.logger.warning("WeChat API unavailable, falling back to browser-only mode: %s", exc)
+        if not force_editor_135:
+            try:
+                access_token = self._get_access_token()
+                thumb_media_id = self._upload_cover_material(access_token, cover_path)
+                inline_image_urls = [self._upload_inline_image(access_token, path) for path in inline_image_paths]
+                api_available = True
+                self.logger.info("WeChat API available, using API + browser hybrid mode.")
+            except WechatIpWhitelistBlockedException as exc:
+                self.logger.warning(
+                    "WeChat API blocked by IP whitelist, falling back to browser-only mode: %s", exc
+                )
+            except Exception as exc:
+                self.logger.warning("WeChat API unavailable, falling back to browser-only mode: %s", exc)
+        else:
+            self.logger.info("Force routing WeChat publish through 135 Editor for run: %s", run_dir)
 
         article_markdown = self._compose_article_markdown(article=article, inline_image_urls=inline_image_urls)
         article_markdown_path.write_text(article_markdown, encoding="utf-8")
@@ -237,8 +289,16 @@ class WechatPublishService:
                     raise RuntimeError(f"Draft creation did not return media_id: {draft_response}")
 
         publish_response: dict[str, Any] = {}
-        if submit or self.settings.wechat.auto_publish:
-            if api_available and draft_media_id:
+        should_submit = submit if force_editor_135 else (submit or self.settings.wechat.auto_publish)
+        if should_submit:
+            if force_editor_135:
+                publish_response = self._publish_via_135editor(
+                    title=title,
+                    summary=summary,
+                    article_html=article_html,
+                    cover_path=cover_path,
+                )
+            elif api_available and draft_media_id:
                 publish_response = self._submit_draft_via_browser(
                     draft_media_id=draft_media_id,
                     title=title,
@@ -258,6 +318,14 @@ class WechatPublishService:
                     article_html=article_html,
                     cover_path=cover_path,
                 )
+        elif force_editor_135:
+            self.logger.info("Force-routing draft creation to 135 Editor.")
+            publish_response = self._publish_via_135editor(
+                title=title,
+                summary=summary,
+                article_html=article_html,
+                cover_path=cover_path,
+            )
         elif not api_available and self.settings.wechat.editor_135_enabled:
             # 即使不自动发布，也通过135编辑器创建草稿
             self.logger.info("WeChat API unavailable and auto_publish disabled, using 135 Editor to create draft.")
@@ -272,7 +340,7 @@ class WechatPublishService:
             "published_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "platform": "wechat",
             "run_dir": str(run_dir),
-            "status": "submitted" if publish_response else "draft_created",
+            "status": str(publish_response.get("status", "")).strip() if publish_response else "draft_created",
             "draft_status": "created" if api_available else "browser_only",
             "submit_status": str(publish_response.get("status", "")).strip() if publish_response else "",
             "draft_media_id": draft_media_id,
@@ -280,7 +348,7 @@ class WechatPublishService:
             "inline_image_urls": inline_image_urls,
             "layout_backend": layout_meta.get("provider", "builtin"),
             "layout_request": layout_meta.get("request", {}),
-            "submit_requested": submit or self.settings.wechat.auto_publish,
+            "submit_requested": should_submit,
             "publish_response": publish_response,
             "external_url": str(publish_response.get("publish_url", "")).strip() if publish_response else "",
             "original_declared": bool(publish_response.get("original_declared", False)) if publish_response else False,
@@ -305,6 +373,9 @@ class WechatPublishService:
             **growth_exports,
         }
 
+    def publish_run_via_135(self, run_dir: Path, submit: bool = True) -> dict[str, Path]:
+        return self.publish_run(run_dir, submit=submit, force_editor_135=True)
+
     def initialize_login_session(self) -> dict[str, str]:
         if sync_playwright is None:
             raise RuntimeError(
@@ -323,38 +394,47 @@ class WechatPublishService:
         )
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=self.settings.publishing.headless,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
+            browser = self._launch_persistent_browser(playwright, profile_dir=profile_dir)
             try:
                 page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto(
-                    self.settings.wechat.base_url,
-                    wait_until="domcontentloaded",
-                    timeout=max(self.settings.publishing.wait_timeout_ms, 20000),
+                session_summary = ensure_browser_session_ready(
+                    browser_context=browser,
+                    page=page,
+                    platform="WeChat",
+                    profile_dir=self._resolve_browser_profile_dir(),
+                    account_runtime_dir=self.settings.account_runtime_dir,
+                    project_root=self.settings.project_root,
+                    logger=self.logger,
+                    probe_url=self.settings.wechat.base_url,
+                    login_detected_fn=self._is_login_page,
+                    session_ready_fn=self._browser_session_ready,
+                    notification_service=self.notification_service,
+                    navigate_fn=lambda target_page, _url: self._open_wechat_backend(target_page),
+                    goto_timeout_ms=max(self.settings.publishing.wait_timeout_ms, 20000),
                 )
-                print("")
-                print("Log in to your WeChat Official Account in the opened browser window.")
-                print("When login is ready, make sure the 草稿箱 or 公众号后台 page is reachable.")
-                deadline = time.time() + 600
-                while time.time() < deadline:
-                    if self._browser_session_ready(page):
-                        summary = {
-                            "profile_dir": str(profile_dir),
-                            "current_url": page.url,
-                            "state": "ready",
-                        }
-                        self.settings.automation_dir.mkdir(parents=True, exist_ok=True)
-                        (self.settings.automation_dir / "wechat_publish_preflight.json").write_text(
-                            json.dumps(summary, ensure_ascii=False, indent=2),
-                            encoding="utf-8",
-                        )
-                        return summary
-                    page.wait_for_timeout(1500)
-                raise RuntimeError("WeChat login session was not confirmed within 10 minutes.")
+                if not session_summary.get("session_ready") or session_summary.get("login_detected"):
+                    print("")
+                    print("WeChat session is not ready. Notification has been sent to the operator.")
+                    print("Please scan the QR code in the opened browser window within 10 minutes.")
+                    deadline = time.time() + 600
+                    while time.time() < deadline:
+                        if self._browser_session_ready(page):
+                            break
+                        page.wait_for_timeout(1500)
+                    if not self._browser_session_ready(page):
+                        raise RuntimeError("WeChat login session was not confirmed within 10 minutes.")
+                summary = {
+                    "profile_dir": str(profile_dir),
+                    "current_url": page.url,
+                    "state": "ready",
+                    "healed": bool(session_summary.get("healed", False)),
+                }
+                self.settings.automation_dir.mkdir(parents=True, exist_ok=True)
+                (self.settings.automation_dir / "wechat_publish_preflight.json").write_text(
+                    json.dumps(summary, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                return summary
             finally:
                 browser.close()
 
@@ -507,11 +587,28 @@ class WechatPublishService:
         article_markdown: str,
         inline_image_urls: list[str],
     ) -> tuple[str, dict[str, Any]]:
+        clean_markdown = self._strip_wechat_cta_markdown(article_markdown)
+        cta_payload = self._build_wechat_cta_payload()
+        theme = self._resolve_builtin_wechat_theme()
+        brand_name = (
+            self.settings.wechat.author_name
+            or self.settings.wechat.account_name
+            or self.settings.brand_name
+        )
+
         # 优先级1: md2wechat（外部 API/CLI 服务）
         if self.md2wechat_service.available:
             try:
-                payload = self.md2wechat_service.convert(article_markdown)
-                return str(payload.get("html", "")).strip(), payload
+                payload = self.md2wechat_service.convert(clean_markdown)
+                html = append_wechat_footer(
+                    str(payload.get("html", "")).strip(),
+                    theme=theme,
+                    brand_name=brand_name,
+                    cta_payload=cta_payload,
+                )
+                payload = dict(payload)
+                payload["html"] = html
+                return html, payload
             except Exception as exc:
                 if not self.settings.wechat.md2wechat_fallback_to_builtin:
                     raise
@@ -525,34 +622,41 @@ class WechatPublishService:
         if self.html_anything_service.enabled:
             try:
                 style = getattr(self.settings.writing, "default_style", "")
-                payload = self.html_anything_service.convert(article_markdown, style=style)
-                return str(payload.get("html", "")).strip(), payload
+                payload = self.html_anything_service.convert(clean_markdown, style=style)
+                html = append_wechat_footer(
+                    str(payload.get("html", "")).strip(),
+                    theme=theme,
+                    brand_name=brand_name,
+                    cta_payload=cta_payload,
+                )
+                payload = dict(payload)
+                payload["html"] = html
+                return html, payload
             except Exception as exc:
                 self.logger.warning("html-anything conversion failed, falling back to builtin: %s", exc)
 
         # 优先级3: 内置 WeChat layout engine
         try:
-            # 导入主题预设
-            from toutiao_content_factory.services.wechat_layout_engine import THEME_PRESETS
             theme_name = self.settings.wechat.builtin_theme
-            theme = THEME_PRESETS.get(theme_name)
-            if theme is None:
-                self.logger.warning(f"Theme '{theme_name}' not found, using default theme")
-                theme = THEME_PRESETS.get("tech_blue")
             converter = MarkdownToWechatConverter(
                 theme=theme,
-                brand_name=self.settings.wechat.author_name or self.settings.wechat.account_name or self.settings.brand_name,
+                brand_name=brand_name,
+                cta_payload=cta_payload,
             )
-            html = converter.convert(article_markdown)
+            html = converter.convert(clean_markdown)
             return html, {"provider": "wechat_layout_engine", "theme": theme_name}
         except Exception as exc:
             self.logger.warning("WeChat layout engine failed, falling back to builtin renderer: %s", exc)
 
         # 优先级4: 最基础 fallback
-        return (
-            self._render_article_html(title=title, article=article, inline_image_urls=inline_image_urls),
-            {"provider": "builtin_fallback"},
+        html = self._render_article_html(title=title, article=article, inline_image_urls=inline_image_urls)
+        html = append_wechat_footer(
+            html,
+            theme=theme,
+            brand_name=brand_name,
+            cta_payload=cta_payload,
         )
+        return html, {"provider": "builtin_fallback"}
 
     def _compose_article_markdown(self, *, article: str, inline_image_urls: list[str]) -> str:
         blocks = self._build_article_blocks(title="", article=article)
@@ -579,6 +683,30 @@ class WechatPublishService:
             markdown_parts.append(f"![]({inline_image_urls[image_index]})")
             image_index += 1
         return "\n\n".join(part for part in markdown_parts if part.strip()).strip()
+
+    def _resolve_builtin_wechat_theme(self):
+        from toutiao_content_factory.services.wechat_layout_engine import THEME_PRESETS
+
+        theme_name = self.settings.wechat.builtin_theme
+        theme = THEME_PRESETS.get(theme_name)
+        if theme is None:
+            self.logger.warning("Theme '%s' not found, using default theme", theme_name)
+            theme = THEME_PRESETS.get("tech_blue")
+        return theme
+
+    def _strip_wechat_cta_markdown(self, markdown: str) -> str:
+        marker = MonetizationService.CTA_MARKER
+        normalized = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not normalized or marker not in normalized:
+            return normalized
+        return normalized.split(marker, 1)[0].rstrip()
+
+    def _build_wechat_cta_payload(self) -> dict[str, Any]:
+        try:
+            return self.monetization_service.get_cta_payload(platform_key="wechat")
+        except Exception as exc:
+            self.logger.warning("Failed to load WeChat CTA payload, continuing without CTA card: %s", exc)
+            return {}
 
     def _render_image_block(self, image_url: str) -> str:
         escaped = html.escape(image_url, quote=True)
@@ -1120,6 +1248,8 @@ class WechatPublishService:
                 article_html=article_html,
                 cover_path=cover_path,
                 summary=summary,
+                author=self.settings.wechat.author_name,
+                account_name=self.settings.wechat.account_name,
             )
             return result
         except Exception as exc:
@@ -1154,16 +1284,11 @@ class WechatPublishService:
 
         def _run() -> dict[str, Any]:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=self.settings.publishing.headless,
-                    channel=self.settings.publishing.channel or None,
-                    executable_path=self.settings.publishing.executable_path or None,
-                )
+                browser = self._launch_persistent_browser(playwright, profile_dir=profile_dir)
                 page = None
                 try:
                     page = browser.pages[0] if browser.pages else browser.new_page()
-                    self._open_wechat_backend(page)
+                    self._ensure_browser_session_ready(browser, page, self.settings.wechat.base_url)
                     self._raise_if_session_expired(page)
                     token = self._extract_token(page)
 
@@ -1854,16 +1979,11 @@ class WechatPublishService:
 
         def _run() -> dict[str, Any]:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=self.settings.publishing.headless,
-                    channel=self.settings.publishing.channel or None,
-                    executable_path=self.settings.publishing.executable_path or None,
-                )
+                browser = self._launch_persistent_browser(playwright, profile_dir=profile_dir)
                 page = None
                 try:
                     page = browser.pages[0] if browser.pages else browser.new_page()
-                    self._open_wechat_backend(page)
+                    self._ensure_browser_session_ready(browser, page, self.settings.wechat.base_url)
                     self._open_wechat_draft_box(page)
                     self._open_wechat_draft_by_title(page, title)
                     self._click_publish_button_on_wechat_page(page)

@@ -576,6 +576,88 @@ class InlineStyleBuilder:
             f"margin-top: 2em;"
         )
 
+    def keyword_chip(self) -> str:
+        return (
+            f"display: inline-block; "
+            f"padding: 1px 8px; "
+            f"margin: 0 2px; "
+            f"border-radius: 999px; "
+            f"background: {self.t.accent_color}; "
+            f"border: 1px solid {self.t.border_color}; "
+            f"color: {self.t.primary_color}; "
+            f"font-weight: 700; "
+            f"font-size: 0.92em;"
+        )
+
+    def original_badge(self) -> str:
+        return (
+            f"display: inline-block; "
+            f"padding: 5px 12px; "
+            f"border-radius: 999px; "
+            f"background: {self.t.primary_color}; "
+            f"color: #ffffff; "
+            f"font-size: 12px; "
+            f"font-weight: 800; "
+            f"letter-spacing: 1px;"
+        )
+
+    def footer_shell(self) -> str:
+        return (
+            f"margin: 28px 0 0; "
+            f"padding: 0; "
+            f"border: 1px solid {self.t.border_color}; "
+            f"border-radius: {self.t.card_radius}; "
+            f"background: linear-gradient(180deg, #ffffff 0%, {self.t.card_bg} 100%); "
+            f"overflow: hidden; "
+            f"box-shadow: 0 10px 24px rgba(0,0,0,0.06);"
+        )
+
+    def footer_meta(self) -> str:
+        return (
+            f"padding: 18px 20px 6px; "
+            f"text-align: center; "
+            f"color: {self.t.muted_color}; "
+            f"font-size: 13px; "
+            f"line-height: 1.8;"
+        )
+
+    def cta_card(self) -> str:
+        return (
+            f"margin: 14px 16px 18px; "
+            f"padding: 18px 18px 16px; "
+            f"border-radius: {self.t.card_radius}; "
+            f"background: linear-gradient(135deg, {self.t.accent_color}, #ffffff); "
+            f"border: 1px solid {self.t.border_color};"
+        )
+
+    def cta_heading(self) -> str:
+        return (
+            f"margin: 0 0 12px; "
+            f"color: {self.t.text_color}; "
+            f"font-size: 18px; "
+            f"font-weight: 800; "
+            f"line-height: 1.6;"
+        )
+
+    def cta_bullet(self) -> str:
+        return (
+            f"margin: 0 0 10px; "
+            f"padding: 10px 12px; "
+            f"border-radius: 10px; "
+            f"background: rgba(255,255,255,0.76); "
+            f"color: {self.t.text_color}; "
+            f"font-size: 15px; "
+            f"line-height: 1.8;"
+        )
+
+    def cta_closing(self) -> str:
+        return (
+            f"margin: 10px 0 0; "
+            f"color: {self.t.muted_color}; "
+            f"font-size: 14px; "
+            f"line-height: 1.8;"
+        )
+
 
 # ============================================================================
 # 自定义组件渲染器（内联样式版）
@@ -587,6 +669,7 @@ class WechatComponentRenderer:
     BLOCK_PATTERNS = [
         (re.compile(r'^:::info\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "info_card"),
         (re.compile(r'^:::warning\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "highlight_box"),
+        (re.compile(r'^:::alert\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "highlight_box"),
         (re.compile(r'^:::data\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "data_callout"),
         (re.compile(r'^:::tag\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "tag_card"),
         (re.compile(r'^:::step\s*\n(.*?)\n:::', re.DOTALL | re.MULTILINE), "step_card"),
@@ -598,7 +681,7 @@ class WechatComponentRenderer:
     ]
 
     @classmethod
-    def _wrap_content_paragraphs(cls, content: str, style: str = "") -> str:
+    def _wrap_content_paragraphs(cls, content: str, style: str = "", inline_formatter=None) -> str:
         """将组件内容中的纯文本行包裹为 <p> 标签"""
         lines = content.strip().split("\n")
         wrapped = []
@@ -610,20 +693,68 @@ class WechatComponentRenderer:
             if stripped.startswith("<"):
                 wrapped.append(stripped)
             else:
-                wrapped.append(f"<p{p_style}>{stripped}</p>")
+                rendered = inline_formatter(stripped) if inline_formatter else html.escape(stripped)
+                wrapped.append(f"<p{p_style}>{rendered}</p>")
         return "\n".join(wrapped)
 
     @classmethod
-    def render_components(cls, markdown: str, sb: InlineStyleBuilder) -> str:
+    def _svg_ribbon(cls, sb: InlineStyleBuilder, *, compact: bool = False) -> str:
+        height = "10" if compact else "14"
+        margin = "0 0 10px" if compact else "0 0 12px"
+        return (
+            f'<svg viewBox="0 0 400 14" preserveAspectRatio="none" '
+            f'style="display:block;width:100%;height:{height}px;margin:{margin};">'
+            f'<path d="M0 10 C50 14 85 4 135 8 C185 12 220 0 270 4 C320 8 350 14 400 8 L400 14 L0 14 Z" '
+            f'fill="{sb.t.accent_color}"></path>'
+            f'<path d="M0 6 C60 10 90 0 145 4 C200 8 245 0 305 4 C345 6 370 8 400 5" '
+            f'stroke="{sb.t.primary_color}" stroke-width="2" fill="none"></path>'
+            f'</svg>'
+        )
+
+    @classmethod
+    def _render_metrics(cls, metrics: list[tuple[str, str]], sb: InlineStyleBuilder, inline_formatter=None) -> str:
+        if not metrics:
+            return ""
+        cells = []
+        for label, value in metrics[:4]:
+            rendered_value = inline_formatter(value) if inline_formatter else html.escape(value)
+            rendered_label = inline_formatter(label) if inline_formatter else html.escape(label)
+            cells.append(
+                "<td style=\"width:50%;padding:6px;vertical-align:top;\">"
+                f"<div style=\"padding:12px 12px 10px;border-radius:12px;background:#ffffff;"
+                f"border:1px solid {sb.t.border_color};box-shadow:0 4px 12px rgba(0,0,0,0.04);\">"
+                f"<p style=\"margin:0;color:{sb.t.primary_color};font-size:20px;font-weight:800;line-height:1.3;\">{rendered_value}</p>"
+                f"<p style=\"margin:6px 0 0;color:{sb.t.muted_color};font-size:12px;line-height:1.6;\">{rendered_label}</p>"
+                "</div>"
+                "</td>"
+            )
+        if len(cells) % 2 == 1:
+            cells.append("<td style=\"width:50%;padding:6px;\"></td>")
+        rows = []
+        for idx in range(0, len(cells), 2):
+            rows.append(f"<tr>{cells[idx]}{cells[idx + 1]}</tr>")
+        return (
+            "<table style=\"width:100%;border-collapse:collapse;margin:8px 0 2px;\">"
+            f"{''.join(rows)}"
+            "</table>"
+        )
+
+    @classmethod
+    def render_components(cls, markdown: str, sb: InlineStyleBuilder, inline_formatter=None) -> str:
         result = markdown
 
         for pattern, component_type in cls.BLOCK_PATTERNS:
             if component_type == "info_card":
                 def info_replacer(m):
                     content = m.group(1).strip()
-                    body = cls._wrap_content_paragraphs(content, "margin: 0.5em 0; line-height: 1.8;")
+                    body = cls._wrap_content_paragraphs(
+                        content,
+                        "margin: 0.5em 0; line-height: 1.8;",
+                        inline_formatter=inline_formatter,
+                    )
                     return (
                         f'<section style="{sb.info_card()}">\n'
+                        f'{cls._svg_ribbon(sb, compact=True)}\n'
                         f'<span style="{sb.info_card_icon()}">💡</span>\n'
                         f'{body}\n'
                         f'</section>'
@@ -633,22 +764,68 @@ class WechatComponentRenderer:
             elif component_type == "highlight_box":
                 def highlight_replacer(m):
                     content = m.group(1).strip()
-                    body = cls._wrap_content_paragraphs(content, "margin: 0.5em 0; line-height: 1.8;")
-                    return f'<section style="{sb.highlight_box()}">\n{body}\n</section>'
+                    lines = [line.strip() for line in content.splitlines() if line.strip()]
+                    title = ""
+                    if lines and lines[0].startswith("# "):
+                        title = lines.pop(0)[2:].strip()
+                    body = cls._wrap_content_paragraphs(
+                        "\n".join(lines),
+                        "margin: 0.5em 0; line-height: 1.8;",
+                        inline_formatter=inline_formatter,
+                    )
+                    title_html = ""
+                    if title:
+                        rendered_title = inline_formatter(title) if inline_formatter else html.escape(title)
+                        title_html = (
+                            f'<p style="margin:0 0 8px;color:{sb.t.text_color};font-size:17px;'
+                            f'font-weight:800;line-height:1.6;">{rendered_title}</p>'
+                        )
+                    badge = (
+                        f'<span style="display:inline-block;margin:0 0 10px;padding:4px 10px;'
+                        f'border-radius:999px;background:#fff7db;color:#8a5b00;font-size:12px;'
+                        f'font-weight:800;">风险提醒</span>'
+                    )
+                    return (
+                        f'<section style="{sb.highlight_box()}">\n'
+                        f'{cls._svg_ribbon(sb)}\n'
+                        f'{badge}\n'
+                        f'{title_html}\n'
+                        f'{body}\n'
+                        f'</section>'
+                    )
                 result = pattern.sub(highlight_replacer, result)
 
             elif component_type == "data_callout":
                 def data_replacer(m):
                     content = m.group(1).strip()
-                    lines = content.split("\n", 1)
+                    lines = [line.strip() for line in content.splitlines() if line.strip()]
                     title_html = ""
-                    body_text = content
-                    if lines[0].startswith("# "):
-                        title = lines[0][2:].strip()
-                        title_html = f'<div style="{sb.data_callout_title()}">{html.escape(title)}</div>'
-                        body_text = lines[1].strip() if len(lines) > 1 else ""
-                    body = cls._wrap_content_paragraphs(body_text)
-                    return f'<section style="{sb.data_callout()}">\n{title_html}\n{body}\n</section>'
+                    if lines and lines[0].startswith("# "):
+                        title = lines.pop(0)[2:].strip()
+                        rendered_title = inline_formatter(title) if inline_formatter else html.escape(title)
+                        title_html = f'<div style="{sb.data_callout_title()}">{rendered_title}</div>'
+                    metrics: list[tuple[str, str]] = []
+                    body_lines: list[str] = []
+                    for line in lines:
+                        match = re.match(r"^([^:：]{1,16})[:：]\s*(.+)$", line)
+                        if match and len(metrics) < 4:
+                            metrics.append((match.group(1).strip(), match.group(2).strip()))
+                        else:
+                            body_lines.append(line)
+                    metrics_html = cls._render_metrics(metrics, sb, inline_formatter=inline_formatter)
+                    body = cls._wrap_content_paragraphs(
+                        "\n".join(body_lines),
+                        "margin: 0.45em 0; line-height: 1.8;",
+                        inline_formatter=inline_formatter,
+                    )
+                    return (
+                        f'<section style="{sb.data_callout()}">\n'
+                        f'{cls._svg_ribbon(sb)}\n'
+                        f'{title_html}\n'
+                        f'{metrics_html}\n'
+                        f'{body}\n'
+                        f'</section>'
+                    )
                 result = pattern.sub(data_replacer, result)
 
             elif component_type == "pullquote":
@@ -664,7 +841,11 @@ class WechatComponentRenderer:
             elif component_type == "tag_card":
                 def tag_replacer(m):
                     content = m.group(1).strip()
-                    body = cls._wrap_content_paragraphs(content, "margin: 0.5em 0; line-height: 1.8;")
+                    body = cls._wrap_content_paragraphs(
+                        content,
+                        "margin: 0.5em 0; line-height: 1.8;",
+                        inline_formatter=inline_formatter,
+                    )
                     return (
                         f'<section style="{sb.tag_card()}">\n'
                         f'{body}\n'
@@ -680,9 +861,10 @@ class WechatComponentRenderer:
                     body_text = content
                     if lines[0].startswith("# "):
                         title = lines[0][2:].strip()
-                        title_html = f'<div style="font-weight: 800; color: {sb.t.primary_color}; margin-bottom: 8px; font-size: 17px;">{html.escape(title)}</div>'
+                        rendered_title = inline_formatter(title) if inline_formatter else html.escape(title)
+                        title_html = f'<div style="font-weight: 800; color: {sb.t.primary_color}; margin-bottom: 8px; font-size: 17px;">{rendered_title}</div>'
                         body_text = lines[1].strip() if len(lines) > 1 else ""
-                    body = cls._wrap_content_paragraphs(body_text)
+                    body = cls._wrap_content_paragraphs(body_text, inline_formatter=inline_formatter)
                     return (
                         f'<section style="{sb.step_card()}">\n'
                         f'{title_html}\n'
@@ -694,7 +876,11 @@ class WechatComponentRenderer:
             elif component_type == "key_point":
                 def key_replacer(m):
                     content = m.group(1).strip()
-                    body = cls._wrap_content_paragraphs(content, "margin: 0; line-height: 1.7; font-weight: 500;")
+                    body = cls._wrap_content_paragraphs(
+                        content,
+                        "margin: 0; line-height: 1.7; font-weight: 500;",
+                        inline_formatter=inline_formatter,
+                    )
                     return (
                         f'<section style="{sb.key_point()}">\n'
                         f'{body}\n'
@@ -708,10 +894,12 @@ class WechatComponentRenderer:
                     lines = content.split("\n")
                     number = lines[0].strip() if len(lines) > 0 else ""
                     label = lines[1].strip() if len(lines) > 1 else ""
+                    rendered_number = inline_formatter(number) if inline_formatter else html.escape(number)
+                    rendered_label = inline_formatter(label) if inline_formatter else html.escape(label)
                     return (
                         f'<section style="{sb.stat_card()}">\n'
-                        f'<p style="margin: 0; font-size: 48px; font-weight: 900; line-height: 1.2;">{html.escape(number)}</p>\n'
-                        f'<p style="margin: 8px 0 0; font-size: 16px; opacity: 0.9; line-height: 1.5;">{html.escape(label)}</p>\n'
+                        f'<p style="margin: 0; font-size: 48px; font-weight: 900; line-height: 1.2;">{rendered_number}</p>\n'
+                        f'<p style="margin: 8px 0 0; font-size: 16px; opacity: 0.9; line-height: 1.5;">{rendered_label}</p>\n'
                         f'</section>'
                     )
                 result = pattern.sub(stat_replacer, result)
@@ -748,26 +936,93 @@ class WechatComponentRenderer:
 class MarkdownToWechatConverter:
     """将 Markdown 文章转换为微信兼容的纯内联样式 HTML"""
 
-    def __init__(self, theme: WechatTheme | None = None, brand_name: str = ""):
+    DEFAULT_KEYWORDS = (
+        "AIGC",
+        "Agent",
+        "SaaS",
+        "ROI",
+        "GMV",
+        "AI",
+        "增长",
+        "转化",
+        "留存",
+        "复购",
+        "利润",
+        "现金流",
+        "供应链",
+        "出海",
+        "自动化",
+        "订阅",
+        "私域",
+        "线索",
+        "客单价",
+        "渗透率",
+    )
+    CTA_MARKERS = ("## 延伸服务", "## 延伸阅读", "## 进一步交流")
+    METRIC_PATTERN = re.compile(
+        r"(?<![\w])(\d+(?:\.\d+)?(?:%|％|万亿|亿元|万元|万|亿|倍|家|人|条|个点|bp|BP|年|个月|月|天|小时|分钟))"
+    )
+
+    def __init__(
+        self,
+        theme: WechatTheme | None = None,
+        brand_name: str = "",
+        *,
+        cta_payload: dict[str, Any] | None = None,
+        keyword_patterns: list[str] | tuple[str, ...] | None = None,
+        show_original_badge: bool = True,
+    ):
         self.theme = theme or WechatTheme()
         self.brand_name = brand_name
+        self.cta_payload = cta_payload or {}
+        self.show_original_badge = show_original_badge
         self.sb = InlineStyleBuilder(self.theme)
+        keywords = keyword_patterns or list(self.DEFAULT_KEYWORDS)
+        normalized = sorted({str(item).strip() for item in keywords if str(item).strip()}, key=len, reverse=True)
+        self.keyword_patterns = normalized
+        self.keyword_regex = self._build_keyword_regex(normalized)
 
     def convert(self, markdown: str, *, add_closing: bool = True) -> str:
-        """完整转换流程：智能结构化 → 组件渲染 → HTML生成(含内联样式) → 闭合卡片"""
+        """完整转换流程：高级排版失败时，自动回退到基础 HTML 渲染。"""
+        clean_markdown = self._strip_trailing_cta(markdown)
+        try:
+            html_content = self._safe_main_render(clean_markdown)
+        except Exception as exc:
+            logger.warning("Advanced WeChat layout failed, falling back to basic renderer: %s", exc)
+            html_content = self._basic_markdown_to_html(clean_markdown)
+        return self.render_postamble(html_content, add_closing=add_closing)
+
+    def render_postamble(self, html_content: str, *, add_closing: bool = True) -> str:
+        if not add_closing:
+            return html_content
+        footer = self._render_footer()
+        if not footer:
+            return html_content
+        return html_content.rstrip() + "\n" + footer
+
+    def _safe_main_render(self, markdown: str) -> str:
         structured = self._auto_structure(markdown)
-        html_with_components = WechatComponentRenderer.render_components(structured, self.sb)
+        html_with_components = WechatComponentRenderer.render_components(
+            structured,
+            self.sb,
+            inline_formatter=self._inline_format,
+        )
         html_body = self._markdown_to_html(html_with_components)
-        html_wrapped = (
+        return (
             f'<section style="{self.sb.article_wrapper()}">\n'
             f'{html_body}\n'
             f'</section>'
         )
-        if add_closing:
-            html_wrapped = WechatComponentRenderer.add_closing_card(
-                html_wrapped, self.brand_name, self.sb
-            )
-        return html_wrapped
+
+    def _strip_trailing_cta(self, markdown: str) -> str:
+        text = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not text:
+            return ""
+        positions = [text.find(marker) for marker in self.CTA_MARKERS if marker in text]
+        positions = [pos for pos in positions if pos >= 0]
+        if not positions:
+            return text
+        return text[: min(positions)].rstrip()
 
     # ---- 智能结构化 ----
     # 纯文本段落没有 # 标题、> 引用等标记时，自动识别并添加结构
@@ -855,8 +1110,7 @@ class MarkdownToWechatConverter:
                     in_blockquote = False
                 continue
 
-            if (stripped.startswith("<section") or stripped.startswith("<p>") or stripped.startswith("<p ")
-                    or stripped.startswith("<div") or stripped.startswith("<span")):
+            if stripped.startswith("<"):
                 if in_list:
                     html_lines.append(f"</{list_type}>")
                     in_list = False
@@ -878,11 +1132,7 @@ class MarkdownToWechatConverter:
                 if in_blockquote:
                     html_lines.append("</blockquote>")
                     in_blockquote = False
-                content = self._inline_format(stripped[2:])
-                html_lines.append(
-                    f'<h1 style="{self.sb.h1()}">{content}</h1>\n'
-                    f'<span style="{self.sb.h1_underline()}"></span>'
-                )
+                html_lines.append(self._render_heading(1, stripped[2:]))
                 continue
 
             if stripped.startswith("## ") and not stripped.startswith("### "):
@@ -892,10 +1142,7 @@ class MarkdownToWechatConverter:
                 if in_blockquote:
                     html_lines.append("</blockquote>")
                     in_blockquote = False
-                content = self._inline_format(stripped[3:])
-                html_lines.append(
-                    f'<h2 style="{self.sb.h2()}">{content}</h2>'
-                )
+                html_lines.append(self._render_heading(2, stripped[3:]))
                 continue
 
             if stripped.startswith("### "):
@@ -905,10 +1152,7 @@ class MarkdownToWechatConverter:
                 if in_blockquote:
                     html_lines.append("</blockquote>")
                     in_blockquote = False
-                content = self._inline_format(stripped[4:])
-                html_lines.append(
-                    f'<h3 style="{self.sb.h3()}">{content}</h3>'
-                )
+                html_lines.append(self._render_heading(3, stripped[4:]))
                 continue
 
             if stripped.startswith("> ") or stripped == ">":
@@ -923,7 +1167,7 @@ class MarkdownToWechatConverter:
                     )
                 if quote_content:
                     html_lines.append(
-                        f'<p style="margin: 0.3em 0; color: #5a5a5a; font-size: 15px;">'
+                        f'<p style="margin: 0.3em 0; color: #5a5a5a; font-size: 15px; line-height: 1.85;">'
                         f'{self._inline_format(quote_content)}</p>'
                     )
                 continue
@@ -974,7 +1218,7 @@ class MarkdownToWechatConverter:
             if in_blockquote:
                 html_lines.append("</blockquote>")
                 in_blockquote = False
-            html_lines.append(f'<p style="{self.sb.paragraph()}">{self._inline_format(stripped)}</p>')
+            html_lines.append(self._render_paragraph(stripped))
 
         if in_list:
             html_lines.append(f"</{list_type}>")
@@ -983,30 +1227,206 @@ class MarkdownToWechatConverter:
 
         return "\n".join(html_lines)
 
+    def _render_heading(self, level: int, text: str) -> str:
+        content = self._inline_format(text.strip())
+        if level == 1:
+            return (
+                '<section style="margin: 18px 0 24px;">'
+                f'{self._svg_divider()}'
+                f'<h1 style="{self.sb.h1()}">{content}</h1>'
+                f'<span style="{self.sb.h1_underline()}"></span>'
+                "</section>"
+            )
+        if level == 2:
+            return (
+                '<section style="margin: 30px 0 16px;">'
+                f'{self._svg_divider(compact=True)}'
+                f'<h2 style="{self.sb.h2()}">{content}</h2>'
+                "</section>"
+            )
+        return (
+            '<section style="margin: 24px 0 12px;">'
+            f'<h3 style="{self.sb.h3()}">{content}</h3>'
+            "</section>"
+        )
+
+    def _render_paragraph(self, text: str) -> str:
+        return f'<p style="{self.sb.paragraph()}">{self._inline_format(text)}</p>'
+
+    def _svg_divider(self, *, compact: bool = False) -> str:
+        height = "12px" if compact else "16px"
+        margin = "0 auto 10px"
+        return (
+            f'<svg viewBox="0 0 320 16" preserveAspectRatio="none" '
+            f'style="display:block;width:100%;max-width:320px;height:{height};margin:{margin};">'
+            f'<path d="M8 8 H118" stroke="{self.theme.primary_color}" stroke-width="2.5" stroke-linecap="round"></path>'
+            f'<circle cx="160" cy="8" r="4" fill="{self.theme.secondary_color}"></circle>'
+            f'<path d="M202 8 H312" stroke="{self.theme.primary_color}" stroke-width="2.5" stroke-linecap="round"></path>'
+            '</svg>'
+        )
+
     def _inline_format(self, text: str) -> str:
-        """处理行内格式：加粗、代码、链接、图片"""
-        text = re.sub(
-            r'\*\*(.+?)\*\*',
-            rf'<strong style="{self.sb.strong()}">\1</strong>',
+        """处理行内格式：加粗、代码、链接、图片，并自动高亮数字和关键词。"""
+        tokenized, tokens = self._tokenize_special_spans(str(text or ""))
+        safe_text = self._format_plain_text(tokenized)
+        for token, rendered in tokens.items():
+            safe_text = safe_text.replace(token, rendered)
+        return safe_text
+
+    def _tokenize_special_spans(self, text: str) -> tuple[str, dict[str, str]]:
+        tokens: dict[str, str] = {}
+        counter = 0
+
+        def register(rendered: str) -> str:
+            nonlocal counter
+            token = f"__WX_TOKEN_{counter}__"
+            tokens[token] = rendered
+            counter += 1
+            return token
+
+        def image_replacer(match: re.Match[str]) -> str:
+            alt = self._format_plain_text(match.group(1).strip())
+            src = html.escape(match.group(2).strip(), quote=True)
+            rendered = (
+                f'<img src="{src}" alt="{alt}" style="{self.sb.image()}">'
+                f'<p style="{self.sb.image_caption()}">{alt}</p>'
+            )
+            return register(rendered)
+
+        def link_replacer(match: re.Match[str]) -> str:
+            label = self._format_plain_text(match.group(1).strip())
+            href = html.escape(match.group(2).strip(), quote=True)
+            return register(f'<a href="{href}" style="{self.sb.link()}">{label}</a>')
+
+        def code_replacer(match: re.Match[str]) -> str:
+            code = html.escape(match.group(1).strip())
+            return register(f'<code style="{self.sb.inline_code()}">{code}</code>')
+
+        def bold_replacer(match: re.Match[str]) -> str:
+            strong_text = self._format_plain_text(match.group(1).strip())
+            return register(f'<strong style="{self.sb.strong()}">{strong_text}</strong>')
+
+        text = re.sub(r'!\[([^\]]*)\]\(([^\)]+)\)', image_replacer, text)
+        text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', link_replacer, text)
+        text = re.sub(r'`([^`]+)`', code_replacer, text)
+        text = re.sub(r'\*\*(.+?)\*\*', bold_replacer, text)
+        return text, tokens
+
+    def _format_plain_text(self, text: str) -> str:
+        return self._auto_highlight_plain_text(html.escape(text))
+
+    def _auto_highlight_plain_text(self, text: str) -> str:
+        highlighted = self.METRIC_PATTERN.sub(
+            lambda m: f'<strong style="{self.sb.strong()}">{m.group(1)}</strong>',
             text,
         )
-        text = re.sub(
-            r'`([^`]+)`',
-            rf'<code style="{self.sb.inline_code()}">\1</code>',
-            text,
+        if self.keyword_regex is not None:
+            highlighted = self.keyword_regex.sub(
+                lambda m: f'<span style="{self.sb.keyword_chip()}">{m.group(0)}</span>',
+                highlighted,
+            )
+        return highlighted
+
+    def _build_keyword_regex(self, patterns: list[str]) -> re.Pattern[str] | None:
+        if not patterns:
+            return None
+        escaped = "|".join(re.escape(pattern) for pattern in patterns)
+        if not escaped:
+            return None
+        return re.compile(escaped, flags=re.IGNORECASE)
+
+    def _render_footer(self) -> str:
+        if not self.brand_name and not self.show_original_badge and not self.cta_payload:
+            return ""
+        badge_html = ""
+        if self.show_original_badge:
+            badge_html = f'<span style="{self.sb.original_badge()}">原创</span>'
+        brand_html = ""
+        if self.brand_name:
+            brand_html = (
+                f'<p style="margin: 8px 0 0;">'
+                f'{badge_html} <span style="margin-left:8px;">{html.escape(self.brand_name)} 出品</span>'
+                f'</p>'
+            ) if badge_html else f'<p style="margin: 8px 0 0;">{html.escape(self.brand_name)} 出品</p>'
+        elif badge_html:
+            brand_html = f'<p style="margin: 8px 0 0;">{badge_html}</p>'
+
+        cta_html = self._render_cta_card()
+        return (
+            f'<section style="{self.sb.footer_shell()}">\n'
+            f'{self._svg_divider()}\n'
+            f'<div style="{self.sb.footer_meta()}">\n'
+            f'<p style="margin: 0; color: {self.theme.text_color}; font-size: 15px; font-weight: 700;">以上内容，供你判断，不替你决策。</p>\n'
+            f'{brand_html}\n'
+            f'</div>\n'
+            f'{cta_html}\n'
+            f'</section>'
         )
-        text = re.sub(
-            r'\[([^\]]+)\]\(([^\)]+)\)',
-            rf'<a href="\2" style="{self.sb.link()}">\1</a>',
-            text,
+
+    def _render_cta_card(self) -> str:
+        payload = self.cta_payload if isinstance(self.cta_payload, dict) else {}
+        heading = str(payload.get("heading", "")).strip()
+        bullets = [str(item).strip() for item in payload.get("bullets", []) if str(item).strip()]
+        closing = str(payload.get("closing", "")).strip()
+        if not heading and not bullets and not closing:
+            return ""
+        items = []
+        for item in bullets:
+            items.append(
+                f'<p style="{self.sb.cta_bullet()}">'
+                f'<span style="color:{self.theme.primary_color};font-weight:800;">●</span> '
+                f'{self._inline_format(item)}'
+                f'</p>'
+            )
+        closing_html = ""
+        if closing:
+            closing_html = f'<p style="{self.sb.cta_closing()}">{self._inline_format(closing)}</p>'
+        return (
+            f'<div style="{self.sb.cta_card()}">\n'
+            f'<p style="{self.sb.cta_heading()}">{self._inline_format(heading or "想继续往下聊？")}</p>\n'
+            f'{"".join(items)}\n'
+            f'{closing_html}\n'
+            f'</div>'
         )
-        text = re.sub(
-            r'!\[([^\]]*)\]\(([^\)]+)\)',
-            rf'<img src="\2" alt="\1" style="{self.sb.image()}">'
-            rf'<p style="{self.sb.image_caption()}">\1</p>',
-            text,
+
+    def _basic_markdown_to_html(self, markdown: str) -> str:
+        blocks = [block.strip() for block in re.split(r"\n\s*\n+", markdown) if block.strip()]
+        html_blocks: list[str] = []
+        for block in blocks:
+            if block.startswith("### "):
+                html_blocks.append(f'<h3 style="{self.sb.h3()}">{self._format_plain_text(block[4:])}</h3>')
+                continue
+            if block.startswith("## "):
+                html_blocks.append(f'<h2 style="{self.sb.h2()}">{self._format_plain_text(block[3:])}</h2>')
+                continue
+            if block.startswith("# "):
+                html_blocks.append(f'<h1 style="{self.sb.h1()}">{self._format_plain_text(block[2:])}</h1>')
+                continue
+            html_blocks.append(f'<p style="{self.sb.paragraph()}">{self._format_plain_text(block)}</p>')
+        body = "\n".join(html_blocks)
+        return (
+            f'<section style="{self.sb.article_wrapper()}">\n'
+            f'{body}\n'
+            f'</section>'
         )
-        return text
+
+
+def append_wechat_footer(
+    html_content: str,
+    *,
+    theme: WechatTheme | None = None,
+    brand_name: str = "",
+    cta_payload: dict[str, Any] | None = None,
+    add_closing: bool = True,
+    show_original_badge: bool = True,
+) -> str:
+    converter = MarkdownToWechatConverter(
+        theme=theme,
+        brand_name=brand_name,
+        cta_payload=cta_payload,
+        show_original_badge=show_original_badge,
+    )
+    return converter.render_postamble(html_content, add_closing=add_closing)
 
 
 # ============================================================================
@@ -1150,9 +1570,18 @@ def convert_markdown_to_wechat_html(
     theme: WechatTheme | None = None,
     brand_name: str = "",
     add_closing: bool = True,
+    cta_payload: dict[str, Any] | None = None,
+    keyword_patterns: list[str] | tuple[str, ...] | None = None,
+    show_original_badge: bool = True,
 ) -> str:
     """Markdown → 微信排版 HTML（一行调用完成全部转换）"""
-    converter = MarkdownToWechatConverter(theme=theme, brand_name=brand_name)
+    converter = MarkdownToWechatConverter(
+        theme=theme,
+        brand_name=brand_name,
+        cta_payload=cta_payload,
+        keyword_patterns=keyword_patterns,
+        show_original_badge=show_original_badge,
+    )
     return converter.convert(markdown, add_closing=add_closing)
 
 

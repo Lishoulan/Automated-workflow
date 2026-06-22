@@ -40,3 +40,32 @@ def test_export_assets_creates_files(tmp_path: Path) -> None:
     assert Path(exported["lead_magnet"]).exists()
     assert Path(exported["service_menu"]).exists()
     assert Path(exported["sales_playbook"]).exists()
+
+
+def test_get_cta_payload_prefers_platform_block(tmp_path: Path) -> None:
+    settings = _build_settings(tmp_path)
+    config_path = settings.project_root / "config" / "company_revenue.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "cta_blocks:",
+                "  default:",
+                "    heading: 默认标题",
+                "    bullets:",
+                "      - 默认要点",
+                "  wechat:",
+                "    heading: 微信标题",
+                "    bullets:",
+                "      - 微信要点",
+                "    closing: 微信收尾",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    service = MonetizationService(settings, logging.getLogger("test"))
+
+    payload = service.get_cta_payload(platform_key="wechat")
+
+    assert payload["heading"] == "微信标题"
+    assert payload["bullets"] == ["微信要点"]
+    assert payload["closing"] == "微信收尾"

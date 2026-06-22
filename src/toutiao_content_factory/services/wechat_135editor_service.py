@@ -31,8 +31,10 @@ from toutiao_content_factory.constants.selectors import (
     EDITOR_135_LOGIN_URL_MARKERS,
     EDITOR_135_SYNC_SUCCESS_MARKERS,
 )
+from toutiao_content_factory.services.notification_service import NotificationService
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
 from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
+from toutiao_content_factory.utils.browser_utils import apply_stealth, build_persistent_context_options
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -51,6 +53,10 @@ class Editor135Service:
         self._base_url = settings.wechat.editor_135_base_url.rstrip("/")
         self._debug_dir = settings.account_runtime_dir / "debug"
         self._debug_dir.mkdir(parents=True, exist_ok=True)
+        self.notification_service = NotificationService(
+            dict(os.environ),
+            fallback_log_dir=str(self.settings.output_dir / "automation"),
+        )
 
     # ------------------------------------------------------------------
     # 公开接口
@@ -63,6 +69,9 @@ class Editor135Service:
         article_html: str,
         cover_path: Path | None = None,
         summary: str = "",
+        author: str = "",
+        account_name: str = "",
+        submit_to_wechat: bool = True,
     ) -> dict[str, Any]:
         """通过135编辑器发布文章到微信公众号草稿箱。
 
@@ -94,18 +103,51 @@ class Editor135Service:
         # when called from an async context (e.g. FastAPI / cloud_daily_run).
         def _run_in_thread() -> dict[str, Any]:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=self.settings.publishing.headless,
-                    channel=self.settings.publishing.channel or None,
-                    executable_path=self.settings.publishing.executable_path or None,
-                )
+                browser = self._launch_browser(playwright, profile_dir=profile_dir, headless=self.settings.publishing.headless)
                 page = None
                 try:
                     # 注入导出的明文 Cookie（解决跨平台 DPAPI 加密不兼容）
                     self._inject_exported_cookies(browser, "135editor")
 
                     page = browser.pages[0] if browser.pages else browser.new_page()
+
+                    session = self._ensure_session_ready(page, allow_auto_login=True)
+                    if not session.get("ready"):
+                        current_url = str(session.get("current_url", page.url)).strip()
+                        reason = str(session.get("reason", "login_required")).strip() or "login_required"
+                        self._notify_login_required(reason=reason, current_url=current_url)
+                        raise RuntimeError(
+                            "135 Editor session is invalid or expired. "
+                            "Please refresh the persistent 135 login session."
+                        )
+
+                    self._open_editor(page)
+                    self._close_blocking_dialogs(page)
+                    self._fill_title(page, title)
+                    self._fill_article_metadata(page, author=author, summary=summary)
+                    self._paste_html_content(page, article_html)
+                    self._click_save_sync(page)
+                    sync_result = self._save_and_sync(
+                        page,
+                        title=title,
+                        cover_path=cover_path,
+                        summary=summary,
+                        author=author,
+                        account_name=account_name,
+                        submit_to_wechat=submit_to_wechat,
+                    )
+
+                    result = {
+                        "status": "submitted" if submit_to_wechat and sync_result else ("draft_saved" if sync_result else "sync_failed"),
+                        "method": "editor_135",
+                        "title": title,
+                        "editor_url": page.url,
+                        "publish_url": page.url,
+                        "submit_to_wechat": submit_to_wechat,
+                        "error_code": "" if sync_result else "SYNC_NOT_CONFIRMED",
+                    }
+                    self.logger.info("135 editor sync result: %s", result["status"])
+                    return result
 
                     # Step 1: 打开135编辑器
                     self._open_editor(page)
@@ -164,16 +206,11 @@ class Editor135Service:
         )
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=False,
-                channel=self.settings.publishing.channel or None,
-                executable_path=self.settings.publishing.executable_path or None,
-            )
+            browser = self._launch_browser(playwright, profile_dir=profile_dir, headless=False)
             try:
                 page = browser.pages[0] if browser.pages else browser.new_page()
                 # 直接打开编辑器页面，这样能检测到真实的登录状态
-                editor_url = f"{self._base_url}/beautify_editor.html"
+                editor_url = f"{self._base_url}/editor_users/index"
                 page.goto(
                     editor_url,
                     wait_until="domcontentloaded",
@@ -186,7 +223,7 @@ class Editor135Service:
                 print("如果弹出登录对话框，请完成登录后关闭对话框。")
                 deadline = time.time() + 1200
                 while time.time() < deadline:
-                    if not self._is_login_required(page):
+                    if self._ensure_session_ready(page, allow_auto_login=False).get("ready"):
                         summary = {
                             "profile_dir": str(profile_dir),
                             "current_url": page.url,
@@ -203,6 +240,121 @@ class Editor135Service:
             finally:
                 browser.close()
 
+    def keep_alive(self, *, headless: bool | None = None) -> dict[str, Any]:
+        if sync_playwright is None:
+            raise RuntimeError("Playwright is not installed.")
+
+        profile_dir = self._resolve_profile_dir()
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        prepare_browser_profile(
+            profile_dir=profile_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            label="wechat:editor_135:keep-alive",
+            extra_paths=[self.settings.account_runtime_dir],
+        )
+
+        def _run() -> dict[str, Any]:
+            with sync_playwright() as playwright:
+                browser = self._launch_browser(
+                    playwright,
+                    profile_dir=profile_dir,
+                    headless=self.settings.publishing.headless if headless is None else bool(headless),
+                )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    self._inject_exported_cookies(browser, "135editor")
+                    summary = self._ensure_session_ready(page, allow_auto_login=True)
+                    self._open_editor(page)
+                    self._close_blocking_dialogs(page)
+                    summary.update(
+                        {
+                            "status": "ready" if summary.get("ready") else "login_required",
+                            "editor_url": page.url,
+                            "profile_dir": str(profile_dir),
+                        }
+                    )
+                    if not summary.get("ready"):
+                        self._notify_login_required(
+                            reason=str(summary.get("reason", "login_required")),
+                            current_url=str(summary.get("current_url", page.url)),
+                        )
+                    return summary
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=120)
+
+    def sync_run_to_wechat(
+        self,
+        run_dir: Path,
+        *,
+        submit_to_wechat: bool = True,
+        headless: bool | None = None,
+    ) -> dict[str, Any]:
+        resolved_run_dir = Path(run_dir)
+        publish_dir = resolved_run_dir / self.settings.review.publish_dirname
+        wechat_dir = publish_dir / "wechat"
+        wechat_dir.mkdir(parents=True, exist_ok=True)
+
+        publish_meta = self._load_json(publish_dir / "publish_meta.json")
+        article_html_path = wechat_dir / "article.html"
+        if not article_html_path.exists():
+            raise FileNotFoundError(f"WeChat article HTML not found: {article_html_path}")
+
+        title = (
+            str(publish_meta.get("selected_title", "")).strip()
+            or self._read_text(publish_dir / "title.txt")
+            or resolved_run_dir.name
+        )
+        summary = str(publish_meta.get("summary", "")).strip()
+        author = str(self.settings.wechat.author_name or "").strip()
+        account_name = str(self.settings.wechat.account_name or "").strip()
+        article_html = article_html_path.read_text(encoding="utf-8")
+        cover_path = self._find_cover_path(publish_dir)
+
+        original_headless = self.settings.publishing.headless
+        if headless is not None:
+            self.settings.publishing.headless = bool(headless)
+        try:
+            publish_response = self.publish_via_135editor(
+                title=title,
+                article_html=article_html,
+                cover_path=cover_path,
+                summary=summary,
+                author=author,
+                account_name=account_name,
+                submit_to_wechat=submit_to_wechat,
+            )
+        finally:
+            self.settings.publishing.headless = original_headless
+
+        result_payload = {
+            "published_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "platform": "wechat",
+            "run_dir": str(resolved_run_dir),
+            "status": str(publish_response.get("status", "")).strip() or "submitted",
+            "draft_status": "browser_only",
+            "submit_status": str(publish_response.get("status", "")).strip(),
+            "draft_media_id": "",
+            "thumb_media_id": "",
+            "inline_image_urls": [],
+            "layout_backend": "existing_html",
+            "layout_request": {},
+            "submit_requested": submit_to_wechat,
+            "publish_response": publish_response,
+            "external_url": str(publish_response.get("publish_url", "")).strip(),
+            "original_declared": False,
+            "title": title,
+            "api_available": False,
+            "method": "editor_135",
+            "error_code": str(publish_response.get("error_code", "")).strip(),
+        }
+        result_path = wechat_dir / "wechat_publish_result.json"
+        result_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return result_payload
+
     # ------------------------------------------------------------------
     # 内部方法
     # ------------------------------------------------------------------
@@ -216,6 +368,62 @@ class Editor135Service:
         if profile_value.startswith(".runtime") or profile_value.startswith(".runtime\\"):
             return self.settings.project_root / profile_value
         return self.settings.account_runtime_dir / profile_value
+
+    def _launch_browser(self, playwright, *, profile_dir: Path, headless: bool):
+        launch_options, fingerprint = build_persistent_context_options(
+            account_key=f"{self.settings.account_key}-editor135",
+            profile_dir=profile_dir,
+            proxy_server=self._get_proxy_server(),
+            headless=headless,
+            channel=self.settings.publishing.channel or None,
+            executable_path=self.settings.publishing.executable_path or None,
+            timezone_id="Asia/Shanghai",
+            locale="zh-CN",
+        )
+        browser = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            **launch_options,
+        )
+        apply_stealth(browser, fingerprint=fingerprint)
+        return browser
+
+    def _get_proxy_server(self) -> str:
+        return (
+            str(os.getenv("WECHAT_EDITOR_135_PROXY_SERVER", "")).strip()
+            or str(os.getenv("TOUTIAO_PROXY_SERVER", "")).strip()
+        )
+
+    def _load_json(self, path: Path) -> dict[str, Any]:
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _read_text(self, path: Path) -> str:
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8").strip()
+
+    def _find_cover_path(self, publish_dir: Path) -> Path | None:
+        patterns = (
+            "cover.png",
+            "cover.jpg",
+            "cover.jpeg",
+            "wechat_cover.png",
+            "wechat_cover.jpg",
+            "cover_*.png",
+            "cover_*.jpg",
+            "images/cover*.png",
+            "images/cover*.jpg",
+        )
+        for pattern in patterns:
+            for candidate in publish_dir.glob(pattern):
+                if candidate.is_file():
+                    return candidate
+        return None
 
     def _inject_exported_cookies(self, browser_ctx, platform: str) -> None:
         """从 exported_cookies.json 注入明文 Cookie 到浏览器上下文。
@@ -278,10 +486,39 @@ class Editor135Service:
 
     def _open_editor(self, page) -> None:
         """打开135编辑器编辑页面。"""
-        editor_url = f"{self._base_url}/beautify_editor.html"
+        editor_url = f"{self._base_url}/editor_users/index"
         self.logger.info("正在打开135编辑器: %s", editor_url)
         page.goto(editor_url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(5000)
+
+    def _open_home(self, page) -> None:
+        home_url = f"{self._base_url}/"
+        self.logger.info("Opening 135 homepage: %s", home_url)
+        page.goto(
+            home_url,
+            wait_until="domcontentloaded",
+            timeout=max(self.settings.publishing.wait_timeout_ms, 20000),
+        )
+        page.wait_for_timeout(2000)
+
+    def _ensure_session_ready(self, page, *, allow_auto_login: bool) -> dict[str, Any]:
+        self._open_home(page)
+        self._close_blocking_dialogs(page)
+        if not self._is_login_required(page) and self._is_session_ready(page):
+            return {"ready": True, "reason": "ok", "current_url": page.url}
+
+        self._open_editor(page)
+        self._close_blocking_dialogs(page)
+        if not self._is_login_required(page) and self._is_session_ready(page):
+            return {"ready": True, "reason": "ok", "current_url": page.url}
+
+        if allow_auto_login and self._try_saved_credentials_login(page):
+            self._open_editor(page)
+            self._close_blocking_dialogs(page)
+            if not self._is_login_required(page) and self._is_session_ready(page):
+                return {"ready": True, "reason": "credentials_login", "current_url": page.url}
+
+        return {"ready": False, "reason": "login_required", "current_url": page.url}
 
     def _is_login_required(self, page) -> bool:
         """检查是否需要登录。"""
@@ -311,8 +548,243 @@ class Editor135Service:
 
         return False
 
+    def _has_visible_marker(self, root, selectors: list[str]) -> bool:
+        return self._first_visible(root, selectors, timeout=800) is not None
+
+    def _first_visible(self, root, selectors: list[str], *, timeout: int = 0):
+        for selector in selectors:
+            try:
+                element = (
+                    root.wait_for_selector(selector, timeout=timeout)
+                    if timeout > 0 and hasattr(root, "wait_for_selector")
+                    else root.query_selector(selector)
+                )
+                if element and element.is_visible():
+                    return element
+            except Exception:
+                continue
+        return None
+
+    def _open_login_dialog(self, page) -> None:
+        selectors = (
+            EDITOR_135_LOGIN_PAGE.get("login_button")
+            + EDITOR_135_LOGIN_PAGE.get("wechat_login_button")
+            + ["text=登录", "text=微信登录"]
+        )
+        button = self._first_visible(page, selectors, timeout=3000)
+        if button is not None:
+            button.click(force=True)
+            page.wait_for_timeout(1500)
+
+    def _try_saved_credentials_login(self, page) -> bool:
+        username = (
+            str(os.getenv("WECHAT_EDITOR_135_USERNAME", "")).strip()
+            or str(os.getenv("EDITOR_135_USERNAME", "")).strip()
+        )
+        password = (
+            str(os.getenv("WECHAT_EDITOR_135_PASSWORD", "")).strip()
+            or str(os.getenv("EDITOR_135_PASSWORD", "")).strip()
+        )
+        if not username or not password:
+            return False
+
+        self.logger.info("Attempting credential login for 135 Editor.")
+        self._open_home(page)
+        self._close_blocking_dialogs(page)
+        self._open_login_dialog(page)
+
+        user_input = self._first_visible(
+            page,
+            [
+                "input[placeholder*='手机号']",
+                "input[placeholder*='账号']",
+                "input[placeholder*='邮箱']",
+                "input[name='mobile']",
+                "input[name='username']",
+                "input[type='text']",
+            ],
+            timeout=5000,
+        )
+        password_input = self._first_visible(
+            page,
+            [
+                "input[placeholder*='密码']",
+                "input[name='password']",
+                "input[type='password']",
+            ],
+            timeout=5000,
+        )
+        if user_input is None or password_input is None:
+            self.logger.warning("135 Editor login form was not detected for credential login.")
+            return False
+
+        user_input.click()
+        user_input.fill("")
+        user_input.fill(username)
+        password_input.click()
+        password_input.fill("")
+        password_input.fill(password)
+
+        submit = self._first_visible(
+            page,
+            [
+                "button:has-text('登录')",
+                "a:has-text('登录')",
+                ".login-btn",
+                "input[type='submit']",
+            ],
+            timeout=3000,
+        )
+        if submit is not None:
+            submit.click(force=True)
+        else:
+            page.keyboard.press("Enter")
+        page.wait_for_timeout(5000)
+        self._close_blocking_dialogs(page)
+        return not self._is_login_required(page)
+
+    def _notify_login_required(self, *, reason: str, current_url: str) -> None:
+        message = (
+            "135 Editor login is required before syncing to WeChat.\n"
+            f"Reason: {reason}\n"
+            f"Account: {self.settings.account_key}\n"
+            f"Profile: {self._resolve_profile_dir()}\n"
+            f"Current URL: {current_url}\n"
+            "Please refresh the 135 login session or scan in the persistent profile."
+        )
+        self.notification_service.notify_urgent("[WeChat][135] Login Required", message)
+
+    def _fill_article_metadata(self, page, *, author: str, summary: str) -> None:
+        author = author.strip()
+        summary = summary.strip()
+        if author:
+            self._fill_input_candidates(
+                page,
+                [
+                    "input[placeholder*='作者']",
+                    "input[name='author']",
+                    "input[id*='author']",
+                ],
+                author,
+            )
+        if summary:
+            self._fill_input_candidates(
+                page,
+                [
+                    "textarea[placeholder*='摘要']",
+                    "textarea[placeholder*='简介']",
+                    "textarea[name='digest']",
+                    "textarea[name='summary']",
+                ],
+                summary,
+            )
+
+    def _fill_input_candidates(self, root, selectors: list[str], value: str) -> bool:
+        for selector in selectors:
+            try:
+                element = root.query_selector(selector)
+                if element and element.is_visible():
+                    element.click()
+                    element.fill("")
+                    element.fill(value)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _close_blocking_dialogs(self, page) -> int:
+        closed = 0
+        selectors = [
+            ".layui-layer-close",
+            ".layui-layer-close1",
+            ".modal .close",
+            ".popup .close",
+            "[class*='dialog'] .close",
+            "button:has-text('知道了')",
+            "button:has-text('关闭')",
+            "button:has-text('稍后')",
+            "button:has-text('取消')",
+            "button:has-text('我知道了')",
+            "button:has-text('以后再说')",
+        ]
+        for selector in selectors:
+            try:
+                locator = page.locator(selector).first
+                if locator.is_visible(timeout=400):
+                    locator.click(force=True)
+                    closed += 1
+                    page.wait_for_timeout(300)
+            except Exception:
+                continue
+        return closed
+
+    def _fill_dialog_metadata(self, dialog, *, author: str, summary: str) -> None:
+        author = author.strip()
+        summary = summary.strip()
+        if author:
+            self._fill_input_candidates(
+                dialog,
+                [
+                    "input[placeholder*='作者']",
+                    "input[name='author']",
+                    "input[id*='author']",
+                ],
+                author,
+            )
+        if summary:
+            self._fill_input_candidates(
+                dialog,
+                [
+                    "textarea[placeholder*='摘要']",
+                    "textarea[placeholder*='简介']",
+                    "textarea[name='digest']",
+                    "textarea[name='summary']",
+                ],
+                summary,
+            )
+
+    def _select_default_account(self, dialog, *, account_name: str) -> None:
+        normalized = account_name.strip()
+        if not normalized:
+            return
+        selectors = EDITOR_135_SYNC_DIALOG.get("account_selector") + [
+            "select[name*='account']",
+            "select[id*='account']",
+        ]
+        for selector in selectors:
+            try:
+                select = dialog.query_selector(selector)
+                if not select or not select.is_visible():
+                    continue
+                with suppress(Exception):
+                    select.select_option(label=normalized)
+                    self.logger.info("Selected bound WeChat account by label: %s", normalized)
+                    return
+                options = select.query_selector_all("option")
+                for option in options:
+                    label = (option.inner_text() or "").strip()
+                    if normalized in label:
+                        value = option.get_attribute("value")
+                        if value:
+                            select.select_option(value=value)
+                            self.logger.info("Selected bound WeChat account by partial label: %s", label)
+                            return
+            except Exception:
+                continue
+
     def _is_session_ready(self, page) -> bool:
         """检查135编辑器会话是否就绪。"""
+        if self._has_visible_marker(
+            page,
+            [
+                "text=个人中心",
+                "text=我的文章",
+                "text=保存同步",
+                "[class*='avatar']",
+                ".user-avatar",
+            ],
+        ):
+            return True
         try:
             page_text = page.inner_text("body", timeout=5000)
         except Exception:
@@ -467,7 +939,7 @@ class Editor135Service:
         """点击「保存同步」按钮，打开保存图文对话框。"""
         self.logger.info("正在点击「保存同步」按钮...")
 
-        for selector in ["#save-as-template"]:
+        for selector in ["#save-as-template", *EDITOR_135_EDITOR_PAGE.get("save_sync_button")]:
             try:
                 btn = page.wait_for_selector(selector, timeout=10000)
                 if btn and btn.is_visible():
@@ -488,7 +960,17 @@ class Editor135Service:
 
         raise RuntimeError("未找到「保存同步」按钮。")
 
-    def _save_and_sync(self, page, *, title: str = "", cover_path: Path | None = None) -> bool:
+    def _save_and_sync(
+        self,
+        page,
+        *,
+        title: str = "",
+        cover_path: Path | None = None,
+        summary: str = "",
+        author: str = "",
+        account_name: str = "",
+        submit_to_wechat: bool = True,
+    ) -> bool:
         """在保存图文对话框中上传封面、勾选同步公众号、保存。"""
         self.logger.info("正在保存图文对话框中操作...")
 
@@ -510,6 +992,9 @@ class Editor135Service:
         # 上传封面图
         if cover_path and cover_path.exists():
             self._upload_cover_in_save_dialog(page, dialog, cover_path)
+
+        self._fill_dialog_metadata(dialog, author=author, summary=summary)
+        self._select_default_account(dialog, account_name=account_name)
 
         # 确保对话框中的文章标题已填写（WxMsgName 字段）
         # 始终用传入的 title 覆盖，避免标题为空或显示为字体大小
@@ -787,6 +1272,7 @@ class Editor135Service:
         start_time = time.time()
         last_progress = ""
         while time.time() - start_time < max_wait:
+            self._close_blocking_dialogs(page)
             # 检查同步进度条（多种选择器）
             try:
                 progress_text = page.evaluate("""() => {

@@ -1,39 +1,39 @@
 #!/usr/bin/env python3
-"""精简打包浏览器 profile，只保留登录必需文件。
+"""Pack minimal browser profiles for cloud restore.
 
-从两个源目录精简复制到目标目录，再打包为 tar.gz。
+This script trims login-critical files from local browser profiles and packs them
+into ``browser_profiles_seed.tar.gz`` for GitHub Actions / cloud runners.
 """
 
+from __future__ import annotations
+
+import argparse
 import os
 import shutil
 import sys
 import tarfile
+import tempfile
+from pathlib import Path
 
-# ── 配置 ──────────────────────────────────────────────
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RUNTIME_DIR = os.path.join(PROJECT_ROOT, ".runtime")
-OUTPUT_FILE = os.path.join(PROJECT_ROOT, "browser_profiles_seed.tar.gz")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+RUNTIME_DIR = PROJECT_ROOT / ".runtime"
+DEFAULT_OUTPUT = PROJECT_ROOT / "browser_profiles_seed.tar.gz"
 
-# 源目录 → 目标目录映射（相对于 PROJECT_ROOT/.runtime/）
-PROFILE_MAPPINGS = [
-    ("accounts/robot_notes/toutiao_profile", "toutiao_profile"),
-    (".runtime/editor_135_profile", "editor_135_profile"),
-]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-# 排除的目录名（匹配路径中任意层级）
+from toutiao_content_factory.config import load_settings
+
 EXCLUDE_DIR_NAMES = {
     "Cache",
     "Code Cache",
     "Service Worker",
 }
 
-# 排除的文件扩展名
 EXCLUDE_EXTENSIONS = {
     ".log",
     ".pma",
 }
 
-# 必须保留的文件（相对于 profile 根目录，统一用 / 分隔）
 KEEP_FILES = {
     "Default/Cookies",
     "Default/Network/Cookies",
@@ -43,201 +43,202 @@ KEEP_FILES = {
     "Default/Web Data",
 }
 
-# 必须保留的目录前缀（整个目录递归保留，统一用 / 分隔，以 / 结尾）
-KEEP_DIRS = {
+KEEP_DIR_PREFIXES = {
     "Default/Local Storage/",
     "Default/Session Storage/",
 }
 
-# 保留所有路径中包含 "Cookies" 的文件
 KEEP_NAME_PATTERN = "Cookies"
 
 
-def _is_under_keep_dir(rel_path: str) -> bool:
-    """判断 rel_path 是否位于某个 KEEP_DIRS 前缀下。"""
-    normalized = rel_path.replace("\\", "/")
-    for d in KEEP_DIRS:
-        if normalized.startswith(d) or normalized == d.rstrip("/"):
-            return True
-    return False
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Pack minimal browser profiles for cloud restore.")
+    parser.add_argument("--account", default="default", help="Account key defined in config.yaml.")
+    parser.add_argument(
+        "--output",
+        default=str(DEFAULT_OUTPUT),
+        help="Output tar.gz path. Default: browser_profiles_seed.tar.gz in project root.",
+    )
+    return parser.parse_args()
 
 
-def _has_cookies_in_name(rel_path: str) -> bool:
-    """判断文件名中是否包含 Cookies。"""
+def normalize_rel_path(path: str) -> str:
+    return path.replace("\\", "/")
+
+
+def is_kept_path(rel_path: str) -> bool:
+    normalized = normalize_rel_path(rel_path)
+    if normalized in KEEP_FILES:
+        return True
+    if any(normalized.startswith(prefix) for prefix in KEEP_DIR_PREFIXES):
+        return True
     return KEEP_NAME_PATTERN in os.path.basename(rel_path)
 
 
-def should_keep(rel_path: str) -> bool:
-    """判断一个相对路径是否应该保留。"""
-    normalized = rel_path.replace("\\", "/")
-
-    # 1. 精确匹配保留文件
-    if normalized in KEEP_FILES:
+def is_excluded_path(rel_path: str) -> bool:
+    normalized = normalize_rel_path(rel_path)
+    if any(part in EXCLUDE_DIR_NAMES for part in normalized.split("/")):
         return True
-
-    # 2. 位于保留目录下
-    if _is_under_keep_dir(normalized):
-        return True
-
-    # 3. 文件名包含 Cookies
-    if _has_cookies_in_name(rel_path):
-        return True
-
-    return False
+    return Path(rel_path).suffix.lower() in EXCLUDE_EXTENSIONS
 
 
-def _is_in_excluded_dir(rel_path: str) -> bool:
-    """判断 rel_path 的路径中是否包含被排除的目录名。"""
-    parts = rel_path.replace("\\", "/").split("/")
-    return bool(set(parts) & EXCLUDE_DIR_NAMES)
-
-
-def _has_excluded_extension(rel_path: str) -> bool:
-    """判断文件扩展名是否在排除列表中。"""
-    _, ext = os.path.splitext(rel_path)
-    return ext.lower() in EXCLUDE_EXTENSIONS
-
-
-def fmt_size(n: int) -> str:
-    """格式化字节数。"""
+def format_size(size: int) -> str:
+    value = float(size)
     for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"
+        if value < 1024:
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
 
 
-def copy_profile(src_dir: str, dst_dir: str) -> tuple[int, int]:
-    """精简复制 profile 目录，返回 (原始大小, 保留大小)。"""
+def trim_profile(src_dir: Path, dst_dir: Path) -> tuple[int, int]:
     original_size = 0
     kept_size = 0
 
     for root, dirs, files in os.walk(src_dir, topdown=True):
-        # 剪枝：跳过排除的目录
-        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIR_NAMES]
+        dirs[:] = [name for name in dirs if name not in EXCLUDE_DIR_NAMES]
+        root_path = Path(root)
 
-        for f in files:
-            full_path = os.path.join(root, f)
-            rel_path = os.path.relpath(full_path, src_dir)
-
-            # 排除特定扩展名
-            if _has_excluded_extension(rel_path):
-                continue
-
-            # 排除位于排除目录中的文件（双重保险）
-            if _is_in_excluded_dir(rel_path):
+        for file_name in files:
+            src_file = root_path / file_name
+            rel_path = os.path.relpath(src_file, src_dir)
+            if is_excluded_path(rel_path):
                 continue
 
             try:
-                fsize = os.path.getsize(full_path)
+                file_size = src_file.stat().st_size
             except OSError:
                 continue
 
-            original_size += fsize
+            original_size += file_size
+            if not is_kept_path(rel_path):
+                continue
 
-            # 只保留符合条件的文件
-            if should_keep(rel_path):
-                kept_size += fsize
-                dst_path = os.path.join(dst_dir, rel_path)
-                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                try:
-                    shutil.copy2(full_path, dst_path)
-                except (PermissionError, OSError) as exc:
-                    print(f"   [WARN] 跳过锁定文件: {rel_path} ({exc})")
+            kept_size += file_size
+            dst_file = dst_dir / rel_path
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(src_file, dst_file)
+            except (PermissionError, OSError) as exc:
+                print(f"[WARN] Skip locked file: {rel_path} ({exc})")
 
     return original_size, kept_size
 
 
-def main():
-    if not os.path.isdir(RUNTIME_DIR):
-        print(f"[ERROR] .runtime 目录不存在: {RUNTIME_DIR}")
-        sys.exit(1)
+def resolve_profile_mappings(account: str) -> list[tuple[Path, Path]]:
+    settings = load_settings(PROJECT_ROOT, account_key=account)
 
+    toutiao_src = Path(settings.publishing.user_data_dir)
+    if not toutiao_src.is_absolute():
+        toutiao_src = PROJECT_ROOT / toutiao_src
+
+    editor_src = Path(settings.wechat.editor_135_profile_dir)
+    if not editor_src.is_absolute():
+        editor_src = PROJECT_ROOT / editor_src
+
+    mappings: list[tuple[Path, Path]] = [
+        (toutiao_src, RUNTIME_DIR / "toutiao_profile"),
+        (editor_src, RUNTIME_DIR / "editor_135_profile"),
+    ]
+
+    legacy_wechat_src = PROJECT_ROOT / ".runtime" / "wechat_profile"
+    if legacy_wechat_src.exists():
+        mappings.append((legacy_wechat_src, RUNTIME_DIR / "wechat_profile"))
+
+    unique: list[tuple[Path, Path]] = []
+    seen_targets: set[Path] = set()
+    for src, dst in mappings:
+        if dst in seen_targets:
+            continue
+        seen_targets.add(dst)
+        unique.append((src, dst))
+    return unique
+
+
+def trim_and_stage_profile(src_dir: Path, dst_dir: Path) -> tuple[int, int]:
+    if src_dir.resolve() == dst_dir.resolve():
+        temp_dir = Path(tempfile.mkdtemp(prefix="profile_pack_", dir=RUNTIME_DIR))
+        try:
+            original_size, kept_size = trim_profile(src_dir, temp_dir)
+            if dst_dir.exists():
+                shutil.rmtree(dst_dir)
+            shutil.move(str(temp_dir), str(dst_dir))
+            return original_size, kept_size
+        finally:
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+    if dst_dir.exists():
+        shutil.rmtree(dst_dir)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    return trim_profile(src_dir, dst_dir)
+
+
+def pack_profiles(mappings: list[tuple[Path, Path]], output_file: Path) -> None:
+    if output_file.exists():
+        output_file.unlink()
+
+    with tarfile.open(output_file, "w:gz") as tar:
+        for _, dst_dir in mappings:
+            if dst_dir.exists():
+                tar.add(dst_dir, arcname=dst_dir.name)
+
+
+def main() -> int:
+    args = parse_args()
+    output_file = Path(args.output)
+    if not output_file.is_absolute():
+        output_file = PROJECT_ROOT / output_file
+
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+
+    mappings = resolve_profile_mappings(args.account)
     total_original = 0
     total_kept = 0
+    packed_targets: list[tuple[Path, Path]] = []
 
     print("=" * 60)
-    print("浏览器 Profile 精简打包工具")
+    print("Minimal browser profile packer")
     print("=" * 60)
+    print(f"Account: {args.account}")
 
-    # 阶段1：精简复制
-    import tempfile
+    for src_dir, dst_dir in mappings:
+        rel_src = src_dir.relative_to(PROJECT_ROOT) if src_dir.is_relative_to(PROJECT_ROOT) else src_dir
+        rel_dst = dst_dir.relative_to(PROJECT_ROOT) if dst_dir.is_relative_to(PROJECT_ROOT) else dst_dir
 
-    for src_rel, dst_rel in PROFILE_MAPPINGS:
-        src_path = os.path.join(RUNTIME_DIR, src_rel)
-        dst_path = os.path.join(RUNTIME_DIR, dst_rel)
-
-        if not os.path.isdir(src_path):
-            print(f"\n[SKIP] 源目录不存在: .runtime/{src_rel}")
+        if not src_dir.exists():
+            print(f"[SKIP] Missing source profile: {rel_src}")
             continue
 
-        # 如果源和目标相同，先复制到临时目录再替换，避免删除源
-        if os.path.abspath(src_path) == os.path.abspath(dst_path):
-            tmp_dir = tempfile.mkdtemp(prefix="profile_pack_", dir=RUNTIME_DIR)
-            try:
-                print(f"\n📂 复制: .runtime/{src_rel} → 临时目录 → .runtime/{dst_rel}")
-                orig, kept = copy_profile(src_path, tmp_dir)
-                total_original += orig
-                total_kept += kept
-                print(f"   原始大小: {fmt_size(orig)}")
-                print(f"   保留大小: {fmt_size(kept)}")
-                if orig > 0:
-                    ratio = kept / orig * 100
-                    print(f"   保留比例: {ratio:.1f}%")
-                # 替换目标目录
-                if os.path.exists(dst_path):
-                    shutil.rmtree(dst_path)
-                shutil.move(tmp_dir, dst_path)
-            except Exception:
-                if os.path.isdir(tmp_dir):
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
-                raise
-        else:
-            # 目标目录已存在则先删除
-            if os.path.exists(dst_path):
-                print(f"\n🗑  删除已有目标: .runtime/{dst_rel}")
-                shutil.rmtree(dst_path)
+        print(f"\n[PACK] {rel_src} -> {rel_dst}")
+        original_size, kept_size = trim_and_stage_profile(src_dir, dst_dir)
+        total_original += original_size
+        total_kept += kept_size
+        packed_targets.append((src_dir, dst_dir))
 
-            os.makedirs(dst_path, exist_ok=True)
+        print(f"  original: {format_size(original_size)}")
+        print(f"  kept:     {format_size(kept_size)}")
+        if original_size > 0:
+            print(f"  ratio:    {kept_size / original_size * 100:.1f}%")
 
-            print(f"\n📂 复制: .runtime/{src_rel} → .runtime/{dst_rel}")
-            orig, kept = copy_profile(src_path, dst_path)
-            total_original += orig
-            total_kept += kept
-            print(f"   原始大小: {fmt_size(orig)}")
-            print(f"   保留大小: {fmt_size(kept)}")
-            if orig > 0:
-                ratio = kept / orig * 100
-                print(f"   保留比例: {ratio:.1f}%")
+    if not packed_targets:
+        print("[ERROR] No valid profiles were found to pack.")
+        return 1
 
-    # 阶段2：打包为 tar.gz
-    print(f"\n📦 打包为 tar.gz ...")
+    print(f"\n[ARCHIVE] {output_file}")
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    pack_profiles(packed_targets, output_file)
 
-    # 删除旧的压缩包
-    if os.path.exists(OUTPUT_FILE):
-        os.remove(OUTPUT_FILE)
-
-    with tarfile.open(OUTPUT_FILE, "w:gz") as tar:
-        for _, dst_rel in PROFILE_MAPPINGS:
-            dst_path = os.path.join(RUNTIME_DIR, dst_rel)
-            if not os.path.isdir(dst_path):
-                continue
-            tar.add(dst_path, arcname=dst_rel)
-
-    # 输出结果
-    gz_size = os.path.getsize(OUTPUT_FILE) if os.path.exists(OUTPUT_FILE) else 0
-
+    archive_size = output_file.stat().st_size if output_file.exists() else 0
     print("\n" + "=" * 60)
-    print("📊 汇总")
+    print("Summary")
     print("=" * 60)
-    print(f"   原始总大小:   {fmt_size(total_original)}")
-    print(f"   保留总大小:   {fmt_size(total_kept)}")
-    print(f"   压缩包大小:   {fmt_size(gz_size)}")
-    if total_original > 0:
-        print(f"   精简比例:     {total_kept / total_original * 100:.1f}%")
-        print(f"   压缩比例:     {gz_size / total_original * 100:.1f}%")
-    print(f"\n✅ 已保存到: {OUTPUT_FILE}")
+    print(f"Original total: {format_size(total_original)}")
+    print(f"Kept total:     {format_size(total_kept)}")
+    print(f"Archive size:   {format_size(archive_size)}")
+    print(f"Saved to:       {output_file}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

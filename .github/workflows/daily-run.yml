@@ -2,18 +2,14 @@ name: Daily Run
 
 on:
   schedule:
-    # 北京时间 6:00 = UTC 22:00
-    - cron: '0 22 * * *'
-    # 北京时间 10:00 = UTC 2:00
-    - cron: '0 2 * * *'
-    # 北京时间 14:00 = UTC 6:00
-    - cron: '0 6 * * *'
-    # 北京时间 18:00 = UTC 10:00
+    # Beijing time 07:00 = UTC 23:00 (previous day)
+    - cron: '0 23 * * *'
+    # Beijing time 11:30 = UTC 03:30
+    - cron: '30 3 * * *'
+    # Beijing time 18:00 = UTC 10:00
     - cron: '0 10 * * *'
-    # 北京时间 22:00 = UTC 14:00
+    # Beijing time 22:00 = UTC 14:00
     - cron: '0 14 * * *'
-    # 北京时间 2:00 = UTC 18:00
-    - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
       account:
@@ -28,6 +24,14 @@ on:
         description: 'Fast mode (true/false)'
         required: false
         default: 'true'
+      publish_toutiao:
+        description: 'Publish to Toutiao instead of draft-only (true/false)'
+        required: false
+        default: 'false'
+      publish_wechat_via_135:
+        description: 'Publish to WeChat via 135 Editor when a cached profile exists (true/false)'
+        required: false
+        default: 'false'
 
 concurrency:
   group: daily-run-${{ github.ref }}
@@ -60,7 +64,7 @@ jobs:
 
       # ---- 非敏感配置（直接硬编码默认值） ----
       PYTHONUTF8: "1"
-      TOUTIAO_ACCOUNT: ${{ github.event.inputs.account || 'default' }}
+      TOUTIAO_ACCOUNT: default
 
       # 图片生成（frontend = HTML+Playwright截图，renderer = Pillow兜底）
       IMAGE_BACKEND: ${{ secrets.IMAGE_BACKEND || 'frontend' }}
@@ -89,7 +93,7 @@ jobs:
 
       # 头条发布（云端自动发布，草稿模式优先）
       TOUTIAO_PUBLISH_ENABLED: "1"
-      TOUTIAO_AUTO_PUBLISH: "1"
+      TOUTIAO_AUTO_PUBLISH: "0"
       TOUTIAO_DRAFT_ONLY: "1"
       TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS: ${{ secrets.TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS || '3' }}
       TOUTIAO_AIGC_DECLARATION_ENABLED: "1"
@@ -119,7 +123,7 @@ jobs:
       WECHAT_LAYOUT_BACKEND: ${{ secrets.WECHAT_LAYOUT_BACKEND || 'builtin' }}
       WECHAT_MD2WECHAT_ENABLED: ${{ secrets.WECHAT_MD2WECHAT_ENABLED || '0' }}
       WECHAT_SERV00_PROXY_ENABLED: ${{ secrets.WECHAT_SERV00_PROXY_ENABLED || '0' }}
-      WECHAT_EDITOR_135_ENABLED: "1"
+      WECHAT_EDITOR_135_ENABLED: ${{ secrets.CLOUD_WECHAT_135_ENABLED || '1' }}
       WECHAT_EDITOR_135_PROFILE_DIR: .runtime/editor_135_profile
       WECHAT_BROWSER_PROFILE_DIR: .runtime/wechat_profile
 
@@ -202,6 +206,93 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Resolve cloud runtime flags
+        shell: bash
+        run: |
+          normalize_bool() {
+            case "${1,,}" in
+              1|true|yes|on) echo "true" ;;
+              *) echo "false" ;;
+            esac
+          }
+
+          first_non_empty() {
+            for value in "$@"; do
+              if [ -n "$value" ]; then
+                echo "$value"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          EVENT_NAME="${{ github.event_name }}"
+          INPUT_ACCOUNT="${{ github.event.inputs.account }}"
+          INPUT_DRY_RUN="${{ github.event.inputs.dry_run }}"
+          INPUT_FAST_MODE="${{ github.event.inputs.fast_mode }}"
+          INPUT_PUBLISH_TOUTIAO="${{ github.event.inputs.publish_toutiao }}"
+          INPUT_PUBLISH_WECHAT="${{ github.event.inputs.publish_wechat_via_135 }}"
+
+          SECRET_DEFAULT_ACCOUNT="${{ secrets.CLOUD_DEFAULT_ACCOUNT }}"
+          SECRET_DEFAULT_DRY_RUN="${{ secrets.CLOUD_DRY_RUN }}"
+          SECRET_DEFAULT_FAST_MODE="${{ secrets.CLOUD_FAST_MODE }}"
+          SECRET_DEFAULT_PUBLISH_TOUTIAO="${{ secrets.CLOUD_TOUTIAO_AUTOPUBLISH }}"
+          SECRET_DEFAULT_PUBLISH_WECHAT="${{ secrets.CLOUD_WECHAT_VIA_135_AUTOPUBLISH }}"
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            RUN_ACCOUNT="$(first_non_empty "$INPUT_ACCOUNT" "$SECRET_DEFAULT_ACCOUNT" "default")"
+            RUN_DRY_RUN="$(normalize_bool "$(first_non_empty "$INPUT_DRY_RUN" "$SECRET_DEFAULT_DRY_RUN" "false")")"
+            RUN_FAST_MODE="$(normalize_bool "$(first_non_empty "$INPUT_FAST_MODE" "$SECRET_DEFAULT_FAST_MODE" "true")")"
+            RUN_PUBLISH_TOUTIAO="$(normalize_bool "$(first_non_empty "$INPUT_PUBLISH_TOUTIAO" "$SECRET_DEFAULT_PUBLISH_TOUTIAO" "false")")"
+            RUN_PUBLISH_WECHAT_VIA_135="$(normalize_bool "$(first_non_empty "$INPUT_PUBLISH_WECHAT" "$SECRET_DEFAULT_PUBLISH_WECHAT" "false")")"
+          else
+            RUN_ACCOUNT="$(first_non_empty "$SECRET_DEFAULT_ACCOUNT" "default")"
+            RUN_DRY_RUN="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_DRY_RUN" "false")")"
+            RUN_FAST_MODE="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_FAST_MODE" "true")")"
+            RUN_PUBLISH_TOUTIAO="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_PUBLISH_TOUTIAO" "false")")"
+            RUN_PUBLISH_WECHAT_VIA_135="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_PUBLISH_WECHAT" "false")")"
+          fi
+
+          TOUTIAO_AUTO_PUBLISH_VALUE="0"
+          TOUTIAO_DRAFT_ONLY_VALUE="1"
+          WECHAT_ENABLED_VALUE="0"
+          WECHAT_AUTO_PUBLISH_VALUE="0"
+
+          if [ "$RUN_DRY_RUN" = "true" ]; then
+            RUN_PUBLISH_TOUTIAO="false"
+            RUN_PUBLISH_WECHAT_VIA_135="false"
+          fi
+
+          if [ "$RUN_PUBLISH_TOUTIAO" = "true" ]; then
+            TOUTIAO_AUTO_PUBLISH_VALUE="1"
+            TOUTIAO_DRAFT_ONLY_VALUE="0"
+          fi
+
+          if [ "$RUN_PUBLISH_WECHAT_VIA_135" = "true" ]; then
+            WECHAT_ENABLED_VALUE="1"
+            WECHAT_AUTO_PUBLISH_VALUE="1"
+          fi
+
+          {
+            echo "RUN_ACCOUNT=$RUN_ACCOUNT"
+            echo "RUN_DRY_RUN=$RUN_DRY_RUN"
+            echo "RUN_FAST_MODE=$RUN_FAST_MODE"
+            echo "RUN_PUBLISH_TOUTIAO=$RUN_PUBLISH_TOUTIAO"
+            echo "RUN_PUBLISH_WECHAT_VIA_135=$RUN_PUBLISH_WECHAT_VIA_135"
+            echo "TOUTIAO_ACCOUNT=$RUN_ACCOUNT"
+            echo "TOUTIAO_AUTO_PUBLISH=$TOUTIAO_AUTO_PUBLISH_VALUE"
+            echo "TOUTIAO_DRAFT_ONLY=$TOUTIAO_DRAFT_ONLY_VALUE"
+            echo "WECHAT_ENABLED=$WECHAT_ENABLED_VALUE"
+            echo "WECHAT_AUTO_PUBLISH=$WECHAT_AUTO_PUBLISH_VALUE"
+          } >> "$GITHUB_ENV"
+
+          echo "Resolved cloud runtime flags:"
+          echo "  account=$RUN_ACCOUNT"
+          echo "  dry_run=$RUN_DRY_RUN"
+          echo "  fast_mode=$RUN_FAST_MODE"
+          echo "  publish_toutiao=$RUN_PUBLISH_TOUTIAO"
+          echo "  publish_wechat_via_135=$RUN_PUBLISH_WECHAT_VIA_135"
+
       - name: Cache pip packages
         uses: actions/cache@v4
         with:
@@ -283,7 +374,13 @@ jobs:
       - name: Seed browser profiles from release
         run: |
           NEED_SEED=false
-          for profile in toutiao_profile wechat_profile editor_135_profile; do
+          REQUIRED_PROFILES="toutiao_profile"
+          if [ "${WECHAT_EDITOR_135_ENABLED}" = "1" ]; then
+            REQUIRED_PROFILES="$REQUIRED_PROFILES editor_135_profile"
+          else
+            REQUIRED_PROFILES="$REQUIRED_PROFILES wechat_profile"
+          fi
+          for profile in $REQUIRED_PROFILES; do
             if [ ! -d ".runtime/$profile" ] || [ -z "$(ls -A .runtime/$profile 2>/dev/null)" ]; then
               echo "Profile $profile is missing or empty, need seed."
               NEED_SEED=true
@@ -302,7 +399,7 @@ jobs:
           done
           if [ "$NEED_SEED" = "true" ]; then
             echo "Downloading seed from release..."
-            rm -rf .runtime/toutiao_profile .runtime/wechat_profile
+            rm -rf .runtime/toutiao_profile .runtime/wechat_profile .runtime/editor_135_profile
             gh release download browser-profiles-v1 --repo Lishoulan/Automated-workflow --pattern "browser_profiles_seed.tar.gz" --dir /tmp/
             mkdir -p .runtime
             tar xzf /tmp/browser_profiles_seed.tar.gz -C .runtime/
@@ -335,7 +432,7 @@ jobs:
             echo "Verifying cookie file copy..."
             ls -la .runtime/automation/exported_cookies.json 2>/dev/null || echo "WARNING: cookie file not found at .runtime/automation/"
             python scripts/inject_cookies.py --input "$COOKIES_FILE" --headless \
-              --account ${{ github.event.inputs.account || 'default' }} || true
+              --account "$RUN_ACCOUNT" || true
           else
             echo "No exported cookies found, skipping injection."
           fi
@@ -355,16 +452,16 @@ jobs:
       - name: Keep browser sessions alive
         run: |
           echo "Refreshing browser cookies to prevent session expiry..."
-          python scripts/keep_alive.py --headless --account ${{ github.event.inputs.account || 'default' }} || true
+          python scripts/keep_alive.py --headless --account "$RUN_ACCOUNT" || true
         continue-on-error: true
 
       - name: Run daily pipeline
         run: |
-          ARGS="--account ${{ github.event.inputs.account || 'default' }} --skip-browser-check"
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+          ARGS="--account $RUN_ACCOUNT --skip-browser-check"
+          if [ "$RUN_DRY_RUN" = "true" ]; then
             ARGS="$ARGS --dry-run"
           fi
-          if [ "${{ github.event.inputs.fast_mode }}" = "true" ] || [ -z "${{ github.event.inputs.fast_mode }}" ]; then
+          if [ "$RUN_FAST_MODE" = "true" ]; then
             ARGS="$ARGS --fast-mode"
           fi
           python scripts/cloud_daily_run.py $ARGS
@@ -373,14 +470,14 @@ jobs:
         if: env.ENGAGEMENT_ENABLED == '1'
         run: |
           echo "Running daily engagement agent..."
-          python main.py --engagement --account ${{ github.event.inputs.account || 'default' }}
+          python main.py --engagement --account "$RUN_ACCOUNT"
         continue-on-error: true
 
       - name: Mine engagement topics
         if: env.ENGAGEMENT_ENABLED == '1'
         run: |
           echo "Mining comments for topic ideas..."
-          python main.py --engagement-mine-topics --account ${{ github.event.inputs.account || 'default' }}
+          python main.py --engagement-mine-topics --account "$RUN_ACCOUNT"
         continue-on-error: true
 
       - name: Run monetization sync
@@ -411,7 +508,7 @@ jobs:
         if: success()
         run: |
           echo "Updating browser profile seed with fresh cookies..."
-          PYTHONUTF8=1 python scripts/pack_browser_profiles.py || true
+          PYTHONUTF8=1 python scripts/pack_browser_profiles.py --account "$RUN_ACCOUNT" || true
           if [ -f "browser_profiles_seed.tar.gz" ]; then
             echo "Uploading updated profile seed to GitHub Release..."
             gh release upload browser-profiles-v1 browser_profiles_seed.tar.gz --clobber --repo Lishoulan/Automated-workflow

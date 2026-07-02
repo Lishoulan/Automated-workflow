@@ -680,6 +680,24 @@ class WriterAgent(BaseAgent):
             f" 当前风格语气：{style.tone}"
         )
 
+    def _writer_system_prompt(self, style: StyleProfile) -> str:
+        parts = [
+            "You are WriterAgent. Output JSON only.",
+            "Write a grounded Chinese industry-analysis article, not a generic AI essay.",
+            "Priority order: evidence fidelity > insight depth > readability > length.",
+            "Hard rules:",
+            "1. Never invent company names, numbers, time points, orders, margins, market share, or case studies.",
+            "2. If the source material lacks hard evidence, say so explicitly and deepen the causal analysis instead of padding.",
+            "3. Every paragraph must advance the argument. No repeated conclusions, no empty transitions, no marketing copy.",
+            "4. The opening must make a clear judgment in the first two sentences.",
+            "5. Keep paragraphs short for mobile reading. Avoid symmetrical template phrasing.",
+            "6. If you mention data, use only data grounded in the provided material and attach a source feel such as '公开材料显示' or '财报披露'.",
+            "7. Do not chase length by fabricating examples. It is better to be shorter than to be fake.",
+            "8. Avoid banned AI cliches and avoid writing like a content-operation script.",
+            f"Current tone: {style.tone}",
+        ]
+        return "\n".join(parts)
+
     def _tone_directive(self, style: StyleProfile) -> str:
         parts = [
             f"严格执行当前语气：{style.tone}",
@@ -1245,6 +1263,56 @@ class WriterAgent(BaseAgent):
         order_hits = sum(1 for token in self.ORDER_ANCHOR_TOKENS if token in article)
         return company_hits >= 1 or order_hits >= 3
 
+    def _has_grounded_evidence(self, data_report: "DataReport") -> bool:
+        return bool(
+            self._company_candidates(data_report)
+            or len(getattr(data_report, "growth_numbers", []) or []) >= 1
+            or len(getattr(data_report, "evidence_notes", []) or []) >= 2
+            or int(getattr(data_report, "evidence_strength", 0) or 0) >= 70
+        )
+
+    def _trim_low_confidence_paragraphs(
+        self,
+        paragraphs: list[str],
+        data_report: "DataReport",
+    ) -> list[str]:
+        if not paragraphs:
+            return paragraphs
+
+        grounded = self._has_grounded_evidence(data_report)
+        known_companies = {item.lower() for item in self._company_candidates(data_report)}
+        rejected_markers = (
+            "## 延伸服务",
+            "回复“",
+            "回复\"",
+            "咨询",
+            "代运营",
+            "行业周报",
+            "领取",
+        )
+        generic_guess_markers = ("未来三年", "例如", "比如", "以", "某头部")
+        cleaned: list[str] = []
+
+        for paragraph in paragraphs:
+            text = str(paragraph or "").strip()
+            if not text:
+                continue
+            if any(marker in text for marker in rejected_markers):
+                continue
+            if self._unsupported_numeric_tokens(text, data_report):
+                continue
+            if not grounded and any(marker in text for marker in generic_guess_markers):
+                continue
+            if not known_companies:
+                discovered = [match.group(0).lower() for match in self.COMPANY_SUFFIX_RE.finditer(text)]
+                if discovered:
+                    continue
+            if cleaned and text == cleaned[-1]:
+                continue
+            cleaned.append(text)
+
+        return cleaned or paragraphs
+
 
 
     _short_article_warned = False
@@ -1356,6 +1424,132 @@ class WriterAgent(BaseAgent):
 
         return paragraphs
 
+    def _ensure_min_char_count(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 0) -> list[str]:
+        if min_chars <= 0:
+            word_target = getattr(data_report, "word_target", 0) or 0
+            if word_target > 0:
+                min_chars = max(1200, int(word_target * 0.8))
+            else:
+                min_chars = max(1200, int(getattr(self.settings, "article_word_target", 1500) * 0.8))
+
+        content_format = getattr(data_report, "content_format", "") or ""
+        if content_format in ("quick_commentary", "short_comment", "news_flash") and min_chars > 900:
+            min_chars = 900
+
+        grounded = self._has_grounded_evidence(data_report)
+        if not grounded:
+            min_chars = min(min_chars, max(950, int((getattr(data_report, "word_target", 0) or 1200) * 0.7)))
+
+        logger = logging.getLogger(__name__)
+        current_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in paragraphs)
+        if current_chars >= min_chars:
+            return self._trim_low_confidence_paragraphs(paragraphs, data_report)
+
+        if not WriterAgent._short_article_warned:
+            logger.warning(
+                "Article has only %d chars (minimum %d). Appending grounded supplementary paragraphs.",
+                current_chars,
+                min_chars,
+            )
+            WriterAgent._short_article_warned = True
+
+        result = list(paragraphs)
+        supplements = self._build_supplementary_paragraphs(data_report, existing_paragraphs=result)
+        for sup in supplements:
+            result.insert(-1, sup)
+            total = sum(len(p.replace("\n", "").replace(" ", "")) for p in result)
+            if total >= min_chars:
+                break
+
+        final_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in result)
+        if final_chars < min_chars and grounded:
+            logger.info(
+                "Supplementary paragraphs brought article to %d chars, still below %d. Attempting grounded LLM expansion.",
+                final_chars,
+                min_chars,
+            )
+            result = self._expand_article_via_llm(result, data_report, min_chars)
+            final_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in result)
+        elif final_chars < min_chars:
+            logger.info(
+                "Skipping LLM expansion because the topic lacks grounded evidence. current=%d target=%d",
+                final_chars,
+                min_chars,
+            )
+
+        if final_chars < min_chars:
+            logger.warning(
+                "After expansion article still has only %d chars (minimum %d).",
+                final_chars,
+                min_chars,
+            )
+        return self._trim_low_confidence_paragraphs(result, data_report)
+
+    def _expand_article_via_llm(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 1200) -> list[str]:
+        if not self._has_grounded_evidence(data_report):
+            return paragraphs
+
+        logger = logging.getLogger(__name__)
+        current_text = "\n\n".join(paragraphs)
+        current_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in paragraphs)
+        deficit = min_chars - current_chars
+        if deficit <= 0:
+            return paragraphs
+
+        data_summary_parts = []
+        if data_report.watch_metrics:
+            data_summary_parts.append("Follow-up metrics: " + " / ".join(str(m) for m in data_report.watch_metrics[:5]))
+        if data_report.risk_flags:
+            data_summary_parts.append("Risk flags: " + " / ".join(str(r) for r in data_report.risk_flags[:3]))
+        if data_report.growth_numbers:
+            data_summary_parts.append("Grounded numbers: " + " / ".join(str(g) for g in data_report.growth_numbers[:3]))
+        if data_report.evidence_notes:
+            data_summary_parts.append("Evidence notes: " + " / ".join(str(e) for e in data_report.evidence_notes[:3]))
+        data_summary = "\n".join(data_summary_parts) if data_summary_parts else "No extra evidence."
+
+        system_prompt = (
+            "You are a Chinese article expansion assistant. "
+            "Extend the article using only the provided facts. "
+            "Do not invent companies, percentages, revenue, margins, market share, order size, dates, or case studies. "
+            "If evidence is thin, add causal analysis and risk boundaries instead of new facts. "
+            'Return strict JSON: {"paragraphs": ["...", "..."]}.'
+        )
+        user_prompt = (
+            f"Current article length: {current_chars}. Need roughly {deficit} more Chinese characters.\n\n"
+            f"Existing article:\n{current_text[:2400]}\n\n"
+            f"Available evidence:\n{data_summary}\n\n"
+            "Write 1-3 extra paragraphs in Chinese. Each paragraph must introduce a new analytical angle, "
+            "must stay consistent with the industry/topic already in the article, and must not add unsupported facts."
+        )
+
+        try:
+            result_data = self.openai_service.create_json_completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+            expansion_paragraphs = result_data.get("paragraphs", []) if isinstance(result_data, dict) else []
+            if not isinstance(expansion_paragraphs, list):
+                return paragraphs
+
+            new_paragraphs = [
+                str(item).strip()
+                for item in expansion_paragraphs
+                if isinstance(item, str) and str(item).strip()
+            ]
+            if not new_paragraphs:
+                return paragraphs
+
+            result = list(paragraphs)
+            insert_pos = max(1, len(result) - 1)
+            for offset, para in enumerate(new_paragraphs):
+                result.insert(insert_pos + offset, para)
+            result = self._trim_low_confidence_paragraphs(result, data_report)
+            logger.info("Grounded LLM expansion added %d paragraphs.", len(new_paragraphs))
+            return result
+        except Exception as exc:
+            logger.warning("LLM expansion failed: %s", exc)
+            return paragraphs
+
     def _build_supplementary_paragraphs(self, data_report: "DataReport", existing_paragraphs: list[str] | None = None) -> list[str]:
         existing_text = "\n".join(existing_paragraphs) if existing_paragraphs else ""
         paragraphs = []
@@ -1382,6 +1576,158 @@ class WriterAgent(BaseAgent):
             text = f"关键数字锚点：{data_report.growth_numbers[0]}和{data_report.growth_numbers[1]}是判断赛道兑现进度的核心参照。后续如果这两个指标出现明显变化，产业链利润分配逻辑可能需要重新评估。"
             if text[:30] not in existing_text:
                 paragraphs.append(text)
+        return paragraphs
+
+    def _grounded_numeric_tokens(self, data_report: "DataReport") -> set[str]:
+        grounded: set[str] = set()
+        sources = [
+            *(getattr(data_report, "growth_numbers", []) or []),
+            *(getattr(data_report, "evidence_notes", []) or []),
+            *(getattr(data_report, "core_data", []) or []),
+        ]
+        for item in sources:
+            for token in self._NUMERIC_TOKEN_RE.findall(str(item)):
+                text = str(token).strip()
+                if text:
+                    grounded.add(text)
+        return grounded
+
+    def _extract_company_mentions(self, text: str) -> list[str]:
+        mentions: list[str] = []
+        seen: set[str] = set()
+        for match in self.COMPANY_SUFFIX_RE.finditer(str(text or "")):
+            candidate = str(match.group(0)).strip()
+            if not candidate:
+                continue
+            lowered = candidate.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            mentions.append(candidate)
+        return mentions
+
+    def _has_unknown_company_mention(self, text: str, data_report: "DataReport") -> bool:
+        known = [item.lower() for item in self._company_candidates(data_report)]
+        mentions = self._extract_company_mentions(text)
+        if not mentions:
+            return False
+        if not known:
+            return True
+        for mention in mentions:
+            lowered = mention.lower()
+            if not any(lowered in item or item in lowered for item in known):
+                return True
+        return False
+
+    def _looks_like_template_paragraph(self, text: str, data_report: "DataReport") -> bool:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        template_markers = (
+            "真正要看的",
+            "接下来最值得持续跟踪的",
+            "从已有证据看",
+            "产业链利润分配并非静态格局",
+            "后续需要持续跟踪的变量包括",
+            "风险边界也要讲清楚",
+            "关键数字锚点",
+        )
+        marker_hits = sum(1 for marker in template_markers if marker in normalized)
+        if marker_hits >= 2:
+            return True
+
+        grounded_numbers = self._grounded_numeric_tokens(data_report)
+        has_grounded_number = any(token in normalized for token in grounded_numbers)
+        has_known_company = any(item.lower() in normalized.lower() for item in self._company_candidates(data_report))
+        if marker_hits >= 1 and not (has_grounded_number or has_known_company):
+            return True
+        return False
+
+    def _trim_low_confidence_paragraphs(
+        self,
+        paragraphs: list[str],
+        data_report: "DataReport",
+    ) -> list[str]:
+        if not paragraphs:
+            return paragraphs
+
+        grounded = self._has_grounded_evidence(data_report)
+        rejected_markers = (
+            "## 延伸服务",
+            "回复“",
+            '回复"',
+            "咨询",
+            "代运营",
+            "行业周报",
+            "领取",
+        )
+        generic_guess_markers = ("未来三年", "例如", "比如", "以", "某头部", "投资者应")
+        cleaned: list[str] = []
+        seen_openings: set[str] = set()
+
+        for paragraph in paragraphs:
+            text = str(paragraph or "").strip()
+            if not text:
+                continue
+            if any(marker in text for marker in rejected_markers):
+                continue
+            if self._unsupported_numeric_tokens(text, data_report):
+                continue
+            if self._has_unknown_company_mention(text, data_report):
+                continue
+            if self._looks_like_template_paragraph(text, data_report):
+                continue
+            if not grounded and any(marker in text for marker in generic_guess_markers):
+                continue
+
+            opening = re.sub(r"\s+", "", text[:16].lower())
+            if opening and opening in seen_openings:
+                continue
+            seen_openings.add(opening)
+
+            if cleaned and text == cleaned[-1]:
+                continue
+            cleaned.append(text)
+
+        return cleaned or paragraphs
+
+    def _build_supplementary_paragraphs(self, data_report: "DataReport", existing_paragraphs: list[str] | None = None) -> list[str]:
+        existing_text = "\n".join(existing_paragraphs) if existing_paragraphs else ""
+        paragraphs: list[str] = []
+
+        if data_report.watch_metrics:
+            metrics = [str(item).strip() for item in data_report.watch_metrics[:4] if str(item).strip()]
+            if metrics:
+                text = (
+                    "后续更值得盯的是"
+                    + "、".join(metrics)
+                    + "。这些指标如果同步改善，说明这条线开始从预期走向兑现；如果只有订单没有回款，热度很可能先走一步。"
+                )
+                if text[:20] not in existing_text:
+                    paragraphs.append(text)
+
+        if data_report.risk_flags:
+            risks = [str(item).strip() for item in data_report.risk_flags[:3] if str(item).strip()]
+            if risks:
+                text = "风险不在情绪，而在节奏：" + "；".join(risks) + "。只要其中一环明显延后，利润兑现时间表就要整体后移。"
+                if text[:20] not in existing_text:
+                    paragraphs.append(text)
+
+        if data_report.evidence_notes:
+            notes = [str(item).strip() for item in data_report.evidence_notes[:3] if str(item).strip()]
+            if notes:
+                text = "目前能确认的公开信息主要到这里：" + "；".join(notes) + "。再往下的判断，最好等公告、财报或项目进展把口径补齐。"
+                if text[:20] not in existing_text:
+                    paragraphs.append(text)
+
+        if data_report.growth_numbers and len(data_report.growth_numbers) >= 2:
+            first = str(data_report.growth_numbers[0]).strip()
+            second = str(data_report.growth_numbers[1]).strip()
+            if first and second:
+                text = f"如果一定要抓两个数字锚点，先看{first}和{second}。这两个数字一旦继续改善，市场会更快把它从题材重估成业绩。"
+                if text[:20] not in existing_text:
+                    paragraphs.append(text)
+
         return paragraphs
 
     def _ensure_closing_question(self, paragraphs: list[str], comment_prompt: str) -> list[str]:

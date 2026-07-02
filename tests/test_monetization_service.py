@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from toutiao_content_factory.services.monetization_service import MonetizationService
 
 
-def _build_settings(tmp_path: Path) -> SimpleNamespace:
+def _build_settings(tmp_path: Path, *, monetization_enabled: bool = False) -> SimpleNamespace:
     project_root = tmp_path / "project"
     output_dir = tmp_path / "output"
     (project_root / "config").mkdir(parents=True, exist_ok=True)
@@ -16,11 +16,12 @@ def _build_settings(tmp_path: Path) -> SimpleNamespace:
         project_root=project_root,
         output_dir=output_dir,
         brand_name="测试品牌",
+        monetization_enabled=monetization_enabled,
     )
 
 
 def test_append_cta_only_once(tmp_path: Path) -> None:
-    settings = _build_settings(tmp_path)
+    settings = _build_settings(tmp_path, monetization_enabled=True)
     service = MonetizationService(settings, logging.getLogger("test"))
 
     article = "这是一篇正文。"
@@ -29,6 +30,16 @@ def test_append_cta_only_once(tmp_path: Path) -> None:
 
     assert "## 延伸服务" in first
     assert second.count("## 延伸服务") == 1
+
+
+def test_append_cta_disabled_by_default(tmp_path: Path) -> None:
+    settings = _build_settings(tmp_path, monetization_enabled=False)
+    service = MonetizationService(settings, logging.getLogger("test"))
+
+    article = "这是一篇正文。"
+    rendered = service.append_cta(article)
+
+    assert rendered.strip() == article
 
 
 def test_export_assets_creates_files(tmp_path: Path) -> None:

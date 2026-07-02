@@ -159,8 +159,8 @@
     "auto_prepare": true,
     "min_overall_score": 72,
     "max_ai_risk": 45,
-    "min_auto_publish_overall_score": 65,
-    "max_auto_publish_ai_risk": 70,
+    "min_auto_publish_overall_score": 78,
+    "max_auto_publish_ai_risk": 42,
     "min_auto_publish_validation_score": 70,
     "min_auto_publish_readiness_score": 70,
     "publish_dirname": "publish"

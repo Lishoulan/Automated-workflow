@@ -336,6 +336,107 @@ class AgentWorkflowService:
             )
         return paragraphs
 
+    def _has_grounded_evidence(self, data_report) -> bool:
+        companies = [str(item).strip() for item in getattr(data_report, "companies", []) if str(item).strip()]
+        growth_numbers = [str(item).strip() for item in getattr(data_report, "growth_numbers", []) if str(item).strip()]
+        evidence_notes = [str(item).strip() for item in getattr(data_report, "evidence_notes", []) if str(item).strip()]
+        return bool(companies or growth_numbers or len(evidence_notes) >= 2 or int(getattr(data_report, "evidence_strength", 0) or 0) >= 70)
+
+    def _collect_low_quality_reasons(self, extraction: ExtractionResult, data_report, score: int) -> list[str]:
+        reasons: list[str] = []
+        if score < self.LOW_QUALITY_THRESHOLD:
+            reasons.append(f"quality_score_below_{self.LOW_QUALITY_THRESHOLD}")
+        if not (data_report.core_data or data_report.key_points):
+            reasons.append("missing_core_points")
+        if not (data_report.growth_numbers or data_report.evidence_notes):
+            reasons.append("missing_evidence")
+        if not (data_report.companies or extraction.companies or data_report.focus_industry.strip()):
+            reasons.append("missing_subject_anchor")
+
+        quality_flags = {
+            str(flag).strip()
+            for flag in (getattr(data_report, "topic_quality_flags", None) or getattr(extraction, "topic_quality_flags", None) or [])
+            if str(flag).strip()
+        }
+        if "evergreen_fallback" in quality_flags and not self._has_grounded_evidence(data_report):
+            reasons.append("fallback_topic_without_hard_evidence")
+        elif not self._has_grounded_evidence(data_report) and int(getattr(data_report, "topic_quality_score", 0) or 0) < 78:
+            reasons.append("insufficient_hard_evidence")
+        return reasons
+
+    def _ensure_article_min_chars(self, article: str, data_report, min_chars: int = None) -> str:
+        min_chars = min_chars if min_chars is not None else self.ARTICLE_MIN_CHARS
+        if not self._has_grounded_evidence(data_report):
+            min_chars = min(min_chars, max(950, int((getattr(data_report, "word_target", 0) or 1200) * 0.7)))
+        current = len(article.replace("\n", "").replace(" ", ""))
+        if current >= min_chars:
+            return article
+        self.logger.warning(
+            "Article has only %d chars (minimum %d). Appending grounded supplementary paragraphs.",
+            current,
+            min_chars,
+        )
+        paragraphs = article.split("\n\n")
+        supplements = self._build_supplementary_paragraphs(data_report)
+        for sup in supplements:
+            paragraphs.insert(-1, sup)
+            total = len("\n\n".join(paragraphs).replace("\n", "").replace(" ", ""))
+            if total >= min_chars:
+                break
+        result = "\n\n".join(paragraphs)
+        result_chars = len(result.replace("\n", "").replace(" ", ""))
+        if result_chars < min_chars and self.openai_service.available and self._has_grounded_evidence(data_report):
+            self.logger.info(
+                "Supplementary paragraphs brought article to %d chars, still below %d. Attempting grounded LLM expansion.",
+                result_chars,
+                min_chars,
+            )
+            result = self._expand_article_via_llm(result, data_report, min_chars)
+        return result
+
+    def _expand_article_via_llm(self, article: str, data_report, min_chars: int) -> str:
+        current_chars = len(article.replace("\n", "").replace(" ", ""))
+        deficit = min_chars - current_chars
+        if deficit <= 0 or not self._has_grounded_evidence(data_report):
+            return article
+        data_parts = []
+        if hasattr(data_report, "watch_metrics") and data_report.watch_metrics:
+            data_parts.append("Follow-up metrics: " + " / ".join(str(m) for m in data_report.watch_metrics[:5]))
+        if hasattr(data_report, "risk_flags") and data_report.risk_flags:
+            data_parts.append("Risk factors: " + " / ".join(str(r) for r in data_report.risk_flags[:3]))
+        if hasattr(data_report, "growth_numbers") and data_report.growth_numbers:
+            data_parts.append("Grounded numbers: " + " / ".join(str(g) for g in data_report.growth_numbers[:3]))
+        if hasattr(data_report, "evidence_notes") and data_report.evidence_notes:
+            data_parts.append("Evidence notes: " + " / ".join(str(e) for e in data_report.evidence_notes[:3]))
+        data_summary = "\n".join(data_parts) if data_parts else "No extra evidence."
+        system_prompt = (
+            "You are an article expansion assistant. Extend the Chinese article using only the provided evidence. "
+            "Never invent companies, numbers, time points, case studies, margins, or market share. "
+            'Return strict JSON: {"paragraphs": ["...", "..."]}.'
+        )
+        user_prompt = (
+            f"Current article length: {current_chars}. Need about {deficit} more Chinese characters.\n\n"
+            f"Article:\n{article[:2400]}\n\n"
+            f"Evidence:\n{data_summary}\n\n"
+            "Add 1-3 analytical paragraphs only. They must stay in the same industry context and add no unsupported facts."
+        )
+        try:
+            payload = self.openai_service.create_json_completion(system_prompt, user_prompt)
+            if payload and isinstance(payload.get("paragraphs"), list):
+                new_paragraphs = [str(p).strip() for p in payload["paragraphs"] if str(p).strip()]
+                if new_paragraphs:
+                    existing = article.split("\n\n")
+                    for p in new_paragraphs:
+                        if any(char.isdigit() for char in p) and not getattr(data_report, "growth_numbers", []):
+                            continue
+                        existing.insert(-1, p)
+                    result = "\n\n".join(existing)
+                    self.logger.info("Grounded LLM expansion added %d paragraphs.", len(new_paragraphs))
+                    return result
+        except Exception as exc:
+            self.logger.warning("LLM expansion failed: %s", exc)
+        return article
+
     def _should_run_second_polish(self, content, content_score) -> bool:
         return (
             content_score.pass_status == "needs_revision"

@@ -137,15 +137,34 @@ class Editor135Service:
                         submit_to_wechat=submit_to_wechat,
                     )
 
+                    saved_ok = bool(sync_result.get("saved"))
+                    synced_ok = bool(sync_result.get("synced"))
                     result = {
-                        "status": "submitted" if submit_to_wechat and sync_result else ("draft_saved" if sync_result else "sync_failed"),
+                        "status": (
+                            "submitted"
+                            if submit_to_wechat and synced_ok
+                            else ("draft_saved" if saved_ok else "sync_failed")
+                        ),
                         "method": "editor_135",
                         "title": title,
                         "editor_url": page.url,
                         "publish_url": page.url,
                         "submit_to_wechat": submit_to_wechat,
-                        "error_code": "" if sync_result else "SYNC_NOT_CONFIRMED",
+                        "error_code": str(sync_result.get("error_code", "")).strip(),
+                        "message": str(sync_result.get("message", "")).strip(),
+                        "debug_dir": str(self._debug_dir),
                     }
+                    if result["status"] != "submitted":
+                        self._capture_debug_artifacts(
+                            page,
+                            {
+                                "title": title,
+                                "method": "editor_135",
+                                "status": result["status"],
+                                "submit_to_wechat": submit_to_wechat,
+                                "sync_result": sync_result,
+                            },
+                        )
                     self.logger.info("135 editor sync result: %s", result["status"])
                     return result
 
@@ -1408,6 +1427,413 @@ class Editor135Service:
         # 对话框已关闭，可能保存成功
         self.logger.info("超时但对话框已关闭，假定保存成功")
         return True
+
+    def _find_sync_dialog(self, page):
+        selectors = [
+            "#save-wx-msg-dialog",
+            ".layui-layer:has(#save-wx-msg)",
+            ".layui-layer:has(#WxMsgName)",
+            ".layui-layer-content:has(#save-wx-msg)",
+        ]
+        for selector in selectors:
+            with suppress(Exception):
+                dialog = page.query_selector(selector)
+                if dialog and dialog.is_visible():
+                    return dialog
+        return None
+
+    def _read_sync_feedback(self, page) -> tuple[bool, str]:
+        success_markers = tuple(EDITOR_135_SYNC_SUCCESS_MARKERS) + ("同步成功", "已同步", "同步完成", "保存成功")
+        error_markers = (
+            "同步失败",
+            "未绑定公众号",
+            "请选择公众号",
+            "未授权",
+            "保存失败",
+            "内容不能为空",
+            "标题不能为空",
+        )
+        with suppress(Exception):
+            page_text = page.inner_text("body", timeout=3000)
+            for marker in success_markers:
+                if marker and marker in page_text:
+                    return True, marker
+            for marker in error_markers:
+                if marker and marker in page_text:
+                    return False, marker
+        return False, ""
+
+    def _save_and_sync(
+        self,
+        page,
+        *,
+        title: str = "",
+        cover_path: Path | None = None,
+        summary: str = "",
+        author: str = "",
+        account_name: str = "",
+        submit_to_wechat: bool = True,
+    ) -> dict[str, Any]:
+        self.logger.info("Processing 135 save/sync dialog...")
+
+        dialog = None
+        for _ in range(12):
+            dialog = self._find_sync_dialog(page)
+            if dialog is not None:
+                break
+            page.wait_for_timeout(1000)
+
+        if dialog is None:
+            self.logger.error("135 save/sync dialog did not appear.")
+            return {
+                "saved": False,
+                "synced": False,
+                "error_code": "SYNC_DIALOG_NOT_FOUND",
+                "message": "135 save/sync dialog did not appear.",
+            }
+
+        if cover_path and cover_path.exists():
+            self._upload_cover_in_save_dialog(page, dialog, cover_path)
+
+        self._fill_dialog_metadata(dialog, author=author, summary=summary)
+        self._select_default_account(dialog, account_name=account_name)
+
+        with suppress(Exception):
+            name_input = dialog.query_selector("#WxMsgName")
+            if name_input and title.strip():
+                page.evaluate(
+                    """([selector, value]) => {
+                        const input = document.querySelector(selector);
+                        if (!input) return;
+                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        setter.call(input, value);
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }""",
+                    ["#WxMsgName", title.strip()],
+                )
+
+        if submit_to_wechat:
+            checkbox_selectors = [
+                "input[name='data[WxMsg][sync][]']",
+                "input[type='checkbox'][name*='sync']",
+                "input[type='checkbox'][value*='wechat']",
+            ]
+            for selector in checkbox_selectors:
+                with suppress(Exception):
+                    sync_checkbox = dialog.query_selector(selector)
+                    if sync_checkbox:
+                        if not sync_checkbox.is_checked():
+                            sync_checkbox.click(force=True)
+                        break
+
+        save_candidates = [
+            "#save-wx-msg[value='保存文章']",
+            "#save-wx-msg",
+            "#save-wx-msg-dialog .btn-primary",
+            "#save-wx-msg-dialog input[type='submit']",
+        ]
+        save_clicked = False
+        for selector in save_candidates:
+            with suppress(Exception):
+                locator = page.locator(selector).first
+                if locator.count() > 0 and locator.is_visible():
+                    locator.click(timeout=10000, force=True)
+                    save_clicked = True
+                    break
+
+        if not save_clicked:
+            self.logger.error("135 save button was not found.")
+            return {
+                "saved": False,
+                "synced": False,
+                "error_code": "SAVE_BUTTON_NOT_FOUND",
+                "message": "135 save button was not found.",
+            }
+
+        saved = False
+        synced = False
+        message = ""
+        error_code = ""
+        deadline = time.time() + 90
+
+        while time.time() < deadline:
+            self._close_blocking_dialogs(page)
+            self._dismiss_copyright_popup(page)
+
+            ok, feedback = self._read_sync_feedback(page)
+            if feedback:
+                message = feedback
+                if ok:
+                    saved = True
+                    synced = synced or ("同步" in feedback or not submit_to_wechat)
+                    if synced or not submit_to_wechat:
+                        break
+                else:
+                    error_code = "SYNC_FEEDBACK_ERROR"
+                    return {
+                        "saved": saved,
+                        "synced": False,
+                        "error_code": error_code,
+                        "message": feedback,
+                    }
+
+            dialog = self._find_sync_dialog(page)
+            if dialog is None:
+                saved = True
+                if not submit_to_wechat:
+                    message = message or "保存成功"
+                    break
+                if synced:
+                    break
+
+            page.wait_for_timeout(2500)
+
+        if saved and submit_to_wechat and not synced:
+            error_code = "SYNC_NOT_CONFIRMED"
+            message = message or "135 draft may have been saved, but WeChat sync was not confirmed."
+
+        if saved and not message:
+            message = "保存成功" if not submit_to_wechat else "同步流程已触发"
+
+        return {
+            "saved": saved,
+            "synced": synced if submit_to_wechat else False,
+            "error_code": error_code,
+            "message": message,
+        }
+
+    def _select_default_account(self, dialog, *, account_name: str) -> None:
+        normalized = account_name.strip()
+        selectors = EDITOR_135_SYNC_DIALOG.get("account_selector") + [
+            "select[name*='account']",
+            "select[id*='account']",
+        ]
+
+        for selector in selectors:
+            try:
+                select = dialog.query_selector(selector)
+                if not select or not select.is_visible():
+                    continue
+                if normalized:
+                    with suppress(Exception):
+                        select.select_option(label=normalized)
+                        self.logger.info("Selected 135 bound account by label: %s", normalized)
+                        return
+                options = select.query_selector_all("option")
+                for option in options:
+                    label = (option.inner_text() or "").strip()
+                    if normalized and normalized not in label:
+                        continue
+                    value = option.get_attribute("value")
+                    if value:
+                        select.select_option(value=value)
+                        self.logger.info("Selected 135 bound account option: %s", label or value)
+                        return
+            except Exception:
+                continue
+
+        clickable_selectors = [
+            ".account-item",
+            ".wx-account-item",
+            ".official-account-item",
+            "[data-account-name]",
+            "label",
+            "li",
+            "div",
+            "span",
+        ]
+        fallback_keywords = [normalized] if normalized else ["默认", "已绑定", "公众号"]
+        for selector in clickable_selectors:
+            try:
+                nodes = dialog.query_selector_all(selector)
+            except Exception:
+                continue
+            for node in nodes:
+                with suppress(Exception):
+                    label = (node.inner_text() or "").strip()
+                    if not label:
+                        continue
+                    if not any(keyword and keyword in label for keyword in fallback_keywords):
+                        continue
+                    if node.is_visible():
+                        node.click(force=True)
+                        self.logger.info("Selected 135 account via clickable node: %s", label)
+                        return
+
+    def _enable_wechat_sync_options(self, page, dialog) -> None:
+        text_targets = (
+            "同步到微信",
+            "微信同步",
+            "同步至微信",
+            "同步到草稿箱",
+            "草稿箱",
+        )
+        checkbox_selectors = [
+            "input[name='data[WxMsg][sync][]']",
+            "input[type='checkbox'][name*='sync']",
+            "input[type='checkbox'][value*='wechat']",
+            "input[type='checkbox'][value*='draft']",
+        ]
+
+        for selector in checkbox_selectors:
+            with suppress(Exception):
+                checkbox = dialog.query_selector(selector)
+                if checkbox:
+                    if not checkbox.is_checked():
+                        checkbox.click(force=True)
+                    self.logger.info("Enabled 135 sync checkbox via %s", selector)
+
+        label_selectors = [
+            "label",
+            "span",
+            "div",
+            "button",
+            "a",
+        ]
+        for selector in label_selectors:
+            try:
+                nodes = dialog.query_selector_all(selector)
+            except Exception:
+                continue
+            for node in nodes:
+                with suppress(Exception):
+                    text = (node.inner_text() or "").strip()
+                    if not text:
+                        continue
+                    if any(target in text for target in text_targets) and node.is_visible():
+                        node.click(force=True)
+                        self.logger.info("Enabled 135 sync option via text node: %s", text)
+        page.wait_for_timeout(500)
+
+    def _save_and_sync(
+        self,
+        page,
+        *,
+        title: str,
+        cover_path: Path | None,
+        summary: str = "",
+        author: str = "",
+        account_name: str = "",
+        submit_to_wechat: bool = True,
+    ) -> dict[str, Any]:
+        dialog = None
+        for _ in range(20):
+            self._close_blocking_dialogs(page)
+            dialog = self._find_sync_dialog(page)
+            if dialog is not None:
+                break
+            page.wait_for_timeout(1000)
+
+        if dialog is None:
+            self.logger.error("135 save/sync dialog did not appear.")
+            return {
+                "saved": False,
+                "synced": False,
+                "error_code": "SYNC_DIALOG_NOT_FOUND",
+                "message": "135 save/sync dialog did not appear.",
+            }
+
+        if cover_path and cover_path.exists():
+            self._upload_cover_in_save_dialog(page, dialog, cover_path)
+
+        self._fill_dialog_metadata(dialog, author=author, summary=summary)
+        self._select_default_account(dialog, account_name=account_name)
+
+        with suppress(Exception):
+            name_input = dialog.query_selector("#WxMsgName")
+            if name_input and title.strip():
+                page.evaluate(
+                    """([selector, value]) => {
+                        const input = document.querySelector(selector);
+                        if (!input) return;
+                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        setter.call(input, value);
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }""",
+                    ["#WxMsgName", title.strip()],
+                )
+
+        if submit_to_wechat:
+            self._enable_wechat_sync_options(page, dialog)
+
+        save_candidates = [
+            "#save-wx-msg[value='保存文章']",
+            "#save-wx-msg",
+            "#save-wx-msg-dialog .btn-primary",
+            "#save-wx-msg-dialog input[type='submit']",
+        ]
+        save_clicked = False
+        for selector in save_candidates:
+            with suppress(Exception):
+                locator = page.locator(selector).first
+                if locator.count() > 0 and locator.is_visible():
+                    locator.click(timeout=10000, force=True)
+                    save_clicked = True
+                    self.logger.info("Triggered 135 save/sync via %s", selector)
+                    break
+
+        if not save_clicked:
+            self.logger.error("135 save button was not found.")
+            return {
+                "saved": False,
+                "synced": False,
+                "error_code": "SAVE_BUTTON_NOT_FOUND",
+                "message": "135 save button was not found.",
+            }
+
+        saved = False
+        synced = False
+        message = ""
+        error_code = ""
+        deadline = time.time() + 90
+
+        while time.time() < deadline:
+            self._close_blocking_dialogs(page)
+            self._dismiss_copyright_popup(page)
+
+            ok, feedback = self._read_sync_feedback(page)
+            if feedback:
+                message = feedback
+                if ok:
+                    saved = True
+                    synced = synced or ("同步" in feedback or not submit_to_wechat)
+                    if synced or not submit_to_wechat:
+                        break
+                else:
+                    error_code = "SYNC_FEEDBACK_ERROR"
+                    return {
+                        "saved": saved,
+                        "synced": False,
+                        "error_code": error_code,
+                        "message": feedback,
+                    }
+
+            dialog = self._find_sync_dialog(page)
+            if dialog is None:
+                saved = True
+                if not submit_to_wechat:
+                    message = message or "保存成功"
+                    break
+                if synced:
+                    break
+
+            page.wait_for_timeout(2500)
+
+        if saved and submit_to_wechat and not synced:
+            error_code = "SYNC_NOT_CONFIRMED"
+            message = message or "135 draft may have been saved, but WeChat sync was not confirmed."
+
+        if saved and not message:
+            message = "保存成功" if not submit_to_wechat else "同步流程已触发"
+
+        return {
+            "saved": saved,
+            "synced": synced if submit_to_wechat else False,
+            "error_code": error_code,
+            "message": message,
+        }
 
     def _upload_cover_in_save_dialog(self, page, dialog, cover_path: Path) -> None:
         """在保存图文对话框中上传封面图。"""

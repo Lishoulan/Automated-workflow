@@ -502,6 +502,9 @@ jobs:
           path: |
             output/
             logs/
+            .runtime/*/debug/
+            .runtime/debug/
+            .runtime/automation/
           retention-days: 7
 
       - name: Update browser profile seed

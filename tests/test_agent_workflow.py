@@ -152,6 +152,34 @@ class TestCollectLowQualityReasons:
         reasons = workflow_service._collect_low_quality_reasons(extraction, data_report, 80)
         assert "missing_subject_anchor" in reasons
 
+    def test_fallback_topic_without_hard_evidence_is_rejected(self, workflow_service: AgentWorkflowService) -> None:
+        extraction = ExtractionResult(
+            merged_text="",
+            core_data=[],
+            industry_trends=[],
+            growth_numbers=[],
+            companies=[],
+            supply_chain_keywords=[],
+            key_points=[],
+            topic_quality_score=72,
+        )
+        extraction.topic_quality_flags = ["evergreen_fallback"]
+        data_report = DataReport(
+            core_data=["只有泛化判断"],
+            key_points=["缺少硬数据"],
+            growth_numbers=[],
+            evidence_notes=["公开材料提到行业变化"],
+            companies=[],
+            focus_industry="工业自动化",
+            topic_quality_score=72,
+            evidence_strength=55,
+        )
+        data_report.topic_quality_flags = ["evergreen_fallback"]
+
+        reasons = workflow_service._collect_low_quality_reasons(extraction, data_report, 72)
+
+        assert "fallback_topic_without_hard_evidence" in reasons
+
 
 class TestShouldRunSecondPolish:
     def test_needs_revision_triggers(self, workflow_service: AgentWorkflowService) -> None:

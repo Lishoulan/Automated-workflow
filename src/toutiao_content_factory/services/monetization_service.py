@@ -31,6 +31,8 @@ class MonetizationService:
         clean_article = str(article or "").rstrip()
         if not clean_article:
             return ""
+        if not getattr(self.settings, "monetization_enabled", False):
+            return clean_article + "\n"
         if self.CTA_MARKER in clean_article:
             return clean_article + "\n"
 

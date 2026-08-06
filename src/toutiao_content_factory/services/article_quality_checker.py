@@ -15,6 +15,7 @@ class QualityCheckResult:
     originality_score: int
     readability_score: int
     depth_score: int
+    engagement_attractiveness_score: int = 0
 
 
 class ArticleQualityChecker:
@@ -111,6 +112,29 @@ class ArticleQualityChecker:
     # 深度因果词汇列表
     _DEPTH_CAUSAL_WORDS = ["根本原因", "核心驱动", "关键变量", "底层逻辑", "边际变化", "拐点"]
 
+    # === 互动吸引力维度配置 ===
+    # 互动吸引力-公司名检测正则（英文大写开头2-6字母 / 中文2-6字+公司后缀）
+    _ENGAGEMENT_COMPANY_PATTERN = re.compile(
+        r"[A-Z][a-zA-Z]{1,5}"
+        r"|[\u4e00-\u9fa5]{2,6}(?:公司|集团|科技|智能|机器人|半导体|能源|电子|汽车|制药|生物|医疗|航空|航天|通信|网络|软件|控股|资本|证券|银行|保险)"
+    )
+    # 互动吸引力-数字检测正则
+    _ENGAGEMENT_NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?")
+    # 互动吸引力-对立观点关键词
+    _ENGAGEMENT_OPPOSITION_WORDS = ["然而", "但是", "另一方面", "相反", "不过", "与此相对", "反之", "尽管如此"]
+    # 互动吸引力-互动话术模板正则（预编译）
+    _ENGAGEMENT_TEMPLATE_PATTERNS_COMPILED = [
+        re.compile(r"你更看好.+还是"),
+        re.compile(r"你更倾向.+还是"),
+        re.compile(r"背后.+哪个变量"),
+        re.compile(r"哪个变量.+决定"),
+        re.compile(r"如果.+是否"),
+        re.compile(r"假如.+是否会"),
+        re.compile(r"在你的行业里"),
+        re.compile(r"在你的领域里"),
+        re.compile(r"你所在行业"),
+    ]
+
     def __init__(self):
         self.min_word_count = 1500
         self.max_template_usage = 3
@@ -192,6 +216,11 @@ class ArticleQualityChecker:
         source_marker_issues = self._check_source_markers(content)
         issues.extend(source_marker_issues)
 
+        # 10. 互动吸引力检查
+        engagement_result = self._check_engagement_attractiveness(content)
+        engagement_attractiveness_score = engagement_result["score"]
+        issues.extend(engagement_result["warnings"])
+
         # 计算总分
         total_score = (
             (25 if word_count >= self.min_word_count else 0) +
@@ -216,6 +245,7 @@ class ArticleQualityChecker:
             originality_score=originality_score,
             readability_score=readability_score,
             depth_score=depth_score,
+            engagement_attractiveness_score=engagement_attractiveness_score,
         )
 
     def _count_templates(self, content: str) -> int:
@@ -445,7 +475,73 @@ class ArticleQualityChecker:
             score += 5
 
         return min(25, score)
-    
+
+    def _check_engagement_attractiveness(self, article: str) -> dict:
+        """检查文章的用户互动吸引力
+
+        从四个维度评估文章是否能吸引用户互动（阅读/点赞/评论）：
+        1. 具体公司名（25分）：检测是否包含具体公司名称
+        2. 具体数字（25分）：检测是否包含足够的数据支撑
+        3. 对立观点（25分）：检测是否呈现多元视角
+        4. 互动话术（25分）：检测是否使用互动引导话术
+
+        Args:
+            article: 文章正文
+
+        Returns:
+            dict: 包含 score（总分）、details（评分细节）、warnings（警告列表）
+        """
+        warnings: list[str] = []
+        details: dict = {}
+
+        # 1. 检测具体公司名（25分）：≥1个得25分，否则0分
+        company_matches = self._ENGAGEMENT_COMPANY_PATTERN.findall(article)
+        company_score = 25 if len(company_matches) >= 1 else 0
+        details["company_names"] = company_matches[:10]
+        details["company_count"] = len(company_matches)
+        details["company_score"] = company_score
+
+        # 2. 检测具体数字（25分）：≥3个得25分，按比例递减
+        number_matches = self._ENGAGEMENT_NUMBER_PATTERN.findall(article)
+        num_count = len(number_matches)
+        if num_count >= 3:
+            number_score = 25
+        elif num_count == 2:
+            number_score = 16
+        elif num_count == 1:
+            number_score = 8
+        else:
+            number_score = 0
+        details["number_count"] = num_count
+        details["number_score"] = number_score
+
+        # 3. 检测对立观点（25分）：≥1次得25分，否则0分
+        opposition_found = [w for w in self._ENGAGEMENT_OPPOSITION_WORDS if w in article]
+        opposition_score = 25 if len(opposition_found) >= 1 else 0
+        details["opposition_words"] = opposition_found
+        details["opposition_score"] = opposition_score
+
+        # 4. 检测互动话术（25分）：≥1处得25分，否则0分
+        engagement_matches: list[str] = []
+        for pattern in self._ENGAGEMENT_TEMPLATE_PATTERNS_COMPILED:
+            matches = pattern.findall(article)
+            engagement_matches.extend(matches)
+        engagement_score = 25 if len(engagement_matches) >= 1 else 0
+        details["engagement_templates"] = engagement_matches
+        details["engagement_score"] = engagement_score
+
+        # 计算总分（满分100）
+        total = company_score + number_score + opposition_score + engagement_score
+
+        if total < 60:
+            warnings.append("互动吸引力不足，建议补充具体公司/数字/对立观点/互动话术")
+
+        return {
+            "score": total,
+            "details": details,
+            "warnings": warnings,
+        }
+
     @staticmethod
     def _has_any_keyword(text_lower: str, keywords: list[str]) -> bool:
         """检查文本中是否包含任意关键词的辅助函数"""

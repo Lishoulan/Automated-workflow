@@ -172,6 +172,9 @@ class ReviewWorkflowService:
             title_candidates=[chosen_title, *bundle.recommended_titles, *bundle.titles],
         )
         clean_article = self.monetization_service.append_cta(clean_article, platform_key="default").strip()
+        # 头条公域发布包不含私域引流CTA；微信渠道在wechat_layout_engine._strip_trailing_cta中也会剥离CTA
+        # 此处剥离确保文件层面不泄漏CTA，即使止血模式下不经过_publish_to_toutiao
+        clean_article = self.publish_service._strip_cta_for_toutiao(clean_article).strip()
         clean_title = self.publish_service._clip_title(self._text_cleaner.strip_prompt_leakage(chosen_title).strip())
         clean_summary = self._text_cleaner.strip_prompt_leakage(bundle.summary).strip()
         clean_comment = self._text_cleaner.strip_prompt_leakage(bundle.comment_prompt).strip()

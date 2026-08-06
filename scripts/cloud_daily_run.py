@@ -211,7 +211,25 @@ def _configure_cloud_env(account_key: str) -> None:
     wechat_135_enabled = os.environ.get("WECHAT_EDITOR_135_ENABLED", "0") == "1"
     wechat_profile_dir = ".runtime/editor_135_profile" if wechat_135_enabled else ".runtime/wechat_profile"
     _check_and_disable_browser_platform("WECHAT", wechat_profile_dir)
-    _check_and_disable_browser_platform("TOUTIAO", ".runtime/toutiao_profile")
+
+    # 用 account-aware 路径检查 toutiao profile
+    # default 账号用 .runtime/toutiao_profile,非 default 账号用 .runtime/accounts/{account}/toutiao_profile
+    # 避免硬编码 default 路径导致对 robot_notes 等账号的检查形同虚设
+    try:
+        from toutiao_content_factory.config import load_settings
+        _account_settings = load_settings(PROJECT_ROOT, account_key=account_key)
+        _toutiao_profile_path = Path(_account_settings.publishing.user_data_dir)
+        if not _toutiao_profile_path.is_absolute():
+            _toutiao_profile_path = PROJECT_ROOT / _toutiao_profile_path
+        # _check_and_disable_browser_platform 期望相对 PROJECT_ROOT 的路径
+        try:
+            _toutiao_profile_rel = str(_toutiao_profile_path.relative_to(PROJECT_ROOT))
+        except ValueError:
+            _toutiao_profile_rel = str(_toutiao_profile_path)
+        _check_and_disable_browser_platform("TOUTIAO", _toutiao_profile_rel)
+    except Exception as exc:
+        _logger.warning("无法解析 account-aware toutiao profile 路径,回退到 default: %s", exc)
+        _check_and_disable_browser_platform("TOUTIAO", ".runtime/toutiao_profile")
 
     # --- 账号 ---
     os.environ.setdefault("TOUTIAO_ACCOUNT", account_key)
@@ -371,6 +389,22 @@ def _run_extra_modules(account_key: str) -> None:
             _logger.warning("评论挖掘执行异常（非致命）: %s", exc)
     else:
         _logger.info("互动 Agent 未启用，跳过")
+
+    # --- 性能数据回采 ---
+    if os.environ.get("PERFORMANCE_COLLECT_ENABLED", "1") == "1":
+        _logger.info("运行性能数据回采...")
+        try:
+            result = subprocess.run(
+                [sys.executable, main_py, "--collect-performance", "--account", account_key],
+                cwd=str(PROJECT_ROOT),
+                env=os.environ.copy(),
+                timeout=600,
+            )
+            _logger.info("性能数据回采完成 (exit_code=%d)", result.returncode)
+        except Exception as exc:
+            _logger.warning("性能数据回采执行异常（非致命）: %s", exc)
+    else:
+        _logger.info("性能数据回采未启用，跳过")
 
     # --- 变现同步 ---
     if os.environ.get("MONETIZATION_ENABLED", "0") == "1":

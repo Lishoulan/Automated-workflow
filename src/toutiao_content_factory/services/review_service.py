@@ -10,6 +10,7 @@ from pathlib import Path
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import TopicCandidate, WorkflowResult
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.automation import _humanize_source
 from toutiao_content_factory.services.schema_guard_service import SchemaGuardService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.monetization_service import MonetizationService
@@ -507,7 +508,7 @@ class ReviewWorkflowService:
             topic_block = (
                 "## 选题信息\n\n"
                 f"- 标题：{selected_topic.title}\n"
-                f"- 来源：{selected_topic.source}\n"
+                f"- 来源：{_humanize_source(selected_topic.source)}\n"
                 f"- 发布时间：{selected_topic.published_at or '未知'}\n"
                 f"- 原文链接：{selected_topic.url}\n"
                 f"- 热度总分：{selected_topic.total_score}\n"

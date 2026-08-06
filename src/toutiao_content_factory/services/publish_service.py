@@ -9,7 +9,7 @@ import shutil
 import time
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
@@ -25,6 +25,7 @@ from toutiao_content_factory.services.browser_launch_guard import (
 from toutiao_content_factory.services.compliance_service import get_proxy_server
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
+from toutiao_content_factory.services.image_generation_service import generate_text_cover
 from toutiao_content_factory.services.notification_service import NotificationService
 # 健壮性增强模块：动态重试退避 / 弹窗守卫 / 定位器降级 / 发布状态双重校验
 # 所有增强能力均以可选方式接入，不破坏原有配置隔离与业务逻辑
@@ -365,6 +366,22 @@ class PublishService:
         if str(review_status.get("status", "")) != "approved":
             raise RuntimeError("Run is not approved yet. Approve review before publishing.")
 
+        # 日发布频率硬限制：防止 max_daily_posts 配置被绕过
+        # 历史数据：5月31日单日发布10篇，触发平台限流，账号权重被稀释
+        if not bool(self.settings.publishing.draft_only):
+            from toutiao_content_factory.services.compliance_service import (
+                check_daily_post_limit,
+                count_today_published,
+                get_max_daily_posts,
+            )
+            if not check_daily_post_limit(self.history_path, platform=self.settings.publishing.platform):
+                today_count = count_today_published(self.history_path, self.settings.publishing.platform)
+                max_posts = get_max_daily_posts(self.settings.publishing.platform)
+                raise RuntimeError(
+                    f"Daily post limit reached: {today_count}/{max_posts} posts today. "
+                    "Publish blocked to protect account weight."
+                )
+
         topic = publish_meta.get("selected_topic") or {}
         topic_title = str(topic.get("title", ""))
         topic_url = str(topic.get("url", ""))
@@ -373,9 +390,19 @@ class PublishService:
             and not self.settings.publishing.allow_duplicate_topics
             and self._was_topic_published(topic_title, topic_url)
         ):
-            raise RuntimeError("This topic has already been published today. Duplicate publish blocked.")
+            raise RuntimeError("This topic has already been published in the last 7 days. Duplicate publish blocked.")
 
         title = self._clip_title(str(publish_meta.get("selected_title", "")).strip())
+        if (
+            not bool(self.settings.publishing.draft_only)
+            and not self.settings.publishing.allow_duplicate_topics
+            and self._was_article_title_published_recently(title)
+        ):
+            raise RuntimeError(
+                "An article with the same or highly similar title was published in the last 7 days "
+                "(edit distance <= 3). Duplicate publish blocked per RULE_009."
+            )
+
         article = self._sanitize_article_for_publish(self._read_text(publish_dir / "article.md").strip())
         article_char_count = len(article.replace("\n", "").replace(" ", ""))
         if article_char_count < 1500:
@@ -402,6 +429,19 @@ class PublishService:
         max_publish_retries = 2
         last_publish_exc: Exception | None = None
         for attempt in range(1 + max_publish_retries):
+            if attempt > 0:
+                # 重试前重新检查发布历史，防止“第一次实际已提交但前端验证失败”
+                # 导致重复点击发布按钮造成真正的重复发布。
+                if not bool(self.settings.publishing.draft_only) and not self.settings.publishing.allow_duplicate_topics:
+                    if self._was_article_title_published_recently(title):
+                        self.logger.warning(
+                            "Retry aborted: article title was already published in the last 7 days. title=%s",
+                            title,
+                        )
+                        raise RuntimeError(
+                            "Duplicate publish detected on retry: an article with the same or similar title "
+                            "was already submitted. Aborting retry to prevent duplicate publishes."
+                        )
             try:
                 result_payload = self._publish_to_toutiao(
                     title=title,
@@ -1057,49 +1097,56 @@ class PublishService:
         image_result = self._load_json(
             run_dir / self.settings.review.publish_dirname / "image_generation_result.json"
         )
-        if not image_result:
-            notes.append("Skipped Toutiao cover upload because image_generation_result.json is missing.")
-            return None
+        backend = str(image_result.get("backend", "")).strip().lower() if image_result else ""
+        used_fallback = bool(image_result.get("used_fallback", False)) if image_result else False
 
-        if bool(image_result.get("used_fallback", False)):
-            notes.append("Skipped Toutiao cover upload because image2 failed and fallback images are not uploaded.")
-            return None
-
-        backend = str(image_result.get("backend", "")).strip().lower()
-        backend_priority = image_result.get("backend_priority", [])
-        model = str(image_result.get("model", "")).strip()
-        effective_remote_backend = ""
-        if isinstance(backend_priority, list):
-            for item in backend_priority:
-                candidate = str(item).strip().lower()
-                if candidate and candidate not in {"renderer", "local", "local_renderer", "pillow"}:
-                    effective_remote_backend = candidate
-                    break
-        if not effective_remote_backend and backend not in {"", "renderer", "local_renderer"}:
-            effective_remote_backend = backend
-
+        # 优先复用已生成的 cover.png（不论 backend 来源）
         cover_path = self._resolve_existing_publish_asset(
             run_dir=run_dir,
             publish_dir_name="images",
             filename="cover.png",
         )
-        if cover_path is None:
-            notes.append("Skipped Toutiao cover upload because the generated cover file was not found.")
-            return None
 
-        if not effective_remote_backend:
-            if cover_path.exists():
-                notes.append(
-                    f"Cover image exists locally (backend={backend}), will upload directly."
+        # 兜底：image_generation_result.json 缺失或 cover.png 缺失时，调用本地 pillow 生成
+        if cover_path is None or not cover_path.exists():
+            try:
+                publish_meta = self._load_json(
+                    run_dir / self.settings.review.publish_dirname / "publish_meta.json"
                 )
-                return cover_path
+                cover_title = str(publish_meta.get("selected_title", "")).strip() or "科技行业观察"
+                fallback_dir = run_dir / self.settings.review.publish_dirname / "images"
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                fallback_path = fallback_dir / "cover.png"
+                generate_text_cover(cover_title, str(fallback_path))
+                if fallback_path.exists():
+                    cover_path = fallback_path
+                    notes.append(
+                        "Cover generated via local pillow fallback (image_generation_result.json "
+                        "or cover.png was missing). Fallback cover is upload-safe."
+                    )
+                else:
+                    notes.append("Local pillow fallback failed to produce cover.png.")
+                    return None
+            except Exception as exc:
+                notes.append(f"Local pillow fallback cover generation failed: {exc}")
+                return None
+        elif used_fallback:
+            # pillow/renderer 生成的封面是合法可上传的，不再跳过
             notes.append(
-                f"No remote image backend (backend={backend or 'unknown'}), will use no-cover mode."
+                f"Using fallback-generated cover (backend={backend or 'pillow'}). "
+                "Fallback covers are upload-safe per fix-2032."
             )
+        elif not image_result:
+            notes.append(
+                "image_generation_result.json missing but cover.png exists; uploading existing cover directly."
+            )
+
+        if cover_path is None or not cover_path.exists():
+            notes.append("Skipped Toutiao cover upload because no cover could be resolved or generated.")
             return None
 
         notes.append(
-            f"Toutiao cover upload enabled from successful remote image generation ({effective_remote_backend}, {model or 'unknown model'})."
+            f"Toutiao cover resolved (backend={backend or 'local'}, path={cover_path.name})."
         )
         return cover_path
 
@@ -1212,6 +1259,9 @@ class PublishService:
 
     def _sanitize_article_for_publish(self, article: str) -> str:
         cleaned = clean_article_text(article)
+        # 头条为公域平台，剥离 MonetizationService 注入的私域引流 CTA 段落
+        # （CTA 仅保留给微信等私域渠道）
+        cleaned = self._strip_cta_for_toutiao(cleaned)
         sanitized_lines: list[str] = []
         for raw_line in cleaned.splitlines():
             line = self._sanitize_publish_text(raw_line.strip())
@@ -1221,6 +1271,34 @@ class PublishService:
             if line:
                 sanitized_lines.append(line)
         return "\n".join(sanitized_lines).strip()
+
+    def _strip_cta_for_toutiao(self, article: str) -> str:
+        """剥离 CTA 段落（## 延伸服务 及其后全部内容）。
+
+        注意:cta_markers 必须同时包含带 ## 前缀和不带前缀的版本,
+        因为 clean_article_text 会剥离行首的 ## 前缀,导致带前缀的标记失效。
+        另外加入内容型标记作为兜底,确保 CTA 段落被拦截。
+        """
+        cta_markers = (
+            # 带 ## 前缀(clean_article_text 调用前的原始格式)
+            "## 延伸服务",
+            "## 延伸阅读",
+            "## 进一步交流",
+            # 不带 ## 前缀(clean_article_text 调用后被改写的格式)
+            "延伸服务",
+            "延伸阅读",
+            "进一步交流",
+            # 内容型标记(段落首句,作为兜底)
+            "如果你想把信息差变成结果",
+            "做内容的目的不是多发几篇",
+        )
+        for marker in cta_markers:
+            idx = article.find(marker)
+            if idx != -1:
+                stripped = article[:idx].rstrip()
+                self.logger.info("头条发布前剥离 CTA 段落（%s），保留正文 %d 字符", marker, len(stripped))
+                return stripped
+        return article
 
     def _sanitize_publish_text(self, text: str) -> str:
         cleaned = str(text or "")
@@ -1232,6 +1310,8 @@ class PublishService:
         cleaned = re.sub(r"对标热点/[^\s，。！？；：]*", "", cleaned)
         cleaned = re.sub(r"36氪头条号[：:]?", "", cleaned)
         cleaned = re.sub(r"benchmark_hotspot", "", cleaned)
+        cleaned = re.sub(r"evergreen_pool", "", cleaned)
+        cleaned = re.sub(r"evergreen://[^\s，。]*", "", cleaned)
         cleaned = re.sub(r"\s{2,}", " ", cleaned)
         cleaned = re.sub(r"^[，。；：:、\-\s]+", "", cleaned)
         cleaned = re.sub(r"[，。；：:、\-\s]+$", "", cleaned)
@@ -4155,18 +4235,66 @@ class PublishService:
             self.history_path.write_text(content, encoding="utf-8")
 
     def _was_topic_published(self, topic_title: str, topic_url: str) -> bool:
+        """检查近期是否已发布过相同选题。
+
+        去重窗口从“仅当天”扩展到“近7天”，与 RULE_009 对齐。
+        历史数据表明：'日本机场成中国机器人试验场' 在6天内被发布3次，
+        单篇展现从11.7万降至548，跨天重复发布是核心泄漏点。
+        """
         normalized_title = self._normalize(topic_title)
-        today = datetime.now().date().isoformat()
+        cutoff = (datetime.now() - timedelta(days=7)).date().isoformat()
         for record in self._load_history():
             if record.status not in self.SUCCESS_HISTORY_STATUSES:
                 continue
-            if not record.published_at.startswith(today):
+            if not record.published_at or record.published_at < cutoff:
                 continue
             if topic_url and record.topic_url and topic_url == record.topic_url:
                 return True
             if normalized_title and self._normalize(record.topic_title) == normalized_title:
                 return True
         return False
+
+    def _was_article_title_published_recently(self, article_title: str, *, days: int = 7) -> bool:
+        """检查近7天是否已发布过相同或高度相似的最终文章标题。
+
+        基于 RULE_009 的编辑距离≤3 阈值进行模糊匹配。
+        解决“不同 topic 生成相似 article 标题”的去重漏洞：
+        原始 topic_title 与最终 article 标题可能完全不同，
+        仅靠 topic 维度去重无法拦截此类重复。
+        """
+        normalized_target = self._normalize(article_title)
+        if not normalized_target:
+            return False
+        cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
+        for record in self._load_history():
+            if record.status not in self.SUCCESS_HISTORY_STATUSES:
+                continue
+            if not record.published_at or record.published_at < cutoff:
+                continue
+            normalized_record = self._normalize(record.title)
+            if not normalized_record:
+                continue
+            if normalized_record == normalized_target:
+                return True
+            if self._edit_distance_le3(normalized_record, normalized_target):
+                return True
+        return False
+
+    @staticmethod
+    def _edit_distance_le3(a: str, b: str) -> bool:
+        """编辑距离≤3判断，长度差>3时直接剪枝。"""
+        if abs(len(a) - len(b)) > 3:
+            return False
+        if len(a) < len(b):
+            a, b = b, a
+        previous = list(range(len(b) + 1))
+        for i, ca in enumerate(a, start=1):
+            current = [i]
+            for j, cb in enumerate(b, start=1):
+                cost = 0 if ca == cb else 1
+                current.append(min(current[-1] + 1, previous[j] + 1, previous[j - 1] + cost))
+            previous = current
+        return previous[-1] <= 3
 
     def _normalize(self, text: str) -> str:
         return self.NORMALIZE_PATTERN.sub("", text.lower())

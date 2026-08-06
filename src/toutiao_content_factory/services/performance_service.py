@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import random
 import re
 from dataclasses import asdict
@@ -53,7 +54,9 @@ class PerformanceService:
         self.settings = settings
         self.logger = logger
 
-    def collect_performance_data(self) -> dict[str, Any]:
+    def collect_performance_data(self, headless: bool | None = None) -> dict[str, Any]:
+        if headless is None:
+            headless = os.environ.get("TOUTIAO_PUBLISH_HEADLESS", "0") == "1"
         errors: list[dict[str, str]] = []
         raw_platforms: dict[str, list[ArticlePerformance]] = {"toutiao": [], "wechat": []}
 
@@ -62,7 +65,7 @@ class PerformanceService:
             ("wechat", self._collect_wechat_metrics),
         ):
             try:
-                raw_platforms[platform] = collector()
+                raw_platforms[platform] = collector(headless=headless)
             except Exception as exc:  # pragma: no cover - browser/runtime dependent
                 self.logger.exception("Performance collection failed for %s", platform)
                 errors.append({"platform": platform, "message": str(exc)})
@@ -84,7 +87,7 @@ class PerformanceService:
         payload["output_path"] = str(output_path)
         return payload
 
-    def _collect_toutiao_metrics(self) -> list[ArticlePerformance]:
+    def _collect_toutiao_metrics(self, *, headless: bool = False) -> list[ArticlePerformance]:
         return self._collect_platform_metrics(
             platform="toutiao",
             profile_dir=self._resolve_toutiao_profile_dir(),
@@ -94,9 +97,10 @@ class PerformanceService:
             channel=self.settings.publishing.channel,
             executable_path=self.settings.publishing.executable_path,
             timeout_ms=max(self.settings.publishing.wait_timeout_ms, 15000),
+            headless=headless,
         )
 
-    def _collect_wechat_metrics(self) -> list[ArticlePerformance]:
+    def _collect_wechat_metrics(self, *, headless: bool = False) -> list[ArticlePerformance]:
         return self._collect_platform_metrics(
             platform="wechat",
             profile_dir=self._resolve_wechat_profile_dir(),
@@ -106,6 +110,7 @@ class PerformanceService:
             channel=self.settings.publishing.channel,
             executable_path=self.settings.publishing.executable_path,
             timeout_ms=max(self.settings.publishing.wait_timeout_ms, 20000),
+            headless=headless,
         )
 
     def _collect_platform_metrics(
@@ -119,6 +124,7 @@ class PerformanceService:
         channel: str,
         executable_path: str,
         timeout_ms: int,
+        headless: bool = False,
     ) -> list[ArticlePerformance]:
         if sync_playwright is None:
             raise RuntimeError("Playwright is not installed.")
@@ -134,8 +140,9 @@ class PerformanceService:
         metrics: list[ArticlePerformance] = []
         urls = list(dict.fromkeys([*(candidate_urls or ()), base_url]))
         self.logger.info(
-            "Launching performance collector browser for %s with visible mode. profile=%s guard_elapsed_ms=%s",
+            "Launching performance collector browser for %s with headless=%s. profile=%s guard_elapsed_ms=%s",
             platform,
+            headless,
             profile_dir,
             guard_summary.get("elapsed_ms"),
         )
@@ -144,7 +151,7 @@ class PerformanceService:
             with sync_playwright() as playwright:  # pragma: no cover - browser/runtime dependent
                 browser = playwright.chromium.launch_persistent_context(
                     user_data_dir=str(profile_dir),
-                    headless=False,
+                    headless=headless,
                     channel=channel or None,
                     executable_path=executable_path or None,
                 )
@@ -292,7 +299,8 @@ class PerformanceService:
             )
             publish_date = self._normalize_publish_date(source_text)
             views = self._extract_views(source_text)
-            interactions = self._extract_interactions(source_text)
+            breakdown = self._extract_interaction_breakdown(source_text)
+            interactions = breakdown["like_count"] + breakdown["comment_count"] + breakdown["share_count"]
             metrics.append(
                 ArticlePerformance(
                     url=str(row.get("url", "")).strip(),
@@ -301,6 +309,9 @@ class PerformanceService:
                     views=views,
                     interactions=interactions,
                     roi_score=self._compute_roi_score(views),
+                    like_count=breakdown["like_count"],
+                    comment_count=breakdown["comment_count"],
+                    share_count=breakdown["share_count"],
                 )
             )
         return metrics
@@ -476,23 +487,30 @@ class PerformanceService:
                 return self._parse_number(match.group(1))
         return 0
 
-    def _extract_interactions(self, text: str) -> int:
-        total = 0
-        for pattern in (
-            r"(?:点赞|赞)\s*[:：]?\s*([\d.,万wWkK]+)",
-            r"评论\s*[:：]?\s*([\d.,万wWkK]+)",
-            r"(?:转发|分享)\s*[:：]?\s*([\d.,万wWkK]+)",
-        ):
+    def _extract_interaction_breakdown(self, text: str) -> dict[str, int]:
+        """Extract like/comment/share counts as independent fields."""
+        breakdown = {"like_count": 0, "comment_count": 0, "share_count": 0}
+        patterns = {
+            "like_count": r"(?:点赞|赞)\s*[:：]?\s*([\d.,万wWkK]+)",
+            "comment_count": r"评论\s*[:：]?\s*([\d.,万wWkK]+)",
+            "share_count": r"(?:转发|分享)\s*[:：]?\s*([\d.,万wWkK]+)",
+        }
+        for field, pattern in patterns.items():
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                total += self._parse_number(match.group(1))
-        if total > 0:
-            return total
+                breakdown[field] = self._parse_number(match.group(1))
 
-        interaction_match = re.search(r"(?:互动|互动量)\s*[:：]?\s*([\d.,万wWkK]+)", text, re.IGNORECASE)
-        if interaction_match:
-            return self._parse_number(interaction_match.group(1))
-        return 0
+        # Fallback: if all zero, try combined "互动" field and leave breakdown at 0
+        if breakdown["like_count"] == 0 and breakdown["comment_count"] == 0 and breakdown["share_count"] == 0:
+            interaction_match = re.search(r"(?:互动|互动量)\s*[:：]?\s*([\d.,万wWkK]+)", text, re.IGNORECASE)
+            if interaction_match:
+                # Cannot split combined number; put into like_count as approximation
+                breakdown["like_count"] = self._parse_number(interaction_match.group(1))
+        return breakdown
+
+    def _extract_interactions(self, text: str) -> int:
+        breakdown = self._extract_interaction_breakdown(text)
+        return breakdown["like_count"] + breakdown["comment_count"] + breakdown["share_count"]
 
     def _parse_number(self, raw_value: str) -> int:
         text = str(raw_value or "").strip().replace(",", "")

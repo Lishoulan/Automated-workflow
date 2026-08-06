@@ -422,15 +422,23 @@ jobs:
         run: |
           echo "Checking for exported cookies..."
           COOKIES_FILE=""
-          # 优先从 GitHub Release 下载(最新 cookie)
-          if gh release download browser-profiles-v1 --repo Lishoulan/Automated-workflow \
-              --pattern "exported_cookies.json" --dir /tmp/ 2>/dev/null; then
-            COOKIES_FILE="/tmp/exported_cookies.json"
-            echo "Downloaded fresh cookies from Release."
-          # Release 下载失败时,回退到本地缓存
-          elif [ -f ".runtime/automation/exported_cookies.json" ]; then
+          # 用 gh api 下载(避免 gh release download 的 CDN 缓存问题)
+          ASSET_URL=$(gh api repos/Lishoulan/Automated-workflow/releases/tags/browser-profilees-v1 \
+              --jq '.assets[] | select(.name=="exported_cookies.json") | .url' 2>/dev/null)
+          if [ -n "$ASSET_URL" ]; then
+            gh api "$ASSET_URL" -H "Accept: application/octet-stream" > /tmp/exported_cookies.json 2>/dev/null
+            if [ -s /tmp/exported_cookies.json ]; then
+              COOKIES_FILE="/tmp/exported_cookies.json"
+              echo "Downloaded fresh cookies from Release via API."
+              # 验证文件内容
+              EXPORTED_AT=$(python -c "import json; print(json.load(open('/tmp/exported_cookies.json')).get('exported_at','unknown'))" 2>/dev/null || echo "parse_error")
+              echo "Cookie exported_at: $EXPORTED_AT"
+            fi
+          fi
+          # API 下载失败时,回退到本地缓存
+          if [ -z "$COOKIES_FILE" ] && [ -f ".runtime/automation/exported_cookies.json" ]; then
             COOKIES_FILE=".runtime/automation/exported_cookies.json"
-            echo "WARNING: Using cached cookies (Release download failed)."
+            echo "WARNING: Using cached cookies (Release API download failed)."
           fi
           if [ -n "$COOKIES_FILE" ]; then
             echo "Injecting cookies from: $COOKIES_FILE"

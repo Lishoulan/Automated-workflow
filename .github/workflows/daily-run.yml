@@ -46,6 +46,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
+    outputs:
+      # 主 job 运行状态（success / blocked / degraded_to_draft / unknown）
+      run-status: ${{ steps.extract-status.outputs.run-status }}
+      # 运行账号，供备用 job 复用
+      run-account: ${{ steps.extract-status.outputs.run-account }}
+
     env:
       # ---- 敏感配置（从 GitHub Secrets 读取） ----
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -193,6 +199,10 @@ jobs:
 
       # ---- 性能数据回采配置 ----
       PERFORMANCE_COLLECT_ENABLED: ${{ secrets.PERFORMANCE_COLLECT_ENABLED || '1' }}
+
+      # ---- 月度回顾与迭代建议配置 ----
+      # 默认开启，读取 30 天发布数据生成回顾报告、迭代建议与演化提案
+      MONTHLY_REVIEW_ENABLED: ${{ secrets.MONTHLY_REVIEW_ENABLED || '1' }}
 
       # ---- Docker AI 服务配置 ----
       DEERFLOW_ENABLED: "1"
@@ -485,7 +495,7 @@ jobs:
       - name: Debug cookie file status
         run: |
           echo "=== Cookie file check ==="
-          for dir in .runtime/toutiao_profile .runtime/accounts/robot_notes/toutiao_profile .runtime/accounts/robot-notes/toutiao_profile; do
+          for dir in .runtime/toutiao_profile .runtime/accounts/robot-notes/toutiao_profile; do
             echo "--- $dir ---"
             if [ -d "$dir" ]; then
               find "$dir" -name "Cookies*" -type f -exec stat -c "%n size=%s mtime=%y" {} \; 2>/dev/null || echo "No Cookies files"
@@ -556,6 +566,42 @@ jobs:
           python main.py --collect-performance --account "$RUN_ACCOUNT"
         continue-on-error: true
 
+      - name: Publish precheck report
+        if: always()
+        shell: bash
+        run: |
+          echo "=== Precheck Report ==="
+          find .runtime -name "precheck_report.json" -exec cat {} \; 2>/dev/null || echo "No precheck report found"
+
+      - name: Monthly review and iteration
+        if: always()
+        env:
+          MONTHLY_REVIEW_ENABLED: ${{ env.MONTHLY_REVIEW_ENABLED }}
+        shell: bash
+        run: |
+          if [ "$MONTHLY_REVIEW_ENABLED" = "0" ]; then
+            echo "MONTHLY_REVIEW_ENABLED=0, skipping monthly review."
+            exit 0
+          fi
+          echo "Running monthly review and iteration..."
+          python main.py --monthly-review --account "$RUN_ACCOUNT" || echo "Monthly review failed (non-fatal)"
+        continue-on-error: true
+
+      - name: Extract run status
+        id: extract-status
+        if: always()
+        shell: bash
+        run: |
+          if [ -f output/automation/last_daily_run_result.json ]; then
+            STATUS=$(python -c "import json; print(json.load(open('output/automation/last_daily_run_result.json')).get('status', 'unknown'))" 2>/dev/null || echo "unknown")
+            ACCOUNT=$(python -c "import json; print(json.load(open('output/automation/last_daily_run_result.json')).get('account_key', 'default'))" 2>/dev/null || echo "default")
+            echo "run-status=$STATUS" >> $GITHUB_OUTPUT
+            echo "run-account=$ACCOUNT" >> $GITHUB_OUTPUT
+          else
+            echo "run-status=unknown" >> $GITHUB_OUTPUT
+            echo "run-account=default" >> $GITHUB_OUTPUT
+          fi
+
       - name: Upload output artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -567,6 +613,7 @@ jobs:
             .runtime/*/debug/
             .runtime/debug/
             .runtime/automation/
+            .runtime/accounts/
           retention-days: 7
 
       - name: Update browser profile seed
@@ -587,3 +634,218 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
+
+  # 备用 job：主 job 失败或被 blocked 时以草稿模式重跑，保证至少产出草稿内容
+  daily-run-fallback:
+    needs: daily-run
+    if: failure() || needs.daily-run.outputs.run-status == 'blocked'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      # ---- 敏感配置（从 GitHub Secrets 读取，与主 job 保持一致） ----
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+      OPENAI_MODEL: ${{ secrets.OPENAI_BASE_URL && secrets.OPENAI_MODEL || '' }}
+      OPENAI_TEMPERATURE: ${{ secrets.OPENAI_TEMPERATURE || '0.7' }}
+
+      IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY }}
+      IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+
+      WECHAT_APP_ID: ${{ secrets.WECHAT_APP_ID }}
+      WECHAT_APP_SECRET: ${{ secrets.WECHAT_APP_SECRET }}
+
+      MD2WECHAT_API_KEY: ${{ secrets.MD2WECHAT_API_KEY }}
+
+      WECHAT_SERV00_PROXY_URL: ${{ secrets.WECHAT_SERV00_PROXY_URL }}
+      WECHAT_SERV00_PROXY_SECRET: ${{ secrets.WECHAT_SERV00_PROXY_SECRET }}
+
+      TOUTIAO_PROXY_SERVER: ${{ secrets.TOUTIAO_PROXY_SERVER }}
+
+      # ---- 非敏感配置（直接硬编码默认值） ----
+      PYTHONUTF8: "1"
+      TOUTIAO_ACCOUNT: default
+
+      # 图片生成（frontend = HTML+Playwright截图，renderer = Pillow兜底）
+      IMAGE_BACKEND: ${{ secrets.IMAGE_BACKEND || 'frontend' }}
+      IMAGE_API_MODE: ${{ secrets.IMAGE_API_MODE || 'images' }}
+      IMAGE_MODEL: ${{ secrets.IMAGE_MODEL || 'gpt-image-1' }}
+      IMAGE_MAX_ASSETS: ${{ secrets.IMAGE_MAX_ASSETS || '2' }}
+      IMAGE_COVER_SIZE: ${{ secrets.IMAGE_COVER_SIZE || '1536x1024' }}
+      IMAGE_INFOGRAPHIC_SIZE: ${{ secrets.IMAGE_INFOGRAPHIC_SIZE || '1024x1536' }}
+      IMAGE_QUALITY: ${{ secrets.IMAGE_QUALITY || 'high' }}
+      IMAGE_STYLE: ${{ secrets.IMAGE_STYLE || 'vivid' }}
+      IMAGE_BACKGROUND: ${{ secrets.IMAGE_BACKGROUND || 'opaque' }}
+      IMAGE_FALLBACK_TO_RENDERER: "1"
+
+      # 内容生成
+      ARTICLE_WORD_TARGET: ${{ secrets.ARTICLE_WORD_TARGET || '1200' }}
+      MAX_INPUT_CHARS: ${{ secrets.MAX_INPUT_CHARS || '16000' }}
+      BRAND_NAME: ${{ secrets.BRAND_NAME || '' }}
+      INDUSTRY_FOCUS: ${{ secrets.INDUSTRY_FOCUS || '' }}
+      TARGET_PLATFORM: ${{ secrets.TARGET_PLATFORM || 'all' }}
+      TARGET_AUDIENCE: ${{ secrets.TARGET_AUDIENCE || '' }}
+      DEFAULT_STYLE: ${{ secrets.DEFAULT_STYLE || 'deep_industry_analysis' }}
+      TITLE_COUNT: ${{ secrets.TITLE_COUNT || '20' }}
+      RECOMMENDED_TITLE_COUNT: ${{ secrets.RECOMMENDED_TITLE_COUNT || '3' }}
+      CACHE_SIMILARITY_THRESHOLD: ${{ secrets.CACHE_SIMILARITY_THRESHOLD || '0.82' }}
+      LOG_LEVEL: INFO
+
+      # 头条发布（备用 job 强制草稿模式，不发布）
+      TOUTIAO_PUBLISH_ENABLED: "1"
+      TOUTIAO_AUTO_PUBLISH: "0"
+      TOUTIAO_DRAFT_ONLY: "1"
+      TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS: ${{ secrets.TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS || '3' }}
+      TOUTIAO_AIGC_DECLARATION_ENABLED: "1"
+      TOUTIAO_PUBLISH_PLATFORM: toutiao
+      TOUTIAO_PUBLISH_BASE_URL: https://mp.toutiao.com/
+      TOUTIAO_PUBLISH_URL: https://mp.toutiao.com/profile_v4/graphic/publish
+      TOUTIAO_BROWSER_PROFILE_DIR: .runtime/toutiao_profile
+      TOUTIAO_PUBLISH_CHANNEL: chromium
+      TOUTIAO_PUBLISH_HEADLESS: "1"
+      TOUTIAO_PUBLISH_TIMEOUT_MS: ${{ secrets.TOUTIAO_PUBLISH_TIMEOUT_MS || '15000' }}
+      TOUTIAO_PUBLISH_HISTORY_FILE: publish_history.json
+      TOUTIAO_ALLOW_DUPLICATE_TOPICS: "0"
+      TOUTIAO_TITLE_MAX_LENGTH: "30"
+      TOUTIAO_PUBLISH_COVER_MODE: ${{ secrets.TOUTIAO_PUBLISH_COVER_MODE || 'single' }}
+
+      # 微信发布（备用 job 不发布）
+      WECHAT_ENABLED: "0"
+      WECHAT_AUTO_PUBLISH: "0"
+      WECHAT_ACCOUNT_NAME: ${{ secrets.WECHAT_ACCOUNT_NAME || '' }}
+      WECHAT_AUTHOR_NAME: ${{ secrets.WECHAT_AUTHOR_NAME || '手蓝' }}
+      WECHAT_BASE_URL: https://mp.weixin.qq.com/
+      WECHAT_API_BASE_URL: https://api.weixin.qq.com
+      WECHAT_TITLE_MAX_LENGTH: "64"
+      WECHAT_DIGEST_MAX_LENGTH: "120"
+      WECHAT_HISTORY_FILENAME: wechat_publish_history.json
+      WECHAT_COVER_STRATEGY: ${{ secrets.WECHAT_COVER_STRATEGY || 'text_cover' }}
+      WECHAT_LAYOUT_BACKEND: ${{ secrets.WECHAT_LAYOUT_BACKEND || 'builtin' }}
+      WECHAT_MD2WECHAT_ENABLED: ${{ secrets.WECHAT_MD2WECHAT_ENABLED || '0' }}
+      WECHAT_SERV00_PROXY_ENABLED: ${{ secrets.WECHAT_SERV00_PROXY_ENABLED || '0' }}
+      WECHAT_EDITOR_135_ENABLED: ${{ secrets.CLOUD_WECHAT_135_ENABLED || '1' }}
+      WECHAT_EDITOR_135_PROFILE_DIR: .runtime/editor_135_profile
+      WECHAT_BROWSER_PROFILE_DIR: .runtime/wechat_profile
+
+      # 抖音发布（备用 job 不发布）
+      DOUYIN_ENABLED: "0"
+      DOUYIN_AUTO_PUBLISH: "0"
+      DOUYIN_NICHE: ${{ secrets.DOUYIN_NICHE || '' }}
+      DOUYIN_PUBLISH_MODE: browser
+      DOUYIN_DAILY_POST_TARGET: ${{ secrets.DOUYIN_DAILY_POST_TARGET || '3' }}
+      DOUYIN_BASE_URL: https://creator.douyin.com/
+      DOUYIN_PUBLISH_URL: https://creator.douyin.com/creator-micro/content/upload
+      DOUYIN_BROWSER_PROFILE_DIR: .runtime/douyin_profile
+      DOUYIN_PUBLISH_CHANNEL: chromium
+      DOUYIN_PUBLISH_HEADLESS: "1"
+      DOUYIN_PUBLISH_TIMEOUT_MS: ${{ secrets.DOUYIN_PUBLISH_TIMEOUT_MS || '20000' }}
+      DOUYIN_PUBLISH_HISTORY_FILE: douyin_publish_history.json
+      DOUYIN_TITLE_MAX_LENGTH: "30"
+      DOUYIN_CAPTION_MAX_LENGTH: "220"
+      DOUYIN_MAX_IMAGES: "3"
+
+      # MD2WeChat
+      MD2WECHAT_BASE_URL: ${{ secrets.MD2WECHAT_BASE_URL || 'https://www.md2wechat.com/api/v1' }}
+      MD2WECHAT_THEME: ${{ secrets.MD2WECHAT_THEME || 'default' }}
+      MD2WECHAT_FONT_SIZE: ${{ secrets.MD2WECHAT_FONT_SIZE || 'medium' }}
+      MD2WECHAT_CONVERT_VERSION: ${{ secrets.MD2WECHAT_CONVERT_VERSION || 'v1' }}
+      MD2WECHAT_FALLBACK_TO_BUILTIN: "1"
+
+      # 快速模式（备用 job 默认快速模式）
+      TOUTIAO_FAST_MODE: ${{ secrets.TOUTIAO_FAST_MODE || '1' }}
+      TOUTIAO_SKIP_IMAGE_GENERATION: ${{ secrets.TOUTIAO_SKIP_IMAGE_GENERATION || '0' }}
+      TOUTIAO_SKIP_REVIEW_AGENT: ${{ secrets.TOUTIAO_SKIP_REVIEW_AGENT || '0' }}
+      TOUTIAO_SKIP_PUBLISH_REVIEW: ${{ secrets.TOUTIAO_SKIP_PUBLISH_REVIEW || '0' }}
+      TOUTIAO_REVIEW_MIN_OVERALL_SCORE: ${{ secrets.TOUTIAO_REVIEW_MIN_OVERALL_SCORE || '72' }}
+      TOUTIAO_REVIEW_MAX_AI_RISK: ${{ secrets.TOUTIAO_REVIEW_MAX_AI_RISK || '45' }}
+      TOUTIAO_AUTO_PUBLISH_MIN_OVERALL_SCORE: ${{ secrets.TOUTIAO_AUTO_PUBLISH_MIN_OVERALL_SCORE || '80' }}
+      TOUTIAO_AUTO_PUBLISH_MAX_AI_RISK: ${{ secrets.TOUTIAO_AUTO_PUBLISH_MAX_AI_RISK || '40' }}
+
+      # ---- 洞察增强功能配置 ----
+      TOUTIAO_ENHANCED_INSIGHTS_ENABLED: ${{ secrets.TOUTIAO_ENHANCED_INSIGHTS_ENABLED || '1' }}
+      TOUTIAO_ENHANCED_INSIGHTS_USE_MULTI_SOURCE: ${{ secrets.TOUTIAO_ENHANCED_INSIGHTS_USE_MULTI_SOURCE || '0' }}
+      TOUTIAO_ENHANCED_INSIGHTS_USE_HISTORICAL: ${{ secrets.TOUTIAO_ENHANCED_INSIGHTS_USE_HISTORICAL || '0' }}
+      TOUTIAO_ENHANCED_INSIGHTS_USE_DATA_MINING: ${{ secrets.TOUTIAO_ENHANCED_INSIGHTS_USE_DATA_MINING || '0' }}
+
+      # ---- 新平台发布配置（AiToEarn 集成，备用 job 全部禁用） ----
+      BILIBILI_ENABLED: ${{ secrets.BILIBILI_ENABLED || '0' }}
+      ZHIHU_ENABLED: ${{ secrets.ZHIHU_ENABLED || '0' }}
+      WEIBO_ENABLED: ${{ secrets.WEIBO_ENABLED || '0' }}
+      XIAOHONGSHU_ENABLED: ${{ secrets.XIAOHONGSHU_ENABLED || '0' }}
+
+      # ---- 性能数据回采配置 ----
+      PERFORMANCE_COLLECT_ENABLED: ${{ secrets.PERFORMANCE_COLLECT_ENABLED || '0' }}
+
+      # ---- Docker AI 服务配置（备用 job 不启动 Docker 服务，仅保留配置） ----
+      DEERFLOW_ENABLED: "0"
+      DEERFLOW_BASE_URL: "http://localhost:8001"
+      LETTA_ENABLED: "0"
+      LETTA_BASE_URL: "http://localhost:8283"
+      LETTA_AGENT_ID: ${{ secrets.LETTA_AGENT_ID || '' }}
+      PROMPT_OPTIMIZER_ENABLED: "0"
+      PROMPT_OPTIMIZER_BASE_URL: "http://localhost:8501"
+      RUFLO_ENABLED: "0"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Resolve fallback account
+        shell: bash
+        run: |
+          # 从主 job 输出获取账号，若缺失则回退到 default
+          ACCOUNT="${{ needs.daily-run.outputs.run-account }}"
+          if [ -z "$ACCOUNT" ] || [ "$ACCOUNT" = "unknown" ]; then
+            ACCOUNT="default"
+          fi
+          echo "RUN_ACCOUNT=$ACCOUNT" >> $GITHUB_ENV
+          echo "TOUTIAO_ACCOUNT=$ACCOUNT" >> $GITHUB_ENV
+          echo "Fallback account resolved: $ACCOUNT"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py3.11-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-py3.11-
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright chromium
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run daily pipeline (draft-only fallback)
+        run: |
+          # 备用 job 强制草稿模式：不发布，仅生成内容到草稿箱
+          ARGS="--account $RUN_ACCOUNT --skip-browser-check --fast-mode"
+          python scripts/cloud_daily_run.py $ARGS
+
+      - name: Publish precheck report
+        if: always()
+        shell: bash
+        run: |
+          echo "=== Fallback Precheck Report ==="
+          find .runtime -name "precheck_report.json" -exec cat {} \; 2>/dev/null || echo "No precheck report found"
+
+      - name: Upload fallback artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-output-fallback-${{ github.run_id }}
+          path: |
+            output/
+            logs/
+            .runtime/*/debug/
+            .runtime/debug/
+            .runtime/automation/
+            .runtime/accounts/
+          retention-days: 7

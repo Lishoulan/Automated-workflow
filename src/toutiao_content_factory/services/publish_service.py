@@ -426,6 +426,21 @@ class PublishService:
                 " | ".join(str(item) for item in blocking_flags),
             )
 
+        # 发布前最终合规预检：作为 sanitize 之后的最后防线，
+        # 命中任一硬拦截规则即降级为草稿模式，不提交到头条公域。
+        # effective_draft_only 仅影响本次发布，不修改 settings，不影响后续发布任务。
+        effective_draft_only = bool(self.settings.publishing.draft_only)
+        precheck_result = self.precheck_service.run_precheck(
+            article,
+            project_root=self.settings.project_root,
+        )
+        if precheck_result.get("status") == "blocked":
+            effective_draft_only = True
+            self.logger.info(
+                "Precheck blocked,降级为草稿模式: %s",
+                precheck_result.get("violations"),
+            )
+
         max_publish_retries = 2
         last_publish_exc: Exception | None = None
         for attempt in range(1 + max_publish_retries):
@@ -446,7 +461,7 @@ class PublishService:
                 result_payload = self._publish_to_toutiao(
                     title=title,
                     article=article,
-                    draft_only=bool(self.settings.publishing.draft_only),
+                    draft_only=effective_draft_only,
                     run_dir=run_dir,
                     declare_first_release=declare_first_release,
                 )
@@ -520,6 +535,7 @@ class PublishService:
                 {
                     **result_payload,
                     "preflight_summary": preflight_summary,
+                    "precheck_report": precheck_result.get("report_path"),
                     "record": asdict(record),
                 },
                 ensure_ascii=False,

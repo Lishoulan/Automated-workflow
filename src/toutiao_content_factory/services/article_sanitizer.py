@@ -41,6 +41,8 @@ META_NOISE_PREFIXES = (
     "manual_paste",
     "来源摘要：",
     "来源摘要",
+    "evergreen_pool",
+    "evergreen://",
 )
 
 SECTION_LABELS = {
@@ -262,6 +264,8 @@ def _looks_like_noise(text: str) -> bool:
             "benchmark_hotspot",
             "体裁要求",
             "manual_paste",
+            "evergreen_pool",
+            "evergreen://",
         )
     )
 

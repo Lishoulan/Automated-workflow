@@ -381,20 +381,26 @@ jobs:
       - name: Seed browser profiles from release
         run: |
           NEED_SEED=false
-          REQUIRED_PROFILES="toutiao_profile"
-          if [ "${WECHAT_EDITOR_135_ENABLED}" = "1" ]; then
-            REQUIRED_PROFILES="$REQUIRED_PROFILES editor_135_profile"
+          # 根据账号动态确定 toutiao profile 路径
+          if [ "$RUN_ACCOUNT" = "default" ]; then
+            TOUTIAO_PROFILE_DIR=".runtime/toutiao_profile"
           else
-            REQUIRED_PROFILES="$REQUIRED_PROFILES wechat_profile"
+            TOUTIAO_PROFILE_DIR=".runtime/accounts/$RUN_ACCOUNT/toutiao_profile"
+          fi
+          REQUIRED_PROFILES="$TOUTIAO_PROFILE_DIR"
+          if [ "${WECHAT_EDITOR_135_ENABLED}" = "1" ]; then
+            REQUIRED_PROFILES="$REQUIRED_PROFILES .runtime/editor_135_profile"
+          else
+            REQUIRED_PROFILES="$REQUIRED_PROFILES .runtime/wechat_profile"
           fi
           for profile in $REQUIRED_PROFILES; do
-            if [ ! -d ".runtime/$profile" ] || [ -z "$(ls -A .runtime/$profile 2>/dev/null)" ]; then
+            if [ ! -d "$profile" ] || [ -z "$(ls -A $profile 2>/dev/null)" ]; then
               echo "Profile $profile is missing or empty, need seed."
               NEED_SEED=true
               break
             fi
             # Check if Cookies file is older than 7 days
-            COOKIE_FILE=$(find ".runtime/$profile" -name "Cookies" -type f 2>/dev/null | head -1)
+            COOKIE_FILE=$(find "$profile" -name "Cookies" -type f 2>/dev/null | head -1)
             if [ -n "$COOKIE_FILE" ]; then
               COOKIE_AGE_DAYS=$(( ($(date +%s) - $(stat -c %Y "$COOKIE_FILE" 2>/dev/null || echo 0)) / 86400 ))
               if [ "$COOKIE_AGE_DAYS" -gt 7 ]; then
@@ -406,12 +412,22 @@ jobs:
           done
           if [ "$NEED_SEED" = "true" ]; then
             echo "Downloading seed from release..."
+            echo "Toutiao profile dir for account '$RUN_ACCOUNT': $TOUTIAO_PROFILE_DIR"
+            # 清理可能存在的旧 profile(default 路径 + 账号子目录)
             rm -rf .runtime/toutiao_profile .runtime/wechat_profile .runtime/editor_135_profile
+            rm -rf .runtime/accounts/*/toutiao_profile 2>/dev/null || true
             gh release download browser-profiles-v1 --repo Lishoulan/Automated-workflow --pattern "browser_profiles_seed.tar.gz" --dir /tmp/
             mkdir -p .runtime
             tar xzf /tmp/browser_profiles_seed.tar.gz -C .runtime/
             echo "Browser profiles seeded successfully."
-            ls -la .runtime/
+            echo "Verifying seeded toutiao profile:"
+            if [ -d "$TOUTIAO_PROFILE_DIR" ]; then
+              echo "  OK: $TOUTIAO_PROFILE_DIR exists"
+              find "$TOUTIAO_PROFILE_DIR" -name "Cookies*" -type f -exec stat -c "%n size=%s mtime=%y" {} \; 2>/dev/null || echo "  No Cookies files found"
+            else
+              echo "  WARNING: $TOUTIAO_PROFILE_DIR not found after seed!"
+              ls -la .runtime/
+            fi
           else
             echo "All browser profiles found in cache and cookies are fresh, skipping seed."
           fi
@@ -447,14 +463,24 @@ jobs:
             cp "$COOKIES_FILE" .runtime/automation/exported_cookies.json 2>/dev/null || true
             echo "Verifying cookie file copy..."
             ls -la .runtime/automation/exported_cookies.json 2>/dev/null || echo "WARNING: cookie file not found at .runtime/automation/"
-            python scripts/inject_cookies.py --input "$COOKIES_FILE" --headless \
-              --account "$RUN_ACCOUNT" || true
+            if python scripts/inject_cookies.py --input "$COOKIES_FILE" --headless \
+              --account "$RUN_ACCOUNT"; then
+              echo "Cookie injection succeeded."
+            else
+              echo "ERROR: Cookie injection failed."
+              # 仅在自动发布启用时终止(避免健康检查阻塞);止血模式(autopublish=0)继续执行内容生成
+              if [ "$TOUTIAO_AUTO_PUBLISH" = "1" ]; then
+                echo "TOUTIAO_AUTO_PUBLISH=1, aborting to avoid health check block downstream."
+                exit 1
+              else
+                echo "TOUTIAO_AUTO_PUBLISH=0, continuing (publish disabled, content generation only)."
+              fi
+            fi
           else
             echo "No exported cookies found, skipping injection."
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
 
       - name: Debug cookie file status
         run: |

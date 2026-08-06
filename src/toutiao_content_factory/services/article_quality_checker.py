@@ -85,6 +85,8 @@ class ArticleQualityChecker:
         r"对标热点",
         r"36氪头条号",
         r"benchmark_hotspot",
+        r"evergreen_pool",
+        r"evergreen://[^\s，。]*",
     ]
     # 预编译来源标记正则表达式
     _SOURCE_MARKER_PATTERNS_COMPILED = [re.compile(pattern) for pattern in SOURCE_MARKER_PATTERNS]
@@ -177,8 +179,8 @@ class ArticleQualityChecker:
         # 6. 深度检查
         depth_score = self._check_depth(content)
 
-        # 7. 标题检查
-        title_issues = self._check_title(title)
+        # 7. 标题检查（传入content用于标题-正文一致性校验）
+        title_issues = self._check_title(title, content)
         issues.extend(title_issues["issues"])
         suggestions.extend(title_issues["suggestions"])
 
@@ -331,8 +333,28 @@ class ArticleQualityChecker:
 
         return min(40, score)
 
-    def _check_title(self, title: str) -> dict:
-        """检查标题质量"""
+    # RULE_007: 标题模板滥用检测模板
+    _TITLE_TEMPLATE_PATTERNS = [
+        re.compile(r".+之后，.+(开始|进入|先)"),
+        re.compile(r".+验证期[，,].+先流向"),
+        re.compile(r".+之后，.+重排利润"),
+        re.compile(r".+筛选期$"),
+    ]
+
+    # RULE_006: 具象元素检测
+    _TITLE_COMPANY_PATTERN = re.compile(
+        r"(宇树|特斯拉|英伟达|Optimus|澜起|富士康|宁德时代|比亚迪|华为|Walker|优必选|智元|Anthropic|OpenAI|苹果|Macmini|HBM|DDR5)"
+    )
+    _TITLE_PLACE_PATTERN = re.compile(r"(日本|中国|美国|韩国|德国|机场|工厂|电站|产线|海外)")
+
+    def _check_title(self, title: str, content: str = "") -> dict:
+        """检查标题质量
+
+        增强（RULE_006/007/008 落地）：
+        - 模板滥用硬校验：检测"XX之后，XX开始/进入/先"等模板
+        - 纯抽象标题硬校验：必须包含具象数字、公司名或地名
+        - 标题-正文关键词一致性：标题中的核心实体应在正文中出现
+        """
         issues = []
         suggestions = []
         title_lower = title.lower()
@@ -355,6 +377,42 @@ class ArticleQualityChecker:
         # 检查是否有数字
         if not any(c.isdigit() for c in title):
             suggestions.append("标题中可以使用数字吸引点击（如'3大趋势'）")
+
+        # RULE_007: 模板滥用硬校验
+        for pattern in self._TITLE_TEMPLATE_PATTERNS:
+            if pattern.search(title):
+                issues.append(
+                    f"标题使用了滥用模板（RULE_007）。历史数据：同模板标题CTR从3.2%降至0.4%。"
+                    "请改用差异化句式。"
+                )
+                break
+
+        # RULE_006: 纯抽象标题硬校验
+        has_number = bool(re.search(r"\d", title))
+        has_company = bool(self._TITLE_COMPANY_PATTERN.search(title))
+        has_place = bool(self._TITLE_PLACE_PATTERN.search(title))
+        if not has_number and not has_company and not has_place:
+            issues.append(
+                "标题为纯抽象概念堆砌（RULE_006）。历史数据：具象标题平均展现6806，"
+                "纯抽象标题仅1753，差距3.9倍。必须加入具象数字、公司名或地名。"
+            )
+
+        # 标题-正文一致性校验：标题中的核心实体应在正文中出现
+        if content:
+            # 提取标题中的公司名
+            title_companies = self._TITLE_COMPANY_PATTERN.findall(title)
+            for company in title_companies:
+                if company not in content:
+                    issues.append(
+                        f"标题提及'{company}'但正文未出现，标题-正文不一致会导致阅读完成率骤降"
+                    )
+            # 提取标题中的数字
+            title_numbers = re.findall(r"\d+", title)
+            for number in title_numbers:
+                if number not in content:
+                    suggestions.append(
+                        f"标题中的数字'{number}'未在正文中出现，建议补充对应数据支撑"
+                    )
 
         return {"issues": issues, "suggestions": suggestions}
 

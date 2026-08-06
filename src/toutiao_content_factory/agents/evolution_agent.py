@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
+import re
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,19 @@ RULE_CATEGORIES = (
 # 结构化规则 schema 版本
 RULE_SCHEMA_VERSION = "2.0"
 
+# evolution_state.json / evolution_proposals.json 相关常量
+EVOLUTION_STATE_FILENAME = "evolution_state.json"
+EVOLUTION_PROPOSALS_FILENAME = "evolution_proposals.json"
+ITERATION_SUGGESTIONS_FILENAME = "iteration_suggestions.json"
+PROPOSAL_SUPPORT_THRESHOLD = 3
+
+# 迭代建议 category → 规则 category 映射
+# topic_priority / publish_time_slot 无对应写作规则类别，将写入提案
+SUGGESTION_TO_RULE_CATEGORY: dict[str, str] = {
+    "title_template": "title_attraction",
+    "engagement_template_weight": "closing_interaction",
+}
+
 
 class EvolutionAgent(BaseAgent):
     agent_name = "EvolutionAgent"
@@ -33,6 +47,16 @@ class EvolutionAgent(BaseAgent):
     METRICS_FILENAME = "performance_metrics.json"
     RULES_FILENAME = "best_practices_rule.json"
     MAX_RULES = 10
+
+    def __init__(
+        self,
+        settings: AppSettings,
+        prompt_repository: PromptRepository,
+        openai_service: OpenAIContentService,
+        logger: logging.Logger,
+    ) -> None:
+        super().__init__(settings, prompt_repository, openai_service, logger)
+        self._account: str = "default"
 
     def run(self) -> dict[str, Any]:
         metrics_path = self._resolve_metrics_path()
@@ -475,3 +499,503 @@ class EvolutionAgent(BaseAgent):
             if text:
                 return text
         return fallback
+
+    # ==================================================================
+    # 迭代建议接入（Task 10）
+    # ==================================================================
+
+    def run_full_loop(self, account: str = "default") -> dict[str, Any]:
+        """执行完整的演化循环，整合迭代建议与待审提案。
+
+        流程：
+            1. 评估 ``evolution_proposals.json`` 中的待审提案（连续 3 次支持则应用）
+            2. 调用 ``run()`` 生成结构化规则
+            3. 将生成的规则同步到 ``evolution_state.json``（保留 penalty_weight 修改和 change_log）
+            4. 读取 ``iteration_suggestions.json``，与现有规则对比：
+               方向一致则直接更新，方向冲突则写入提案
+
+        Args:
+            account: 账号标识，用于定位 ``.runtime/accounts/{account}/`` 目录。
+
+        Returns:
+            包含各步骤执行结果的字典。
+        """
+        self._account = account or "default"
+
+        # Step 1: 评估待审提案（SubTask 10.5）
+        proposals_result = self._evaluate_pending_proposals()
+
+        # Step 2: 执行原有规则生成
+        run_result = self.run()
+
+        # Step 3: 同步规则到 evolution_state.json（保留已有 change_log 和权重修改）
+        if run_result.get("status") == "ok":
+            self._sync_rules_to_state()
+
+        # Step 4: 处理迭代建议（SubTask 10.1 - 10.4）
+        suggestions_result = self._process_iteration_suggestions()
+
+        return {
+            "status": "ok",
+            "account": self._account,
+            "run_result": run_result,
+            "proposals_applied": proposals_result.get("applied", 0),
+            "proposals_pending": proposals_result.get("pending", 0),
+            "suggestions_applied": suggestions_result.get("applied", 0),
+            "suggestions_proposed": suggestions_result.get("proposed", 0),
+        }
+
+    # ------------------------------------------------------------------
+    # 路径解析
+    # ------------------------------------------------------------------
+
+    def _account_runtime_dir(self) -> Path:
+        """返回账号运行时目录：``.runtime/accounts/{account}/``"""
+        return self.settings.project_root / ".runtime" / "accounts" / self._account
+
+    def _evolution_state_path(self) -> Path:
+        """返回 evolution_state.json 路径。"""
+        return self._account_runtime_dir() / EVOLUTION_STATE_FILENAME
+
+    def _evolution_proposals_path(self) -> Path:
+        """返回 evolution_proposals.json 路径。"""
+        return self._account_runtime_dir() / EVOLUTION_PROPOSALS_FILENAME
+
+    def _iteration_suggestions_path(self) -> Path:
+        """返回 iteration_suggestions.json 路径。"""
+        return self._account_runtime_dir() / ITERATION_SUGGESTIONS_FILENAME
+
+    # ------------------------------------------------------------------
+    # evolution_state.json 读写
+    # ------------------------------------------------------------------
+
+    def _load_evolution_state(self) -> dict[str, Any]:
+        """读取 ``evolution_state.json``，返回含 ``rules`` 和 ``change_log`` 的 dict。
+
+        文件不存在或格式错误时返回空骨架，不抛异常。
+        """
+        path = self._evolution_state_path()
+        if not path.exists():
+            return {"version": RULE_SCHEMA_VERSION, "rules": [], "change_log": []}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            self.logger.warning("读取 evolution_state.json 失败 %s: %s", path, exc)
+            return {"version": RULE_SCHEMA_VERSION, "rules": [], "change_log": []}
+        if not isinstance(payload, dict):
+            return {"version": RULE_SCHEMA_VERSION, "rules": [], "change_log": []}
+        if not isinstance(payload.get("rules"), list):
+            payload["rules"] = []
+        if not isinstance(payload.get("change_log"), list):
+            payload["change_log"] = []
+        return payload
+
+    def _save_evolution_state(self, state: dict[str, Any]) -> None:
+        """写入 ``evolution_state.json``。"""
+        path = self._evolution_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.logger.info("EvolutionAgent 已更新 evolution_state.json: %s", path)
+
+    def _sync_rules_to_state(self) -> None:
+        """将 ``best_practices_rule.json`` 中的规则同步到 ``evolution_state.json``。
+
+        同步策略：
+            - 保留现有 ``change_log``
+            - 按 ``rule_id`` 匹配：更新规则内容，保留 ``penalty_weight``（可能被建议修改过）
+            - 无匹配的新规则直接添加
+        """
+        rules_payload = self.read_best_practices_rules_json()
+        if not rules_payload:
+            return
+
+        state = self._load_evolution_state()
+        new_rules = list(rules_payload.get("rules", []))
+        old_rules: list[dict[str, Any]] = state.get("rules", [])
+
+        # 构建 rule_id → penalty_weight 映射（保留被建议修改过的权重）
+        old_weights: dict[str, float] = {}
+        for rule in old_rules:
+            if isinstance(rule, dict):
+                rule_id = str(rule.get("rule_id", ""))
+                if rule_id:
+                    try:
+                        old_weights[rule_id] = float(rule.get("penalty_weight", 0.5))
+                    except (TypeError, ValueError):
+                        pass
+
+        merged: list[dict[str, Any]] = []
+        for new_rule in new_rules:
+            if not isinstance(new_rule, dict):
+                continue
+            merged_rule = dict(new_rule)
+            rule_id = str(new_rule.get("rule_id", ""))
+            if rule_id in old_weights:
+                merged_rule["penalty_weight"] = old_weights[rule_id]
+            merged.append(merged_rule)
+
+        state["version"] = RULE_SCHEMA_VERSION
+        state["rules"] = merged
+        self._save_evolution_state(state)
+
+    # ------------------------------------------------------------------
+    # evolution_proposals.json 读写
+    # ------------------------------------------------------------------
+
+    def _load_proposals(self) -> list[dict[str, Any]]:
+        """读取 ``evolution_proposals.json``，返回提案列表。文件不存在时返回空列表。"""
+        path = self._evolution_proposals_path()
+        if not path.exists():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            self.logger.warning("读取 evolution_proposals.json 失败 %s: %s", path, exc)
+            return []
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        return []
+
+    def _save_proposals(self, proposals: list[dict[str, Any]]) -> None:
+        """写入 ``evolution_proposals.json``。"""
+        path = self._evolution_proposals_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(proposals, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    # ------------------------------------------------------------------
+    # iteration_suggestions.json 读取（SubTask 10.1）
+    # ------------------------------------------------------------------
+
+    def _load_iteration_suggestions(self) -> list[dict[str, Any]]:
+        """读取 ``iteration_suggestions.json``，返回建议列表。
+
+        文件不存在或为空时记录日志并返回空列表，不报错。
+        """
+        path = self._iteration_suggestions_path()
+        if not path.exists():
+            self.logger.debug("iteration_suggestions.json 不存在，跳过: %s", path)
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            self.logger.warning("读取 iteration_suggestions.json 失败 %s: %s", path, exc)
+            return []
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        return []
+
+    # ------------------------------------------------------------------
+    # 待审提案评估（SubTask 10.5）
+    # ------------------------------------------------------------------
+
+    def _evaluate_pending_proposals(self) -> dict[str, Any]:
+        """评估待审提案：连续 3 次数据支持则应用，否则保留并更新支持计数。
+
+        每次调用时，如果 ``iteration_suggestions.json`` 中存在与提案相同
+        ``category`` 的建议，则递增提案的 ``support_count``。
+
+        Returns:
+            含 ``applied``（已应用数）和 ``pending``（保留待审数）的字典。
+        """
+        proposals = self._load_proposals()
+        if not proposals:
+            return {"applied": 0, "pending": 0}
+
+        suggestions = self._load_iteration_suggestions()
+        state = self._load_evolution_state()
+
+        applied = 0
+        remaining: list[dict[str, Any]] = []
+
+        for proposal in proposals:
+            suggestion = proposal.get("suggestion")
+            if not isinstance(suggestion, dict):
+                continue
+
+            # 检查 iteration_suggestions.json 中是否有相同建议
+            if self._find_matching_suggestion(suggestion, suggestions) is not None:
+                proposal["support_count"] = int(proposal.get("support_count", 0)) + 1
+
+            if int(proposal.get("support_count", 0)) >= PROPOSAL_SUPPORT_THRESHOLD:
+                self._apply_proposal_to_state(proposal, state)
+                applied += 1
+            else:
+                remaining.append(proposal)
+
+        self._save_proposals(remaining)
+        if applied > 0:
+            self._save_evolution_state(state)
+
+        self.logger.info(
+            "EvolutionAgent 评估提案：应用 %d 条，保留 %d 条待审",
+            applied,
+            len(remaining),
+        )
+        return {"applied": applied, "pending": len(remaining)}
+
+    def _find_matching_suggestion(
+        self, suggestion: dict[str, Any], suggestions: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """在建议列表中查找与给定建议匹配的项（按 ``category`` 匹配）。"""
+        target_category = str(suggestion.get("category", "")).strip()
+        if not target_category:
+            return None
+        for item in suggestions:
+            if str(item.get("category", "")).strip() == target_category:
+                return item
+        return None
+
+    def _apply_proposal_to_state(
+        self, proposal: dict[str, Any], state: dict[str, Any]
+    ) -> None:
+        """将连续 3 次支持的提案应用到 ``evolution_state.json``。"""
+        suggestion = proposal.get("suggestion")
+        if not isinstance(suggestion, dict):
+            return
+
+        category = str(suggestion.get("category", "")).strip()
+        suggested_value = str(suggestion.get("suggested_value", ""))
+        evidence = str(suggestion.get("evidence", ""))
+
+        rules: list[dict[str, Any]] = state.get("rules", [])
+        rule_category = SUGGESTION_TO_RULE_CATEGORY.get(category, "")
+
+        target_rule: dict[str, Any] | None = None
+        if rule_category:
+            for rule in rules:
+                if isinstance(rule, dict) and rule.get("category") == rule_category:
+                    target_rule = rule
+                    break
+
+        timestamp = datetime.now().isoformat(timespec="seconds")
+
+        if target_rule is not None:
+            old_value = str(target_rule.get("penalty_weight", ""))
+            new_weight = self._compute_new_weight(
+                suggested_value, target_rule.get("penalty_weight", 0.5)
+            )
+            target_rule["penalty_weight"] = new_weight
+            new_value = str(new_weight)
+        else:
+            # 无匹配规则，作为新规则添加
+            old_value = ""
+            new_rule: dict[str, Any] = {
+                "rule_id": f"R{len(rules) + 1:03d}",
+                "category": rule_category or category,
+                "title": suggested_value,
+                "trigger_conditions": ["通用"],
+                "applicable_industries": ["通用"],
+                "applicable_formats": ["通用"],
+                "positive_example": "",
+                "negative_example": "",
+                "penalty_weight": 0.7,
+                "priority": len(rules) + 1,
+                "evidence": evidence,
+            }
+            rules.append(new_rule)
+            new_value = suggested_value
+
+        state["change_log"].append({
+            "timestamp": timestamp,
+            "category": category,
+            "old_value": old_value,
+            "new_value": new_value,
+            "source": "monthly_review",
+            "evidence": evidence,
+        })
+
+    # ------------------------------------------------------------------
+    # 迭代建议处理（SubTask 10.1 - 10.4）
+    # ------------------------------------------------------------------
+
+    def _process_iteration_suggestions(self) -> dict[str, Any]:
+        """读取迭代建议，与现有规则对比后应用或写入提案。
+
+        - 方向一致：直接更新 ``evolution_state.json`` 并记录 ``change_log``
+        - 方向冲突或无匹配规则：写入 ``evolution_proposals.json``
+
+        Returns:
+            含 ``applied``（直接应用数）和 ``proposed``（写入提案数）的字典。
+        """
+        suggestions = self._load_iteration_suggestions()
+        if not suggestions:
+            self.logger.info("无迭代建议可处理")
+            return {"applied": 0, "proposed": 0}
+
+        state = self._load_evolution_state()
+        existing_proposals = self._load_proposals()
+
+        applied = 0
+        proposed = 0
+
+        for suggestion in suggestions:
+            category = str(suggestion.get("category", "")).strip()
+            if not category:
+                continue
+
+            rule_category = SUGGESTION_TO_RULE_CATEGORY.get(category, "")
+            matching_rule: dict[str, Any] | None = None
+            if rule_category:
+                for rule in state.get("rules", []):
+                    if isinstance(rule, dict) and rule.get("category") == rule_category:
+                        matching_rule = rule
+                        break
+
+            if matching_rule is None:
+                # 无匹配规则 → 写入提案（SubTask 10.4）
+                self._add_proposal(
+                    suggestion, None, "无对应类别的现有规则", existing_proposals
+                )
+                proposed += 1
+                continue
+
+            # 判断方向是否一致（SubTask 10.2）
+            if self._is_direction_consistent(suggestion, matching_rule):
+                # 方向一致 → 直接更新（SubTask 10.3）
+                self._apply_suggestion_to_state(suggestion, matching_rule, state)
+                applied += 1
+            else:
+                # 方向冲突 → 写入提案（SubTask 10.4）
+                self._add_proposal(
+                    suggestion,
+                    matching_rule,
+                    "建议方向与现有规则不一致",
+                    existing_proposals,
+                )
+                proposed += 1
+
+        if applied > 0:
+            self._save_evolution_state(state)
+        if proposed > 0:
+            self._save_proposals(existing_proposals)
+
+        self.logger.info(
+            "EvolutionAgent 处理迭代建议：直接应用 %d 条，写入提案 %d 条",
+            applied,
+            proposed,
+        )
+        return {"applied": applied, "proposed": proposed}
+
+    def _is_direction_consistent(
+        self, suggestion: dict[str, Any], rule: dict[str, Any]
+    ) -> bool:
+        """判断建议方向是否与现有规则一致（SubTask 10.2）。
+
+        启发式判断：从建议的 ``suggested_value`` 中提取关键中文词汇，
+        检查是否在规则的 ``title`` / ``positive_example`` / ``evidence`` 中出现。
+        无法提取关键词时默认方向一致（同类规则）。
+        """
+        suggested_value = str(suggestion.get("suggested_value", ""))
+        rule_text = " ".join([
+            str(rule.get("title", "")),
+            str(rule.get("positive_example", "")),
+            str(rule.get("evidence", "")),
+        ])
+
+        key_terms = self._extract_key_terms(suggested_value)
+        if not key_terms:
+            return True
+
+        return any(term in rule_text for term in key_terms)
+
+    def _extract_key_terms(self, text: str) -> list[str]:
+        """从文本中提取关键中文词汇（2 字以上），过滤常见停用词。"""
+        if not text:
+            return []
+        terms = re.findall(r"[\u4e00-\u9fff]{2,}", text)
+        stop_words = {
+            "建议", "使用", "增加", "提升", "优先级", "权重", "模板",
+            "时段", "发布", "内容", "产出", "频次", "当前", "平均",
+        }
+        return [t for t in terms if t not in stop_words]
+
+    def _apply_suggestion_to_state(
+        self,
+        suggestion: dict[str, Any],
+        rule: dict[str, Any],
+        state: dict[str, Any],
+    ) -> None:
+        """将建议直接应用到 ``evolution_state.json`` 的规则中，并记录 ``change_log``（SubTask 10.3）。
+
+        ``change_log`` 格式：::
+
+            {"timestamp": "...", "category": "...", "old_value": "...",
+             "new_value": "...", "source": "monthly_review", "evidence": "..."}
+        """
+        category = str(suggestion.get("category", "")).strip()
+        suggested_value = str(suggestion.get("suggested_value", ""))
+        evidence = str(suggestion.get("evidence", ""))
+
+        old_weight = rule.get("penalty_weight", 0.5)
+        new_weight = self._compute_new_weight(suggested_value, old_weight)
+        rule["penalty_weight"] = new_weight
+
+        state["change_log"].append({
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "category": category,
+            "old_value": str(old_weight),
+            "new_value": str(new_weight),
+            "source": "monthly_review",
+            "evidence": evidence,
+        })
+
+    def _compute_new_weight(self, suggested_value: str, current_weight: float) -> float:
+        """从建议值中提取目标权重，或基于当前权重递增。
+
+        对于含数字的建议（如 ``站队式:0.5``），提取数字作为新权重；
+        否则在当前权重基础上 +0.05，上限 1.0。
+        """
+        match = re.search(r"(\d+\.?\d*)", suggested_value)
+        if match:
+            try:
+                value = float(match.group(1))
+                if 0.0 < value <= 1.0:
+                    return round(value, 2)
+            except ValueError:
+                pass
+
+        try:
+            current = float(current_weight)
+        except (TypeError, ValueError):
+            current = 0.5
+        return round(min(1.0, current + 0.05), 2)
+
+    def _add_proposal(
+        self,
+        suggestion: dict[str, Any],
+        current_rule: dict[str, Any] | None,
+        conflict_reason: str,
+        proposals: list[dict[str, Any]],
+    ) -> None:
+        """将冲突建议作为提案追加到 ``proposals`` 列表（SubTask 10.4）。
+
+        每条提案含字段：``suggestion`` / ``current_rule`` / ``conflict_reason`` /
+        ``pending_since`` / ``support_count``。
+
+        若已存在相同 ``category`` 的提案，则更新内容并保留 ``support_count``。
+        """
+        category = str(suggestion.get("category", "")).strip()
+        for existing in proposals:
+            existing_suggestion = existing.get("suggestion")
+            if isinstance(existing_suggestion, dict) and \
+                    str(existing_suggestion.get("category", "")).strip() == category:
+                existing["suggestion"] = suggestion
+                if current_rule is not None:
+                    existing["current_rule"] = current_rule
+                existing["conflict_reason"] = conflict_reason
+                return
+
+        proposal: dict[str, Any] = {
+            "suggestion": suggestion,
+            "current_rule": current_rule if current_rule is not None else {},
+            "conflict_reason": conflict_reason,
+            "pending_since": datetime.now().isoformat(timespec="seconds"),
+            "support_count": 0,
+        }
+        proposals.append(proposal)

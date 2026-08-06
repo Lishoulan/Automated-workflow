@@ -17,6 +17,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RUNTIME_DIR = PROJECT_ROOT / ".runtime"
+STAGING_DIR = RUNTIME_DIR / "_pack_staging"
 DEFAULT_OUTPUT = PROJECT_ROOT / "browser_profiles_seed.tar.gz"
 
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -136,14 +137,27 @@ def resolve_profile_mappings(account: str) -> list[tuple[Path, Path]]:
     if not editor_src.is_absolute():
         editor_src = PROJECT_ROOT / editor_src
 
+    def _mirror_dst(src: Path) -> Path:
+        """暂存目录镜像源路径结构,保留账号子目录。
+
+        暂存到 .runtime/_pack_staging/<相对路径>,避免修改本地原始 profile。
+        tar arcname 用相对暂存目录的路径,解压后自然回到 .runtime/accounts/{account}/toutiao_profile。
+        """
+        try:
+            rel = src.resolve().relative_to(RUNTIME_DIR.resolve())
+            return STAGING_DIR / rel
+        except ValueError:
+            # 源不在 .runtime 下,回退到扁平命名(default 账号兼容)
+            return STAGING_DIR / src.name
+
     mappings: list[tuple[Path, Path]] = [
-        (toutiao_src, RUNTIME_DIR / "toutiao_profile"),
-        (editor_src, RUNTIME_DIR / "editor_135_profile"),
+        (toutiao_src, _mirror_dst(toutiao_src)),
+        (editor_src, _mirror_dst(editor_src)),
     ]
 
     legacy_wechat_src = PROJECT_ROOT / ".runtime" / "wechat_profile"
     if legacy_wechat_src.exists():
-        mappings.append((legacy_wechat_src, RUNTIME_DIR / "wechat_profile"))
+        mappings.append((legacy_wechat_src, _mirror_dst(legacy_wechat_src)))
 
     unique: list[tuple[Path, Path]] = []
     seen_targets: set[Path] = set()
@@ -181,7 +195,13 @@ def pack_profiles(mappings: list[tuple[Path, Path]], output_file: Path) -> None:
     with tarfile.open(output_file, "w:gz") as tar:
         for _, dst_dir in mappings:
             if dst_dir.exists():
-                tar.add(dst_dir, arcname=dst_dir.name)
+                # arcname 保留相对 STAGING_DIR 的路径,确保解压后账号子目录结构正确
+                try:
+                    arcname = dst_dir.resolve().relative_to(STAGING_DIR.resolve())
+                    arcname_str = str(arcname)
+                except ValueError:
+                    arcname_str = dst_dir.name
+                tar.add(dst_dir, arcname=arcname_str)
 
 
 def main() -> int:
@@ -237,6 +257,11 @@ def main() -> int:
     print(f"Kept total:     {format_size(total_kept)}")
     print(f"Archive size:   {format_size(archive_size)}")
     print(f"Saved to:       {output_file}")
+
+    # 清理暂存目录
+    if STAGING_DIR.exists():
+        shutil.rmtree(STAGING_DIR, ignore_errors=True)
+        print(f"[CLEAN] Removed staging dir: {STAGING_DIR}")
     return 0
 
 

@@ -456,6 +456,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
 
+      - name: Debug cookie file status
+        run: |
+          echo "=== Cookie file check ==="
+          for dir in .runtime/toutiao_profile .runtime/accounts/robot_notes/toutiao_profile .runtime/accounts/robot-notes/toutiao_profile; do
+            echo "--- $dir ---"
+            if [ -d "$dir" ]; then
+              find "$dir" -name "Cookies*" -type f -exec stat -c "%n size=%s mtime=%y" {} \; 2>/dev/null || echo "No Cookies files"
+            else
+              echo "NOT FOUND"
+            fi
+          done
+        continue-on-error: true
+
       - name: Get runner public IP
         run: |
           echo "=== Runner Public IP ==="

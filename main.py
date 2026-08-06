@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import os
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+faulthandler.enable()
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
@@ -338,6 +341,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--platforms", type=str, default=None, help="Comma-separated list of platforms for --multi-publish (e.g., bilibili,zhihu).")
     parser.add_argument("--matrix-dashboard", action="store_true", help="Show matrix operations dashboard.")
     parser.add_argument("--monetization-sync", action="store_true", help="Sync monetization data and generate revenue report.")
+    parser.add_argument("--collect-performance", action="store_true", help="Collect performance data (views/likes/comments/shares) from creator dashboards.")
+    parser.add_argument("--feedback-loop", action="store_true", help="Run full feedback loop: collect performance data, evolve writing rules, update prompts.")
+    parser.add_argument("--monthly-review", action="store_true", help="运行 30 天数据回顾 Agent，生成回顾报告、迭代建议与演化提案。")
     return parser
 
 
@@ -413,6 +419,33 @@ def main() -> int:
         engine = MonetizationEngine(settings, logger)
         report = engine.get_revenue_report("monthly")
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0
+    if args.collect_performance:
+        from toutiao_content_factory.services.performance_service import PerformanceService
+        service = PerformanceService(settings, logger)
+        result = service.collect_performance_data()
+        print(f"Performance data collected: {len(result.get('records', []))} records")
+        if result.get("errors"):
+            print(f"Errors: {result['errors']}")
+        return 0
+    if args.feedback_loop:
+        from toutiao_content_factory.services.feedback_loop_service import FeedbackLoopService
+        from toutiao_content_factory.services.openai_service import OpenAIContentService
+        from toutiao_content_factory.services.prompt_repository import PromptRepository
+        loop = FeedbackLoopService(
+            settings,
+            logger,
+            prompt_repository=PromptRepository(settings.prompts_dir),
+            openai_service=OpenAIContentService(settings, logger),
+        )
+        result = loop.run_full_loop()
+        print(f"Feedback loop completed: {result.get('status', 'unknown')}")
+        return 0
+    if args.monthly_review:
+        from toutiao_content_factory.agents.monthly_review_agent import MonthlyReviewAgent
+        agent = MonthlyReviewAgent(account=args.account or "default", logger=logger)
+        result = agent.run()
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     refresh_heartbeat(settings.automation_dir / "scheduled_status.json")
     app_service = ContentFactoryAppService(settings, logger)
@@ -976,6 +1009,9 @@ def _is_review_or_publish_action(args: argparse.Namespace) -> bool:
             args.backfill_performance_ledger,
             args.record_performance,
             args.build_performance_report,
+            args.collect_performance,
+            args.feedback_loop,
+            args.monthly_review,
         ]
     )
 

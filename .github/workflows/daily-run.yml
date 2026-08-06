@@ -2,14 +2,15 @@ name: Daily Run
 
 on:
   schedule:
-    # Beijing time 07:00 = UTC 23:00 (previous day)
-    - cron: '0 23 * * *'
-    # Beijing time 11:30 = UTC 03:30
-    - cron: '30 3 * * *'
-    # Beijing time 18:00 = UTC 10:00
-    - cron: '0 10 * * *'
-    # Beijing time 22:00 = UTC 14:00
-    - cron: '0 14 * * *'
+    # 工作日早间 Beijing 07:00 (周一-周五) = UTC 23:00 前一天 (周日-周四)
+    - cron: '0 23 * * 0-4'
+    # 工作日午间 Beijing 12:30 (周一-周五) = UTC 04:30
+    - cron: '30 4 * * 1-5'
+    # 工作日傍晚 Beijing 18:00 (周一-周五) = UTC 10:00
+    - cron: '0 10 * * 1-5'
+    # 周末早间 Beijing 08:00 (周六-周日) = UTC 00:00
+    # 周末仅1次发布，避免历史数据中周末过度发布（周日14篇占32.6%）
+    - cron: '0 0 * * 0,6'
   workflow_dispatch:
     inputs:
       account:
@@ -27,7 +28,7 @@ on:
       publish_toutiao:
         description: 'Publish to Toutiao instead of draft-only (true/false)'
         required: false
-        default: 'false'
+        default: 'true'
       publish_wechat_via_135:
         description: 'Publish to WeChat via 135 Editor when a cached profile exists (true/false)'
         required: false
@@ -36,6 +37,9 @@ on:
 concurrency:
   group: daily-run-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: write
 
 jobs:
   daily-run:
@@ -93,8 +97,8 @@ jobs:
 
       # 头条发布（云端自动发布，草稿模式优先）
       TOUTIAO_PUBLISH_ENABLED: "1"
-      TOUTIAO_AUTO_PUBLISH: "0"
-      TOUTIAO_DRAFT_ONLY: "1"
+      TOUTIAO_AUTO_PUBLISH: "1"
+      TOUTIAO_DRAFT_ONLY: "0"
       TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS: ${{ secrets.TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS || '3' }}
       TOUTIAO_AIGC_DECLARATION_ENABLED: "1"
       TOUTIAO_PUBLISH_PLATFORM: toutiao
@@ -187,6 +191,9 @@ jobs:
       # ---- 矩阵运营配置 ----
       MATRIX_ENABLED: ${{ secrets.MATRIX_ENABLED || '0' }}
 
+      # ---- 性能数据回采配置 ----
+      PERFORMANCE_COLLECT_ENABLED: ${{ secrets.PERFORMANCE_COLLECT_ENABLED || '1' }}
+
       # ---- Docker AI 服务配置 ----
       DEERFLOW_ENABLED: "1"
       DEERFLOW_BASE_URL: "http://localhost:8001"
@@ -243,13 +250,13 @@ jobs:
             RUN_ACCOUNT="$(first_non_empty "$INPUT_ACCOUNT" "$SECRET_DEFAULT_ACCOUNT" "default")"
             RUN_DRY_RUN="$(normalize_bool "$(first_non_empty "$INPUT_DRY_RUN" "$SECRET_DEFAULT_DRY_RUN" "false")")"
             RUN_FAST_MODE="$(normalize_bool "$(first_non_empty "$INPUT_FAST_MODE" "$SECRET_DEFAULT_FAST_MODE" "true")")"
-            RUN_PUBLISH_TOUTIAO="$(normalize_bool "$(first_non_empty "$INPUT_PUBLISH_TOUTIAO" "$SECRET_DEFAULT_PUBLISH_TOUTIAO" "false")")"
+            RUN_PUBLISH_TOUTIAO="$(normalize_bool "$(first_non_empty "$INPUT_PUBLISH_TOUTIAO" "$SECRET_DEFAULT_PUBLISH_TOUTIAO" "true")")"
             RUN_PUBLISH_WECHAT_VIA_135="$(normalize_bool "$(first_non_empty "$INPUT_PUBLISH_WECHAT" "$SECRET_DEFAULT_PUBLISH_WECHAT" "false")")"
           else
             RUN_ACCOUNT="$(first_non_empty "$SECRET_DEFAULT_ACCOUNT" "default")"
             RUN_DRY_RUN="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_DRY_RUN" "false")")"
             RUN_FAST_MODE="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_FAST_MODE" "true")")"
-            RUN_PUBLISH_TOUTIAO="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_PUBLISH_TOUTIAO" "false")")"
+            RUN_PUBLISH_TOUTIAO="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_PUBLISH_TOUTIAO" "true")")"
             RUN_PUBLISH_WECHAT_VIA_135="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_PUBLISH_WECHAT" "false")")"
           fi
 
@@ -492,6 +499,13 @@ jobs:
         run: |
           echo "Matrix operations dashboard:"
           python main.py --matrix-dashboard
+        continue-on-error: true
+
+      - name: Collect performance data
+        if: env.PERFORMANCE_COLLECT_ENABLED == '1'
+        run: |
+          echo "Collecting performance data (views/likes/comments/shares)..."
+          python main.py --collect-performance --account "$RUN_ACCOUNT"
         continue-on-error: true
 
       - name: Upload output artifacts

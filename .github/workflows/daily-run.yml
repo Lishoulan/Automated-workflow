@@ -422,14 +422,15 @@ jobs:
         run: |
           echo "Checking for exported cookies..."
           COOKIES_FILE=""
-          # 优先从 GitHub Release 下载
+          # 优先从 GitHub Release 下载(最新 cookie)
           if gh release download browser-profiles-v1 --repo Lishoulan/Automated-workflow \
               --pattern "exported_cookies.json" --dir /tmp/ 2>/dev/null; then
             COOKIES_FILE="/tmp/exported_cookies.json"
-          fi
-          # 也检查本地文件
-          if [ -f ".runtime/automation/exported_cookies.json" ]; then
+            echo "Downloaded fresh cookies from Release."
+          # Release 下载失败时,回退到本地缓存
+          elif [ -f ".runtime/automation/exported_cookies.json" ]; then
             COOKIES_FILE=".runtime/automation/exported_cookies.json"
+            echo "WARNING: Using cached cookies (Release download failed)."
           fi
           if [ -n "$COOKIES_FILE" ]; then
             echo "Injecting cookies from: $COOKIES_FILE"

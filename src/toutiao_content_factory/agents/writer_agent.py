@@ -665,7 +665,7 @@ class WriterAgent(BaseAgent):
             " 禁止在不同段落中重复相同的观点或措辞。如果需要回扣前文，必须用新论据或新视角推进，而非简单重述。"
             ' 结尾必须给出一个具体的开放式互动问题，不能只写“你怎么看”。'
             ' 禁止使用“今天我们来探讨”“不可否认”“值得注意的是”“综上所述”等套话。' ' 禁止使用“不难发现”“众所周知”“由此可见”“显而易见”“不言而喻”“毋庸置疑”等模板化过渡词。' ' 段落之间用具体事实或数据衔接，不要用空洞的转折词。'
-            ' 禁止在正文中写入来源标记，如"对标账号高热内容""对标热点""36氪头条号""benchmark_hotspot"等。'
+            ' 禁止在正文中写入来源标记，如"对标账号高热内容""对标热点""36氪头条号""benchmark_hotspot""evergreen_pool""evergreen://"等。'
             ' 引用数据时只需写“公开报道”或“公开材料”，不要写具体媒体名称或账号名称作为来源标签。'
             " 【去AI味硬规则】每段必须包含至少一个具体场景锚点（如：某工厂产线、某园区并网现场、某公司发布会），不能用抽象描述代替。"
             " 禁止连续3句以上使用相同句式结构，必须打散句式。"
@@ -1543,7 +1543,6 @@ class WriterAgent(BaseAgent):
             insert_pos = max(1, len(result) - 1)
             for offset, para in enumerate(new_paragraphs):
                 result.insert(insert_pos + offset, para)
-            result = self._trim_low_confidence_paragraphs(result, data_report)
             logger.info("Grounded LLM expansion added %d paragraphs.", len(new_paragraphs))
             return result
         except Exception as exc:

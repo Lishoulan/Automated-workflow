@@ -180,6 +180,7 @@ class EngagementAgent:
         max_consecutive_failures = 3  # 连续失败3次则停止
 
         def _run():
+            nonlocal consecutive_failures
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as pw:

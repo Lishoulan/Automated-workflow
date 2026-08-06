@@ -20,7 +20,7 @@ LOCK_FILENAMES = (
     "SingletonCookie",
     "SingletonSocket",
 )
-TARGET_PROCESS_NAMES = {"python.exe", "msedge.exe", "python", "chromium", "chromium-browser", "chrome", "google-chrome"}
+TARGET_PROCESS_NAMES = {"msedge.exe", "chromium", "chromium-browser", "chrome", "google-chrome"}
 PROCESS_WHITELIST_MARKERS = (
     "webapp.py",
     "uvicorn",
@@ -231,6 +231,7 @@ def check_cookie_health(profile_dir: Path, *, max_age_hours: float = 72.0) -> di
     cookie_files = (
         list(resolved.glob("Cookies")) + list(resolved.glob("Cookies-journal"))
         + list(resolved.glob("Default/Network/Cookies")) + list(resolved.glob("Default/Network/Cookies-journal"))
+        + list(resolved.glob("Default/Cookies")) + list(resolved.glob("Default/Cookies-journal"))
     )
     if not cookie_files:
         return {

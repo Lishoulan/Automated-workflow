@@ -147,9 +147,11 @@
     "default_topic_rank": 1,
     "daily_run_times": [
       "07:00",
-      "11:30",
-      "18:00",
-      "22:00"
+      "12:30",
+      "18:00"
+    ],
+    "weekend_run_times": [
+      "08:00"
     ],
     "archive_outputs": true,
     "archive_dirname": "runs",
@@ -321,9 +323,9 @@
   },
   "accounts": {
     "default": {
-      "label": "手蓝科技笔记",
+      "label": "手蓝数据笔记",
       "industry": {
-        "brand_name": "手蓝科技笔记",
+        "brand_name": "手蓝数据笔记",
         "focus": "AI、机器人、芯片、新能源、储能、智能制造与科技商业",
         "audience": "关注科技产业趋势、公司竞争格局与关键赛道机会的头条读者"
       },
@@ -331,6 +333,8 @@
         "default_style": "deep_industry_analysis"
       },
       "topic_collection": {
+        "max_topic_age_hours": 12,
+        "drop_topics_without_timestamp": true,
         "enabled_sources": [
           "36kr",
           "zhidx",
@@ -350,7 +354,7 @@
     },
     "robot_notes": {
       "label": "机器人/地缘科技笔记",
-      "browser_profile_dir": ".runtime/accounts/robot_notes/toutiao_profile",
+      "browser_profile_dir": ".runtime/accounts/robot-notes/toutiao_profile",
       "industry": {
         "brand_name": "手蓝机器人笔记",
         "focus": "人形机器人、具身智能、AI硬件、工业自动化、新能源",

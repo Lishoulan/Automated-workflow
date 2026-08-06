@@ -57,8 +57,17 @@ def _inject_and_verify(
     verify_login_indicators: list[str],
     headless: bool,
 ) -> dict:
-    """注入 Cookie 并验证 Session 是否有效。"""
+    """注入 Cookie 并验证 Session 是否有效。
+
+    容错策略：Cookie 注入成功后，页面验证超时不视为整体失败。
+    返回 status 取值：
+      - alive: 注入并验证成功
+      - injected_but_verify_timeout: Cookie 已注入但页面验证超时（不阻断流程）
+      - still_expired: 注入后仍被重定向到登录页
+      - inject_failed: 注入阶段异常
+    """
     from playwright.sync_api import sync_playwright
+    from playwright._impl._errors import TimeoutError as PlaywrightTimeoutError
 
     result = {"status": "unknown", "injected": 0, "verified": False}
 
@@ -93,22 +102,33 @@ def _inject_and_verify(
                 result["injected"] = len(injectable)
                 logger.info("已注入 %d 个 Cookie 到 %s", len(injectable), profile_dir.name)
 
-                # 访问页面验证 Session
+                # 访问页面验证 Session（容错：超时不阻断，Cookie 已持久化）
                 page = browser.pages[0] if browser.pages else browser.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(5000)
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    page.wait_for_timeout(5000)
 
-                current_url = page.url.lower()
-                is_login_page = any(ind in current_url for ind in verify_login_indicators)
+                    current_url = page.url.lower()
+                    is_login_page = any(ind in current_url for ind in verify_login_indicators)
 
-                if is_login_page:
-                    result["status"] = "still_expired"
+                    if is_login_page:
+                        result["status"] = "still_expired"
+                        result["verified"] = False
+                        logger.warning("Cookie 注入后仍被重定向到登录页: %s", current_url)
+                    else:
+                        result["status"] = "alive"
+                        result["verified"] = True
+                        logger.info("✓ Session 验证成功 (URL: %s)", page.url[:80])
+                except PlaywrightTimeoutError:
+                    # Cookie 已通过 add_cookies 持久化，页面加载超时不应阻断流程
+                    # 后续 health_check 会再做一次判断，此处降级为"已注入待验证"
+                    result["status"] = "injected_but_verify_timeout"
                     result["verified"] = False
-                    logger.warning("Cookie 注入后仍被重定向到登录页: %s", current_url)
-                else:
-                    result["status"] = "alive"
-                    result["verified"] = True
-                    logger.info("✓ Session 验证成功 (URL: %s)", page.url[:80])
+                    logger.warning(
+                        "页面验证超时（%s），但 %d 个 Cookie 已注入并持久化，降级为待验证状态",
+                        url,
+                        result["injected"],
+                    )
 
                 # 正常关闭浏览器，让 Playwright 将 Cookie 持久化到 Profile
             finally:
@@ -213,11 +233,17 @@ def main():
     # 输出汇总
     logger.info("注入结果: %s", json.dumps(results, ensure_ascii=False, indent=2))
 
+    # 成功状态：alive（验证通过）+ injected_but_verify_timeout（Cookie 已注入，仅页面验证超时）
+    # 失败状态：still_expired / inject_failed / unknown
+    OK_STATUSES = ("alive", "injected_but_verify_timeout", "skipped")
     success = [p for p, r in results.items() if r.get("status") == "alive"]
-    failed = [p for p, r in results.items() if r.get("status") not in ("alive", "skipped")]
+    accepted = [p for p, r in results.items() if r.get("status") == "injected_but_verify_timeout"]
+    failed = [p for p, r in results.items() if r.get("status") not in OK_STATUSES]
 
     if success:
         logger.info("✓ 注入成功: %s", success)
+    if accepted:
+        logger.info("✓ Cookie 已注入（页面验证超时，降级为待验证）: %s", accepted)
     if failed:
         logger.error("✗ 注入失败: %s", failed)
         sys.exit(1)

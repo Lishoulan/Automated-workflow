@@ -15,6 +15,24 @@ from toutiao_content_factory.services.schema_guard_service import SchemaGuardSer
 from toutiao_content_factory.services.topic_pool_service import TopicPoolService
 
 
+# 内部选题池标识 → 面向 LLM 的人类可读来源名
+# 避免把机器标识(如 evergreen_pool、benchmark_hotspot)直接喂给 LLM 导致泄漏到正文
+SOURCE_DISPLAY_NAMES = {
+    "evergreen_pool": "常青选题库",
+    "benchmark_hotspot": "公开报道",
+    "manual_paste": "公开材料",
+    "topic_pool": "选题库",
+}
+
+
+def _humanize_source(raw_source: str | None) -> str:
+    """把内部选题池标识映射为人类可读的来源名,未知标识统一回退为"公开材料"。"""
+    if not raw_source:
+        return "公开材料"
+    key = str(raw_source).strip().lower()
+    return SOURCE_DISPLAY_NAMES.get(key, "公开材料")
+
+
 @dataclass
 class TopicSelectionResult:
     report: DailyTopicsReport
@@ -396,7 +414,7 @@ class TopicAutomationService:
 
         return (
             f"标题：{topic.title}\n"
-            f"来源：{topic.source}\n"
+            f"来源：{_humanize_source(topic.source)}\n"
             f"发布日期：{published_at}\n"
             f"原文链接：{topic.url}\n\n"
             f"主赛道：{primary_industry}\n"
@@ -573,7 +591,7 @@ class TopicAutomationService:
             "# 今日自动选题\n\n"
             f"- 标题：{topic.title}\n"
             f"- 排名：{topic.rank or 1}\n"
-            f"- 来源：{topic.source}\n"
+            f"- 来源：{_humanize_source(topic.source)}\n"
             f"- 发布时间：{topic.published_at or '未知'}\n"
             f"- 原文链接：{topic.url}\n"
             f"- 匹配赛道：{'、'.join(humanized_industries) or '无'}\n"

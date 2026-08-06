@@ -594,12 +594,13 @@ jobs:
         run: |
           if [ -f output/automation/last_daily_run_result.json ]; then
             STATUS=$(python -c "import json; print(json.load(open('output/automation/last_daily_run_result.json')).get('status', 'unknown'))" 2>/dev/null || echo "unknown")
-            ACCOUNT=$(python -c "import json; print(json.load(open('output/automation/last_daily_run_result.json')).get('account_key', 'default'))" 2>/dev/null || echo "default")
+            ACCOUNT=$(python -c "import json; print(json.load(open('output/automation/last_daily_run_result.json')).get('account_key', '$RUN_ACCOUNT'))" 2>/dev/null || echo "$RUN_ACCOUNT")
             echo "run-status=$STATUS" >> $GITHUB_OUTPUT
             echo "run-account=$ACCOUNT" >> $GITHUB_OUTPUT
           else
+            # 主 job 在 pipeline 运行前失败（如 cookie 注入阶段），使用实际运行账号而非硬编码 default
             echo "run-status=unknown" >> $GITHUB_OUTPUT
-            echo "run-account=default" >> $GITHUB_OUTPUT
+            echo "run-account=${RUN_ACCOUNT:-default}" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload output artifacts
@@ -798,10 +799,10 @@ jobs:
       - name: Resolve fallback account
         shell: bash
         run: |
-          # 从主 job 输出获取账号，若缺失则回退到 default
+          # 从主 job 输出获取账号，若缺失则回退到 CLOUD_DEFAULT_ACCOUNT secret，再回退到 default
           ACCOUNT="${{ needs.daily-run.outputs.run-account }}"
           if [ -z "$ACCOUNT" ] || [ "$ACCOUNT" = "unknown" ]; then
-            ACCOUNT="default"
+            ACCOUNT="${{ secrets.CLOUD_DEFAULT_ACCOUNT || 'default' }}"
           fi
           echo "RUN_ACCOUNT=$ACCOUNT" >> $GITHUB_ENV
           echo "TOUTIAO_ACCOUNT=$ACCOUNT" >> $GITHUB_ENV

@@ -295,11 +295,29 @@ def _ensure_playwright_browsers() -> bool:
 # ---------------------------------------------------------------------------
 # 发布结果摘要输出
 # ---------------------------------------------------------------------------
-def _print_publish_summary() -> None:
+def _resolve_last_daily_run_result_path(account_key: str) -> Path:
+    """解析账号对应的 last_daily_run_result.json 路径。
+
+    优先使用账号输出目录下的路径，解析失败时回退到 default 路径。
+    """
+    try:
+        from toutiao_content_factory.config import load_settings
+
+        settings = load_settings(PROJECT_ROOT, account_key=account_key)
+        account_output_dir = settings.output_dir
+        if not account_output_dir.is_absolute():
+            account_output_dir = PROJECT_ROOT / account_output_dir
+        return account_output_dir / "automation" / "last_daily_run_result.json"
+    except Exception as exc:
+        _logger.warning("解析 account-aware last_daily_run_result 路径失败，回退到默认路径: %s", exc)
+        return PROJECT_ROOT / "output" / "automation" / "last_daily_run_result.json"
+
+
+def _print_publish_summary(account_key: str) -> None:
     """读取并输出本次运行的发布结果摘要。"""
-    result_path = PROJECT_ROOT / "output" / "automation" / "last_daily_run_result.json"
+    result_path = _resolve_last_daily_run_result_path(account_key)
     if not result_path.exists():
-        _logger.info("未找到 last_daily_run_result.json，跳过发布摘要")
+        _logger.info("未找到 last_daily_run_result.json，跳过发布摘要: %s", result_path)
         return
 
     try:
@@ -519,7 +537,7 @@ def _mark_degraded_status(account_key: str) -> None:
     该函数在 main.py 子进程成功退出后调用，用于区分 "blocked" / "success" / "degraded_to_draft"
     三种状态。仅在账号匹配时更新，避免误改其他账号的结果文件。
     """
-    result_path = PROJECT_ROOT / "output" / "automation" / "last_daily_run_result.json"
+    result_path = _resolve_last_daily_run_result_path(account_key)
     if not result_path.exists():
         _logger.warning("last_daily_run_result.json 不存在，跳过降级状态更新: %s", result_path)
         return
@@ -774,7 +792,7 @@ def main() -> int:
                     _mark_degraded_status(account_key)
                 # 主 pipeline 成功后运行 AiToEarn 集成模块
                 _run_extra_modules(account_key)
-                _print_publish_summary()
+                _print_publish_summary(account_key)
                 return exit_code
 
             # 检查是否是 PlatformAuthError，如果是则禁用失败平台并重试

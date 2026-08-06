@@ -18,6 +18,7 @@ from toutiao_content_factory.agents import (
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import LowQualityAbortException
 from toutiao_content_factory.models import CacheContext, ExtractionResult, InsightReport, WorkflowResult
+from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.letta_client import LettaClient
 from toutiao_content_factory.services.openai_service import OpenAIContentService
@@ -27,6 +28,9 @@ from toutiao_content_factory.services.prompt_repository import PromptRepository
 class AgentWorkflowService:
     LOW_QUALITY_THRESHOLD = 60
     ARTICLE_MIN_CHARS = 1500
+    # 整个 workflow 生命周期内 LLM expansion 最大调用次数
+    # DeepSeek-V4-Flash 单次 expansion 耗时 5-7 分钟，多次累计会导致云端 30 分钟超时
+    MAX_LLM_EXPANSION_CALLS = 1
 
     def __init__(
         self,
@@ -48,7 +52,10 @@ class AgentWorkflowService:
         self.insight_agent = InsightAgent(settings, prompt_repository, openai_service, logger)
         self.data_mining_agent = DataMiningAgent(settings, prompt_repository, openai_service, logger)
         self.content_guard_service = ContentGuardService(settings, logger)
+        self.quality_checker = ArticleQualityChecker()
         self.openai_service = openai_service
+        # LLM expansion 调用计数器，跨 writer/polish/second_polish 阶段共享
+        self._llm_expansion_call_count = 0
 
         # One-Person Company AI Services
         self._letta_client: LettaClient | None = None
@@ -129,6 +136,7 @@ class AgentWorkflowService:
 
             title_pack = self.title_agent.run(content, trend_report, data_report, style, cache_context)
             self._apply_title_pack(content, title_pack)
+            self._filter_titles_by_quality(content)
 
             content.cover_prompt = ""
             content.infographic_prompts = []
@@ -159,6 +167,7 @@ class AgentWorkflowService:
 
                     title_pack = self.title_agent.run(content, trend_report, data_report, style, cache_context)
                     self._apply_title_pack(content, title_pack)
+                    self._filter_titles_by_quality(content)
 
                     review_pack = self.review_agent.run(content, data_report, style, cache_context)
                     self._apply_review_pack(content, review_pack, cache_context)
@@ -399,6 +408,18 @@ class AgentWorkflowService:
         deficit = min_chars - current_chars
         if deficit <= 0 or not self._has_grounded_evidence(data_report):
             return article
+        # 限制整个 workflow 生命周期内的 LLM expansion 调用次数
+        # 避免 writer/polish/second_polish 阶段反复触发导致云端 30 分钟超时
+        if self._llm_expansion_call_count >= self.MAX_LLM_EXPANSION_CALLS:
+            self.logger.warning(
+                "LLM expansion 已达上限（%d/%d），跳过本次调用，当前文章 %d 字符（目标 %d）",
+                self._llm_expansion_call_count,
+                self.MAX_LLM_EXPANSION_CALLS,
+                current_chars,
+                min_chars,
+            )
+            return article
+        self._llm_expansion_call_count += 1
         data_parts = []
         if hasattr(data_report, "watch_metrics") and data_report.watch_metrics:
             data_parts.append("Follow-up metrics: " + " / ".join(str(m) for m in data_report.watch_metrics[:5]))
@@ -488,6 +509,52 @@ class AgentWorkflowService:
     def _apply_title_pack(self, content, title_pack) -> None:
         content.titles = title_pack["titles"]
         content.recommended_titles = title_pack["recommended_titles"]
+
+    def _filter_titles_by_quality(self, content) -> None:
+        """标题质量硬过滤（RULE_006/007 落地）
+
+        在 TitleAgent 生成候选后，剔除模板滥用、纯抽象、标题-正文不一致的标题。
+        若全部被过滤，保留原列表并记录 warning，避免空列表导致后续流程崩溃。
+        """
+        article_text = content.article or ""
+        original_titles = list(content.titles or [])
+        original_recommended = list(content.recommended_titles or [])
+        if not original_titles:
+            return
+
+        kept_titles: list[str] = []
+        rejected: list[str] = []
+        for title in original_titles:
+            result = self.quality_checker._check_title(title, article_text)
+            issues = result.get("issues", []) if isinstance(result, dict) else []
+            # 只拦截 RULE_006/007/一致性问题（issues 中的硬性问题），suggestions 不拦截
+            if issues:
+                rejected.append(f"{title} -> {'; '.join(issues)}")
+            else:
+                kept_titles.append(title)
+
+        if kept_titles:
+            content.titles = kept_titles
+            # recommended_titles 也需同步过滤，只保留通过校验的
+            kept_set = set(kept_titles)
+            filtered_recommended = [t for t in original_recommended if t in kept_set]
+            if filtered_recommended:
+                content.recommended_titles = filtered_recommended
+            else:
+                content.recommended_titles = kept_titles[: self.settings.recommended_title_count]
+            if rejected:
+                self.logger.info(
+                    "标题质量硬过滤：剔除 %d 个不合格标题：%s",
+                    len(rejected),
+                    " | ".join(rejected),
+                )
+        else:
+            # 全部被过滤，保留原列表避免空标题，但记录 warning 供人工介入
+            self.logger.warning(
+                "标题质量硬过滤：全部 %d 个候选标题均未通过 RULE_006/007 校验，保留原列表。明细：%s",
+                len(original_titles),
+                " | ".join(rejected),
+            )
 
     def _apply_review_pack(self, content, review_pack, cache_context) -> None:
         content.optimized_opening_lines = list(review_pack.get("optimized_opening_lines", []))

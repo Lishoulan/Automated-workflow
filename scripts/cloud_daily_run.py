@@ -763,7 +763,7 @@ def main() -> int:
                 cmd,
                 cwd=str(PROJECT_ROOT),
                 env=os.environ.copy(),
-                timeout=1800,  # 30 分钟超时
+                timeout=2400,  # 40 分钟超时（与 workflow 45 分钟对齐，留 5 分钟缓冲）
             )
             exit_code = result.returncode
             if exit_code == 0:
@@ -786,7 +786,7 @@ def main() -> int:
             _logger.error("云端定时执行失败 (exit_code=%d)", exit_code)
             return exit_code
         except subprocess.TimeoutExpired:
-            _logger.error("云端定时执行超时（30 分钟）")
+            _logger.error("云端定时执行超时（40 分钟）")
             return 1
         except KeyboardInterrupt:
             _logger.warning("用户中断执行")

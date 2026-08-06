@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import platform
@@ -26,6 +27,7 @@ import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # 路径常量
@@ -325,6 +327,229 @@ def _print_publish_summary() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 健康检查阻塞降级
+# ---------------------------------------------------------------------------
+def _perform_quick_health_check(account_key: str) -> dict[str, Any] | None:
+    """执行轻量级平台健康检查，返回健康检查结果字典；失败时返回 None。
+
+    该函数直接调用 PlatformHealthService.quick_health_check()，用于在调用
+    main.py 之前预先检测 toutiao 是否 blocked，以便进入降级流程。
+    """
+    try:
+        from toutiao_content_factory.config import load_settings
+        from toutiao_content_factory.services.notification_service import NotificationService
+        from toutiao_content_factory.services.platform_health_service import PlatformHealthService
+        from toutiao_content_factory.services.review_service import ReviewWorkflowService
+        from toutiao_content_factory.services.wechat_service import WechatPublishService
+    except ImportError as exc:
+        _logger.warning("无法导入健康检查所需模块 (非致命): %s", exc)
+        return None
+
+    try:
+        settings = load_settings(PROJECT_ROOT, account_key=account_key)
+        notification_service = NotificationService(
+            dict(os.environ),
+            fallback_log_dir=str(settings.output_dir / "automation"),
+        )
+        review_service = ReviewWorkflowService(settings, _logger)
+        wechat_publish_service = WechatPublishService(settings, _logger)
+        health_service = PlatformHealthService(
+            settings,
+            _logger,
+            toutiao_publish_service=review_service.publish_service,
+            wechat_publish_service=wechat_publish_service,
+            notification_service=notification_service,
+        )
+        return health_service.quick_health_check()
+    except Exception as exc:
+        _logger.warning("quick_health_check 执行失败 (非致命): %s", exc)
+        return None
+
+
+def _resolve_cookies_file(account_key: str) -> Path:
+    """解析 cookie 文件路径。
+
+    优先使用账号运行时目录下的 exported_cookies.json（与 inject_cookies.py 默认路径一致），
+    解析失败时回退到 .runtime/automation/exported_cookies.json。
+    """
+    try:
+        from toutiao_content_factory.config import load_settings
+
+        settings = load_settings(PROJECT_ROOT, account_key=account_key)
+        return settings.account_runtime_dir / "automation" / "exported_cookies.json"
+    except Exception as exc:
+        _logger.warning("解析 cookie 文件路径失败，回退到默认路径: %s", exc)
+        return RUNTIME_DIR / "automation" / "exported_cookies.json"
+
+
+def _reinject_cookies(account_key: str, cookies_file: Path) -> bool:
+    """调用 inject_cookies.py 重新注入 toutiao cookie，返回是否成功。
+
+    使用 subprocess 调用 scripts/inject_cookies.py，仅注入 toutiao 平台。
+    """
+    inject_script = PROJECT_ROOT / "scripts" / "inject_cookies.py"
+    if not inject_script.exists():
+        _logger.warning("inject_cookies.py 不存在，跳过重新注入: %s", inject_script)
+        return False
+    if not cookies_file.exists():
+        _logger.warning("Cookie 文件不存在，跳过重新注入: %s", cookies_file)
+        return False
+
+    cmd = [
+        sys.executable,
+        str(inject_script),
+        "--platforms", "toutiao",
+        "--input", str(cookies_file),
+        "--headless",
+        "--account", account_key,
+    ]
+    _logger.info("重新注入 cookie (优先级 1): %s", " ".join(cmd))
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            env=os.environ.copy(),
+            timeout=300,
+        )
+        if result.returncode == 0:
+            _logger.info("Cookie 重新注入成功")
+            return True
+        _logger.warning("Cookie 重新注入失败 (exit_code=%d)", result.returncode)
+        return False
+    except subprocess.TimeoutExpired:
+        _logger.warning("Cookie 重新注入超时（5 分钟）")
+        return False
+    except Exception as exc:
+        _logger.warning("Cookie 重新注入异常: %s", exc)
+        return False
+
+
+def _write_blocked_alert(
+    account_key: str,
+    blocking_platforms: list[str],
+    degraded_to: str,
+    reason: str,
+) -> None:
+    """写入降级告警文件 daily_run_blocked_alert.json。
+
+    路径: .runtime/daily_run_blocked_alert.json
+    字段: account / blocking_platforms / degraded_to / timestamp / reason
+    """
+    alert_path = RUNTIME_DIR / "daily_run_blocked_alert.json"
+    alert_payload = {
+        "account": account_key,
+        "blocking_platforms": blocking_platforms,
+        "degraded_to": degraded_to,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "reason": reason,
+    }
+    try:
+        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        alert_path.write_text(
+            json.dumps(alert_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        _logger.warning("已写入降级告警文件: %s", alert_path)
+    except Exception as exc:
+        _logger.error("写入降级告警文件失败: %s", exc)
+
+
+def _handle_health_check_blocked(
+    account_key: str,
+    cookies_file: Path,
+) -> str:
+    """处理健康检查 blocked 情况，按优先级降级。
+
+    降级优先级:
+        1. 调用 inject_cookies.py 重新注入 cookie 并重试健康检查；
+           若重试后 toutiao 不再 blocked，返回 "normal" 继续正常流程。
+        2. 若重新注入 cookie 后仍 blocked，切换到草稿模式
+           （设置 TOUTIAO_DRAFT_ONLY=1, TOUTIAO_AUTO_PUBLISH=0）。
+        3. 写入 daily_run_blocked_alert.json 告警文件。
+
+    返回降级后的模式:
+        - "normal": 重新注入 cookie 后恢复，继续正常流程
+        - "draft_only": 降级到草稿模式
+    """
+    # 优先级 1: 重新注入 cookie 并重试健康检查
+    _logger.warning("健康检查报告 toutiao blocked，开始优先级 1: 重新注入 cookie")
+    if _reinject_cookies(account_key, cookies_file):
+        retry_health = _perform_quick_health_check(account_key)
+        if retry_health is not None:
+            retry_blocking = [
+                str(p) for p in retry_health.get("blocking_platforms", []) if str(p).strip()
+            ]
+            if "toutiao" not in retry_blocking:
+                _logger.info("重新注入 cookie 后健康检查通过，继续正常流程")
+                return "normal"
+            _logger.warning(
+                "重新注入 cookie 后健康检查仍 blocked: %s",
+                ", ".join(retry_blocking) or "(none)",
+            )
+        else:
+            _logger.warning("重试健康检查失败，按仍 blocked 处理")
+    else:
+        _logger.warning("重新注入 cookie 失败，进入优先级 2: 草稿模式")
+
+    # 优先级 2: 切换到草稿模式
+    _logger.warning("健康检查仍 blocked，开始优先级 2: 切换到草稿模式")
+    os.environ["TOUTIAO_DRAFT_ONLY"] = "1"
+    os.environ["TOUTIAO_AUTO_PUBLISH"] = "0"
+    _logger.info(
+        "已设置环境变量降级: TOUTIAO_DRAFT_ONLY=1, TOUTIAO_AUTO_PUBLISH=0 (草稿模式，不自动发布)"
+    )
+
+    # 优先级 3: 写入降级告警文件
+    reason = (
+        "健康检查报告 toutiao blocked，重新注入 cookie 后仍无法恢复，已降级为草稿模式。"
+        "每日内容仍会生成草稿，但不会自动发布到头条。请检查 cookie 是否过期或手动重新登录。"
+    )
+    _write_blocked_alert(
+        account_key=account_key,
+        blocking_platforms=["toutiao"],
+        degraded_to="draft_only",
+        reason=reason,
+    )
+    return "draft_only"
+
+
+def _mark_degraded_status(account_key: str) -> None:
+    """如果发生了降级，将 last_daily_run_result.json 的 status 更新为 degraded_to_draft。
+
+    该函数在 main.py 子进程成功退出后调用，用于区分 "blocked" / "success" / "degraded_to_draft"
+    三种状态。仅在账号匹配时更新，避免误改其他账号的结果文件。
+    """
+    result_path = PROJECT_ROOT / "output" / "automation" / "last_daily_run_result.json"
+    if not result_path.exists():
+        _logger.warning("last_daily_run_result.json 不存在，跳过降级状态更新: %s", result_path)
+        return
+    try:
+        data = json.loads(result_path.read_text(encoding="utf-8"))
+        # 仅当账号匹配或未标记账号时更新（避免误改其他账号的结果）
+        existing_account = data.get("account_key")
+        if existing_account and existing_account != account_key:
+            _logger.info(
+                "last_daily_run_result.json 账号不匹配 (%s != %s)，跳过状态更新",
+                existing_account, account_key,
+            )
+            return
+        previous_status = data.get("status", "")
+        data["status"] = "degraded_to_draft"
+        data["degraded_from"] = previous_status
+        data["degraded_at"] = datetime.now().isoformat(timespec="seconds")
+        result_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        _logger.info(
+            "已将 last_daily_run_result.json 的 status 从 '%s' 更新为 'degraded_to_draft'",
+            previous_status or "(empty)",
+        )
+    except Exception as exc:
+        _logger.warning("更新 last_daily_run_result.json 降级状态失败: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
@@ -406,6 +631,24 @@ def _run_extra_modules(account_key: str) -> None:
     else:
         _logger.info("性能数据回采未启用，跳过")
 
+    # --- 月度回顾与迭代建议 ---
+    # 读取 30 天发布数据生成回顾报告、迭代建议，并接入 EvolutionAgent 生成演化提案。
+    # 默认开启，可通过环境变量 MONTHLY_REVIEW_ENABLED=0 关闭。
+    if os.environ.get("MONTHLY_REVIEW_ENABLED", "1") == "1":
+        _logger.info("运行月度回顾与迭代建议...")
+        try:
+            result = subprocess.run(
+                [sys.executable, main_py, "--monthly-review", "--account", account_key],
+                cwd=str(PROJECT_ROOT),
+                env=os.environ.copy(),
+                timeout=900,
+            )
+            _logger.info("月度回顾完成 (exit_code=%d)", result.returncode)
+        except Exception as exc:
+            _logger.warning("月度回顾执行异常（非致命）: %s", exc)
+    else:
+        _logger.info("月度回顾未启用，跳过")
+
     # --- 变现同步 ---
     if os.environ.get("MONETIZATION_ENABLED", "0") == "1":
         _logger.info("运行变现数据同步...")
@@ -467,6 +710,31 @@ def main() -> int:
     # 4. 配置 PYTHONPATH
     _configure_pythonpath()
 
+    # 4.5 健康检查阻塞降级（在调用 main.py 之前预先检测 toutiao blocked）
+    # 降级优先级: 重新注入 cookie → 草稿模式 → 告警
+    degraded_mode: str = "normal"
+    if not args.dry_run:
+        try:
+            health = _perform_quick_health_check(account_key)
+            if health is not None:
+                blocking_platforms = [
+                    str(p) for p in health.get("blocking_platforms", []) if str(p).strip()
+                ]
+                if "toutiao" in blocking_platforms:
+                    _logger.warning(
+                        "健康检查报告 blocked 平台: %s，进入降级流程",
+                        ", ".join(blocking_platforms) or "(none)",
+                    )
+                    cookies_file = _resolve_cookies_file(account_key)
+                    degraded_mode = _handle_health_check_blocked(account_key, cookies_file)
+                else:
+                    _logger.info(
+                        "健康检查通过 (blocking_platforms: %s)",
+                        ", ".join(blocking_platforms) or "none",
+                    )
+        except Exception as exc:
+            _logger.warning("健康检查阻塞降级流程异常 (非致命，继续执行): %s", exc)
+
     # 5. Playwright 浏览器预检
     if not args.skip_browser_check:
         if not _ensure_playwright_browsers():
@@ -500,6 +768,10 @@ def main() -> int:
             exit_code = result.returncode
             if exit_code == 0:
                 _logger.info("云端定时执行成功完成 (exit_code=%d)", exit_code)
+                # 如果发生了降级（草稿模式），将 last_daily_run_result.json
+                # 的 status 更新为 degraded_to_draft，区分 blocked / success
+                if degraded_mode == "draft_only":
+                    _mark_degraded_status(account_key)
                 # 主 pipeline 成功后运行 AiToEarn 集成模块
                 _run_extra_modules(account_key)
                 _print_publish_summary()

@@ -5,11 +5,12 @@ import logging
 import random
 import re
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
 from toutiao_content_factory.agents.base import BaseAgent
-from toutiao_content_factory.config import AppSettings, StyleProfile
+from toutiao_content_factory.config import AppSettings, IterationOverrides, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, InsightReport, TrendReport
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
 from toutiao_content_factory.services.prompt_repository import PromptRepository
@@ -35,6 +36,23 @@ class WriterAgent(BaseAgent):
     )
 
     MODE_NOISE_TOKENS = ("产业链", "订单", "交付", "毛利", "利润", "兑现", "融资", "客户验证", "科技制造", "项目落地")
+
+    def __init__(
+        self,
+        settings: AppSettings,
+        prompt_repository: PromptRepository,
+        openai_service: OpenAIContentService,
+        logger: logging.Logger,
+        iteration_overrides: Optional[IterationOverrides] = None,
+    ) -> None:
+        super().__init__(settings, prompt_repository, openai_service, logger)
+        self.iteration_overrides = iteration_overrides
+        # 应用首段结构覆盖（为空时使用默认配置，不改变现有行为）
+        self.opening_structure = (
+            str(iteration_overrides.opening_structure).strip()
+            if iteration_overrides and iteration_overrides.opening_structure
+            else ""
+        )
 
     def run(
         self,
@@ -704,7 +722,28 @@ class WriterAgent(BaseAgent):
             f"正文写法重点：{style.article_instruction or '先判断，再证据，再拆变量。'}",
             f"开头写法重点：{style.opening_instruction or '开头先抛钩子，再落到事实。'}",
         ]
+        opening_directive = self._iteration_opening_directive()
+        if opening_directive:
+            parts.append(opening_directive)
         return "\n".join(f"- {item}" for item in parts if item.strip())
+
+    def _iteration_opening_directive(self) -> str:
+        """根据 iteration_overrides.opening_structure 生成首段结构覆盖指令。
+
+        仅当调整项非空且为已知结构时返回指令，否则返回空串（保持现有行为）。
+        """
+        structure = self.opening_structure
+        if not structure:
+            return ""
+        mapping = {
+            "judgment_first": "首段以判断句开场，先抛出反直觉结论，再用数据支撑",
+            "data_first": "首段以关键数据开场，先用数字制造冲击，再落到判断",
+            "scene_first": "首段以具体场景锚点开场，先还原现场，再引出判断",
+        }
+        text = mapping.get(structure)
+        if not text:
+            return ""
+        return f"迭代调整-首段结构：{text}"
 
     def _viral_template_instruction(self, style: StyleProfile, self_benchmark_context: dict[str, object] | None) -> str:
         patterns = self._self_benchmark_patterns(self_benchmark_context)

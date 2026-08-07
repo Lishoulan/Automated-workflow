@@ -1,0 +1,80 @@
+{
+  "title_template_weights": {
+    "data_hook_consequence": 0.40,
+    "contrast_hook": 0.25,
+    "insight_hook": 0.20,
+    "judgment_hook": 0.15
+  },
+  "engagement_template_weights": {
+    "stance": 0.40,
+    "counterfactual": 0.25,
+    "variable_query": 0.20,
+    "experience": 0.15
+  },
+  "topic_priorities": {
+    "robot_cost_breakdown": 0.30,
+    "robot_supply_chain": 0.25,
+    "ai_chip": 0.20,
+    "robot_humanoid": 0.15,
+    "new_energy": 0.10
+  },
+  "opening_structure": "data_first",
+  "adjustment_evidence": {
+    "best_performer_analysis": {
+      "title": "人形机器人成本生死线：2万美元一破，格局即变",
+      "impressions": 3036,
+      "reads": 97,
+      "read_rate": 0.032,
+      "pattern": "data_hook_consequence",
+      "key_features": [
+        "具体数字(2万美元)作为标题核心",
+        "强情感词(生死线)制造紧迫感",
+        "明确后果(格局即变)而非抽象判断"
+      ]
+    },
+    "low_performer_patterns": [
+      {
+        "title": "技术拐点来临：人形机器人进入小批量阶段",
+        "impressions": 2,
+        "reads": 0,
+        "problem": "纯抽象判断，无具体数字或利害关系"
+      },
+      {
+        "title": "人形机器人技术路线之争决定量产节奏",
+        "impressions": 3,
+        "reads": 0,
+        "problem": "模板化句式(之争决定)，缺少钩子"
+      },
+      {
+        "title": "涉及哪些公司之后，科技利润流向变了",
+        "impressions": 1191,
+        "reads": 0,
+        "problem": "'之后'模板滥用，标题空泛无法吸引点击"
+      }
+    ],
+    "recent_impressions_drop": {
+      "recent_7d_avg_impressions": 8,
+      "older_avg_impressions": 1843,
+      "drop_ratio": 0.996,
+      "likely_causes": [
+        "2天内发布4篇高频文章触发限流",
+        "标题高度同质化(全部含'人形机器人')",
+        "重复标题发布(资本提前卡位后...发布2次)"
+      ]
+    }
+  },
+  "adjustment_confidence": 0.7,
+  "adjustment_notes": [
+    "标题模板：提升data_hook_consequence权重至0.40(最佳表现文章使用此模式)，降低judgment_hook至0.15(近7天0阅读文章均用此模式)",
+    "互动话术：提升stance(站队式)至0.40，因为当前互动率几乎为0，需要更强的对立观点引发讨论",
+    "话题优先级：降低robot_humanoid至0.15(过度饱和)，提升robot_cost_breakdown至0.30(最佳表现文章聚焦成本话题)",
+    "首段结构：切换为data_first(数据先行)，避免抽象判断开篇",
+    "发布频率：建议每日最多1篇，避免触发限流"
+  ],
+  "title_blacklist_patterns": [
+    ".*之后.*变了",
+    ".*之争.*",
+    ".*拉开.*序幕",
+    "技术拐点来临"
+  ]
+}

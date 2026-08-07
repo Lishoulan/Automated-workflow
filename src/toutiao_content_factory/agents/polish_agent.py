@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import re
 import logging
+from typing import Optional
 
 from toutiao_content_factory.agents.base import BaseAgent
-from toutiao_content_factory.config import AppSettings, StyleProfile
+from toutiao_content_factory.config import AppSettings, IterationOverrides, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, TrendReport
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
 from toutiao_content_factory.services.compliance_service import is_aigc_declaration_enabled
@@ -66,6 +67,48 @@ class PolishAgent(BaseAgent):
         "10. 结尾避免总结式收束，改用一个具体判断或前瞻性观察结束。"
     )
 
+    def __init__(
+        self,
+        settings: AppSettings,
+        prompt_repository: PromptRepository,
+        openai_service: OpenAIContentService,
+        logger: logging.Logger,
+        iteration_overrides: Optional[IterationOverrides] = None,
+    ) -> None:
+        super().__init__(settings, prompt_repository, openai_service, logger)
+        self.iteration_overrides = iteration_overrides
+        # 应用互动话术权重覆盖（为空时使用默认配置，不改变现有行为）
+        self.engagement_template_weights = (
+            dict(iteration_overrides.engagement_template_weights)
+            if iteration_overrides and iteration_overrides.engagement_template_weights
+            else {}
+        )
+
+    def _iteration_engagement_directive(self) -> str:
+        """根据 iteration_overrides.engagement_template_weights 生成互动话术覆盖指令。
+
+        仅当调整项非空时返回指令，否则返回空串（保持现有行为）。
+        """
+        weights = self.engagement_template_weights
+        if not weights:
+            return ""
+        descriptions = {
+            "stance": "立场鲜明型：先表态再给理由",
+            "variable_query": "变量追问型：抛出待验证的关键变量",
+            "counterfactual": "反事实假设型：假设另一种走向引导讨论",
+            "experience": "经验征集型：邀请读者分享实操经验",
+        }
+        lines = ["[迭代调整-互动话术权重]"]
+        for key, value in weights.items():
+            desc = descriptions.get(str(key), str(key))
+            try:
+                weight = float(value)
+            except (TypeError, ValueError):
+                weight = 0.0
+            lines.append(f"- {desc}（权重 {weight}）")
+        lines.append("请按上述权重分布选择结尾互动话术类型，权重越高越优先采用。")
+        return "\n".join(lines)
+
     def run(
         self,
         content: GeneratedContent,
@@ -100,6 +143,9 @@ class PolishAgent(BaseAgent):
         prompt = prompt + self.ANTI_AI_FLAVOR_APPENDIX
         if rule_block:
             prompt = prompt + "\n\n" + rule_block + "\n请在润色时严格执行以上规则。"
+        engagement_directive = self._iteration_engagement_directive()
+        if engagement_directive:
+            prompt = prompt + "\n\n" + engagement_directive
         payload = self.request_json("你是 PolishAgent，只输出 JSON。", prompt)
         if payload:
             polished = str(payload.get("polished_article", "")).strip()
@@ -352,6 +398,23 @@ class PolishAgent(BaseAgent):
         cleaned = self._remove_ai_cliches(cleaned)
         paragraphs = [self._normalize_paragraph(block) for block in cleaned.split("\n\n") if block.strip()]
         paragraphs = [block for block in paragraphs if block]
+
+        # 后置过滤：剔除 LLM 在 polish 阶段可能模仿生成的 CTA / 营销段落
+        # （MonetizationService.append_cta 会在导出阶段统一注入，polish 阶段不应出现）
+        cta_markers = (
+            "## 延伸服务",
+            "## 延伸阅读",
+            "## 进一步交流",
+            "回复“",
+            "回复\"",
+            "如果你想把信息差变成结果",
+            "做内容的目的不是多发几篇",
+        )
+        before_count = len(paragraphs)
+        paragraphs = [p for p in paragraphs if not any(m in p for m in cta_markers)]
+        removed = before_count - len(paragraphs)
+        if removed > 0:
+            self.logger.info("PolishAgent 后置过滤：剔除 %d 个 CTA/营销段落", removed)
 
         if not paragraphs:
             paragraphs = [self._build_mode_fallback_anchor(data_report, trend_report)]

@@ -247,6 +247,7 @@ class AutomationSettings:
     default_topic_rank: int
     max_daily_topic_attempts: int
     daily_run_times: list[str]
+    weekend_run_times: list[str]
     archive_outputs: bool
     archive_dirname: str
     selected_topic_basename: str
@@ -257,6 +258,7 @@ class AutomationSettings:
             default_topic_rank=int(payload.get("default_topic_rank", 1)),
             max_daily_topic_attempts=int(payload.get("max_daily_topic_attempts", 5)),
             daily_run_times=[str(item).strip() for item in payload.get("daily_run_times", []) if str(item).strip()],
+            weekend_run_times=[str(item).strip() for item in payload.get("weekend_run_times", []) if str(item).strip()],
             archive_outputs=bool(payload.get("archive_outputs", True)),
             archive_dirname=str(payload.get("archive_dirname", "runs")),
             selected_topic_basename=str(payload.get("selected_topic_basename", "selected_topic")),
@@ -570,6 +572,41 @@ class EvolutionSettings:
         )
 
 
+@dataclass(frozen=True)
+class IterationOverrides:
+    """基于发布数据观察的内容迭代调整项。
+
+    由 ``config/iteration_overrides/<account>.json`` 加载，覆盖各 Agent 的默认配置，
+    实现基于真实读者反馈的迭代调整。所有字段均带默认值（向下兼容）：
+    当调整项文件不存在或字段缺失时，使用默认空值，不影响现有流程。
+    """
+    # 标题模板权重，如 {"judgment": 0.4, "contrast": 0.3, "data_hook": 0.3}
+    title_template_weights: dict = field(default_factory=dict)
+    # 互动话术模板权重，如 {"stance": 0.5, "variable_query": 0.2, "counterfactual": 0.2, "experience": 0.1}
+    engagement_template_weights: dict = field(default_factory=dict)
+    # 话题优先级，如 {"robot": 0.4, "ai_chip": 0.3, "new_energy": 0.3}
+    topic_priorities: dict = field(default_factory=dict)
+    # 首段结构，如 "judgment_first" | "data_first" | "scene_first"
+    opening_structure: str = ""
+    # 调整证据（各调整项的证据说明）
+    adjustment_evidence: dict = field(default_factory=dict)
+    # 整体置信度
+    adjustment_confidence: float = 0.0
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "IterationOverrides":
+        if not data:
+            return cls()
+        return cls(
+            title_template_weights=dict(data.get("title_template_weights", {}) or {}),
+            engagement_template_weights=dict(data.get("engagement_template_weights", {}) or {}),
+            topic_priorities=dict(data.get("topic_priorities", {}) or {}),
+            opening_structure=str(data.get("opening_structure", "") or ""),
+            adjustment_evidence=dict(data.get("adjustment_evidence", {}) or {}),
+            adjustment_confidence=float(data.get("adjustment_confidence", 0.0) or 0.0),
+        )
+
+
 @dataclass
 class AppSettings:
     project_root: Path
@@ -647,6 +684,8 @@ class AppSettings:
     rpa_resilience: RPAResilienceSettings = field(default_factory=RPAResilienceSettings)
     content_guard: ContentGuardSettings = field(default_factory=ContentGuardSettings)
     evolution: EvolutionSettings = field(default_factory=EvolutionSettings)
+    # 基于发布数据观察的内容迭代调整项（默认空对象，向下兼容）
+    iteration_overrides: IterationOverrides = field(default_factory=IterationOverrides)
 
     def ensure_directories(self) -> None:
         for directory in (
@@ -736,6 +775,12 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     rpa_resilience_config = RPAResilienceSettings.from_dict(merged_payload.get("rpa_resilience", {}))
     content_guard_config = ContentGuardSettings.from_dict(merged_payload.get("content_guard", {}))
     evolution_config = EvolutionSettings.from_dict(merged_payload.get("evolution", {}))
+
+    # 基于发布数据观察的迭代调整项：从 config/iteration_overrides/<account>.json 加载
+    # 文件不存在时使用空默认值，不影响现有流程
+    iteration_overrides_config = _load_iteration_overrides(
+        project_root, account_profile.key, account_profile.slug
+    )
 
     is_default_account = account_profile.key == DEFAULT_ACCOUNT_KEY
     default_style = os.getenv("DEFAULT_STYLE", str(merged_payload.get("writing", {}).get("default_style", "deep_industry_analysis")))
@@ -839,6 +884,8 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         rpa_resilience=rpa_resilience_config,
         content_guard=content_guard_config,
         evolution=evolution_config,
+        # 内容迭代调整项
+        iteration_overrides=iteration_overrides_config,
     )
 
 
@@ -906,6 +953,7 @@ def _load_automation_config(merged_payload: dict[str, Any], automation_config: A
             )
         ),
         daily_run_times=automation_config.daily_run_times,
+        weekend_run_times=automation_config.weekend_run_times,
         archive_outputs=automation_config.archive_outputs,
         archive_dirname=automation_config.archive_dirname,
         selected_topic_basename=automation_config.selected_topic_basename,
@@ -1134,6 +1182,52 @@ def _load_image_config(merged_payload: dict[str, Any], image_config: ImageGenera
         export_svg=image_config.export_svg,
         export_png=image_config.export_png,
     )
+
+def _load_iteration_overrides(
+    project_root: Path,
+    account_key: str,
+    account_slug: str,
+) -> IterationOverrides:
+    """从 ``config/iteration_overrides/<account>.json`` 加载迭代调整项。
+
+    账号名可能是 ``robot_notes`` 或 ``robot-notes``，因此同时尝试下划线/连字符
+    变体。文件不存在时返回空 ``IterationOverrides``（不影响现有流程）；
+    文件格式错误时同样返回空默认值，避免调整项加载失败导致整个配置加载失败。
+    """
+    base_dir = project_root / "config" / "iteration_overrides"
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for name in (
+        account_key,
+        account_slug,
+        account_key.replace("-", "_"),
+        account_key.replace("_", "-"),
+    ):
+        normalized = str(name or "").strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            candidates.append(normalized)
+
+    for name in candidates:
+        path = base_dir / f"{name}.json"
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            # 调整项文件格式错误不应导致整个配置加载失败
+            import sys
+            print(
+                f"[WARNING] Failed to load iteration overrides from {path}: {exc}. "
+                "Falling back to empty overrides.",
+                file=sys.stderr,
+            )
+            return IterationOverrides()
+        if isinstance(payload, dict):
+            return IterationOverrides.from_dict(payload)
+        return IterationOverrides()
+    return IterationOverrides()
+
 
 def _load_config_payload(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
@@ -1397,6 +1491,7 @@ def _default_config_payload() -> dict[str, Any]:
             "default_topic_rank": 1,
             "max_daily_topic_attempts": 5,
             "daily_run_times": [],
+            "weekend_run_times": [],
             "archive_outputs": True,
             "archive_dirname": "runs",
             "selected_topic_basename": "selected_topic",

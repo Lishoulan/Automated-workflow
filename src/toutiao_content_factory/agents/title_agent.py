@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import re
 import logging
+from typing import Optional
 
 from toutiao_content_factory.agents.base import BaseAgent
-from toutiao_content_factory.config import AppSettings, StyleProfile
+from toutiao_content_factory.config import AppSettings, IterationOverrides, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, TrendReport
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.openai_service import OpenAIContentService
@@ -77,8 +78,16 @@ class TitleAgent(BaseAgent):
         prompt_repository: PromptRepository,
         openai_service: OpenAIContentService,
         logger: logging.Logger,
+        iteration_overrides: Optional[IterationOverrides] = None,
     ) -> None:
         super().__init__(settings, prompt_repository, openai_service, logger)
+        self.iteration_overrides = iteration_overrides
+        # 应用标题模板权重覆盖（为空时使用默认配置，不改变现有行为）
+        self.title_template_weights = (
+            dict(iteration_overrides.title_template_weights)
+            if iteration_overrides and iteration_overrides.title_template_weights
+            else {}
+        )
 
     def validate_title_compliance(self, title: str) -> bool:
         if len(title) > 30:
@@ -269,10 +278,16 @@ class TitleAgent(BaseAgent):
         if self_benchmark_titles:
             note_parts.append(f"优先吸收你自己的已验证样本：{'；'.join(self_benchmark_titles[:2])}")
         note_parts.append("禁止直接照抄样本标题，禁止只替换一个名词。")
+        title_templates = [str(item).strip() for item in selected.get("title_templates", []) if str(item).strip()][:8]
+        # 应用迭代调整项：按 title_template_weights 重排标题模板，权重高的优先
+        if self.title_template_weights:
+            title_templates = self._reorder_templates_by_weights(
+                title_templates, self.title_template_weights
+            )
         return {
             "track": str(selected.get("track", track_label)).strip() or track_label,
             "top_keywords": [str(item).strip() for item in selected.get("top_keywords", []) if str(item).strip()][:8],
-            "title_templates": [str(item).strip() for item in selected.get("title_templates", []) if str(item).strip()][:8],
+            "title_templates": title_templates,
             "topic_imitation_pool": [
                 str(item).strip() for item in selected.get("topic_imitation_pool", []) if str(item).strip()
             ][:8],
@@ -283,6 +298,28 @@ class TitleAgent(BaseAgent):
             ][:5],
             "note": "；".join(note_parts),
         }
+
+    def _reorder_templates_by_weights(self, templates: list[str], weights: dict) -> list[str]:
+        """按权重重排标题模板：包含高权重关键词的模板优先，未匹配的保持相对顺序。"""
+        if not templates or not weights:
+            return templates
+
+        def score(template: str) -> float:
+            best = 0.0
+            for key, value in weights.items():
+                token = str(key or "").strip()
+                if not token or token not in template:
+                    continue
+                try:
+                    weight = float(value)
+                except (TypeError, ValueError):
+                    weight = 0.0
+                if weight > best:
+                    best = weight
+            return best
+
+        # 稳定排序：权重高的在前，相同权重（含未匹配的 0 分）保持原相对顺序
+        return sorted(templates, key=lambda t: -score(t))
 
     def _load_title_playbook_payload(self) -> dict[str, object]:
         path = self.settings.output_dir / "growth_ops" / "title_playbook.json"

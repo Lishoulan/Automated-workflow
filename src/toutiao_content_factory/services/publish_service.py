@@ -27,6 +27,7 @@ from toutiao_content_factory.services.content_guard_service import ContentGuardS
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.image_generation_service import generate_text_cover
 from toutiao_content_factory.services.notification_service import NotificationService
+from toutiao_content_factory.services.publish_precheck_service import PublishPrecheckService
 # 健壮性增强模块：动态重试退避 / 弹窗守卫 / 定位器降级 / 发布状态双重校验
 # 所有增强能力均以可选方式接入，不破坏原有配置隔离与业务逻辑
 from toutiao_content_factory.services.rpa_resilience import (
@@ -171,6 +172,10 @@ class PublishService:
         self._popup_guard_platform = "toutiao"
         # 模块 A 合并新增：读取 rpa_resilience 配置，若无则使用默认值（向下兼容）
         self.rpa_config = getattr(settings, "rpa_resilience", RPAResilienceSettings())
+        # 发布前最终合规预检器（作为 sanitize 之后的最后防线）
+        self.precheck_service = PublishPrecheckService(
+            account=settings.account_key, logger=logger,
+        )
 
     def _launch_persistent_browser(self, playwright, *, profile_dir: Path):
         proxy_server = get_proxy_server()

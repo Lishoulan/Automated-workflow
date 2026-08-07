@@ -41,12 +41,14 @@ class AgentWorkflowService:
     ) -> None:
         self.settings = settings
         self.logger = logger
+        # 基于发布数据观察的迭代调整项，传递给各 Agent 覆盖默认配置
+        iteration_overrides = settings.iteration_overrides
         self.trend_agent = TrendAgent(settings, prompt_repository, openai_service, logger)
         self.data_agent = DataAgent(settings, prompt_repository, openai_service, logger)
         self.evolution_agent = EvolutionAgent(settings, prompt_repository, openai_service, logger)
-        self.writer_agent = WriterAgent(settings, prompt_repository, openai_service, logger)
-        self.polish_agent = PolishAgent(settings, prompt_repository, openai_service, logger)
-        self.title_agent = TitleAgent(settings, prompt_repository, openai_service, logger)
+        self.writer_agent = WriterAgent(settings, prompt_repository, openai_service, logger, iteration_overrides=iteration_overrides)
+        self.polish_agent = PolishAgent(settings, prompt_repository, openai_service, logger, iteration_overrides=iteration_overrides)
+        self.title_agent = TitleAgent(settings, prompt_repository, openai_service, logger, iteration_overrides=iteration_overrides)
         self.review_agent = ReviewAgent(settings, prompt_repository, openai_service, logger)
         self.publish_review_agent = PublishReviewAgent(settings, prompt_repository, openai_service, logger)
         self.insight_agent = InsightAgent(settings, prompt_repository, openai_service, logger)

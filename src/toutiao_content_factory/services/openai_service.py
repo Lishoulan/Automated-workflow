@@ -34,9 +34,10 @@ class UsageCostSnapshot:
 
 class OpenAIContentService:
     # 类常量定义
-    MAX_RETRIES = 4
+    MAX_RETRIES = 2
     BASE_DELAY = 2.0
     MAX_DELAY = 30.0
+    REQUEST_TIMEOUT = 120.0
     RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 
     def __init__(self, settings: AppSettings, logger: logging.Logger, force_mock: bool = False) -> None:
@@ -62,7 +63,10 @@ class OpenAIContentService:
             if OpenAI is None:
                 raise AIRequestError("The openai package is not installed, so the model client cannot be used.")
 
-            client_kwargs = {"api_key": settings.openai_api_key}
+            client_kwargs = {
+                "api_key": settings.openai_api_key,
+                "timeout": self.REQUEST_TIMEOUT,
+            }
             if settings.openai_base_url:
                 client_kwargs["base_url"] = settings.openai_base_url
             self.client = OpenAI(**client_kwargs)

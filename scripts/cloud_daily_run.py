@@ -531,7 +531,7 @@ def _handle_health_check_blocked(
     return "draft_only"
 
 
-def _mark_degraded_status(account_key: str) -> None:
+def _mark_degraded_status(account_key: str, reason: str = "health_check_blocked") -> None:
     """如果发生了降级，将 last_daily_run_result.json 的 status 更新为 degraded_to_draft。
 
     该函数在 main.py 子进程成功退出后调用，用于区分 "blocked" / "success" / "degraded_to_draft"
@@ -555,16 +555,52 @@ def _mark_degraded_status(account_key: str) -> None:
         data["status"] = "degraded_to_draft"
         data["degraded_from"] = previous_status
         data["degraded_at"] = datetime.now().isoformat(timespec="seconds")
+        data["degraded_reason"] = reason
         result_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         _logger.info(
-            "已将 last_daily_run_result.json 的 status 从 '%s' 更新为 'degraded_to_draft'",
+            "已将 last_daily_run_result.json 的 status 从 '%s' 更新为 'degraded_to_draft' (reason=%s)",
             previous_status or "(empty)",
+            reason,
         )
     except Exception as exc:
         _logger.warning("更新 last_daily_run_result.json 降级状态失败: %s", exc)
+
+
+def _mark_degraded_if_draft_saved(account_key: str) -> None:
+    """当配置要求发布但实际只生成了草稿时，标记为 degraded_to_draft。
+
+    用于捕获 precheck 硬拦截或质量门禁降级的情况——这些降级发生在
+    publish_service 内部，cloud_daily_run 的 degraded_mode 不会感知到。
+    """
+    result_path = _resolve_last_daily_run_result_path(account_key)
+    if not result_path.exists():
+        return
+    try:
+        data = json.loads(result_path.read_text(encoding="utf-8"))
+        existing_account = data.get("account_key")
+        if existing_account and existing_account != account_key:
+            return
+        publish_status = data.get("publish_status", "")
+        if publish_status != "draft_saved":
+            return
+        previous_status = data.get("status", "")
+        data["status"] = "degraded_to_draft"
+        data["degraded_from"] = previous_status
+        data["degraded_at"] = datetime.now().isoformat(timespec="seconds")
+        data["degraded_reason"] = "precheck_blocked_or_quality_gate"
+        result_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        _logger.warning(
+            "配置要求发布但 publish_status=draft_saved，已标记 status=degraded_to_draft (was '%s')",
+            previous_status or "(empty)",
+        )
+    except Exception as exc:
+        _logger.warning("检查 draft_saved 降级状态失败: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +826,9 @@ def main() -> int:
                 # 的 status 更新为 degraded_to_draft，区分 blocked / success
                 if degraded_mode == "draft_only":
                     _mark_degraded_status(account_key)
+                elif os.environ.get("TOUTIAO_DRAFT_ONLY", "1") != "1":
+                    # 配置要求发布但可能被 precheck/质量门禁内部降级为草稿
+                    _mark_degraded_if_draft_saved(account_key)
                 # 主 pipeline 成功后运行 AiToEarn 集成模块
                 _run_extra_modules(account_key)
                 _print_publish_summary(account_key)

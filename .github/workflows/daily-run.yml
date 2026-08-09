@@ -598,11 +598,21 @@ jobs:
         if: always()
         shell: bash
         run: |
-          if [ -f output/automation/last_daily_run_result.json ]; then
-            STATUS=$(python -c "import json; print(json.load(open('output/automation/last_daily_run_result.json')).get('status', 'unknown'))" 2>/dev/null || echo "unknown")
-            ACCOUNT=$(python -c "import json; print(json.load(open('output/automation/last_daily_run_result.json')).get('account_key', '$RUN_ACCOUNT'))" 2>/dev/null || echo "$RUN_ACCOUNT")
+          # 尝试 account-aware 路径，再回退到默认路径
+          RESULT_FILE=""
+          if [ -f "output/accounts/${RUN_ACCOUNT}/automation/last_daily_run_result.json" ]; then
+            RESULT_FILE="output/accounts/${RUN_ACCOUNT}/automation/last_daily_run_result.json"
+          elif [ -f "output/automation/last_daily_run_result.json" ]; then
+            RESULT_FILE="output/automation/last_daily_run_result.json"
+          fi
+          if [ -n "$RESULT_FILE" ]; then
+            STATUS=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('status', 'unknown'))" 2>/dev/null || echo "unknown")
+            ACCOUNT=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('account_key', '$RUN_ACCOUNT'))" 2>/dev/null || echo "$RUN_ACCOUNT")
             echo "run-status=$STATUS" >> $GITHUB_OUTPUT
             echo "run-account=$ACCOUNT" >> $GITHUB_OUTPUT
+            if [ "$STATUS" = "degraded_to_draft" ]; then
+              echo "::warning::定时任务降级为草稿模式（publish_status=draft_saved），文章未发布到头条公域。请检查 precheck_report.json 确认降级原因。"
+            fi
           else
             # 主 job 在 pipeline 运行前失败（如 cookie 注入阶段），使用实际运行账号而非硬编码 default
             echo "run-status=unknown" >> $GITHUB_OUTPUT

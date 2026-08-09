@@ -135,24 +135,35 @@ class PublishPrecheckService:
         return violations
 
     # ------------------------------------------------------------------
-    # 硬拦截项 3：段落重复率检测
+    # 硬拦截项 3：段落重复率检测（段落级，跨段落提及不算违规）
     # ------------------------------------------------------------------
     def _check_repeated_phrases(self, article: str) -> list[dict]:
-        """检测指标短语是否在全文重复出现 ≥3 次。"""
+        """检测指标短语是否在同一自然段内重复出现 ≥3 次。
+
+        跨段落合理提及产业链关键指标（如"样机验证、量产节奏、单机成本"）
+        是深度行业分析的正常写法，不算违规；仅当同一自然段内反复堆砌
+        同一指标短语时才判定为重复率过高。
+        """
         violations: list[dict] = []
         seen: set[str] = set()
+        # 按空行分割自然段（兼容 \\n\\n 与 \\r\\n\\r\\n）
+        paragraphs = re.split(r"\n\s*\n", article)
         for match in _METRIC_PHRASE_RE.finditer(article):
             phrase = match.group(0)
             if phrase in seen:
                 continue
             seen.add(phrase)
-            count = article.count(phrase)
-            if count >= _REPEAT_THRESHOLD:
+            # 只统计同一自然段内的重复次数，取最大值
+            max_in_paragraph = max(
+                (para.count(phrase) for para in paragraphs),
+                default=0,
+            )
+            if max_in_paragraph >= _REPEAT_THRESHOLD:
                 violations.append(
                     {
                         "rule": "repeated_phrase",
                         "matched": phrase,
-                        "count": count,
+                        "count": max_in_paragraph,
                     }
                 )
         return violations

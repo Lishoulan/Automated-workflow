@@ -328,13 +328,28 @@ class WechatPublishService:
             )
         elif not api_available and self.settings.wechat.editor_135_enabled:
             # 即使不自动发布，也通过135编辑器创建草稿
+            # session 过期时降级为跳过，不中断流程（微信发布留给本地 one_click_publish.ps1）
             self.logger.info("WeChat API unavailable and auto_publish disabled, using 135 Editor to create draft.")
-            publish_response = self._publish_via_135editor(
-                title=title,
-                summary=summary,
-                article_html=article_html,
-                cover_path=cover_path,
-            )
+            try:
+                publish_response = self._publish_via_135editor(
+                    title=title,
+                    summary=summary,
+                    article_html=article_html,
+                    cover_path=cover_path,
+                )
+            except RuntimeError as exc:
+                if "session is invalid or expired" in str(exc):
+                    self.logger.warning(
+                        "135 Editor session expired, skipping WeChat draft creation on cloud. "
+                        "WeChat publish will be handled locally. Error: %s",
+                        exc,
+                    )
+                    publish_response = {
+                        "status": "skipped_session_expired",
+                        "method": "editor_135",
+                    }
+                else:
+                    raise
 
         result_payload = {
             "published_at": time.strftime("%Y-%m-%dT%H:%M:%S"),

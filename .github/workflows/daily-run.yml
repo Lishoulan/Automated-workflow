@@ -214,6 +214,9 @@ jobs:
       PROMPT_OPTIMIZER_BASE_URL: "http://localhost:8501"
       RUFLO_ENABLED: "0"
 
+      # ---- 发布结果通知 ----
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -608,10 +611,25 @@ jobs:
           if [ -n "$RESULT_FILE" ]; then
             STATUS=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('status', 'unknown'))" 2>/dev/null || echo "unknown")
             ACCOUNT=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('account_key', '$RUN_ACCOUNT'))" 2>/dev/null || echo "$RUN_ACCOUNT")
+            PUBLISH_STATUS=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('publish_status', ''))" 2>/dev/null || echo "")
+            PUBLISH_PGC_ID=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('publish_pgc_id', ''))" 2>/dev/null || echo "")
+            SELECTED_TITLE=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('selected_title', ''))" 2>/dev/null || echo "")
             echo "run-status=$STATUS" >> $GITHUB_OUTPUT
             echo "run-account=$ACCOUNT" >> $GITHUB_OUTPUT
+            echo "publish-status=$PUBLISH_STATUS" >> $GITHUB_OUTPUT
+            echo "publish-pgc-id=$PUBLISH_PGC_ID" >> $GITHUB_OUTPUT
+            echo "selected-title=$SELECTED_TITLE" >> $GITHUB_OUTPUT
             if [ "$STATUS" = "degraded_to_draft" ]; then
               echo "::warning::定时任务降级为草稿模式（publish_status=draft_saved），文章未发布到头条公域。请检查 precheck_report.json 确认降级原因。"
+            fi
+            if [ "$PUBLISH_STATUS" = "submitted_for_review" ] && [ -n "$PUBLISH_PGC_ID" ]; then
+              echo "::notice::头条发布成功 | 账号=$ACCOUNT | 标题=$SELECTED_TITLE | pgc_id=$PUBLISH_PGC_ID"
+            fi
+            if [ "$STATUS" = "success" ] && [ "$PUBLISH_STATUS" != "submitted_for_review" ] && [ -n "$PUBLISH_STATUS" ]; then
+              echo "::warning::workflow 标记 success 但 publish_status=$PUBLISH_STATUS（非 submitted_for_review），文章可能未成功发布到头条公域。请检查 publish_result.json。"
+            fi
+            if [ "$PUBLISH_STATUS" = "submitted_for_review" ] && [ -z "$PUBLISH_PGC_ID" ]; then
+              echo "::warning::publish_status=submitted_for_review 但 pgc_id 为空，发布可能未真正成功。请检查 publish_result.json 的 backend_response_summary。"
             fi
           else
             # 主 job 在 pipeline 运行前失败（如 cookie 注入阶段），使用实际运行账号而非硬编码 default

@@ -383,6 +383,19 @@ jobs:
             echo "Letta service unavailable, skipping agent creation"
           fi
 
+      - name: Restore publish history cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            output/accounts/*/publish_history.json
+            output/publish_history.json
+            output/accounts/*/wechat_publish_history.json
+            output/accounts/*/automation/last_daily_run_result.json
+            output/automation/last_daily_run_result.json
+          key: daily-publish-history-${{ github.run_id }}
+          restore-keys: |
+            daily-publish-history-
+
       - name: Restore browser profile cache
         uses: actions/cache@v4
         with:

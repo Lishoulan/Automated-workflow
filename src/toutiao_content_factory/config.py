@@ -1324,7 +1324,8 @@ def _default_config_payload() -> dict[str, Any]:
                 "chuneng_ofweek",
                 "newenergy_ofweek",
                 "gg_robot",
-                "google_news",
+                "ithome",
+                "solidot",
             ],
             "focus_industries": [
                 "humanoid_robot",
@@ -1394,16 +1395,16 @@ def _default_config_payload() -> dict[str, Any]:
                 ],
             },
             "sources": {
-                "google_news": {
-                    "type": "google_rss",
-                    "timeout": 5,
-                    "enabled": True,
+                "ithome": {
+                    "type": "rss",
                     "urls": [
-                        "https://news.google.com/rss/search?q=%E4%BA%BA%E5%BD%A2%E6%9C%BA%E5%99%A8%E4%BA%BA&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-                        "https://news.google.com/rss/search?q=%E6%96%B0%E8%83%BD%E6%BA%90&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-                        "https://news.google.com/rss/search?q=%E5%82%A8%E8%83%BD&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-                        "https://news.google.com/rss/search?q=AI%E7%A1%AC%E4%BB%B6&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-                        "https://news.google.com/rss/search?q=%E5%B7%A5%E4%B8%9A%E8%87%AA%E5%8A%A8%E5%8C%96&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+                        "https://www.ithome.com/rss/",
+                    ],
+                },
+                "solidot": {
+                    "type": "rss",
+                    "urls": [
+                        "https://www.solidot.org/index.rss",
                     ],
                 },
                 "36kr": {

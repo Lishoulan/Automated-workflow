@@ -1311,7 +1311,7 @@ def _default_config_payload() -> dict[str, Any]:
         },
         "topic_collection": {
             "lookback_days": 2,
-            "max_topic_age_hours": 24,
+            "max_topic_age_hours": 12,
             "drop_topics_without_timestamp": True,
             "max_ranked_items_per_source": 4,
             "max_items_per_source": 12,
@@ -1324,6 +1324,7 @@ def _default_config_payload() -> dict[str, Any]:
                 "chuneng_ofweek",
                 "newenergy_ofweek",
                 "gg_robot",
+                "google_news",
             ],
             "focus_industries": [
                 "humanoid_robot",
@@ -1396,10 +1397,8 @@ def _default_config_payload() -> dict[str, Any]:
                 "google_news": {
                     "type": "google_rss",
                     "timeout": 5,
-                    "enabled": False,
+                    "enabled": True,
                     "urls": [
-                    ],
-                    "_disabled_urls": [
                         "https://news.google.com/rss/search?q=%E4%BA%BA%E5%BD%A2%E6%9C%BA%E5%99%A8%E4%BA%BA&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
                         "https://news.google.com/rss/search?q=%E6%96%B0%E8%83%BD%E6%BA%90&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
                         "https://news.google.com/rss/search?q=%E5%82%A8%E8%83%BD&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",

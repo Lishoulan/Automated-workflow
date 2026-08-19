@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import os
 import re
 import ssl
 import time
@@ -29,7 +30,6 @@ class TopicSourceResult:
 
 class TopicCollectionService:
     URL_DOMAIN_BLACKLIST: frozenset[str] = frozenset({
-        "news.google.com",
         "google.com",
         "googleapis.com",
         "newsrss.bbc.co.uk",

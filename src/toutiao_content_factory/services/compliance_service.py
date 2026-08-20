@@ -50,6 +50,13 @@ def get_account_switch_interval() -> int:
 
 
 def count_today_published(history_path: Path, platform: str = "toutiao") -> int:
+    """统计今日已发布的文章数。
+
+    时区修复：publish_history.json 使用本地时间（如 2026-05-31T00:27:13）记录，
+    原实现使用 UTC 时间判断"今日"，导致凌晨0-8点期间都算"前一天"，
+    实际放行了超过 max_daily_posts 限制的发布。
+    现统一使用本地时间（datetime.now() 不带时区）与历史记录对齐。
+    """
     if not history_path.exists():
         return 0
     try:
@@ -58,11 +65,11 @@ def count_today_published(history_path: Path, platform: str = "toutiao") -> int:
             records = records.get("records", records.get("history", []))
         if not isinstance(records, list):
             return 0
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_str = datetime.now().strftime("%Y-%m-%d")
         count = 0
         for rec in records:
             ts = rec.get("published_at", rec.get("timestamp", rec.get("created_at", "")))
-            if isinstance(ts, str) and today_str in ts:
+            if isinstance(ts, str) and ts.startswith(today_str):
                 count += 1
         return count
     except Exception:
@@ -70,6 +77,10 @@ def count_today_published(history_path: Path, platform: str = "toutiao") -> int:
 
 
 def check_daily_post_limit(history_path: Path, platform: str = "toutiao") -> bool:
+    """检查今日发布数是否已达上限。
+
+    返回 True 表示可以继续发布，False 表示已达上限。
+    """
     max_posts = get_max_daily_posts(platform)
     today_count = count_today_published(history_path, platform)
     if today_count >= max_posts:

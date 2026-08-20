@@ -295,19 +295,33 @@ class ArticlePerformance:
     views: int
     interactions: int
     roi_score: float
+    like_count: int = 0
+    comment_count: int = 0
+    share_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ArticlePerformance":
+        like_count = int(payload.get("like_count", 0) or 0)
+        comment_count = int(payload.get("comment_count", 0) or 0)
+        share_count = int(payload.get("share_count", 0) or 0)
+        interactions_raw = payload.get("interactions")
+        if interactions_raw is None or interactions_raw == 0:
+            interactions = like_count + comment_count + share_count
+        else:
+            interactions = int(interactions_raw or 0)
         return cls(
             url=str(payload.get("url", "")),
             title=str(payload.get("title", "")),
             publish_date=str(payload.get("publish_date", "")),
             views=int(payload.get("views", 0) or 0),
-            interactions=int(payload.get("interactions", 0) or 0),
+            interactions=interactions,
             roi_score=float(payload.get("roi_score", 0.0) or 0.0),
+            like_count=like_count,
+            comment_count=comment_count,
+            share_count=share_count,
         )
 
 

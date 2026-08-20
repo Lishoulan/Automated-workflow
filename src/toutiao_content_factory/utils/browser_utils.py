@@ -148,6 +148,8 @@ def build_persistent_context_options(
         timezone_id=timezone_id,
         locale=locale,
     )
+    profile_path = Path(profile_dir)
+    log_file = profile_path / "chrome_debug.log"
     args = [
         "--disable-blink-features=AutomationControlled",
         "--disable-features=IsolateOrigins,site-per-process",
@@ -160,6 +162,14 @@ def build_persistent_context_options(
         "--disable-dev-shm-usage",
         "--no-first-run",
         "--no-default-browser-check",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-logging",
+        "--log-level=3",
+        f"--log-file={log_file}",
+        "--disable-crash-reporter",
+        "--disable-breakpad",
+        "--noerrdialogs",
     ]
     options: dict[str, Any] = {
         "headless": headless,

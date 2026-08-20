@@ -188,15 +188,22 @@ class TitleAgent(BaseAgent):
         if playbook_context:
             templates.extend(self._adapt_playbook_titles(playbook_context, data_report))
 
-        # 利润/兑现类（控制在 4 条以内）
-        templates.extend(
-            [
-            f"{keyword}热起来后，利润先向哪一环转移",
-            f"{number}之后，{keyword}开始重排利润",
-            f"{keyword}景气抬升后，谁先把回款做实",
-            f"{keyword}真正的胜负手，不在整机",
-            ]
-        )
+        # 利润/兑现类（控制在 4 条以内；移除"X之后，X开始重排利润"等高频同构模板）
+        # 改为数据/公司/场景锚定的多样化句式，同时满足 RULE_006 具象化
+        profit_variants: list[str] = []
+        if number and number not in {"这组数据", "一组数据", "市场数据"}:
+            profit_variants.append(f"{number}背后，{keyword}的利润先流向谁")
+        else:
+            profit_variants.append(f"{keyword}的钱变多了，先受益的是谁")
+        profit_variants.append(f"{keyword}毛利率的分化，正在改写座次")
+        if company:
+            profit_variants.append(f"{company}重估后，谁先把{keyword}做到位")
+        elif scene:
+            profit_variants.append(f"{scene}落地，谁先把{keyword}回款做实")
+        else:
+            profit_variants.append(f"{secondary if secondary not in keyword else '供应端'}回款先落地，{keyword}谁在稳赚")
+        profit_variants.append(f"{keyword}的对手盘出现，先兑现的是供应端")
+        templates.extend(profit_variants[:4])
         # 技术突破/产品迭代类
         templates.extend(
             [

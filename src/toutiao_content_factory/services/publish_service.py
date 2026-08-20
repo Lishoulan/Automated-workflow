@@ -76,6 +76,19 @@ class PublishService:
     DEBUG_PATH_PATTERN = re.compile(r"Debug files saved to:\s*(?P<path>.+)$", re.IGNORECASE)
     NORMALIZE_PATTERN = re.compile(r"[\s\W_]+", re.UNICODE)
     SUCCESS_HISTORY_STATUSES = {"published", "submitted_for_review", "submitted", "success"}
+
+    # 生产层同模板标题去重：主题词/数字泛化为骨架占位符后比较，
+    # 解决"不同 topic 生成同构模板标题"的重复漏洞（如'XX之后，XX开始重排利润'被跨次复用）。
+    TITLE_SKELETON_FILLERS = (
+        "人形机器人", "具身智能", "机器人", "AI芯片", "芯片", "半导体",
+        "储能", "光伏", "新能源", "零部件", "整机", "执行器", "减速器",
+        "传感器", "大脑", "核心件", "产业链", "环节", "AI应用", "大模型",
+    )
+    # 高频滥用模板的触发标记：仅当命中这些标记时才启用骨架去重，避免误判正常多样标题。
+    KNOWN_TEMPLATE_MARKERS = (
+        "重排利润", "兑现筛选期", "进入筛选期", "筛选期",
+        "开始重排", "利润流向", "先流向", "先兑现", "开始进入兑现",
+    )
     META_NOISE_PREFIXES = (
         "账号定位：",
         "账号：",
@@ -401,11 +414,14 @@ class PublishService:
         if (
             not bool(self.settings.publishing.draft_only)
             and not self.settings.publishing.allow_duplicate_topics
-            and self._was_article_title_published_recently(title)
+            and (
+                self._was_article_title_published_recently(title)
+                or self._blocked_by_template_dedup(title)
+            )
         ):
             raise RuntimeError(
                 "An article with the same or highly similar title was published in the last 7 days "
-                "(edit distance <= 3). Duplicate publish blocked per RULE_009."
+                "(edit distance <= 3 or template skeleton). Duplicate publish blocked per RULE_009/RULE_007."
             )
 
         article = self._sanitize_article_for_publish(self._read_text(publish_dir / "article.md").strip())
@@ -453,7 +469,7 @@ class PublishService:
                 # 重试前重新检查发布历史，防止“第一次实际已提交但前端验证失败”
                 # 导致重复点击发布按钮造成真正的重复发布。
                 if not bool(self.settings.publishing.draft_only) and not self.settings.publishing.allow_duplicate_topics:
-                    if self._was_article_title_published_recently(title):
+                    if self._was_article_title_published_recently(title) or self._blocked_by_template_dedup(title):
                         self.logger.warning(
                             "Retry aborted: article title was already published in the last 7 days. title=%s",
                             title,
@@ -4316,6 +4332,53 @@ class PublishService:
                 current.append(min(current[-1] + 1, previous[j] + 1, previous[j - 1] + cost))
             previous = current
         return previous[-1] <= 3
+
+    def _title_structural_skeleton(self, title: str) -> str:
+        """提取标题结构骨架：将主题词与数字统一替换为占位符再比较。
+
+        例如 '这组数据之后，机器人开始重排利润' 与 '超1000%之后，具身智能开始重排利润'
+        都会归一化为 '{N}之后，{S}开始重排利润'，从而在生产层去重中识别为同一模板。
+        """
+        skel = title
+        for filler in self.TITLE_SKELETON_FILLERS:
+            if filler in skel:
+                skel = skel.replace(filler, "{S}")
+        # 数字（含百分比、数量词）与通用数据词统一替换
+        skel = re.sub(r"\d+(?:\.\d+)?%?", "{N}", skel)
+        skel = skel.replace("这组数据", "{N}").replace("一组数据", "{N}").replace("市场数据", "{N}")
+        while "{S}{S}" in skel:
+            skel = skel.replace("{S}{S}", "{S}")
+        return skel
+
+    def _blocked_by_template_dedup(self, article_title: str) -> bool:
+        """生产层同模板标题去重（RULE_007 落地）。
+
+        仅当标题命中已知高频滥用模板标记（如'重排利润'）时，
+        才将其结构骨架与近7天已发布标题对比；相同骨架即视为同模板复用并拦截。
+        通过触发标记 + 骨架相等双重条件，避免对正常多样标题误判。
+        """
+        normalized_target = self._normalize(article_title)
+        if not normalized_target:
+            return False
+        if not any(marker in normalized_target for marker in self.KNOWN_TEMPLATE_MARKERS):
+            return False
+        target_skeleton = self._title_structural_skeleton(normalized_target)
+        if len(target_skeleton) < 6:
+            return False
+        cutoff = (datetime.now() - timedelta(days=7)).date().isoformat()
+        for record in self._load_history():
+            if record.status not in self.SUCCESS_HISTORY_STATUSES:
+                continue
+            if not record.published_at or record.published_at < cutoff:
+                continue
+            normalized_record = self._normalize(record.title)
+            if not normalized_record:
+                continue
+            if not any(marker in normalized_record for marker in self.KNOWN_TEMPLATE_MARKERS):
+                continue
+            if self._title_structural_skeleton(normalized_record) == target_skeleton:
+                return True
+        return False
 
     def _normalize(self, text: str) -> str:
         return self.NORMALIZE_PATTERN.sub("", text.lower())

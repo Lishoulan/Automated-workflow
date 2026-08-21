@@ -263,7 +263,7 @@
     "history_filename": "publish_history.json",
     "allow_duplicate_topics": false,
     "title_max_length": 30,
-    "cover_mode": "auto"
+    "cover_mode": "three"
   },
   "wechat": {
     "enabled": true,

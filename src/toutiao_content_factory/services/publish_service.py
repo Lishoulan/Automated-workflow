@@ -3339,21 +3339,30 @@ class PublishService:
     def _resolve_three_cover_assets(self, run_dir: Path | None) -> list[Path]:
         """解析三图封面的三张可用图片。
 
-        优先复用已生成的 cover.png 与 infographic_1/2.png；三者均为合规可上传图。
-        返回至少 3 张且在本地实际存在，否则返回空列表（由调用方回退到单图/无图）。
+        优先复用已生成的 cover.png 与 infographic_1/2.png；若不足三张，
+        用 cover.png 复制补齐到三张，保证三图封面始终有三张合规可上传图。
         """
         if run_dir is None:
             return []
         assets: list[Path] = []
+        cover: Path | None = None
+        seen: set[Path] = set()
         for filename in ("cover.png", "infographic_1.png", "infographic_2.png"):
             cand = self._resolve_existing_publish_asset(
                 run_dir=run_dir,
                 publish_dir_name="images",
                 filename=filename,
             )
-            if cand is not None and cand.exists():
+            if cand is not None and cand.exists() and cand not in seen:
+                seen.add(cand)
                 assets.append(cand)
-        return assets if len(assets) >= 3 else []
+                if filename == "cover.png":
+                    cover = cand
+        if len(assets) < 3 and cover is not None:
+            # 素材不足：用 cover.png 补齐到三张，保证三图封面三张齐备（同一主题近似图）
+            while len(assets) < 3:
+                assets.append(cover)
+        return assets[:3]
 
     def _ensure_no_cover_mode(self, page, notes: list[str]) -> None:
         self._dismiss_ai_assistant_drawer(page, notes)

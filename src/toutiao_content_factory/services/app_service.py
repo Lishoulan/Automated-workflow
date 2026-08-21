@@ -1026,7 +1026,9 @@ class ContentFactoryAppService:
                 "resolved_run_dir": str(resolved),
                 "image_generation_skipped": str(skipped_path),
             }
-        include_infographics = bool(self.settings.wechat.enabled)
+        # 头条三图封面也需要 infographic 作为封面素材，故三图模式下即使无微信也生成
+        cover_mode = str(self.settings.publishing.cover_mode or "auto").strip().lower()
+        include_infographics = bool(self.settings.wechat.enabled) or cover_mode == "three"
         result = self.image_generation_service.generate_for_run(resolved, include_infographics=include_infographics)
         exported = {name: str(path) for name, path in result.items()}
         exported["resolved_run_dir"] = str(resolved)

@@ -89,13 +89,51 @@ class TitleAgent(BaseAgent):
             else {}
         )
 
-    def validate_title_compliance(self, title: str) -> bool:
+    def validate_title_compliance(self, title: str, body_text: str = "") -> bool:
         if len(title) > 30:
             return False
         for pattern in self.DISCOURAGED_TITLE_PATTERNS:
             if pattern in title:
                 return False
+        # 标题必须承接正文具象钩子：若正文含具体数字/场景/公司等地标元素，
+        # 标题至少引用其一，避免"情绪模板+空泛主题词"的零点击标题。
+        if body_text and 10 <= len(title) <= 30:
+            if not self._has_concrete_hook(title, body_text):
+                return False
         return True
+
+    @staticmethod
+    def _extract_concrete_elements(text: str) -> set[str]:
+        """从正文/摘要中提取具象地标元素：数字、特定公司/地名/场景、具体量化短语。"""
+        elements: set[str] = set()
+        # 数字与量化短语（如 300%、6.2亿元、10倍、2.3%）
+        for match in re.finditer(r"\d+(?:\.\d+)?\s*%?|\d+(?:\.\d+)?\s*(?:亿|万|倍|个|家|款|台|条)", text):
+            token = match.group(0).strip()
+            if 1 <= len(token) <= 8:
+                elements.add(token)
+        # 公司/机构名（含常见后缀）
+        for match in re.finditer(r"[\u4e00-\u9fa5A-Za-z]{2,}(?:公司|集团|科技|证券|银行|研究院|工厂|基地|机场|园区|实验室)", text):
+            token = match.group(0).strip()
+            if 2 <= len(token) <= 14:
+                elements.add(token)
+        # 具体地名（省/市/县/高新区等 + 常见后缀）
+        for match in re.finditer(r"[\u4e00-\u9fa5]{2,6}(?:省|市|县|区|高新区|经开区|国家的|地区)", text):
+            token = match.group(0).strip()
+            if 2 <= len(token) <= 10:
+                elements.add(token)
+        return elements
+
+    @classmethod
+    def _has_concrete_hook(cls, title: str, body_text: str) -> bool:
+        """标题是否包含正文中至少一个具象地标元素。
+
+        用于强制标题承接正文具体意象（数字/场景/公司/地名），
+        避免全盘空洞的泛化标题。正文无任何具象元素时不强制。
+        """
+        body_elements = cls._extract_concrete_elements(body_text)
+        if not body_elements:
+            return True
+        return any(elem in title for elem in body_elements)
 
     def run(
         self,
@@ -151,7 +189,9 @@ class TitleAgent(BaseAgent):
 
         dual = self._pick_dual_titles(ranked_titles, data_report, model_title_a, model_title_b, cache_context)
 
-        compliant_titles = [t for t in ranked_titles if self.validate_title_compliance(t)]
+        compliant_titles = [
+            t for t in ranked_titles if self.validate_title_compliance(t, content.summary)
+        ]
         if compliant_titles:
             ranked_titles = compliant_titles
 

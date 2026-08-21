@@ -1,0 +1,3 @@
+# 占位文件，保持 config/iteration_overrides 目录结构。
+# 将基于发布数据观察生成的迭代调整项放在此目录，文件名为 <account>.json
+# （如 robot_notes.json 或 robot-notes.json），由 AgentWorkflowService 在运行时加载。

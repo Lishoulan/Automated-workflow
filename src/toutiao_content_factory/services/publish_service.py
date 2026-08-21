@@ -75,7 +75,10 @@ class PlatformUIUpdateException(RuntimeError):
 class PublishService:
     DEBUG_PATH_PATTERN = re.compile(r"Debug files saved to:\s*(?P<path>.+)$", re.IGNORECASE)
     NORMALIZE_PATTERN = re.compile(r"[\s\W_]+", re.UNICODE)
-    SUCCESS_HISTORY_STATUSES = {"published", "submitted_for_review", "submitted", "success"}
+    # 去重基线状态：凡可能已上线(含发布验证不确定但有成功后端确认或可能已发布)的记录，
+    # 都纳入去重比对，避免同标题/同选题重复上线。
+    # publish_uncertain 保守纳入：它代表"可能已发布"，漏判会直接导致完全同标题重复。
+    SUCCESS_HISTORY_STATUSES = {"published", "submitted_for_review", "submitted", "success", "publish_uncertain"}
 
     # 生产层同模板标题去重：主题词/数字泛化为骨架占位符后比较，
     # 解决"不同 topic 生成同构模板标题"的重复漏洞（如'XX之后，XX开始重排利润'被跨次复用）。

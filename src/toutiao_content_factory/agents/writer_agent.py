@@ -47,6 +47,8 @@ class WriterAgent(BaseAgent):
     ) -> None:
         super().__init__(settings, prompt_repository, openai_service, logger)
         self.iteration_overrides = iteration_overrides
+        # 单次 run 内 LLM expansion 调用计数，受 MAX_LLM_EXPANSION_CALLS 限制
+        self._llm_expansion_call_count = 0
         # 应用首段结构覆盖（为空时使用默认配置，不改变现有行为）
         self.opening_structure = (
             str(iteration_overrides.opening_structure).strip()
@@ -1355,6 +1357,10 @@ class WriterAgent(BaseAgent):
 
 
     _short_article_warned = False
+    # 单次 writer run 生命周期内允许的 LLM expansion 最大次数。
+    # DeepSeek 系模型长文常出现"字数不足→LLM补全→polish压缩→再次不足"的循环，
+    # 若不设上限会反复消耗 token 并拖长单次运行（历史 auto-run 达 17 分钟）。
+    MAX_LLM_EXPANSION_CALLS = 1
 
     def _ensure_min_char_count(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 0) -> list[str]:
         # 动态获取最小字数：优先 data_report.word_target，其次 settings.article_word_target，最后 1500
@@ -1401,7 +1407,22 @@ class WriterAgent(BaseAgent):
         return result
 
     def _expand_article_via_llm(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 1200) -> list[str]:
+        if not self._has_grounded_evidence(data_report):
+            return paragraphs
+
         logger = logging.getLogger(__name__)
+        # 单次 run 生命周期内限制 expansion 调用次数，防止"补全→polish→再补全"循环
+        if self._llm_expansion_call_count >= self.MAX_LLM_EXPANSION_CALLS:
+            logger.warning(
+                "LLM expansion 已达上限（%d/%d），跳过本次调用。当前文章 %d 字符，目标 %d。",
+                self._llm_expansion_call_count,
+                self.MAX_LLM_EXPANSION_CALLS,
+                sum(len(p.replace("\n", "").replace(" ", "")) for p in paragraphs),
+                min_chars,
+            )
+            return paragraphs
+        self._llm_expansion_call_count += 1
+
         current_text = "\n\n".join(paragraphs)
         current_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in paragraphs)
         deficit = min_chars - current_chars
@@ -1410,27 +1431,28 @@ class WriterAgent(BaseAgent):
 
         data_summary_parts = []
         if data_report.watch_metrics:
-            data_summary_parts.append("跟踪变量：" + "、".join(str(m) for m in data_report.watch_metrics[:5]))
+            data_summary_parts.append("Follow-up metrics: " + " / ".join(str(m) for m in data_report.watch_metrics[:5]))
         if data_report.risk_flags:
-            data_summary_parts.append("风险因素：" + "、".join(str(r) for r in data_report.risk_flags[:3]))
+            data_summary_parts.append("Risk factors: " + " / ".join(str(r) for r in data_report.risk_flags[:3]))
         if data_report.growth_numbers:
-            data_summary_parts.append("关键数字：" + "、".join(str(g) for g in data_report.growth_numbers[:3]))
-        data_summary = "\n".join(data_summary_parts) if data_summary_parts else "无额外数据"
+            data_summary_parts.append("Grounded numbers: " + " / ".join(str(g) for g in data_report.growth_numbers[:3]))
+        if data_report.evidence_notes:
+            data_summary_parts.append("Evidence notes: " + " / ".join(str(e) for e in data_report.evidence_notes[:3]))
+        data_summary = "\n".join(data_summary_parts) if data_summary_parts else "No extra evidence."
 
         system_prompt = (
-            "你是文章扩展助手。你必须在现有文章基础上，补充三个维度的深度内容："
-            "1. [具体案例分析]：补充1-2个具体公司或项目的案例，说明产业链中某环节的实际表现，每段不少于150字。"
-            "2. [产业链上下游影响]：分析上游供应和下游需求对当前主题的影响，每段不少于150字。"
-            "3. [未来趋势预测]：基于现有数据给出1-2个可验证的趋势判断，每段不少于150字。"
-            "禁止使用'值得注意的是''不可否认''综上所述'等套话。"
-            "禁止重复现有文章中已经出现过的数据、观点或措辞。补充内容必须提供新信息或新视角。"
-            "你必须以JSON格式输出，格式为：{\"paragraphs\": [\"段落1\", \"段落2\", ...]}"
+            "You are a Chinese article expansion assistant. "
+            "Extend the article using only the provided facts. "
+            "Do not invent companies, percentages, revenue, margins, market share, order size, dates, or case studies. "
+            "If evidence is thin, add causal analysis and risk boundaries instead of new facts. "
+            'Return strict JSON: {"paragraphs": ["...", "..."]}.'
         )
         user_prompt = (
-            f"当前文章已有{current_chars}字，需要再补充约{deficit}字。\n\n"
-            f"现有文章内容：\n{current_text[:2000]}\n\n"
-            f"可用数据：\n{data_summary}\n\n"
-            f"请输出JSON格式的补充段落，每个段落不少于150字。"
+            f"Current article length: {current_chars}. Need roughly {deficit} more Chinese characters.\n\n"
+            f"Existing article:\n{current_text[:2400]}\n\n"
+            f"Available evidence:\n{data_summary}\n\n"
+            "Write 1-3 extra paragraphs in Chinese. Each paragraph must introduce a new analytical angle, "
+            "must stay consistent with the industry/topic already in the article, and must not add unsupported facts."
         )
 
         try:
@@ -1438,30 +1460,27 @@ class WriterAgent(BaseAgent):
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
             )
-            # 从 JSON 中提取段落列表
-            expansion_paragraphs = result_data.get("paragraphs", [])
-            if isinstance(expansion_paragraphs, list) and expansion_paragraphs:
-                expansion_text = "\n\n".join(str(p) for p in expansion_paragraphs if isinstance(p, str) and p.strip())
-            else:
-                # 兼容：如果 JSON 结构不是预期的，尝试从 content/expansion 字段提取
-                expansion_text = str(result_data.get("content", "") or result_data.get("expansion", "") or "").strip()
-            if not expansion_text:
-                raw = str(result_data).strip()
-                if len(raw) > 50:
-                    expansion_text = raw
-            if expansion_text:
-                new_paragraphs = [p.strip() for p in expansion_text.split("\n\n") if p.strip()]
-                result = list(paragraphs)
-                insert_pos = max(1, len(result) - 1)
-                for i, para in enumerate(new_paragraphs):
-                    result.insert(insert_pos + i, para)
-                new_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in result)
-                logger.info("LLM expansion added %d paragraphs, article now %d chars (was %d).", len(new_paragraphs), new_chars, current_chars)
-                return result
+            expansion_paragraphs = result_data.get("paragraphs", []) if isinstance(result_data, dict) else []
+            if not isinstance(expansion_paragraphs, list):
+                return paragraphs
+
+            new_paragraphs = [
+                str(item).strip()
+                for item in expansion_paragraphs
+                if isinstance(item, str) and str(item).strip()
+            ]
+            if not new_paragraphs:
+                return paragraphs
+
+            result = list(paragraphs)
+            insert_pos = max(1, len(result) - 1)
+            for offset, para in enumerate(new_paragraphs):
+                result.insert(insert_pos + offset, para)
+            logger.info("Grounded LLM expansion added %d paragraphs.", len(new_paragraphs))
+            return result
         except Exception as exc:
             logger.warning("LLM expansion failed: %s", exc)
-
-        return paragraphs
+            return paragraphs
 
     def _ensure_min_char_count(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 0) -> list[str]:
         if min_chars <= 0:
@@ -1523,70 +1542,6 @@ class WriterAgent(BaseAgent):
                 min_chars,
             )
         return self._trim_low_confidence_paragraphs(result, data_report)
-
-    def _expand_article_via_llm(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 1200) -> list[str]:
-        if not self._has_grounded_evidence(data_report):
-            return paragraphs
-
-        logger = logging.getLogger(__name__)
-        current_text = "\n\n".join(paragraphs)
-        current_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in paragraphs)
-        deficit = min_chars - current_chars
-        if deficit <= 0:
-            return paragraphs
-
-        data_summary_parts = []
-        if data_report.watch_metrics:
-            data_summary_parts.append("Follow-up metrics: " + " / ".join(str(m) for m in data_report.watch_metrics[:5]))
-        if data_report.risk_flags:
-            data_summary_parts.append("Risk flags: " + " / ".join(str(r) for r in data_report.risk_flags[:3]))
-        if data_report.growth_numbers:
-            data_summary_parts.append("Grounded numbers: " + " / ".join(str(g) for g in data_report.growth_numbers[:3]))
-        if data_report.evidence_notes:
-            data_summary_parts.append("Evidence notes: " + " / ".join(str(e) for e in data_report.evidence_notes[:3]))
-        data_summary = "\n".join(data_summary_parts) if data_summary_parts else "No extra evidence."
-
-        system_prompt = (
-            "You are a Chinese article expansion assistant. "
-            "Extend the article using only the provided facts. "
-            "Do not invent companies, percentages, revenue, margins, market share, order size, dates, or case studies. "
-            "If evidence is thin, add causal analysis and risk boundaries instead of new facts. "
-            'Return strict JSON: {"paragraphs": ["...", "..."]}.'
-        )
-        user_prompt = (
-            f"Current article length: {current_chars}. Need roughly {deficit} more Chinese characters.\n\n"
-            f"Existing article:\n{current_text[:2400]}\n\n"
-            f"Available evidence:\n{data_summary}\n\n"
-            "Write 1-3 extra paragraphs in Chinese. Each paragraph must introduce a new analytical angle, "
-            "must stay consistent with the industry/topic already in the article, and must not add unsupported facts."
-        )
-
-        try:
-            result_data = self.openai_service.create_json_completion(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            )
-            expansion_paragraphs = result_data.get("paragraphs", []) if isinstance(result_data, dict) else []
-            if not isinstance(expansion_paragraphs, list):
-                return paragraphs
-
-            new_paragraphs = [
-                str(item).strip()
-                for item in expansion_paragraphs
-                if isinstance(item, str) and str(item).strip()
-            ]
-            if not new_paragraphs:
-                return paragraphs
-
-            result = list(paragraphs)
-            insert_pos = max(1, len(result) - 1)
-            for offset, para in enumerate(new_paragraphs):
-                result.insert(insert_pos + offset, para)
-            logger.info("Grounded LLM expansion added %d paragraphs.", len(new_paragraphs))
-            return result
-        except Exception as exc:
-            logger.warning("LLM expansion failed: %s", exc)
-            return paragraphs
 
     def _build_supplementary_paragraphs(self, data_report: "DataReport", existing_paragraphs: list[str] | None = None) -> list[str]:
         existing_text = "\n".join(existing_paragraphs) if existing_paragraphs else ""

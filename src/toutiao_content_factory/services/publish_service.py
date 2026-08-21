@@ -932,7 +932,18 @@ class PublishService:
                     self._finalize_editor_state(page, title_locator, editor_selector, title, notes)
                     cover_path = self._resolve_toutiao_cover_asset(run_dir, notes)
                     cover_mode = self._resolve_cover_mode(cover_path) if cover_path is not None else "none"
-                    if cover_mode == "single" and cover_path is not None:
+                    if cover_mode == "three" and cover_path is not None:
+                        three_assets = self._resolve_three_cover_assets(run_dir)
+                        if len(three_assets) >= 3:
+                            self._apply_three_cover(page, three_assets, notes)
+                        else:
+                            notes.append(
+                                "Three-image cover requested but <3 images available; "
+                                "falling back to single-image cover."
+                            )
+                            self._apply_cover_image(page, cover_path, notes)
+                            cover_mode = "single"
+                    elif cover_mode == "single" and cover_path is not None:
                         self._apply_cover_image(page, cover_path, notes)
                     else:
                         self._ensure_no_cover_mode(page, notes)
@@ -2831,6 +2842,45 @@ class PublishService:
 
         notes.append(f"Applied cover image: {cover_path.name}")
 
+    def _apply_three_cover(self, page, cover_paths: list[Path], notes: list[str]) -> None:
+        """以三图封面模式向头条发布页上传三张图片。
+
+        先切换到三图（three-image）封面 radio，再依次上传 cover/infographic 三张图。
+        任一环节失败不中断发布：回退由调用方处理（当前调用方在 assets<3 时已回退单图，
+        此处仅尽力而为，失败日志不影响主流程）。
+        """
+        self._dismiss_ai_assistant_drawer(page, notes)
+        try:
+            self._ensure_three_cover_mode(page)
+        except Exception as exc:
+            self.logger.warning("Failed to switch to three-image cover mode: %s", exc)
+            notes.append(f"Three-image cover mode switch failed: {exc}")
+        for idx, path in enumerate(cover_paths[:3], start=1):
+            try:
+                applied = self._upload_cover_via_file_chooser(page, path, notes)
+                if not applied:
+                    applied = self._upload_cover_via_direct_input(page, path, notes)
+                notes.append(
+                    f"Three-image cover slot {idx}: {'applied' if applied else 'failed'} {path.name}"
+                )
+            except Exception as exc:
+                self.logger.warning("Three-image cover slot %d upload failed: %s", idx, exc)
+                notes.append(f"Three-image cover slot {idx} upload failed: {exc}")
+
+    def _ensure_three_cover_mode(self, page) -> None:
+        self._ensure_radio_state(
+            page,
+            [
+                ".article-cover-radio-group label.byte-radio:has(input[value='3'])",
+                "label.byte-radio:has-text('三图')",
+                "label.byte-radio:has-text('三封面')",
+                "label.byte-radio:has-text('三张图')",
+                "label:has-text('三图封面')",
+                "label:has-text('多图封面')",
+                "label.byte-radio:has(input[value='4'])",
+            ],
+        )
+
     def _upload_cover_via_file_chooser(self, page, cover_path: Path, notes: list[str]) -> bool:
         try:
             trigger_locator = self._resolve_cover_trigger(page)
@@ -3282,9 +3332,28 @@ class PublishService:
         configured = (self.settings.publishing.cover_mode or "auto").strip().lower()
         if configured in {"none", "single"}:
             return configured
-        if cover_path.exists():
-            return "single"
-        return "none"
+        if configured == "three":
+            return "three"
+        return "single"
+
+    def _resolve_three_cover_assets(self, run_dir: Path | None) -> list[Path]:
+        """解析三图封面的三张可用图片。
+
+        优先复用已生成的 cover.png 与 infographic_1/2.png；三者均为合规可上传图。
+        返回至少 3 张且在本地实际存在，否则返回空列表（由调用方回退到单图/无图）。
+        """
+        if run_dir is None:
+            return []
+        assets: list[Path] = []
+        for filename in ("cover.png", "infographic_1.png", "infographic_2.png"):
+            cand = self._resolve_existing_publish_asset(
+                run_dir=run_dir,
+                publish_dir_name="images",
+                filename=filename,
+            )
+            if cand is not None and cand.exists():
+                assets.append(cand)
+        return assets if len(assets) >= 3 else []
 
     def _ensure_no_cover_mode(self, page, notes: list[str]) -> None:
         self._dismiss_ai_assistant_drawer(page, notes)

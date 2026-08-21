@@ -318,10 +318,15 @@ class TitleAgent(BaseAgent):
         self_benchmark_titles = [
             str(item).strip() for item in selected.get("self_benchmark_titles", []) if str(item).strip()
         ]
+        self_benchmark_hooks = [
+            str(item).strip() for item in selected.get("self_benchmark_concrete_hooks", []) if str(item).strip()
+        ]
         note_parts = [
             "先学习这些对标账号的标题结构、判断感和主体感，再结合当前文章信息重写",
             f"可参考账号：{'、'.join(benchmark_accounts[:5]) or '当前赛道对标库'}",
         ]
+        if self_benchmark_hooks:
+            note_parts.append(f"可优先复用已验证的具象钩子要素：{'、'.join(self_benchmark_hooks[:6])}")
         if self_benchmark_titles:
             note_parts.append(f"优先吸收你自己的已验证样本：{'；'.join(self_benchmark_titles[:2])}")
         note_parts.append("禁止直接照抄样本标题，禁止只替换一个名词。")

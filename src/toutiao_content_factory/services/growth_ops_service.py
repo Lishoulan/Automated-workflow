@@ -397,9 +397,12 @@ articles:
         pattern_counter: Counter[str] = Counter()
         notes: list[str] = []
         top_hits: list[dict[str, Any]] = []
+        concrete_hook_counter: Counter[str] = Counter()
         for item in filtered:
             for pattern in item.get("inferred_patterns", []):
                 pattern_counter[str(pattern).strip()] += 1
+            for hook in self._coerce_str_list(item.get("concrete_hooks", [])):
+                concrete_hook_counter[str(hook).strip()] += 1
             notes.extend(str(note).strip() for note in item.get("notes", []) if str(note).strip())
             top_hits.append(
                 {
@@ -420,6 +423,7 @@ articles:
             "track": resolved_track or requested_track or "科技商业",
             "titles": [str(item.get("title", "")).strip() for item in filtered if str(item.get("title", "")).strip()][:5],
             "patterns": [name for name, _count in pattern_counter.most_common(6)],
+            "concrete_hooks": [name for name, _count in concrete_hook_counter.most_common(8)],
             "notes": self._unique_texts(notes)[:5],
             "hits": top_hits[:3],
             "summary": {
@@ -527,6 +531,9 @@ articles:
             "self_benchmark_patterns": [
                 str(item).strip() for item in self_benchmark_context.get("patterns", []) if str(item).strip()
             ],
+            "self_benchmark_concrete_hooks": [
+                str(item).strip() for item in self_benchmark_context.get("concrete_hooks", []) if str(item).strip()
+            ],
             "self_benchmark_notes": [
                 str(item).strip() for item in self_benchmark_context.get("notes", []) if str(item).strip()
             ],
@@ -563,6 +570,9 @@ articles:
             "self_benchmark_patterns": [
                 str(item).strip() for item in self_benchmark_context.get("patterns", []) if str(item).strip()
             ],
+            "self_benchmark_concrete_hooks": [
+                str(item).strip() for item in self_benchmark_context.get("concrete_hooks", []) if str(item).strip()
+            ],
             "self_benchmark_notes": [
                 str(item).strip() for item in self_benchmark_context.get("notes", []) if str(item).strip()
             ],
@@ -596,6 +606,14 @@ articles:
                 [
                     "内部复用线索：",
                     *[f"- {item}" for item in self_patterns[:4]],
+                ]
+            )
+        self_hooks = [str(item).strip() for item in context.get("self_benchmark_concrete_hooks", []) if str(item).strip()]
+        if self_hooks:
+            lines.extend(
+                [
+                    "已验证具象钩子要素（优先复用）：",
+                    *[f"- {item}" for item in self_hooks[:8]],
                 ]
             )
         if self_notes:
@@ -2409,6 +2427,42 @@ articles:
             flags.append(f"互动率较高（{round(interaction_rate, 2)}%）")
         return self._unique_texts(flags)
 
+    @staticmethod
+    def _extract_concrete_hooks(title: str) -> list[str]:
+        """从标题中提取具象钩子要素（数字/量化、公司机构、具体地名/场景）。
+
+        用于「高展现标题要素回灌」：把历史高展现标题里已被验证的具象要素
+        沉淀进 title_playbook，供新一轮标题生成优先复用，避免再产出
+        全盘空洞的情绪模板标题。正则口径与 title_agent 保持一致。
+        """
+        element_set: set[str] = set()
+        text = str(title or "")
+        # 数字与量化短语（如 6.2亿元、460万台、10倍、300%）——量化短语优先于裸数字
+        for match in re.finditer(
+            r"\d+(?:\.\d+)?\s*(?:亿|万|倍|个|家|款|台|条)|\d+(?:\.\d+)?\s*%?",
+            text,
+        ):
+            token = match.group(0).strip()
+            if 1 <= len(token) <= 8:
+                element_set.add(token)
+        # 公司/机构名（含常见后缀）——非贪婪，避免吞并整句连词
+        for match in re.finditer(
+            r"[\u4e00-\u9fa5A-Za-z]{2,14}?(?:公司|集团|科技|证券|银行|研究院|工厂|基地|机场|园区|实验室|机器人|人形)",
+            text,
+        ):
+            token = match.group(0).strip()
+            if 2 <= len(token) <= 14:
+                element_set.add(token)
+        # 具体地名（省/市/县/高新技术区等 + 常见后缀）
+        for match in re.finditer(
+            r"[\u4e00-\u9fa5]{2,6}(?:省|市|县|区|高新区|经开区|国家的|地区)",
+            text,
+        ):
+            token = match.group(0).strip()
+            if 2 <= len(token) <= 10:
+                element_set.add(token)
+        return [token for token in element_set]
+
     def _normalize_self_benchmark_article(
         self,
         payload: dict[str, Any],
@@ -2484,6 +2538,7 @@ articles:
             "keywords": keywords,
             "notes": notes,
             "inferred_patterns": inferred_patterns,
+            "concrete_hooks": self._extract_concrete_hooks(title),
             "observed_metrics": observed_metrics,
             "impression_count": impression_count,
             "read_count": read_count,

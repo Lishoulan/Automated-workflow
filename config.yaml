@@ -611,8 +611,11 @@
       },
       "topic_collection": {
         "max_topic_age_hours": 48,
-        "enabled_sources": [],
-        "_todo_enabled_sources": "TODO: zhidx不符合体育定位，需添加体育新闻源(懂球帝/虎扑/腾讯体育RSS)",
+        "enabled_sources": [
+          "zhibo8",
+          "hupu_sports",
+          "sina_sports"
+        ],
         "focus_industries": [
           "sports"
         ],
@@ -645,7 +648,33 @@
             "转会"
           ]
         },
-        "sources": {}
+        "sources": {
+          "zhibo8": {
+            "type": "html",
+            "same_domain_only": true,
+            "urls": [
+              "https://news.zhibo8.cc/"
+            ]
+          },
+          "hupu_sports": {
+            "type": "html",
+            "same_domain_only": true,
+            "urls": [
+              "https://voice.hupu.com/fifa",
+              "https://voice.hupu.com/nba",
+              "https://voice.hupu.com/csl"
+            ]
+          },
+          "sina_sports": {
+            "type": "html",
+            "same_domain_only": true,
+            "urls": [
+              "https://sports.sina.com.cn/nba/1.shtml",
+              "https://sports.sina.com.cn/china/",
+              "https://sports.sina.com.cn/football/"
+            ]
+          }
+        }
       }
     },
     "hardware_notes": {

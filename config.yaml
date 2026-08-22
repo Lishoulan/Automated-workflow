@@ -183,7 +183,7 @@
   },
   "compliance": {
     "aigc_declaration_enabled": true,
-    "max_daily_posts": 2,
+    "max_daily_posts": 1,
     "draft_only_mode": false,
     "anti_ai_flavor": {
       "banned_words": [

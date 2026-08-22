@@ -42,6 +42,8 @@ class TitleAgent(BaseAgent):
         "竟然", "万万没想到", "背后原因", "原来是因为", "天理难容",
         "大变局", "出事了", "震惊", "背后真相", "令人震惊",
         "不敢相信", "看哭了", "太可怕了", "细思极恐",
+        # 已验证零点击的同质骨架（历史重复发布主因），从标题生成源头硬拦截
+        "重排利润", "先流向谁", "改写座次", "利润先流向",
     )
 
     CURIOSITY_TOKENS = ("不是", "而是", "背后", "真正", "为什么", "谁在", "谁能", "谁会", "到底", "竟然", "难道", "居然", "反常", "意外", "颠覆", "反转", "没想到", "想不到", "秘密", "真相")
@@ -228,21 +230,21 @@ class TitleAgent(BaseAgent):
         if playbook_context:
             templates.extend(self._adapt_playbook_titles(playbook_context, data_report))
 
-        # 利润/兑现类（控制在 4 条以内；移除"X之后，X开始重排利润"等高频同构模板）
-        # 改为数据/公司/场景锚定的多样化句式，同时满足 RULE_006 具象化
+        # 利润/兑现类（控制在 4 条以内；移除所有"X背后，利润先流向谁""开始重排利润"
+        # "毛利率分化改写座次"等已验证零点击同质骨架），改为数据/公司/场景锚定的多样化句式，
+        # 每条标题必须带具体信息量而非泛化骨架，同时满足 RULE_006 具象化。
         profit_variants: list[str] = []
         if number and number not in {"这组数据", "一组数据", "市场数据"}:
-            profit_variants.append(f"{number}背后，{keyword}的利润先流向谁")
+            profit_variants.append(f"{number}的增速里，{keyword}先回款的是哪一环")
         else:
-            profit_variants.append(f"{keyword}的钱变多了，先受益的是谁")
-        profit_variants.append(f"{keyword}毛利率的分化，正在改写座次")
+            profit_variants.append(f"{keyword}开始放量，先收到钱的是哪一环")
         if company:
-            profit_variants.append(f"{company}重估后，谁先把{keyword}做到位")
+            profit_variants.append(f"{company}的{keyword}生意，真正的收入来自什么")
         elif scene:
-            profit_variants.append(f"{scene}落地，谁先把{keyword}回款做实")
+            profit_variants.append(f"{scene}跑通的订单，最后给了哪类供应商")
         else:
-            profit_variants.append(f"{secondary if secondary not in keyword else '供应端'}回款先落地，{keyword}谁在稳赚")
-        profit_variants.append(f"{keyword}的对手盘出现，先兑现的是供应端")
+            profit_variants.append(f"{secondary if secondary not in keyword else '供应端'}先收到钱，{keyword}的账怎么算")
+        profit_variants.append(f"{keyword}从样机走到交付，中间卡在哪一步")
         templates.extend(profit_variants[:4])
         # 技术突破/产品迭代类
         templates.extend(

@@ -58,8 +58,8 @@ class TestPublishPrecheckService:
         """
         phrase = "订单量、量产节奏、单机成本"
         article = (
-            f"{phrase}。第一节关注这些核心指标。\n\n"
-            f"{phrase}。第二节拆解相关环比数据。\n\n"
+            f"{phrase}。第一节关注这些核心指标。"
+            f"{phrase}。第二节拆解相关环比数据。"
             f"{phrase}。第三节对比历史水平。"
         )
         result = service.run_precheck(article, project_root=tmp_path)

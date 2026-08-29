@@ -10,7 +10,7 @@ param(
     [switch]$UseEnhancedScript,  # 使用增强版脚本
     [int]$RetryCount = 2,
     [int]$RetryDelaySeconds = 90,
-    [string[]]$Times = @("08:00", "12:00", "18:30", "22:00"),
+    [string[]]$Times = @("07:00", "09:30", "12:30", "15:30", "18:00", "21:30"),
     [string]$CollectTime = "01:00"
 )
 
@@ -82,11 +82,22 @@ else {
 $actionArguments = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
-    "-File", "`"$ResolvedScriptPath`"",
-    "-AccountKey", "`"$AccountKey`"",
-    "-RetryCount", ([string][Math]::Max(0, $RetryCount)),
-    "-RetryDelaySeconds", ([string][Math]::Max(5, $RetryDelaySeconds))
+    "-File", "`"$ResolvedScriptPath`""
 )
+if ($UseEnhancedScript.IsPresent) {
+    $actionArguments += @(
+        "-Account", "`"$AccountKey`"",
+        "-RetryCount", ([string][Math]::Max(0, $RetryCount)),
+        "-RetryDelaySeconds", ([string][Math]::Max(5, $RetryDelaySeconds))
+    )
+}
+else {
+    $actionArguments += @(
+        "-AccountKey", "`"$AccountKey`"",
+        "-RetryCount", ([string][Math]::Max(0, $RetryCount)),
+        "-RetryDelaySeconds", ([string][Math]::Max(5, $RetryDelaySeconds))
+    )
+}
 if ($resolvedPythonPath) {
     $actionArguments += @("-PythonPath", "`"$resolvedPythonPath`"")
 }
@@ -138,7 +149,7 @@ foreach ($time in $Times) {
 Register-InteractiveTask `
     -TaskName "$TaskPrefix-$AccountSlug-collect-performance" `
     -AtTime $CollectTime `
-    -ExtraArguments @("-CollectPerformanceOnly")
+    -ExtraArguments @("-CollectPerformanceOnly", "-EnableFeedbackLoop")
 
 Write-Host "Script: $ResolvedScriptPath"
 Write-Host "Account: $AccountKey"

@@ -43,6 +43,8 @@ class InsightAgent(BaseAgent):
             growth_numbers=self.json_text(data_report.growth_numbers),
             key_points=self.json_text(data_report.key_points),
             watch_metrics=self.json_text(data_report.watch_metrics),
+            style_digest=self.style_digest(style),
+            benchmark_digest=benchmark_digest,
             best_practices=self.best_practices_instruction(),
             cache_note=self.cache_note(cache_context),
         )

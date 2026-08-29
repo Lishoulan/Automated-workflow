@@ -14,6 +14,7 @@ import yaml
 
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.utils.runtime_status import recover_stale_running_status
+from toutiao_content_factory.services.t1_policy import infer_availability_status
 
 
 @dataclass
@@ -812,7 +813,11 @@ class WebViewService:
 
         platform_cards: list[dict[str, str]] = []
         platforms = scheduled_status.get("platforms", {}) if isinstance(scheduled_status.get("platforms"), dict) else {}
-        for key, title in (("toutiao", "今日头条"), ("wechat", "公众号")):
+        for key, title in (
+            ("toutiao", "今日头条"),
+            ("weitoutiao", "微头条"),
+            ("wechat", "公众号"),
+        ):
             item = platforms.get(key)
             if not isinstance(item, dict):
                 continue
@@ -1376,6 +1381,72 @@ class WebViewService:
                 if isinstance(item.get("metrics_latest"), dict) and bool(item.get("metrics_latest"))
             )
 
+        computed_analysis_eligible_count = sum(
+            1
+            for item in valid_rows
+            if isinstance(item.get("metrics_latest"), dict)
+            and bool(item.get("metrics_latest"))
+            and not self._performance_row_is_pending_t1(item)
+            and bool(
+                item.get("metrics_latest", {}).get(
+                    "analysis_eligible",
+                    str(item.get("metrics_latest", {}).get("availability_status", "available")).strip()
+                    == "available",
+                )
+            )
+        )
+        analysis_eligible_count = (
+            computed_analysis_eligible_count if valid_rows else int(summary.get("analysis_eligible_count", 0) or 0)
+        )
+        computed_pending_t1_count = sum(1 for item in valid_rows if self._performance_row_is_pending_t1(item))
+        pending_t1_count = (
+            computed_pending_t1_count if valid_rows else int(summary.get("pending_t1_count", 0) or 0)
+        )
+
+        collection_dates = [
+            str(item.get("metrics_latest", {}).get("collection_date", "")).strip()
+            for item in valid_rows
+            if isinstance(item.get("metrics_latest"), dict)
+        ]
+        collection_date = str(summary.get("collection_date", "")).strip() or max(collection_dates, default="")
+        latest_earnings_dates = [
+            str(
+                item.get("metrics_latest", {}).get("earnings_date")
+                or item.get("metrics_latest", {}).get("data_date", "")
+            ).strip()
+            for item in valid_rows
+            if str(item.get("metrics_latest", {}).get("collection_date", "")).strip() == collection_date
+            and str(
+                item.get("metrics_latest", {}).get("earnings_date")
+                or item.get("metrics_latest", {}).get("data_date", "")
+            ).strip()
+        ]
+        earnings_date = str(summary.get("earnings_date", "")).strip() or max(latest_earnings_dates, default="")
+        known_platform_revenue = 0.0
+        platform_revenue_known_count = 0
+        for item in valid_rows:
+            metrics = item.get("metrics_latest", {}) if isinstance(item.get("metrics_latest"), dict) else {}
+            if collection_date and str(metrics.get("collection_date", "")).strip() != collection_date:
+                continue
+            if earnings_date and str(metrics.get("earnings_date") or metrics.get("data_date", "")).strip() != earnings_date:
+                continue
+            if infer_availability_status(item) != "available":
+                continue
+            platform_revenue = metrics.get("platform_revenue")
+            platform_status = str(metrics.get("platform_revenue_status", "")).strip()
+            if platform_status == "available" and platform_revenue is not None:
+                try:
+                    known_platform_revenue += float(platform_revenue or 0.0)
+                    platform_revenue_known_count += 1
+                except (TypeError, ValueError):
+                    continue
+        if not valid_rows:
+            try:
+                known_platform_revenue = float(summary.get("known_platform_revenue", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                known_platform_revenue = 0.0
+            platform_revenue_known_count = int(summary.get("platform_revenue_known_count", 0) or 0)
+
         averages = summary.get("averages", {}) if isinstance(summary.get("averages"), dict) else {}
         top_by_reads = summary.get("top_by_reads", []) if isinstance(summary.get("top_by_reads"), list) else []
         top_articles = [item for item in top_by_reads if isinstance(item, dict)][:5]
@@ -1384,6 +1455,19 @@ class WebViewService:
         for item in valid_rows[:5]:
             metrics = item.get("metrics_latest", {}) if isinstance(item.get("metrics_latest"), dict) else {}
             tags = item.get("experiment_tags", {}) if isinstance(item.get("experiment_tags"), dict) else {}
+            inferred_availability = infer_availability_status(item)
+            raw_availability = str(metrics.get("availability_status", "")).strip()
+            availability_status = (
+                inferred_availability
+                if inferred_availability in {"pending_t1", "not_available"}
+                else raw_availability or inferred_availability
+            )
+            raw_revenue_status = str(metrics.get("revenue_status", "unknown")).strip() or "unknown"
+            raw_platform_status = str(metrics.get("platform_revenue_status", "unknown")).strip() or "unknown"
+            revenue_status = "pending_t1" if inferred_availability == "pending_t1" else raw_revenue_status
+            platform_revenue_status = (
+                "pending_t1" if inferred_availability == "pending_t1" else raw_platform_status
+            )
             publish_status = str(item.get("publish_status", "")).strip() or "unknown"
             publish_meta = self._describe_status(publish_status)
             run_name = Path(str(item.get("run_dir", "")).strip()).name
@@ -1392,6 +1476,19 @@ class WebViewService:
                     "title": str(item.get("title", "")).strip(),
                     "platform": str(item.get("platform", "")).strip() or "toutiao",
                     "published_at": str(item.get("published_at", "")).strip(),
+                    "published_date": str(metrics.get("published_date", "")).strip(),
+                    "collection_date": str(metrics.get("collection_date", "")).strip(),
+                    "earnings_date": str(metrics.get("earnings_date", "") or metrics.get("data_date", "")).strip(),
+                    "availability_status": availability_status,
+                    "revenue_status": revenue_status,
+                    "platform_revenue_status": platform_revenue_status,
+                    "platform_revenue": None if inferred_availability != "available" else metrics.get("platform_revenue"),
+                    "platform_revenue_known": (
+                        inferred_availability == "available"
+                        and
+                        platform_revenue_status == "available"
+                        and metrics.get("platform_revenue") is not None
+                    ),
                     "publish_status": publish_status,
                     "publish_status_label": publish_meta["label"],
                     "publish_status_tone": publish_meta["tone"],
@@ -1423,17 +1520,21 @@ class WebViewService:
         if published_count <= 0:
             status_value = "idle"
             summary_message = "还没有沉淀到可分析的发布数据。"
-        elif with_metrics_count > 0:
+        elif analysis_eligible_count > 0:
             status_value = "ready"
-            summary_message = f"已收集到 {with_metrics_count} 条带指标的样本，可以开始做标题和内容方向复盘。"
+            summary_message = (
+                f"已收集到 {analysis_eligible_count} 条可分析样本，收益归属日：{earnings_date or '昨日'}。"
+            )
         else:
             status_value = "pending"
-            summary_message = "已经有发布记录，但平台侧指标还没有回流完成。"
+            summary_message = f"当前没有可分析样本，收益归属日：{earnings_date or '昨日'}。"
+        if pending_t1_count:
+            summary_message += f" 今日文章 T+1 待结算（{pending_t1_count} 条），不按 0 收益处理。"
         status_meta = self._describe_status(status_value)
 
         recommendations = self._build_performance_recommendations(
             published_count=published_count,
-            with_metrics_count=with_metrics_count,
+            with_metrics_count=analysis_eligible_count,
             averages=normalized_averages,
             latest_records=latest_records,
             top_articles=top_articles,
@@ -1448,6 +1549,12 @@ class WebViewService:
             "summary_message": summary_message,
             "published_count": published_count,
             "with_metrics_count": with_metrics_count,
+            "analysis_eligible_count": analysis_eligible_count,
+            "pending_t1_count": pending_t1_count,
+            "collection_date": collection_date,
+            "earnings_date": earnings_date,
+            "known_platform_revenue": round(known_platform_revenue, 4),
+            "platform_revenue_known_count": platform_revenue_known_count,
             "averages": normalized_averages,
             "top_articles": top_articles,
             "latest_records": latest_records,
@@ -1467,6 +1574,9 @@ class WebViewService:
                 else "",
             },
         }
+
+    def _performance_row_is_pending_t1(self, item: dict[str, Any]) -> bool:
+        return infer_availability_status(item) == "pending_t1"
 
     def _build_performance_recommendations(
         self,

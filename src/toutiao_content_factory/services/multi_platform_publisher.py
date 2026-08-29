@@ -80,14 +80,24 @@ class PlatformPublisher(ABC):
 class ContentAdapter:
     """内容适配器，根据平台规则调整标题、内容和标签"""
 
+    PLATFORM_TONE_HINTS = {
+        "toutiao": "结论前置、冲突清晰、适合推荐流阅读。",
+        "wechat": "增加背景、数据来源、完整推理和周报承接。",
+        "zhihu": "问题导向、证据链完整、包含反方观点与边界条件。",
+        "bilibili": "口语化、节奏快、适合视频脚本拆条。",
+        "xiaohongshu": "拆成图文卡片、具体判断和可执行清单。",
+    }
+
     def adapt_for_platform(
         self,
         content: str,
         title: str,
         platform: str,
         tags: list[str] | None = None,
+        *,
+        platform_variant: str = "",
     ) -> dict:
-        """为指定平台适配内容，返回适配后的 {title, content, tags}"""
+        """为指定平台适配内容，返回适配后的 {title, content, tags, platform_variant}"""
         rules = PLATFORM_RULES.get(platform, {})
         max_length = rules.get("max_length", len(content))
 
@@ -97,11 +107,30 @@ class ContentAdapter:
         if formatted_tags:
             adapted_content = f"{adapted_content}\n\n{formatted_tags}"
 
+        resolved_variant = str(platform_variant or "").strip() or self._infer_platform_variant(platform)
+        tone_hint = self.PLATFORM_TONE_HINTS.get(platform, "")
+        adaptation_note = f"platform_variant={resolved_variant}"
+        if tone_hint:
+            adaptation_note += f"; tone_hint={tone_hint}"
+
         return {
             "title": title,
             "content": adapted_content,
             "tags": tags or [],
+            "platform_variant": resolved_variant,
+            "adaptation_note": adaptation_note,
         }
+
+    def _infer_platform_variant(self, platform: str) -> str:
+        normalized = str(platform or "").strip().lower()
+        mapping = {
+            "toutiao": "recommendation_feed",
+            "wechat": "deep_reading",
+            "zhihu": "qa_analysis",
+            "bilibili": "video_script",
+            "xiaohongshu": "card_note",
+        }
+        return mapping.get(normalized, "generic_rewrite")
 
     def _truncate_content(self, content: str, max_length: int) -> str:
         """智能截断内容，在句子边界处截断"""
@@ -176,6 +205,7 @@ class MultiPlatformPublisher:
                     title=title,
                     platform=platform,
                     tags=tags,
+                    platform_variant="",
                 )
 
                 # 处理图片数量限制

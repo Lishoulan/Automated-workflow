@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Alias("AccountKey")]
     [string]$Account = "default"
 )
@@ -10,6 +10,7 @@ $PythonCandidates = @(
     $env:TOUTIAO_PYTHON,
     (Join-Path $ProjectRoot ".venv\Scripts\python.exe"),
     "C:\Users\jiafeng.zeng\AppData\Local\Python\bin\python.exe",
+    "py",
     "python"
 ) | Where-Object { $_ -and $_.Trim() }
 
@@ -19,6 +20,20 @@ function Resolve-Python {
     )
 
     foreach ($candidate in $Candidates) {
+        if ($candidate -eq "py") {
+            try {
+                $pyCommand = Get-Command py.exe -ErrorAction Stop
+                $resolved = (& $pyCommand.Source -3 -c "import sys; print(sys.executable)" 2>$null | Select-Object -Last 1)
+                $resolved = if ($resolved) { ([string]$resolved).Trim() } else { "" }
+                if ($resolved -and (Test-Path -LiteralPath $resolved)) {
+                    return $resolved
+                }
+            }
+            catch {
+                continue
+            }
+        }
+
         if ($candidate -eq "python") {
             try {
                 $null = & python --version

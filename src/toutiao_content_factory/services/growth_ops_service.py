@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from collections import Counter, defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ import yaml
 
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import DailyTopicsReport, TopicCandidate
+from toutiao_content_factory.services.t1_policy import infer_availability_status
 
 
 class GrowthOpsService:
@@ -776,13 +777,21 @@ articles:
         platform: str = "toutiao",
         recommended_topics: list[str] | None = None,
         raw_tags: list[str] | None = None,
+        commercial_intent: str = "medium",
+        content_mix: str = "professional",
+        cta_variant: str = "",
+        cta_source_code: str = "",
+        title_variant: str = "",
+        cover_variant: str = "",
+        platform_variant: str = "",
+        topic_bucket: str = "",
     ) -> dict[str, Any]:
         title_text = str(title or "").strip()
         article_text = str(article or "").strip()
         summary_text = str(summary or "").strip()
         combined = "\n".join(part for part in (title_text, summary_text, article_text, topic_title) if part)
 
-        topic_bucket = self._infer_topic_bucket(combined)
+        topic_bucket = str(topic_bucket or "").strip() or self._infer_topic_bucket(combined)
         title_style = self._infer_title_style(title_text)
         hook_pattern = self._infer_hook_pattern(title_text)
         content_angle = self._infer_content_angle(summary_text or article_text or topic_title)
@@ -799,6 +808,12 @@ articles:
             structure_pattern=structure_pattern,
         )
 
+        normalized_intent = self._normalize_revenue_enum(
+            commercial_intent, ("low", "medium", "high"), "medium"
+        )
+        normalized_mix = self._normalize_revenue_enum(
+            content_mix, ("traffic", "professional", "conversion"), "professional"
+        )
         return {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "platform": platform,
@@ -815,7 +830,19 @@ articles:
             "recommended_topics": list(recommended_topics or []),
             "raw_tags": list(raw_tags or []),
             "test_focus": test_focus,
+            "commercial_intent": normalized_intent,
+            "content_mix": normalized_mix,
+            "cta_variant": str(cta_variant or "").strip(),
+            "cta_source_code": str(cta_source_code or "").strip(),
+            "title_variant": str(title_variant or "").strip(),
+            "cover_variant": str(cover_variant or "").strip(),
+            "platform_variant": str(platform_variant or "").strip(),
         }
+
+    @staticmethod
+    def _normalize_revenue_enum(value: str, allowed: tuple[str, ...], default: str) -> str:
+        normalized = str(value or "").strip().lower()
+        return normalized if normalized in allowed else default
 
     def ensure_run_experiment_tags(self, run_dir: Path, platform: str = "toutiao") -> tuple[Path, dict[str, Any]]:
         publish_dir = run_dir / self.settings.review.publish_dirname
@@ -842,6 +869,14 @@ articles:
             platform=platform,
             recommended_topics=list(publish_meta.get("recommended_topics", [])),
             raw_tags=list(publish_meta.get("tags", [])),
+            commercial_intent=str(selected_topic.get("commercial_intent", "medium")),
+            content_mix=str(selected_topic.get("content_mix", "professional")),
+            cta_variant=str(selected_topic.get("cta_variant", "")),
+            cta_source_code=str(selected_topic.get("cta_source_code", "")),
+            title_variant=str(selected_topic.get("title_variant", "")),
+            cover_variant=str(selected_topic.get("cover_variant", "")),
+            platform_variant=str(selected_topic.get("platform_variant", "")),
+            topic_bucket=str(selected_topic.get("topic_bucket", "")),
         )
         tags_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -961,6 +996,17 @@ articles:
         run_dir: Path,
         platform: str,
         snapshot_date: str | None = None,
+        snapshot_label: str | None = None,
+        snapshot_at: str | None = None,
+        collection_date: str | None = None,
+        published_date: str | None = None,
+        earnings_date: str | None = None,
+        availability_status: str = "available",
+        revenue_status: str = "unknown",
+        platform_revenue_status: str = "unknown",
+        revenue_amount_known: bool | None = False,
+        platform_revenue: float | None = None,
+        content_id: str | None = None,
         impression_count: int | None = None,
         read_count: int | None = None,
         recommendation_read_count: int | None = None,
@@ -969,6 +1015,8 @@ articles:
         share_count: int | None = None,
         comment_count: int | None = None,
         follower_gain: int | None = None,
+        lead_count: int | None = None,
+        revenue_amount: float | None = None,
     ) -> dict[str, Path]:
         self.ensure_directories()
         ledger = self._load_ledger()
@@ -983,8 +1031,78 @@ articles:
         if record_id not in ledger:
             raise FileNotFoundError(f"No published record found for {platform}: {run_dir}")
 
+        resolved_snapshot_at = str(snapshot_at or datetime.now().isoformat(timespec="seconds"))
+        resolved_collection_date = self._date_portion(collection_date) or self._date_portion(resolved_snapshot_at)
+        if not resolved_collection_date:
+            resolved_collection_date = self._date_portion(snapshot_date) or date.today().isoformat()
+        try:
+            collection_day = date.fromisoformat(resolved_collection_date)
+        except ValueError:
+            collection_day = date.today()
+            resolved_collection_date = collection_day.isoformat()
+        resolved_published_date = self._date_portion(
+            published_date or ledger[record_id].get("published_at", "")
+        )
+        resolved_earnings_date = self._date_portion(earnings_date)
+        if not resolved_earnings_date:
+            resolved_earnings_date = (
+                (collection_day - timedelta(days=1)).isoformat()
+                if str(platform).strip().lower() in {"toutiao", "toutiao_weitoutiao"}
+                else collection_day.isoformat()
+            )
+
+        normalized_availability = str(availability_status or "available").strip() or "available"
+        if resolved_published_date:
+            if resolved_published_date > resolved_collection_date:
+                normalized_availability = "not_available"
+            elif (
+                str(platform).strip().lower() in {"toutiao", "toutiao_weitoutiao"}
+                and resolved_published_date > resolved_earnings_date
+                and normalized_availability == "available"
+            ):
+                normalized_availability = "pending_t1"
+        known_revenue = (
+            bool(revenue_amount_known)
+            or platform_revenue is not None
+            or (
+                revenue_amount is not None
+                and str(revenue_status or "").strip() in {"available", "partial"}
+            )
+        )
+        if normalized_availability in {"pending_t1", "not_available"}:
+            known_revenue = False
+        resolved_platform_status = str(platform_revenue_status or "unknown").strip()
+        resolved_revenue_status = str(revenue_status or "unknown").strip()
+        if normalized_availability == "pending_t1":
+            resolved_platform_status = "pending_t1"
+            resolved_revenue_status = "pending_t1"
+        elif normalized_availability == "not_available":
+            resolved_platform_status = "not_available"
+            resolved_revenue_status = "not_available"
+        if platform_revenue is not None and resolved_platform_status == "unknown":
+            resolved_platform_status = "available"
+        if known_revenue and resolved_revenue_status == "unknown":
+            resolved_revenue_status = "available"
         snapshot_payload = {
-            "snapshot_date": snapshot_date or date.today().isoformat(),
+            "snapshot_date": self._date_portion(snapshot_date) or resolved_collection_date,
+            "snapshot_label": str(snapshot_label or "").strip(),
+            "snapshot_at": resolved_snapshot_at,
+            "observed_at": resolved_snapshot_at,
+            "collection_date": resolved_collection_date,
+            "published_date": resolved_published_date,
+            "earnings_date": resolved_earnings_date,
+            "data_date": resolved_earnings_date,
+            "availability_status": normalized_availability,
+            "revenue_status": resolved_revenue_status,
+            "platform_revenue_status": resolved_platform_status,
+            "revenue_amount_known": known_revenue,
+            "analysis_eligible": normalized_availability == "available",
+            "platform_revenue": (
+                float(platform_revenue)
+                if platform_revenue is not None and known_revenue
+                else None
+            ),
+            "content_id": str(content_id or ledger[record_id].get("content_id", "")).strip(),
             "impression_count": int(impression_count or 0),
             "read_count": int(read_count or 0),
             "recommendation_read_count": int(recommendation_read_count or 0),
@@ -993,16 +1111,48 @@ articles:
             "share_count": int(share_count or 0),
             "comment_count": int(comment_count or 0),
             "follower_gain": int(follower_gain or 0),
+            "lead_count": int(lead_count or 0),
+            "revenue_amount": float(revenue_amount) if known_revenue and revenue_amount is not None else None,
         }
         snapshot_payload.update(self._derive_metrics(snapshot_payload))
 
         record = dict(ledger[record_id])
-        snapshots = list(record.get("performance_snapshots", []))
-        snapshots = [item for item in snapshots if str(item.get("snapshot_date", "")) != snapshot_payload["snapshot_date"]]
+        snapshots = [item for item in record.get("performance_snapshots", []) if isinstance(item, dict)]
+        if snapshot_payload["snapshot_label"]:
+            existing_snapshot = next(
+                (
+                    item
+                    for item in snapshots
+                    if str(item.get("snapshot_label", "")) == snapshot_payload["snapshot_label"]
+                ),
+                None,
+            )
+            snapshots = [
+                item for item in snapshots
+                if str(item.get("snapshot_label", "")) != snapshot_payload["snapshot_label"]
+            ]
+            snapshot_payload = self._merge_performance_snapshot(existing_snapshot, snapshot_payload)
+        else:
+            existing_snapshot = next(
+                (
+                    item
+                    for item in snapshots
+                    if str(item.get("snapshot_date", "")) == snapshot_payload["snapshot_date"]
+                ),
+                None,
+            )
+            snapshots = [
+                item
+                for item in snapshots
+                if str(item.get("snapshot_date", "")) != snapshot_payload["snapshot_date"]
+            ]
+            snapshot_payload = self._merge_performance_snapshot(existing_snapshot, snapshot_payload)
+        snapshot_payload.update(self._derive_metrics(snapshot_payload))
         snapshots.append(snapshot_payload)
-        snapshots.sort(key=lambda item: str(item.get("snapshot_date", "")))
+        snapshots.sort(key=self._performance_snapshot_sort_key)
 
-        record["metrics_latest"] = snapshot_payload
+        record["content_id"] = snapshot_payload["content_id"] or record.get("content_id", "")
+        record["metrics_latest"] = max(snapshots, key=self._metrics_latest_sort_key)
         record["performance_snapshots"] = snapshots
         record["updated_at"] = datetime.now().isoformat(timespec="seconds")
         ledger[record_id] = record
@@ -1019,9 +1169,89 @@ articles:
             "performance_snapshot": latest_snapshot_path,
         }
 
+    def _merge_performance_snapshot(
+        self,
+        existing: dict[str, Any] | None,
+        incoming: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Keep reliable values when a later retry has unknown T+1 earnings."""
+        if not existing:
+            return dict(incoming)
+        merged = dict(existing)
+        availability_rank = {"not_available": 0, "pending_t1": 1, "available": 2}
+        old_availability = infer_availability_status(existing)
+        new_availability = infer_availability_status(incoming)
+        if new_availability == "pending_t1":
+            merged["availability_status"] = "pending_t1"
+        elif new_availability and availability_rank.get(new_availability, -1) >= availability_rank.get(old_availability, -1):
+            merged["availability_status"] = new_availability
+
+        status_rank = {"unknown": 0, "pending_t1": 1, "not_available": 1, "partial": 2, "available": 3}
+        for key in ("revenue_status", "platform_revenue_status"):
+            old_status = str(existing.get(key, "unknown")).strip() or "unknown"
+            new_status = str(incoming.get(key, "unknown")).strip() or "unknown"
+            if new_availability == "pending_t1":
+                merged[key] = "pending_t1"
+            elif status_rank.get(new_status, 0) > status_rank.get(old_status, 0):
+                merged[key] = new_status
+
+        for key in (
+            "snapshot_date",
+            "snapshot_at",
+            "observed_at",
+            "collection_date",
+            "published_date",
+            "earnings_date",
+            "data_date",
+            "content_id",
+        ):
+            if str(incoming.get(key, "")).strip():
+                merged[key] = incoming[key]
+        if incoming.get("platform_revenue") is not None:
+            merged["platform_revenue"] = incoming["platform_revenue"]
+
+        for key in (
+            "impression_count",
+            "read_count",
+            "recommendation_read_count",
+            "like_count",
+            "wow_count",
+            "share_count",
+            "comment_count",
+            "follower_gain",
+            "lead_count",
+        ):
+            try:
+                merged[key] = max(int(existing.get(key, 0) or 0), int(incoming.get(key, 0) or 0))
+            except (TypeError, ValueError):
+                merged[key] = incoming.get(key, existing.get(key, 0))
+
+        old_platform_revenue = existing.get("platform_revenue")
+        new_platform_revenue = incoming.get("platform_revenue")
+        old_platform_status = str(existing.get("platform_revenue_status", "")).strip()
+        new_platform_status = str(incoming.get("platform_revenue_status", "")).strip()
+        old_known = bool(existing.get("revenue_amount_known", False)) or (
+            old_platform_revenue is not None and old_platform_status in {"", "available"}
+        )
+        new_known = bool(incoming.get("revenue_amount_known", False)) or (
+            new_platform_revenue is not None and new_platform_status in {"", "available"}
+        )
+        if new_availability == "pending_t1":
+            merged["platform_revenue"] = None
+            merged["revenue_amount"] = None
+        else:
+            merged["revenue_amount"] = (
+                incoming.get("revenue_amount", 0.0)
+                if new_known or not old_known
+                else existing.get("revenue_amount", 0.0)
+            )
+        merged["revenue_amount_known"] = False if new_availability == "pending_t1" else old_known or new_known
+        merged["analysis_eligible"] = new_availability == "available"
+        return merged
+
     def build_performance_report(self) -> dict[str, Path]:
         self.ensure_directories()
-        ledger = list(self._load_ledger().values())
+        ledger = self._attach_attribution_metrics(list(self._load_ledger().values()))
         summary = self._summarize_performance(ledger)
         report_payload = {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -1043,6 +1273,45 @@ articles:
             "performance_report": self.performance_report_path,
             "performance_report_json": self.performance_report_json_path,
         }
+
+    def _attach_attribution_metrics(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Join the operational performance ledger with content-level economics."""
+        try:
+            from toutiao_content_factory.services.revenue_attribution_service import RevenueAttributionService
+
+            attribution = RevenueAttributionService(self.settings.output_dir, self.logger)
+            stored_economics = attribution._load_json(attribution.unit_economics_path, default={})
+        except Exception as exc:  # pragma: no cover - optional legacy data path
+            self.logger.debug("Revenue attribution join skipped: %s", exc)
+            return rows
+
+        enriched_rows: list[dict[str, Any]] = []
+        for row in rows:
+            enriched = dict(row)
+            content_id = str(enriched.get("content_id", "")).strip()
+            if not content_id:
+                identity = attribution.find_content_record_by_run_dir(enriched.get("run_dir", ""))
+                content_id = str(identity.get("content_id", "")).strip() if identity else ""
+            if content_id:
+                existing = stored_economics.get(content_id, {})
+                platform_revenue = (
+                    float(existing.get("platform_revenue", 0.0) or 0.0)
+                    if isinstance(existing, dict)
+                    else 0.0
+                )
+                economics = attribution.compute_unit_economics(
+                    content_id,
+                    platform_revenue=platform_revenue,
+                )
+                enriched["content_id"] = content_id
+                enriched["unit_economics"] = economics.to_dict()
+                revenue_summary = attribution.summarize_revenue_events(content_id)
+                metrics = dict(enriched.get("metrics_latest", {}))
+                metrics.setdefault("lead_count", revenue_summary.get("lead_count", 0))
+                metrics.setdefault("revenue_amount", revenue_summary.get("revenue_amount", 0.0))
+                enriched["metrics_latest"] = metrics
+            enriched_rows.append(enriched)
+        return enriched_rows
 
     def collect_self_benchmark_samples(
         self,
@@ -1448,7 +1717,7 @@ articles:
             ]
         return [
             f"{primary}又有新动作，但真正该盯的是盈利拐点",
-            f"表面上是热点升级，实际上是产业链重新分配利润",
+            "表面上是热点升级，实际上是产业链重新分配利润",
             f"{primary}进入新阶段后，谁会先受益",
             "一个新闻背后，行业分水岭正在出现",
             f"{primary}看起来很火，真正值钱的是哪一层",
@@ -1707,6 +1976,7 @@ articles:
     def _write_ledger_csv(self, rows: list[dict[str, Any]]) -> None:
         fieldnames = [
             "record_id",
+            "content_id",
             "account_key",
             "platform",
             "published_at",
@@ -1714,6 +1984,18 @@ articles:
             "selected_topic_title",
             "publish_url",
             "publish_status",
+            "commercial_intent",
+            "content_mix",
+            "cta_source_code",
+            "snapshot_label",
+            "snapshot_at",
+            "collection_date",
+            "published_date",
+            "earnings_date",
+            "availability_status",
+            "revenue_status",
+            "platform_revenue_status",
+            "revenue_amount_known",
             "topic_bucket",
             "title_style",
             "hook_pattern",
@@ -1734,6 +2016,8 @@ articles:
             "read_rate",
             "recommendation_ratio",
             "interaction_rate",
+            "lead_count",
+            "revenue_amount",
         ]
         with self.performance_csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -1744,6 +2028,7 @@ articles:
                 writer.writerow(
                     {
                         "record_id": item.get("record_id", ""),
+                        "content_id": item.get("content_id", "") or metrics.get("content_id", ""),
                         "account_key": item.get("account_key", ""),
                         "platform": item.get("platform", ""),
                         "published_at": item.get("published_at", ""),
@@ -1751,6 +2036,18 @@ articles:
                         "selected_topic_title": item.get("selected_topic_title", ""),
                         "publish_url": item.get("publish_url", ""),
                         "publish_status": item.get("publish_status", ""),
+                        "commercial_intent": tags.get("commercial_intent", ""),
+                        "content_mix": tags.get("content_mix", ""),
+                        "cta_source_code": tags.get("cta_source_code", ""),
+                        "snapshot_label": metrics.get("snapshot_label", ""),
+                        "snapshot_at": metrics.get("snapshot_at", ""),
+                        "collection_date": metrics.get("collection_date", ""),
+                        "published_date": metrics.get("published_date", "") or item.get("published_at", "")[:10],
+                        "earnings_date": metrics.get("earnings_date", "") or metrics.get("data_date", ""),
+                        "availability_status": metrics.get("availability_status", ""),
+                        "revenue_status": metrics.get("revenue_status", "unknown"),
+                        "platform_revenue_status": metrics.get("platform_revenue_status", "unknown"),
+                        "revenue_amount_known": metrics.get("revenue_amount_known", False),
                         "topic_bucket": tags.get("topic_bucket", ""),
                         "title_style": tags.get("title_style", ""),
                         "hook_pattern": tags.get("hook_pattern", ""),
@@ -1771,20 +2068,95 @@ articles:
                         "read_rate": metrics.get("read_rate", 0),
                         "recommendation_ratio": metrics.get("recommendation_ratio", 0),
                         "interaction_rate": metrics.get("interaction_rate", 0),
+                        "lead_count": metrics.get("lead_count", 0),
+                        "revenue_amount": (
+                            metrics.get("revenue_amount")
+                            if metrics.get("revenue_amount_known", False)
+                            else ""
+                        ),
                     }
                 )
 
     def _summarize_performance(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
         published_count = len(rows)
         with_metrics = [item for item in rows if item.get("metrics_latest")]
+        analysis_rows = [item for item in with_metrics if self._metric_row_is_analysis_eligible(item)]
+        pending_t1_count = sum(
+            1
+            for item in with_metrics
+            if self._metric_row_is_pending_t1(item)
+        )
+        collection_dates = [
+            str(item.get("metrics_latest", {}).get("collection_date", "")).strip()
+            for item in with_metrics
+            if str(item.get("metrics_latest", {}).get("collection_date", "")).strip()
+        ]
+        latest_collection_date = max(collection_dates, default="")
+        latest_earnings_dates = [
+            str(
+                item.get("metrics_latest", {}).get("earnings_date")
+                or item.get("metrics_latest", {}).get("data_date", "")
+            ).strip()
+            for item in with_metrics
+            if str(item.get("metrics_latest", {}).get("collection_date", "")).strip()
+            == latest_collection_date
+            and str(
+                item.get("metrics_latest", {}).get("earnings_date")
+                or item.get("metrics_latest", {}).get("data_date", "")
+            ).strip()
+        ]
+        latest_earnings_date = max(latest_earnings_dates, default="")
+        known_platform_revenue = 0.0
+        platform_revenue_known_count = 0
+        for item in with_metrics:
+            metrics = item.get("metrics_latest", {})
+            if latest_collection_date and str(metrics.get("collection_date", "")).strip() != latest_collection_date:
+                continue
+            if latest_earnings_date and str(metrics.get("earnings_date") or metrics.get("data_date", "")).strip() != latest_earnings_date:
+                continue
+            if infer_availability_status(item) != "available":
+                continue
+            if str(metrics.get("platform_revenue_status", "")).strip() != "available":
+                continue
+            platform_revenue = metrics.get("platform_revenue")
+            if platform_revenue is None:
+                continue
+            try:
+                known_platform_revenue += float(platform_revenue or 0.0)
+                platform_revenue_known_count += 1
+            except (TypeError, ValueError):
+                continue
         top_by_reads = sorted(
-            with_metrics,
+            analysis_rows,
             key=lambda item: int(item.get("metrics_latest", {}).get("read_count", 0)),
             reverse=True,
         )[:5]
+        with_economics = [item for item in analysis_rows if item.get("unit_economics")]
+
+        def top_by_economics(metric: str) -> list[dict[str, Any]]:
+            eligible = []
+            for item in with_economics:
+                economics = dict(item.get("unit_economics", {}))
+                if metric in {"net_profit", "rpm", "total_revenue"} and not economics.get(
+                    "revenue_analysis_eligible", False
+                ):
+                    continue
+                if metric == "lead_revenue" and str(economics.get("revenue_status", "unknown")) in {
+                    "pending_t1",
+                    "unknown",
+                    "not_available",
+                }:
+                    continue
+                eligible.append(item)
+            selected = sorted(
+                eligible,
+                key=lambda item: float(item.get("unit_economics", {}).get(metric, 0.0) or 0.0),
+                reverse=True,
+            )[:5]
+            return [self._economics_summary_item(item, metric) for item in selected]
 
         tag_metrics: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
-        for item in with_metrics:
+        for item in analysis_rows:
             metrics = dict(item.get("metrics_latest", {}))
             tags = dict(item.get("experiment_tags", {}))
             for tag_name in ("topic_bucket", "title_style", "hook_pattern", "content_angle", "cta_style", "test_focus"):
@@ -1802,18 +2174,26 @@ articles:
         }
 
         averages = {
-            "read_rate": self._safe_average(item.get("metrics_latest", {}).get("read_rate", 0) for item in with_metrics),
+            "read_rate": self._safe_average(item.get("metrics_latest", {}).get("read_rate", 0) for item in analysis_rows),
             "interaction_rate": self._safe_average(
-                item.get("metrics_latest", {}).get("interaction_rate", 0) for item in with_metrics
+                item.get("metrics_latest", {}).get("interaction_rate", 0) for item in analysis_rows
             ),
             "recommendation_ratio": self._safe_average(
-                item.get("metrics_latest", {}).get("recommendation_ratio", 0) for item in with_metrics
+                item.get("metrics_latest", {}).get("recommendation_ratio", 0) for item in analysis_rows
             ),
         }
 
         return {
             "published_count": published_count,
             "with_metrics_count": len(with_metrics),
+            "analysis_eligible_count": len(analysis_rows),
+            "pending_t1_count": pending_t1_count,
+            "collection_date": latest_collection_date,
+            "earnings_date": latest_earnings_date,
+            "earnings_policy": "t_plus_1",
+            "known_platform_revenue": round(known_platform_revenue, 4),
+            "platform_revenue_known_count": platform_revenue_known_count,
+            "attribution_count": len(with_economics),
             "averages": averages,
             "top_by_reads": [
                 {
@@ -1827,7 +2207,40 @@ articles:
                 }
                 for item in top_by_reads
             ],
+            "top_by_net_profit": top_by_economics("net_profit"),
+            "top_by_rpm": top_by_economics("rpm"),
+            "top_by_lead_revenue": top_by_economics("lead_revenue"),
             "avg_read_rate_by_tag": avg_read_rate_by_tag,
+        }
+
+    def _metric_row_is_analysis_eligible(self, item: dict[str, Any]) -> bool:
+        metrics = item.get("metrics_latest", {})
+        if not isinstance(metrics, dict):
+            return False
+        if infer_availability_status(item) in {"pending_t1", "not_available"}:
+            return False
+        return bool(metrics.get("analysis_eligible", True))
+
+    def _metric_row_is_pending_t1(self, item: dict[str, Any]) -> bool:
+        return infer_availability_status(item) == "pending_t1"
+
+    def _economics_summary_item(self, item: dict[str, Any], metric: str) -> dict[str, Any]:
+        economics = dict(item.get("unit_economics", {}))
+        return {
+            "content_id": item.get("content_id", ""),
+            "title": item.get("title", ""),
+            "platform": item.get("platform", ""),
+            "commercial_intent": item.get("experiment_tags", {}).get("commercial_intent", ""),
+            "content_mix": item.get("experiment_tags", {}).get("content_mix", ""),
+            "metric": metric,
+            "value": float(economics.get(metric, 0.0) or 0.0),
+            "net_profit": float(economics.get("net_profit", 0.0) or 0.0),
+            "rpm": float(economics.get("rpm", 0.0) or 0.0),
+            "lead_revenue": float(economics.get("lead_revenue", 0.0) or 0.0),
+            "leads": int(economics.get("leads", 0) or 0),
+            "revenue_status": economics.get("revenue_status", "unknown"),
+            "platform_revenue_status": economics.get("platform_revenue_status", "unknown"),
+            "revenue_analysis_eligible": bool(economics.get("revenue_analysis_eligible", False)),
         }
 
     def _build_benchmark_markdown(self, payload: dict[str, Any]) -> str:
@@ -1895,6 +2308,15 @@ articles:
             f"- 生成时间：{payload.get('generated_at', '')}",
             f"- 已登记发布数：{summary.get('published_count', 0)}",
             f"- 已补齐数据文章数：{summary.get('with_metrics_count', 0)}",
+            f"- 可纳入分析文章数：{summary.get('analysis_eligible_count', 0)}",
+            f"- T+1 待结算文章数：{summary.get('pending_t1_count', 0)}",
+            f"- 最近采集日：{summary.get('collection_date', '') or '未知'}",
+            f"- 收益归属日：{summary.get('earnings_date', '') or '昨日'}",
+            (
+                f"- 平台收益：{float(summary.get('known_platform_revenue', 0.0) or 0.0):.2f} CNY"
+                if int(summary.get('platform_revenue_known_count', 0) or 0) > 0
+                else "- 平台收益：待回流（未知金额不按 0 CNY 处理）"
+            ),
             f"- 平均阅读率：{summary.get('averages', {}).get('read_rate', 0)}%",
             f"- 平均互动率：{summary.get('averages', {}).get('interaction_rate', 0)}%",
             f"- 平均推荐占比：{summary.get('averages', {}).get('recommendation_ratio', 0)}%",
@@ -1922,6 +2344,24 @@ articles:
                 for key, value in block.items():
                     lines.append(f"- {key}: {value}%")
                 lines.append("")
+        lines.append("## Revenue-oriented rankings")
+        lines.append("")
+        for heading, key, unit in (
+            ("Net profit", "top_by_net_profit", " CNY"),
+            ("Net RPM", "top_by_rpm", " CNY/1k impressions"),
+            ("Lead revenue", "top_by_lead_revenue", " CNY"),
+        ):
+            lines.append(f"### {heading}")
+            ranking = summary.get(key, [])
+            if not ranking:
+                lines.append("- No attributed content yet")
+            else:
+                for index, item in enumerate(ranking, start=1):
+                    lines.append(
+                        f"{index}. {item.get('title', '')} | {item.get('content_id', '')} | "
+                        f"{float(item.get('value', 0.0) or 0.0):.2f}{unit} | leads={item.get('leads', 0)}"
+                    )
+            lines.append("")
         return "\n".join(lines) + "\n"
 
     def _normalize_benchmark_account(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2780,6 +3220,30 @@ articles:
             "interaction_rate_status": self._rate_status(interaction_rate, 3.0),
         }
 
+    def _performance_snapshot_sort_key(self, item: dict[str, Any]) -> tuple[int, str, str]:
+        label_order = {"1h": 0, "6h": 1, "24h": 2, "72h": 3}
+        label = str(item.get("snapshot_label", "")).strip()
+        return (
+            label_order.get(label, 4),
+            str(item.get("snapshot_at", "")),
+            str(item.get("snapshot_date", "")),
+        )
+
+    def _metrics_latest_sort_key(self, item: dict[str, Any]) -> str:
+        return str(item.get("snapshot_at") or item.get("snapshot_date") or "")
+
+    def _date_portion(self, value: object) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            return date.fromisoformat(text[:10]).isoformat()
+        except ValueError:
+            try:
+                return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+            except ValueError:
+                return ""
+
     def _rate_status(self, value: float, good_threshold: float) -> str:
         if value >= good_threshold * 1.4:
             return "strong"
@@ -2871,3 +3335,54 @@ articles:
         if not path.exists():
             return ""
         return path.read_text(encoding="utf-8").strip()
+
+    def build_content_identity_payload(
+        self,
+        *,
+        platform: str,
+        run_dir: Path,
+        title: str = "",
+        topic_title: str = "",
+        published_at: str = "",
+        commercial_intent: str = "medium",
+        content_mix: str = "professional",
+        cta_variant: str = "",
+        cta_source_code: str = "",
+        title_variant: str = "",
+        cover_variant: str = "",
+        platform_variant: str = "",
+        topic_bucket: str = "",
+    ) -> dict[str, Any]:
+        """构建内容级归因所需的 identity payload，供上层服务注册。"""
+        from toutiao_content_factory.services.revenue_attribution_service import (
+            RevenueAttributionService,
+        )
+
+        service = RevenueAttributionService(self.settings.output_dir, self.logger)
+        identity = service.build_content_identity(
+            account_key=self.settings.account_key,
+            platform=platform,
+            run_dir=run_dir,
+            topic_title=topic_title,
+            title=title,
+            published_at=published_at or datetime.now().isoformat(timespec="seconds"),
+            commercial_intent=commercial_intent,
+            content_mix=content_mix,
+            cta_variant=cta_variant,
+            cta_source_code=cta_source_code,
+            title_variant=title_variant,
+            cover_variant=cover_variant,
+            platform_variant=platform_variant,
+            topic_bucket=topic_bucket,
+        )
+        return {
+            "content_id": identity.content_id,
+            "commercial_intent": identity.commercial_intent,
+            "content_mix": identity.content_mix,
+            "cta_variant": identity.cta_variant,
+            "cta_source_code": identity.cta_source_code,
+            "title_variant": identity.title_variant,
+            "cover_variant": identity.cover_variant,
+            "platform_variant": identity.platform_variant,
+            "topic_bucket": identity.topic_bucket,
+        }

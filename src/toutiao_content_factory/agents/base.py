@@ -106,6 +106,8 @@ class BaseAgent:
     
     SPORTS_TOKENS = ("体育", "足球", "篮球", "网球", "世界杯", "奥运", "英超", "西甲", "法网", "world cup", "football", "tennis", "french open", "grand slam")
     INTERNATIONAL_TOKENS = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金", "仲裁", "白宫")
+    # 实时热点二创模式：命中即按"热点快评"处理，不强制 1500 字长文
+    HOT_TOPIC_TOKENS = ("实时热点", "热点二创", "热点快评", "实时热榜", "平台热度值")
     CROSS_BORDER_TOKENS = ("中国", "日本", "美国", "欧洲", "德国", "东京", "海外", "出海", "国际", "日韩", "东南亚")
     BENEFIT_SHIFT_TOKENS = ("利润", "毛利", "份额", "议价", "红利", "系统集成", "零部件", "整机", "运维", "服务", "回款", "IRR")
 
@@ -382,6 +384,7 @@ class BaseAgent:
             "成文禁忌: 不写泛新闻播报，不堆空形容词，不做无根据拔高。",
             "输出禁令: 标题、正文、摘要、评论引导中不得出现账号名、栏目名、作者自称、品牌口号、运营指令。",
             f"赛道主线: {self.settings.industry_focus}",
+            f"账号定位: {self.settings.brand_positioning}",
         ]
         for section in extra_sections or []:
             section_text = str(section or "").strip()
@@ -479,7 +482,10 @@ class BaseAgent:
 
         cleaned = "\n".join(cleaned_lines)
         cleaned = self._MULTIPLE_NEWLINES_RE.sub("\n\n", cleaned)
-        cleaned = self._WHITESPACE_RE.sub(" ", cleaned)
+        # Normalize spaces inside lines while preserving paragraph boundaries.
+        # Collapsing all whitespace here turns every paragraph into one block
+        # before the article sanitizer can enforce mobile-friendly structure.
+        cleaned = re.sub(r"[^\S\r\n]+", " ", cleaned)
         return cleaned.strip()
 
     def _strip_brand_mentions(self, text: str) -> str:
@@ -527,6 +533,8 @@ class BaseAgent:
             )
             if str(item).strip()
         ).lower()
+        if any(token in text for token in self.HOT_TOPIC_TOKENS):
+            return "hot_topic"
         if any(token in text for token in self.SPORTS_TOKENS):
             return "sports"
         if any(token in text for token in self.INTERNATIONAL_TOKENS):

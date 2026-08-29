@@ -690,7 +690,7 @@ class ContentGuardService:
     # ----------------------------------------------------------------------
 
     def scan_text(self, text: str) -> dict[str, Any]:
-        normalized = self._normalize_text(text)
+        normalized = self._normalize_for_sensitive_scan(text)
         if not normalized or not self.bad_words:
             return {"blocked": False, "matched_words": [], "warnings": []}
         hits = self.bad_words_trie.find_all_with_positions(normalized)
@@ -1147,6 +1147,18 @@ class ContentGuardService:
         normalized = self._INVALID_CHAR_PATTERN.sub("", normalized)
         return normalized[:12000]
 
+    def _normalize_for_sensitive_scan(self, text: str) -> str:
+        """敏感词扫描专用归一化：标点/符号替换为占位分隔符而不是删除。
+
+        修复（2026-08-27 实测误杀）：原 _normalize_text 会把标点一并删除，
+        导致「观察窗口。交付能力」被拼成「观察窗口交付能力」，跨标点拼接出
+        敏感词「口交」误杀正常文章（今日「谐波减速器 IPO」选题被拦的根因）。
+        这里保留词边界，仅把非词字符归一为 \x00 占位，AC 匹配不会跨标点拼词。
+        """
+        normalized = self._WHITESPACE_PATTERN.sub("", str(text or "").lower())
+        normalized = self._INVALID_CHAR_PATTERN.sub("\x00", normalized)
+        return normalized[:12000]
+
     def _parse_run_time(self, name: str) -> datetime | None:
         raw = str(name or "").split("_", 1)[0]
         try:
@@ -1177,7 +1189,7 @@ class ContentGuardService:
         return []
 
     def _check_high_risk_categories(self, text: str) -> dict[str, Any]:
-        normalized = self._normalize_text(text)
+        normalized = self._normalize_for_sensitive_scan(text)
         for _key, category in self.HIGH_RISK_CATEGORIES.items():
             matched = [token for token in category["tokens"] if token in normalized]
             if matched:

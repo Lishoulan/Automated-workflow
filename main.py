@@ -74,6 +74,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--approve-latest", action="store_true", help="Approve the latest pending run.")
     parser.add_argument("--reject-run", action="store_true", help="Reject a run and save review notes.")
     parser.add_argument("--publish-run", action="store_true", help="Publish an approved run.")
+    parser.add_argument(
+        "--publish-wtt-run",
+        action="store_true",
+        help="Publish an approved run as a WeiToutiao (微头条) short post.",
+    )
+    parser.add_argument(
+        "--publish-wtt-latest-approved",
+        action="store_true",
+        help="Publish the latest approved unpublished run as a WeiToutiao (微头条) short post.",
+    )
+    parser.add_argument(
+        "--publish-wtt-standalone",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Generate and publish N independent WeiToutiao (微头条) posts with their own topics (高频化).",
+    )
     parser.add_argument("--draft-only", action="store_true", help="Fill Toutiao publish form and save as draft instead of publishing.")
     parser.add_argument(
         "--refresh-publish-readiness",
@@ -241,6 +258,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lead-estimated-value", type=float, default=0.0, help="Estimated deal value for a lead.")
     parser.add_argument("--lead-actual-value", type=float, default=None, help="Actual won revenue for a lead update.")
     parser.add_argument("--lead-next-follow-up", type=str, default="", help="Next follow-up datetime or note.")
+    parser.add_argument("--lead-content-id", type=str, default="", help="Source content_id for lead attribution.")
+    parser.add_argument("--lead-cta-source-code", type=str, default="", help="CTA source code for lead attribution.")
+    parser.add_argument("--lead-platform", type=str, default="", help="Source platform for CTA attribution, e.g. toutiao or wechat.")
     parser.add_argument("--proposal-offer-name", type=str, default="", help="Offer name for --generate-lead-proposal.")
     parser.add_argument("--proposal-offer-key", type=str, default="", help="ASCII offer key for --generate-lead-proposal.")
     parser.add_argument("--proposal-price", type=str, default="", help="Custom price for --generate-lead-proposal.")
@@ -299,6 +319,42 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Build a performance review report from the performance ledger.",
     )
+    parser.add_argument(
+        "--build-revenue-attribution-report",
+        action="store_true",
+        help="Build revenue attribution, content mix, cooling, and unit economics reports.",
+    )
+    parser.add_argument(
+        "--register-content-identity",
+        action="store_true",
+        help="Register a stable content_id for a published run.",
+    )
+    parser.add_argument("--record-content-cost", action="store_true", help="Record production cost for a content_id.")
+    parser.add_argument("--record-content-revenue", action="store_true", help="Record a revenue event for a content_id.")
+    parser.add_argument("--compute-unit-economics", action="store_true", help="Compute unit economics for a content_id.")
+    parser.add_argument("--content-id", type=str, default=None, help="Content ID for revenue attribution commands.")
+    parser.add_argument("--api-cost", type=float, default=0.0, help="API cost for --record-content-cost.")
+    parser.add_argument("--image-cost", type=float, default=0.0, help="Image generation cost for --record-content-cost.")
+    parser.add_argument("--labor-minutes", type=float, default=0.0, help="Labor minutes for --record-content-cost.")
+    parser.add_argument("--labor-rate-per-hour", type=float, default=0.0, help="Labor rate per hour for --record-content-cost.")
+    parser.add_argument("--revenue-event-type", type=str, default="", help="Event type for --record-content-revenue.")
+    parser.add_argument("--revenue-amount", type=float, default=0.0, help="Amount for --record-content-revenue.")
+    parser.add_argument("--revenue-currency", type=str, default="CNY", help="Currency for --record-content-revenue.")
+    parser.add_argument("--revenue-lead-id", type=str, default="", help="Lead ID for --record-content-revenue.")
+    parser.add_argument("--revenue-product-key", type=str, default="", help="Product key for --record-content-revenue.")
+    parser.add_argument("--revenue-channel", type=str, default="", help="Channel for --record-content-revenue.")
+    parser.add_argument("--revenue-note", type=str, default="", help="Note for --record-content-revenue.")
+    parser.add_argument("--revenue-event-id", type=str, default="", help="Stable event ID for idempotent revenue callbacks.")
+    parser.add_argument("--replace-existing-revenue", action="store_true", help="Replace an existing revenue event with the same event ID.")
+    parser.add_argument("--platform-revenue", type=float, default=0.0, help="Platform revenue for --compute-unit-economics.")
+    parser.add_argument("--commercial-intent", type=str, default="medium", help="Commercial intent for --register-content-identity.")
+    parser.add_argument("--content-mix", type=str, default="professional", help="Content mix for --register-content-identity.")
+    parser.add_argument("--cta-variant", type=str, default="", help="CTA variant for --register-content-identity.")
+    parser.add_argument("--cta-source-code", type=str, default="", help="CTA source code for --register-content-identity.")
+    parser.add_argument("--title-variant", type=str, default="", help="Title variant for --register-content-identity.")
+    parser.add_argument("--cover-variant", type=str, default="", help="Cover variant for --register-content-identity.")
+    parser.add_argument("--platform-variant", type=str, default="", help="Platform variant for --register-content-identity.")
+    parser.add_argument("--topic-bucket", type=str, default="", help="Stable topic bucket for --register-content-identity.")
     parser.add_argument("--run-dir", type=str, default=None, help="Archived run directory for review or publish.")
     parser.add_argument("--selected-title", type=str, default=None, help="Explicit final title to approve.")
     parser.add_argument(
@@ -316,6 +372,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Platform key for performance tracking, e.g. wechat or toutiao.",
     )
     parser.add_argument("--snapshot-date", type=str, default=None, help="Snapshot date for performance metrics.")
+    parser.add_argument("--snapshot-label", type=str, default=None, help="Maturity label for performance metrics, e.g. 1h/6h/24h/72h.")
+    parser.add_argument("--snapshot-at", type=str, default=None, help="Actual observation timestamp for performance metrics.")
+    parser.add_argument("--published-date", type=str, default=None, help="Article publication date for performance metrics.")
+    parser.add_argument("--earnings-date", type=str, default=None, help="Date to which platform earnings belong (Toutiao defaults to yesterday).")
+    parser.add_argument("--availability-status", type=str, default="available", choices=("available", "pending_t1", "not_available"), help="Whether the article data is eligible for analysis.")
+    parser.add_argument("--revenue-status", type=str, default="unknown", choices=("available", "partial", "pending_t1", "unknown", "not_available"), help="Revenue data availability for a performance snapshot.")
+    parser.add_argument("--platform-revenue-status", type=str, default="unknown", choices=("available", "pending_t1", "unknown", "not_available"), help="Platform earnings availability for a performance snapshot.")
+    parser.add_argument("--platform-revenue-amount", type=float, default=None, help="Known platform earnings amount for a performance snapshot.")
+    parser.add_argument("--revenue-amount-known", action="store_true", help="Mark the performance snapshot revenue amount as known, including a known zero.")
     parser.add_argument("--impression-count", type=int, default=None, help="Total impressions/exposures.")
     parser.add_argument("--read-count", type=int, default=None, help="Total reads.")
     parser.add_argument(
@@ -427,6 +492,19 @@ def main() -> int:
         print(f"Performance data collected: {len(result.get('records', []))} records")
         if result.get("errors"):
             print(f"Errors: {result['errors']}")
+        # 采集后自动运行反馈闭环：数据 → EvolutionAgent 规则 → prompt 优化
+        if args.feedback_loop:
+            from toutiao_content_factory.services.feedback_loop_service import FeedbackLoopService
+            from toutiao_content_factory.services.openai_service import OpenAIContentService
+            from toutiao_content_factory.services.prompt_repository import PromptRepository
+            loop = FeedbackLoopService(
+                settings,
+                logger,
+                prompt_repository=PromptRepository(settings.prompts_dir),
+                openai_service=OpenAIContentService(settings, logger),
+            )
+            loop_result = loop.run_full_loop()
+            print(f"Feedback loop completed: {loop_result.get('status', 'unknown')}")
         return 0
     if args.feedback_loop:
         from toutiao_content_factory.services.feedback_loop_service import FeedbackLoopService
@@ -448,6 +526,8 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     refresh_heartbeat(settings.automation_dir / "scheduled_status.json")
+    if args.daily_run:
+        _mark_daily_run_running(settings)
     app_service = ContentFactoryAppService(settings, logger)
     exported_files: dict[str, str] = {}
 
@@ -584,6 +664,9 @@ def main() -> int:
                     status=args.lead_status or "new",
                     estimated_value=args.lead_estimated_value,
                     next_follow_up_at=args.lead_next_follow_up,
+                    source_content_id=args.lead_content_id,
+                    cta_source_code=args.lead_cta_source_code,
+                    platform=args.lead_platform,
                 )
                 _print_export_summary("Lead recorded.", result)
                 return 0
@@ -768,6 +851,15 @@ def main() -> int:
                     args.run_dir,
                     platform=args.performance_platform,
                     snapshot_date=args.snapshot_date,
+                    snapshot_label=args.snapshot_label,
+                    snapshot_at=args.snapshot_at,
+                    published_date=args.published_date,
+                    earnings_date=args.earnings_date,
+                    availability_status=args.availability_status,
+                    revenue_status=args.revenue_status,
+                    platform_revenue_status=args.platform_revenue_status,
+                    revenue_amount_known=args.revenue_amount_known,
+                    platform_revenue=args.platform_revenue_amount,
                     impression_count=args.impression_count,
                     read_count=args.read_count,
                     recommendation_read_count=args.recommendation_read_count,
@@ -783,6 +875,93 @@ def main() -> int:
             if args.build_performance_report:
                 result = app_service.build_performance_report()
                 _print_export_summary("Performance report built.", result)
+                return 0
+
+            if args.build_revenue_attribution_report:
+                result = app_service.build_revenue_attribution_report()
+                _print_export_summary("Revenue attribution report built.", result)
+                return 0
+
+            if args.register_content_identity:
+                resolved_run_dir = app_service.resolve_run_dir(args.run_dir)
+                publish_meta_path = resolved_run_dir / app_service.settings.review.publish_dirname / "publish_meta.json"
+                publish_meta_payload: dict[str, object] = {}
+                if publish_meta_path.exists():
+                    try:
+                        publish_meta_payload = json.loads(publish_meta_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        publish_meta_payload = {}
+                selected_topic_payload = publish_meta_payload.get("selected_topic") or {}
+                title_text = str(
+                    args.selected_title
+                    or publish_meta_payload.get("selected_title", "")
+                    or ""
+                ).strip()
+                topic_title_text = str(selected_topic_payload.get("title", "")).strip()
+                published_at_text = str(publish_meta_payload.get("approved_at", "")).strip()
+                result = app_service.register_content_identity(
+                    platform=args.performance_platform,
+                    run_dir=resolved_run_dir,
+                    title=title_text,
+                    topic_title=topic_title_text,
+                    published_at=published_at_text,
+                    commercial_intent=str(args.commercial_intent),
+                    content_mix=str(args.content_mix),
+                    cta_variant=str(args.cta_variant),
+                    cta_source_code=str(args.cta_source_code),
+                    title_variant=str(args.title_variant),
+                    cover_variant=str(args.cover_variant),
+                    platform_variant=str(args.platform_variant),
+                    topic_bucket=str(args.topic_bucket),
+                )
+                _print_export_summary("Content identity registered.", result)
+                return 0
+
+            if args.record_content_cost:
+                if not args.content_id:
+                    print("--content-id is required for --record-content-cost.")
+                    return 1
+                result = app_service.record_content_cost(
+                    args.content_id,
+                    api_cost=args.api_cost,
+                    image_cost=args.image_cost,
+                    labor_minutes=args.labor_minutes,
+                    labor_rate_per_hour=args.labor_rate_per_hour,
+                )
+                _print_export_summary("Content cost recorded.", result)
+                return 0
+
+            if args.record_content_revenue:
+                if not args.content_id:
+                    print("--content-id is required for --record-content-revenue.")
+                    return 1
+                if not args.revenue_event_type:
+                    print("--revenue-event-type is required for --record-content-revenue.")
+                    return 1
+                result = app_service.record_content_revenue_event(
+                    args.content_id,
+                    event_type=args.revenue_event_type,
+                    amount=args.revenue_amount,
+                    currency=args.revenue_currency,
+                    lead_id=args.revenue_lead_id,
+                    product_key=args.revenue_product_key,
+                    channel=args.revenue_channel,
+                    note=args.revenue_note,
+                    event_id=args.revenue_event_id,
+                    replace_existing=args.replace_existing_revenue,
+                )
+                _print_export_summary("Content revenue event recorded.", result)
+                return 0
+
+            if args.compute_unit_economics:
+                if not args.content_id:
+                    print("--content-id is required for --compute-unit-economics.")
+                    return 1
+                result = app_service.compute_unit_economics(
+                    args.content_id,
+                    platform_revenue=args.platform_revenue,
+                )
+                _print_export_summary("Unit economics computed.", result)
                 return 0
 
             if args.publish_preflight:
@@ -824,6 +1003,27 @@ def main() -> int:
             if args.publish_run:
                 publish_exports = app_service.publish_run(args.run_dir, draft_only=args.draft_only)
                 _print_export_summary("Publish command completed.", publish_exports)
+                return 0
+
+            if args.publish_wtt_run:
+                publish_exports = app_service.publish_weitoutiao_run(args.run_dir, draft_only=args.draft_only)
+                _print_export_summary("WeiToutiao publish command completed.", publish_exports)
+                return 0
+
+            if args.publish_wtt_latest_approved:
+                publish_exports = app_service.publish_weitoutiao_latest_approved(draft_only=args.draft_only)
+                _print_export_summary("Latest approved unpublished run published to WeiToutiao.", publish_exports)
+                return 0
+
+            if args.publish_wtt_standalone is not None:
+                publish_exports = app_service.publish_standalone_weitoutiao(
+                    count=max(1, args.publish_wtt_standalone),
+                    draft_only=args.draft_only,
+                )
+                _print_export_summary(
+                    f"Standalone WeiToutiao batch ({args.publish_wtt_standalone} target) completed.",
+                    publish_exports,
+                )
                 return 0
 
             if args.wechat_draft_run:
@@ -942,7 +1142,12 @@ def main() -> int:
 
     result_status, result_message = _write_daily_run_success_result(settings, args, exported_files)
     _print_export_summary(result_message, exported_files)
-    return 1 if result_status == "failed" else 0
+    return 1 if result_status in {
+        "failed",
+        "partial_success",
+        "publish_login_required",
+        "publish_uncertain",
+    } else 0
 
 
 def _configure_utf8_stdio() -> None:
@@ -968,6 +1173,9 @@ def _is_review_or_publish_action(args: argparse.Namespace) -> bool:
             args.approve_latest,
             args.reject_run,
             args.publish_run,
+            args.publish_wtt_run,
+            args.publish_wtt_latest_approved,
+            args.publish_wtt_standalone is not None,
             args.wechat_draft_run,
             args.wechat_publish_run,
             args.refresh_publish_readiness,
@@ -1009,6 +1217,11 @@ def _is_review_or_publish_action(args: argparse.Namespace) -> bool:
             args.backfill_performance_ledger,
             args.record_performance,
             args.build_performance_report,
+            args.build_revenue_attribution_report,
+            args.register_content_identity,
+            args.record_content_cost,
+            args.record_content_revenue,
+            args.compute_unit_economics,
             args.collect_performance,
             args.feedback_loop,
             args.monthly_review,
@@ -1053,7 +1266,7 @@ def _handle_daily_run_exception(
         error=error_message,
     )
     return {
-        "exit_code": 0,
+        "exit_code": 1,
         "message": message,
     }
 
@@ -1067,17 +1280,71 @@ def _write_daily_run_success_result(
         return "success", "Content generation completed."
 
     run_summary = _build_daily_run_summary(settings, exported_files)
+    run_outcome = str(exported_files.get("status", "")).strip().lower()
+    run_outcome_message = str(exported_files.get("message", "")).strip()
     workflow_status = str(run_summary.get("workflow_status", "")).strip()
     review_status = str(run_summary.get("review_status", "")).strip()
     publish_status = str(run_summary.get("publish_status", "")).strip()
     wechat_status = str(run_summary.get("wechat_status", "")).strip()
+    weitoutiao_status = str(run_summary.get("weitoutiao_status", "")).strip().lower()
+    weitoutiao_message = str(run_summary.get("weitoutiao_message", "")).strip()
 
-    if workflow_status == "platform_publish_failed":
-        status = "success"
-        message = "Scheduled pipeline finished generation, but one or more platform publish steps failed. Treating as success since content was generated."
+    failure_statuses = {
+        "failed",
+        "error",
+        "blocked",
+        "blocked_by_ip",
+        "publish_login_required",
+        "publish_uncertain",
+        "circuit_open",
+        "missing",
+        "invalid",
+    }
+    graphic_submitted = publish_status.strip().lower() in (_DAILY_PUBLISH_SUCCESS_STATUSES - {"publish_uncertain"})
+    weitoutiao_needs_follow_up = weitoutiao_status in (
+        failure_statuses
+        | {"partial_success", "draft_only", "no_topics"}
+    )
+    weitoutiao_partial_message = (
+        f"图文发布已完成（{publish_status or 'submitted'}），但"
+        f"{'微头条补发部分成功但仍有失败项' if weitoutiao_status == 'partial_success' else '微头条补发失败'}。"
+        f"{weitoutiao_message or '请查看微头条日报结果并进行后续处理。'}"
+    )
+    if run_outcome in {"no_topics", "already_published", "skipped"}:
+        if run_outcome == "already_published" and graphic_submitted and weitoutiao_needs_follow_up:
+            status = "partial_success"
+            message = weitoutiao_partial_message
+        else:
+            status = run_outcome
+            message = run_outcome_message or "Scheduled run completed without generating a new article."
+    elif run_outcome == "blocked":
+        status = "publish_login_required"
+        message = run_outcome_message or "Scheduled pipeline was blocked by platform health checks."
+    elif graphic_submitted and weitoutiao_needs_follow_up:
+        status = "partial_success"
+        message = weitoutiao_partial_message
+    elif workflow_status == "platform_publish_failed":
+        if publish_status == "publish_login_required":
+            status = "publish_login_required"
+        elif publish_status == "publish_uncertain":
+            status = "publish_uncertain"
+        else:
+            status = "failed"
+        message = "Scheduled pipeline generated content, but the platform publish step did not complete successfully."
     elif workflow_status == "platform_partial_success":
-        status = "success"
+        status = "partial_success"
         message = "Scheduled pipeline partially succeeded. At least one platform completed, but another platform failed."
+    elif publish_status in failure_statuses or wechat_status in failure_statuses:
+        if publish_status == "publish_login_required":
+            status = "publish_login_required"
+        elif publish_status == "publish_uncertain":
+            status = "publish_uncertain"
+        else:
+            status = "failed"
+        message = "Scheduled pipeline finished, but a platform result is not publishable."
+    elif publish_status == "draft_saved":
+        status = "draft_only"
+        message = "Scheduled pipeline saved a draft; the article was not submitted to Toutiao."
     elif publish_status or wechat_status:
         platform_parts: list[str] = []
         if publish_status:
@@ -1127,13 +1394,24 @@ def _write_daily_run_result(
             "exported_files": {name: str(path) for name, path in exported_files.items()},
         }
     )
+    result_path.parent.mkdir(parents=True, exist_ok=True)
     result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_scheduled_runtime_status(
+        settings,
+        summary=payload,
+        status=status,
+        message=message,
+    )
 
 
 def _build_daily_run_summary(settings, exported_files: dict[str, str]) -> dict[str, Any]:
+    _hydrate_already_published_exports(settings, exported_files)
     summary: dict[str, Any] = {
         "run_dir": "",
         "run_name": "",
+        "content_id": "",
+        "run_outcome": str(exported_files.get("status", "")).strip(),
+        "run_outcome_message": str(exported_files.get("message", "")).strip(),
         "review_status": "",
         "selected_title": "",
         "workflow_status": "",
@@ -1147,16 +1425,110 @@ def _build_daily_run_summary(settings, exported_files: dict[str, str]) -> dict[s
         "wechat_submit_requested": False,
         "wechat_publish_url": "",
         "wechat_draft_media_id": "",
+        "weitoutiao": {},
+        "weitoutiao_status": "",
+        "weitoutiao_message": "",
+        "weitoutiao_topup_status": "",
+        "weitoutiao_topup_result": "",
+        "weitoutiao_result": "",
     }
     run_dir = _resolve_run_dir_from_exports(exported_files)
     workflow_report_path = exported_files.get("workflow_report") or str(settings.automation_dir / "last_daily_workflow_report.json")
     workflow_report = _load_json_file(Path(workflow_report_path)) or {}
     summary["workflow_status"] = str(workflow_report.get("status", "")).strip()
+    run_outcome = str(exported_files.get("status", "")).strip().lower()
+    if run_outcome in {"already_published", "no_topics", "skipped"}:
+        # The previous workflow report can belong to an older run. The short
+        # circuit outcome is authoritative for this invocation.
+        summary["workflow_status"] = run_outcome
     final_attempt = workflow_report.get("final_attempt", {}) if isinstance(workflow_report, dict) else {}
     if isinstance(final_attempt, dict):
         raw_errors = final_attempt.get("platform_errors", [])
         if isinstance(raw_errors, list):
             summary["workflow_errors"] = [str(item) for item in raw_errors]
+
+    workflow_platforms = final_attempt.get("platform_results", {}) if isinstance(final_attempt, dict) else {}
+    workflow_weitoutiao = (
+        workflow_platforms.get("weitoutiao", {})
+        if isinstance(workflow_platforms, dict)
+        else {}
+    )
+    if not isinstance(workflow_weitoutiao, dict):
+        workflow_weitoutiao = {}
+
+    daily_result_path = str(exported_files.get("weitoutiao_daily_result", "")).strip()
+    if not daily_result_path and run_dir is not None:
+        candidate = run_dir / settings.review.publish_dirname / "weitoutiao_daily_result.json"
+        if candidate.exists():
+            daily_result_path = str(candidate)
+    daily_result = _load_json_file(Path(daily_result_path)) if daily_result_path else None
+    daily_result = daily_result if isinstance(daily_result, dict) else {}
+
+    topup_result_path = str(
+        exported_files.get("standalone_topup_result")
+        or exported_files.get("standalone_topup_latest_result")
+        or ""
+    ).strip()
+    nested_topup = daily_result.get("topup", {}) if isinstance(daily_result, dict) else {}
+    if not isinstance(nested_topup, dict):
+        nested_topup = {}
+    if not topup_result_path:
+        topup_result_path = str(nested_topup.get("result_path", "")).strip()
+    topup_result = _load_json_file(Path(topup_result_path)) if topup_result_path else None
+    topup_result = topup_result if isinstance(topup_result, dict) else {}
+
+    run_outcome = str(exported_files.get("status", "")).strip().lower()
+    weitoutiao_payload = dict(daily_result)
+    if not weitoutiao_payload and run_outcome not in {"already_published", "no_topics", "skipped"}:
+        weitoutiao_payload = dict(workflow_weitoutiao)
+    if topup_result and "topup" not in weitoutiao_payload:
+        weitoutiao_payload["topup"] = topup_result
+    if not weitoutiao_payload and topup_result:
+        weitoutiao_payload = {
+            "status": str(topup_result.get("status", "")).strip() or "not_attempted",
+            "message": str(topup_result.get("message", "")).strip(),
+            "topup": topup_result,
+        }
+
+    topup_status = str(
+        topup_result.get("status")
+        or nested_topup.get("status")
+        or exported_files.get("standalone_topup_status")
+        or ""
+    ).strip()
+    weitoutiao_status = str(
+        weitoutiao_payload.get("status")
+        or exported_files.get("weitoutiao_status")
+        or ""
+    ).strip()
+    if not weitoutiao_status and topup_status:
+        weitoutiao_status = topup_status
+    weitoutiao_message = str(
+        weitoutiao_payload.get("message")
+        or exported_files.get("weitoutiao_message")
+        or topup_result.get("message")
+        or nested_topup.get("message")
+        or exported_files.get("standalone_topup_summary")
+        or ""
+    ).strip()
+    if not weitoutiao_payload and (weitoutiao_status or topup_status):
+        weitoutiao_payload = {
+            "status": weitoutiao_status or topup_status,
+            "message": weitoutiao_message,
+            "topup": topup_result or {
+                "status": topup_status,
+                "message": weitoutiao_message,
+            },
+        }
+    if weitoutiao_payload:
+        weitoutiao_payload.setdefault("status", weitoutiao_status)
+        weitoutiao_payload.setdefault("message", weitoutiao_message)
+        summary["weitoutiao"] = weitoutiao_payload
+    summary["weitoutiao_status"] = weitoutiao_status
+    summary["weitoutiao_message"] = weitoutiao_message
+    summary["weitoutiao_topup_status"] = topup_status
+    summary["weitoutiao_topup_result"] = topup_result_path
+    summary["weitoutiao_result"] = daily_result_path
 
     if run_dir is None:
         return summary
@@ -1164,10 +1536,19 @@ def _build_daily_run_summary(settings, exported_files: dict[str, str]) -> dict[s
     summary["run_dir"] = str(run_dir)
     summary["run_name"] = run_dir.name
 
+    workflow_result = _load_json_file(run_dir / "workflow_result.json") or {}
+    if isinstance(workflow_result, dict):
+        summary["content_id"] = str(workflow_result.get("content_id", "")).strip()
+
     review_status = _load_json_file(run_dir / "review_status.json") or {}
     publish_result = _load_json_file(run_dir / settings.review.publish_dirname / "publish_result.json") or {}
     wechat_result = _load_json_file(run_dir / settings.review.publish_dirname / "wechat" / "wechat_publish_result.json") or {}
+    publish_record = publish_result.get("record", {}) if isinstance(publish_result, dict) else {}
+    if not isinstance(publish_record, dict):
+        publish_record = {}
     backend = publish_result.get("backend_response_summary", {}) if isinstance(publish_result, dict) else {}
+    if not isinstance(backend, dict):
+        backend = {}
     wechat_status = str(wechat_result.get("status", "")).strip()
     wechat_submit_status = str(wechat_result.get("submit_status", "")).strip()
     wechat_publish_url = str(wechat_result.get("external_url", "")).strip()
@@ -1179,17 +1560,370 @@ def _build_daily_run_summary(settings, exported_files: dict[str, str]) -> dict[s
             wechat_status = "draft_created"
 
     summary["review_status"] = str(review_status.get("status", "")).strip()
-    summary["selected_title"] = str(review_status.get("selected_title", "")).strip()
+    summary["selected_title"] = (
+        str(review_status.get("selected_title", "")).strip()
+        or str(publish_result.get("title", "")).strip()
+        or str(publish_record.get("title", "")).strip()
+        or str(exported_files.get("selected_title", "")).strip()
+    )
     summary["publish_status"] = str(publish_result.get("status", "")).strip()
-    summary["publish_url"] = str(publish_result.get("external_url", "")).strip()
-    summary["publish_message"] = str(backend.get("message", "")).strip()
-    summary["publish_pgc_id"] = str(backend.get("pgc_id", "")).strip()
+    if not summary["content_id"] and isinstance(publish_result, dict):
+        summary["content_id"] = str(publish_result.get("content_id", "")).strip()
+    if not summary["content_id"]:
+        summary["content_id"] = str(exported_files.get("content_id", "")).strip()
+    summary["publish_url"] = (
+        str(publish_result.get("external_url", "")).strip()
+        or str(exported_files.get("publish_url", "")).strip()
+    )
+    summary["publish_message"] = (
+        str(backend.get("message", "")).strip()
+        or str(publish_result.get("message", "")).strip()
+        or str(exported_files.get("publish_message", "")).strip()
+    )
+    summary["publish_pgc_id"] = (
+        str(backend.get("pgc_id", "")).strip()
+        or str(publish_result.get("pgc_id", "")).strip()
+        or str(exported_files.get("publish_pgc_id", "")).strip()
+    )
     summary["wechat_status"] = wechat_status
     summary["wechat_submit_status"] = wechat_submit_status
     summary["wechat_submit_requested"] = bool(wechat_result.get("submit_requested", False))
     summary["wechat_publish_url"] = wechat_publish_url
     summary["wechat_draft_media_id"] = wechat_draft_media_id
     return summary
+
+
+_DAILY_PUBLISH_SUCCESS_STATUSES = {
+    "published",
+    "submitted_for_review",
+    "submitted",
+    "success",
+    "publish_uncertain",
+}
+
+
+def _hydrate_already_published_exports(settings, exported_files: dict[str, Any]) -> None:
+    """Restore the latest same-day graphic run for an already-published result."""
+    if str(exported_files.get("status", "")).strip().lower() != "already_published":
+        return
+
+    history_path = settings.output_dir / settings.publishing.history_filename
+    if not history_path.exists():
+        return
+    try:
+        history_payload = json.loads(history_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if isinstance(history_payload, dict):
+        history = history_payload.get("records", history_payload.get("history", []))
+    else:
+        history = history_payload
+    if not isinstance(history, list):
+        return
+
+    today = datetime.now().date().isoformat()
+    platform = str(settings.publishing.platform or "toutiao").strip()
+    candidates: list[dict[str, Any]] = []
+    for index, record in enumerate(history):
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("platform", "")).strip() != platform:
+            continue
+        if str(record.get("status", "")).strip().lower() not in _DAILY_PUBLISH_SUCCESS_STATUSES:
+            continue
+        published_at = str(
+            record.get("published_at")
+            or record.get("timestamp")
+            or record.get("created_at")
+            or ""
+        ).strip()
+        if not published_at.startswith(today):
+            continue
+        candidates.append({"index": index, "record": record, "published_at": published_at})
+    if not candidates:
+        return
+
+    candidates.sort(key=lambda item: (str(item["published_at"]), int(item["index"])), reverse=True)
+    selected = candidates[0]["record"]
+    raw_run_dir = str(selected.get("run_dir", "")).strip()
+    if not raw_run_dir:
+        return
+    run_dir = Path(raw_run_dir)
+    if not run_dir.is_absolute():
+        run_dir = settings.project_root / run_dir
+    try:
+        run_dir = run_dir.resolve()
+    except OSError:
+        return
+    if not run_dir.is_dir():
+        return
+
+    def set_if_missing(key: str, value: object) -> None:
+        if str(exported_files.get(key, "")).strip() or not str(value or "").strip():
+            return
+        exported_files[key] = str(value)
+
+    publish_dir = run_dir / settings.review.publish_dirname
+    publish_result_path = publish_dir / "publish_result.json"
+    review_status_path = run_dir / "review_status.json"
+    workflow_result_path = run_dir / "workflow_result.json"
+    set_if_missing("resolved_run_dir", run_dir)
+    set_if_missing("archive_root", run_dir)
+    set_if_missing("published_run_dir", run_dir)
+    if publish_result_path.exists():
+        set_if_missing("publish_result", publish_result_path)
+    if review_status_path.exists():
+        set_if_missing("review_status", review_status_path)
+    if workflow_result_path.exists():
+        set_if_missing("workflow_result", workflow_result_path)
+
+    publish_result = _load_json_file(publish_result_path) or {}
+    publish_record = publish_result.get("record", {}) if isinstance(publish_result, dict) else {}
+    if not isinstance(publish_record, dict):
+        publish_record = {}
+    backend = publish_result.get("backend_response_summary", {}) if isinstance(publish_result, dict) else {}
+    if not isinstance(backend, dict):
+        backend = {}
+    set_if_missing(
+        "selected_title",
+        selected.get("title") or publish_record.get("title") or publish_result.get("title", ""),
+    )
+    set_if_missing("publish_status", publish_result.get("status") or selected.get("status", ""))
+    set_if_missing("publish_url", publish_result.get("external_url") or selected.get("external_url", ""))
+    set_if_missing("publish_message", backend.get("message") or publish_result.get("message", ""))
+    set_if_missing("publish_pgc_id", backend.get("pgc_id") or publish_result.get("pgc_id", ""))
+
+    content_id = str(
+        (publish_result.get("content_id", "") if isinstance(publish_result, dict) else "")
+        or publish_record.get("content_id", "")
+        or ""
+    ).strip()
+    if not content_id and workflow_result_path.exists():
+        workflow_result = _load_json_file(workflow_result_path) or {}
+        content_id = str(workflow_result.get("content_id", "")).strip()
+    content_index_path = settings.output_dir / "growth_ops" / "revenue_attribution" / "content_index.json"
+    if not content_id and content_index_path.exists():
+        index_payload = _load_json_file(content_index_path) or {}
+        if isinstance(index_payload, dict):
+            try:
+                target_path = os.path.normcase(str(run_dir.resolve()))
+            except OSError:
+                target_path = os.path.normcase(str(run_dir))
+            for key, item in index_payload.items():
+                if not isinstance(item, dict):
+                    continue
+                item_path = str(item.get("run_dir", "")).strip()
+                if not item_path:
+                    continue
+                try:
+                    item_path = str(Path(item_path).resolve())
+                except OSError:
+                    pass
+                if os.path.normcase(item_path) == target_path:
+                    content_id = str(item.get("content_id") or key).strip()
+                    break
+    set_if_missing("content_id", content_id)
+    if content_index_path.exists():
+        set_if_missing("content_index", content_index_path)
+
+
+def _mark_daily_run_running(settings) -> None:
+    """Mark direct ``main.py --daily-run`` execution as active."""
+    path = settings.automation_dir / "scheduled_status.json"
+    payload = _load_json_file(path) or {}
+    now = datetime.now().isoformat(timespec="seconds")
+    payload.update(
+        {
+            "updated_at": now,
+            "last_run_time": now,
+            "last_heartbeat": now,
+            "pid": os.getpid(),
+            "account_key": settings.account_key,
+            "account_slug": settings.account_slug,
+            "status": "running",
+            "overall_status": "running",
+            "overall_message": "Scheduled pipeline is running.",
+            "message": "Scheduled pipeline is running.",
+            "exit_code": 0,
+        }
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _scheduled_overall_status(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized == "running":
+        return "running"
+    if normalized == "partial_success":
+        return "partial_success"
+    if normalized in {
+        "failed",
+        "error",
+        "blocked",
+        "blocked_by_ip",
+        "publish_login_required",
+        "publish_uncertain",
+    }:
+        return "failed"
+    if normalized == "review_required":
+        # The pipeline completed normally and left a reviewable draft. This is
+        # a business state, not a scheduler/process failure.
+        return "review_required"
+    if normalized == "no_topics":
+        return "idle"
+    return "success"
+
+
+def _write_scheduled_runtime_status(
+    settings,
+    *,
+    summary: dict[str, Any],
+    status: str,
+    message: str,
+) -> None:
+    """Persist terminal daily-run state without losing the last article."""
+    path = settings.automation_dir / "scheduled_status.json"
+    payload = _load_json_file(path) or {}
+    now = datetime.now().isoformat(timespec="seconds")
+    normalized_status = str(status or "").strip().lower()
+    has_new_run = bool(str(summary.get("run_dir", "")).strip())
+    preserve_previous_article = normalized_status in {
+        "no_topics",
+        "skipped",
+        "already_published",
+    } and not has_new_run
+    payload.update(
+        {
+            "updated_at": now,
+            "last_run_time": now,
+            "last_heartbeat": "",
+            "pid": 0,
+            "account_key": settings.account_key,
+            "account_slug": settings.account_slug,
+            "status": status,
+            "overall_status": _scheduled_overall_status(status),
+            "overall_message": message,
+            "message": message,
+            "run_outcome": str(summary.get("run_outcome", "")).strip(),
+        }
+    )
+    # Keep persisted state aligned with the CLI contract so stale retry
+    # metadata cannot make a successful scheduled run look like an error.
+    payload["exit_code"] = 1 if str(status or "").strip().lower() in {
+        "failed",
+        "partial_success",
+        "publish_login_required",
+        "publish_uncertain",
+    } else 0
+    field_map = {
+        "run_dir": "run_dir",
+        "run_name": "run_name",
+        "content_id": "content_id",
+        "review_status": "review_status",
+        "selected_title": "selected_title",
+        "workflow_status": "workflow_status",
+        "publish_status": "publish_status",
+        "publish_url": "publish_url",
+        "publish_message": "publish_message",
+        "publish_pgc_id": "publish_pgc_id",
+        "wechat_status": "wechat_status",
+        "wechat_submit_status": "wechat_submit_status",
+        "wechat_submit_requested": "wechat_submit_requested",
+        "wechat_publish_url": "wechat_publish_url",
+        "wechat_draft_media_id": "wechat_draft_media_id",
+        "weitoutiao_status": "weitoutiao_status",
+        "weitoutiao_message": "weitoutiao_message",
+        "weitoutiao_topup_status": "weitoutiao_topup_status",
+        "weitoutiao_topup_result": "weitoutiao_topup_result",
+        "weitoutiao_result": "weitoutiao_result",
+    }
+    for target, source in field_map.items():
+        value = summary.get(source)
+        if isinstance(value, bool):
+            if value or not preserve_previous_article:
+                payload[target] = value
+        elif str(value or "").strip():
+            payload[target] = value
+        elif not preserve_previous_article:
+            payload[target] = ""
+    if isinstance(summary.get("workflow_errors"), list):
+        payload["workflow_errors"] = list(summary["workflow_errors"])
+    if isinstance(summary.get("weitoutiao"), dict):
+        payload["weitoutiao"] = dict(summary["weitoutiao"])
+
+    existing_platforms = payload.get("platforms", {}) if isinstance(payload.get("platforms"), dict) else {}
+    platforms: dict[str, dict[str, str]] = {}
+    for key in ("toutiao", "wechat", "weitoutiao"):
+        previous = existing_platforms.get(key, {}) if isinstance(existing_platforms.get(key), dict) else {}
+        platforms[key] = {
+            "status": (
+                str(previous.get("status", "idle") or "idle")
+                if preserve_previous_article
+                else "idle"
+            ),
+            "last_run": (
+                str(previous.get("last_run", "") or "")
+                if preserve_previous_article
+                else ""
+            ),
+            "message": (
+                str(previous.get("message", "") or "")
+                if preserve_previous_article
+                else ""
+            ),
+        }
+    publish_status = str(summary.get("publish_status", "")).strip().lower()
+    if publish_status:
+        platforms["toutiao"] = {
+            "status": "success" if publish_status in _DAILY_PUBLISH_SUCCESS_STATUSES or publish_status in {"draft_saved", "draft_created"} else "failed",
+            "last_run": now,
+            "message": str(summary.get("publish_message") or message),
+        }
+    elif normalized_status == "review_required":
+        platforms["toutiao"] = {
+            "status": "review_required",
+            "last_run": now,
+            "message": message,
+        }
+    elif normalized_status in {
+        "failed",
+        "error",
+        "blocked",
+        "blocked_by_ip",
+        "publish_login_required",
+        "publish_uncertain",
+    }:
+        platforms["toutiao"] = {
+            "status": "failed",
+            "last_run": now,
+            "message": message,
+        }
+    wechat_status = str(summary.get("wechat_status", "")).strip().lower()
+    if wechat_status:
+        platforms["wechat"] = {
+            "status": "success" if wechat_status in {"submitted", "submitted_for_review", "success", "published", "draft_created", "draft_saved"} else "failed",
+            "last_run": now,
+            "message": str(summary.get("wechat_publish_url") or message),
+        }
+    weitoutiao_status = str(summary.get("weitoutiao_status", "")).strip().lower()
+    if weitoutiao_status:
+        if weitoutiao_status in {"success", "published", "submitted", "submitted_for_review", "target_reached"}:
+            platform_status = "success"
+        elif weitoutiao_status == "partial_success":
+            platform_status = "partial_success"
+        elif weitoutiao_status in {"not_attempted", "disabled"}:
+            platform_status = "idle"
+        else:
+            platform_status = "failed"
+        platforms["weitoutiao"] = {
+            "status": platform_status,
+            "last_run": now,
+            "message": str(summary.get("weitoutiao_message") or message),
+        }
+    payload["platforms"] = platforms
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _resolve_run_dir_from_exports(exported_files: dict[str, str]) -> Path | None:
@@ -1219,7 +1953,7 @@ def _load_json_file(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None

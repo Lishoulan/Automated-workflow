@@ -1,4 +1,4 @@
-# Centralized selector registry for all platform RPA automation.
+﻿# Centralized selector registry for all platform RPA automation.
 # Organized by platform and page/dialog.
 # When a platform updates its UI, only this file needs to change.
 
@@ -309,4 +309,21 @@ toutiao:
       - ".ai-assistant-drawer .byte-drawer-close"
       - ".ai-assistant-drawer button:has-text('关闭')"
       - ".ai-assistant-drawer [class*='close']"
+
+  weitoutiao_page:
+    editor:
+      - "div.ProseMirror"
+      - "div[contenteditable='true'][data-placeholder*='微头条']"
+      - "div[contenteditable='true'][data-placeholder*='正文']"
+      - "div[contenteditable='true'][role='textbox']"
+      - "div[contenteditable='true']"
+    publish_button:
+      - "button:has-text('发布')"
+      - "button:has-text('发表')"
+      - "button:has-text('发布微头条')"
+    success_indicator:
+      - "text=发布成功"
+      - "text=提交成功"
+      - "text=审核中"
+      - "text=已发布"
 

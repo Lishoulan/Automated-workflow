@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from difflib import SequenceMatcher
 from typing import Iterable
 
 _MIN_WORD_COUNT = 800
@@ -56,12 +57,17 @@ SECTION_LABELS = {
     "正文校验备注",
 }
 
-# 行内噪声模式：匹配 "体裁要求：..." 和 "manual_paste：..." 等
+# 行内噪声模式：匹配 "体裁要求：..."、"manual_paste：..." 等
 _INLINE_NOISE_PATTERNS = [
     re.compile(r"体裁要求[：:]?.*?(?=[。；;！!？?\n]|$)"),
-    re.compile(r"manual_paste[：:]?.*?(?=[。；;！!？?\n]|$)"),
     re.compile(r"来源摘要[：:]\s*manual_paste[。；;]?"),
     re.compile(r"来源摘要[：:][^。；;！!？?\n]*"),
+    re.compile(
+        r"(?:manual_paste|source_document|source_material|benchmark_hotspot|"
+        r"evergreen_pool|evergreen://)[：:]?.*?(?=[。；;！!？?\n]|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?:manual_paste|source_document|source_material|benchmark_hotspot|evergreen_pool|evergreen://)", re.IGNORECASE),
 ]
 
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?；;])")
@@ -69,7 +75,17 @@ COMMA_SPLIT_RE = re.compile(r"(?<=[，、；：:])")
 INLINE_HEADING_RE = re.compile(r"(?<!\n)\s+(?=#{1,6}\s*)")
 
 
-def clean_article_text(article: str, title_candidates: Iterable[str] | None = None) -> str:
+def clean_article_text(
+    article: str,
+    title_candidates: Iterable[str] | None = None,
+    min_word_count: int | None = None,
+) -> str:
+    """Normalize publishable text without inventing article content.
+
+    Length validation belongs to the writer/workflow quality gates.  This
+    function deliberately never pads a short article with generic facts or
+    industry claims because it has no source context to ground them.
+    """
     text = str(article or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not text:
         return ""
@@ -88,48 +104,22 @@ def clean_article_text(article: str, title_candidates: Iterable[str] | None = No
         result.extend(_split_for_mobile(block))
 
     result = _merge_tiny_blocks(result)
+    result = _deduplicate_blocks(result)
     result = _rebalance_blocks(result)
     final_text = "\n\n".join(block for block in result if block).strip()
     char_count = len(final_text.replace("\n", "").replace(" ", ""))
-    if char_count < _MIN_WORD_COUNT:
+    effective_min = min_word_count if min_word_count is not None else _MIN_WORD_COUNT
+    if char_count < effective_min and effective_min > 0:
         global _warned_short_article
         if not _warned_short_article:
             logging.getLogger(__name__).warning(
                 "Article after sanitization had only %d chars (minimum %d). "
-                "Applying supplementary paragraphs to reach minimum.",
+                "Leaving text unchanged because the sanitizer does not invent supplementary content.",
                 char_count,
-                _MIN_WORD_COUNT,
+                effective_min,
             )
             _warned_short_article = True
-        final_text = _supplement_short_article(final_text, char_count)
     return final_text
-
-
-_SUPPLEMENTARY_PARAGRAPHS = [
-    "再看交付端，目前多数厂商仍处于小批量试产阶段，产线良率和交付周期是比融资额更值得盯的指标。",
-    "从成本结构看，核心零部件占整机成本超过六成，国产替代进度将直接决定整机毛利率能否突破盈亏平衡点。",
-    "一个容易被忽略的变量是场景定义能力——能率先在工业场景拿到重复订单的企业，才有可能在成本曲线上实现下沉。",
-    "头部企业的产能扩张节奏也需要关注，过快扩产可能带来库存压力，过慢则可能错失窗口期。",
-    "从客户验证角度看，从样机到小批量交付通常需要12到18个月，这个爬坡期是判断量产兑现的关键窗口。",
-    "竞争格局正在分化，具备自研核心零部件能力的厂商在议价和交付上更有优势，纯集成商的利润空间可能持续承压。",
-    "后续如果出现头部客户的大额订单或量产线验收公告，将是产业链利润从预期转向兑现的重要信号。",
-]
-
-
-def _supplement_short_article(text: str, current_char_count: int) -> str:
-    if current_char_count >= _MIN_WORD_COUNT:
-        return text
-    deficit = _MIN_WORD_COUNT - current_char_count
-    paragraphs_to_add: list[str] = []
-    chars_added = 0
-    for para in _SUPPLEMENTARY_PARAGRAPHS:
-        if chars_added >= deficit:
-            break
-        paragraphs_to_add.append(para)
-        chars_added += len(para.replace("\n", "").replace(" ", ""))
-    if paragraphs_to_add:
-        text = text.rstrip() + "\n\n" + "\n\n".join(paragraphs_to_add)
-    return text
 
 
 def _strip_inline_noise(text: str) -> str:
@@ -182,7 +172,7 @@ def _clean_block(block: str) -> str:
         if not line or line in {"--", "---"}:
             continue
         lines.append(line)
-    return _repair_cjk_sentence_gaps(" ".join(lines).strip())
+    return _normalize_punctuation(_repair_cjk_sentence_gaps(" ".join(lines).strip()))
 
 
 def _strip_leading_title(blocks: list[str], title_candidates: Iterable[str]) -> list[str]:
@@ -190,8 +180,13 @@ def _strip_leading_title(blocks: list[str], title_candidates: Iterable[str]) -> 
         return blocks
 
     first = blocks[0]
-    first = _strip_known_title_candidate(first, title_candidates)
-    first = _strip_title_like_first_sentence(first)
+    candidates = list(title_candidates)
+    if candidates:
+        # The heuristic is intentionally opt-in.  Without an explicit title
+        # candidate, a normal lead such as "风险边界：客户验收延后。" must
+        # remain article content rather than being mistaken for a heading.
+        first = _strip_known_title_candidate(first, candidates)
+        first = _strip_title_like_first_sentence(first)
 
     if " " in first:
         prefix, rest = first.split(" ", 1)
@@ -338,6 +333,41 @@ def _merge_tiny_blocks(blocks: list[str]) -> list[str]:
         else:
             merged.append(block)
     return merged
+
+
+def _deduplicate_blocks(blocks: list[str]) -> list[str]:
+    """Drop exact or near-identical blocks created by repeated generation passes."""
+    deduplicated: list[str] = []
+    normalized_seen: list[str] = []
+    for block in blocks:
+        normalized = re.sub(r"\W", "", block).lower()
+        if not normalized:
+            continue
+        duplicate = any(
+            normalized == previous
+            or (
+                len(normalized) >= 60
+                and len(previous) >= 60
+                and SequenceMatcher(None, normalized, previous).ratio() >= 0.88
+            )
+            for previous in normalized_seen
+        )
+        if duplicate:
+            continue
+        deduplicated.append(block)
+        normalized_seen.append(normalized)
+    return deduplicated
+
+
+def _normalize_punctuation(text: str) -> str:
+    normalized = str(text or "").strip()
+    normalized = re.sub(r"\s+([，。；：！？!?])", r"\1", normalized)
+    normalized = re.sub(r"([，,])\s*[；;]+", "；", normalized)
+    normalized = re.sub(r"([；;])\s*[，,]+", "；", normalized)
+    normalized = re.sub(r"[；;]\s*[。！？!?]", "。", normalized)
+    normalized = re.sub(r"[，,]\s*[。！？!?]", "。", normalized)
+    normalized = re.sub(r"([。！？!?；;])\s*\1+", r"\1", normalized)
+    return normalized.strip(" ，,；;：:")
 
 
 def _rebalance_blocks(blocks: list[str]) -> list[str]:

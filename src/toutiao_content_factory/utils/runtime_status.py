@@ -89,6 +89,18 @@ def refresh_heartbeat(path: Path, *, pid: int | None = None) -> dict[str, Any]:
     payload["pid"] = int(pid or os.getpid())
     payload["last_heartbeat"] = utcnow_iso()
     payload["updated_at"] = payload["last_heartbeat"]
+    # 陈旧 last_run_time 修复（2026-08-27）：心跳刷新说明本进程此刻在活动，
+    # 若 last_run_time 还停在旧日期（如绕过 ps1 直接 python main.py 的调度），
+    # 顺带补刷一次，避免监控面板显示"上次运行"长期停留在数周前。
+    current_state = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
+    if current_state != "running":
+        last_run = str(payload.get("last_run_time") or "")
+        try:
+            stale = datetime.fromisoformat(last_run) < datetime.now() - timedelta(minutes=10)
+        except (TypeError, ValueError):
+            stale = True
+        if stale:
+            payload["last_run_time"] = utcnow_iso()
     save_runtime_status(path, payload)
     return payload
 

@@ -400,6 +400,24 @@
       <strong>{{ '%.0f'|format(dashboard.lead_summary.actual_revenue or 0) }}</strong>
     </div>
     <div class="metric-card">
+      <span>昨日平台收益</span>
+      <strong>
+        {% if dashboard.performance_feedback.platform_revenue_known_count %}
+        {{ '%.2f'|format(dashboard.performance_feedback.known_platform_revenue or 0) }}
+        {% else %}
+        待回流
+        {% endif %}
+      </strong>
+    </div>
+    <div class="metric-card">
+      <span>收益归属日</span>
+      <strong>{{ dashboard.performance_feedback.earnings_date or "昨日" }}</strong>
+    </div>
+    <div class="metric-card">
+      <span>T+1待结算文章</span>
+      <strong>{{ dashboard.performance_feedback.pending_t1_count or 0 }}</strong>
+    </div>
+    <div class="metric-card">
       <span>待跟进资产</span>
       <strong>{{ 1 if dashboard.lead_assets.followup_queue else 0 }}</strong>
     </div>
@@ -471,6 +489,20 @@
             <input type="text" name="lead_next_follow_up" placeholder="2026-06-15 10:00">
           </label>
         </div>
+        <div class="lead-form-row">
+          <label>
+            来源内容 ID
+            <input type="text" name="lead_content_id" placeholder="ci_xxxxxxxxxxxxxxxx">
+          </label>
+          <label>
+            CTA 来源码
+            <input type="text" name="lead_cta_source_code" placeholder="robot_high_consultation">
+          </label>
+        </div>
+        <label>
+          来源平台
+          <input type="text" name="lead_platform" placeholder="toutiao / wechat">
+        </label>
         <label>
           备注
           <textarea name="lead_notes" placeholder="例如：对顾问式增长陪跑有兴趣，预算 5k-8k"></textarea>

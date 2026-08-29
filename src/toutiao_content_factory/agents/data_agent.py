@@ -217,6 +217,7 @@ class DataAgent(BaseAgent):
             topic_quality_score=int(route["topic_quality_score"]),
             topic_quality_flags=list(route["topic_quality_flags"]),
             word_target=int(route["word_target"]),
+            is_hot_topic=bool(getattr(extraction, "is_hot_topic", False)),
         )
 
     def _fallback(self, extraction: ExtractionResult, trend_report: TrendReport) -> DataReport:
@@ -300,6 +301,7 @@ class DataAgent(BaseAgent):
             topic_quality_score=int(route["topic_quality_score"]),
             topic_quality_flags=list(route["topic_quality_flags"]),
             word_target=int(route["word_target"]),
+            is_hot_topic=bool(getattr(extraction, "is_hot_topic", False)),
         )
 
     def _resolve_content_route(
@@ -320,7 +322,10 @@ class DataAgent(BaseAgent):
             core_data,
             evidence_notes,
         )
-        if content_mode == "sports":
+        if bool(getattr(extraction, "is_hot_topic", False)):
+            # 实时热榜二创：统一走热点快评，不按证据强度硬性要求长文
+            content_format = "quick_commentary"
+        elif content_mode == "sports":
             content_format = "quick_commentary"
         elif content_mode == "international":
             content_format = "quick_commentary"
@@ -376,6 +381,9 @@ class DataAgent(BaseAgent):
         evidence_notes: list[str],
     ) -> list[str]:
         flags = list(extraction.topic_quality_flags)
+        # 实时热榜二创：标题型热点天然缺证据/公司/数字，不把这些记为质量缺陷
+        if bool(getattr(extraction, "is_hot_topic", False)):
+            return flags
         if not core_data:
             flags.append("missing_core_data")
         if not growth_numbers:

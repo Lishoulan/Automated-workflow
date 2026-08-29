@@ -1,6 +1,202 @@
 version: 1
-updated_at: '2026-05-21'
+updated_at: '2026-08-29'
 articles:
+- key: 机器人热度之外_谁在拿走真正订单
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-29'
+  title: 机器人热度之外，谁在拿走真正订单
+  run_dir: ''
+  observed_metrics:
+    impression_count: 931
+    read_count: 25
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 智元机器人的通报生意_真正的收入来自什么
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-28'
+  title: 智元机器人的通报生意，真正的收入来自什么
+  run_dir: ''
+  observed_metrics:
+    impression_count: 220
+    read_count: 2
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 机器人不只卖整机_90_交付能力将重排产业链
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-27'
+  title: 机器人不只卖整机，90%交付能力将重排产业链
+  run_dir: ''
+  observed_metrics:
+    impression_count: 681
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 197_4亿背后_机器人的利润先流向谁
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-27'
+  title: 197.4亿背后，机器人的利润先流向谁
+  run_dir: ''
+  observed_metrics:
+    impression_count: 103
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 1万元背后_灵巧手的利润先流向谁
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-26'
+  title: 1万元背后，灵巧手的利润先流向谁
+  run_dir: ''
+  observed_metrics:
+    impression_count: 244
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 人形机器人9分钟演示_离进工厂还差哪些证据
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-26'
+  title: 人形机器人9分钟演示，离进工厂还差哪些证据
+  run_dir: ''
+  observed_metrics:
+    impression_count: 146
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 上千台机器人同场敬礼_展示规模不等于订单交付
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-25'
+  title: 上千台机器人同场敬礼，展示规模不等于订单交付
+  run_dir: ''
+  observed_metrics:
+    impression_count: 335
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 人形机器人订单多为试点_核心零部件厂商或先赚到钱
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-25'
+  title: 人形机器人订单多为试点，核心零部件厂商或先赚到钱
+  run_dir: ''
+  observed_metrics:
+    impression_count: 335
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 天工ultra跑完1500米夺冠_人形机器人量产还要等多久
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-25'
+  title: 天工Ultra跑完1500米夺冠，人形机器人量产还要等多久
+  run_dir: ''
+  observed_metrics:
+    impression_count: 142
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 90_背后_具身智能的利润先流向谁
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-24'
+  title: 90%背后，具身智能的利润先流向谁
+  run_dir: ''
+  observed_metrics:
+    impression_count: 137
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 分配机器人进入工厂背后_机器人谁在抢跑
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-24'
+  title: 分配机器人进入工厂背后，机器人谁在抢跑
+  run_dir: ''
+  observed_metrics:
+    impression_count: 133
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 具身智能毛利率的分化_正在改写座次
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-23'
+  title: 具身智能毛利率的分化，正在改写座次
+  run_dir: ''
+  observed_metrics:
+    impression_count: 0
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 2026年背后_具身智能的利润先流向谁
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-23'
+  title: 2026年背后，具身智能的利润先流向谁
+  run_dir: ''
+  observed_metrics:
+    impression_count: 0
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 以完成一次演示工厂背后_具身智能谁在抢跑
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-23'
+  title: 以完成一次演示工厂背后，具身智能谁在抢跑
+  run_dir: ''
+  observed_metrics:
+    impression_count: 0
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
 - key: japan_airport_robot
   enabled: true
   track: 科技商业

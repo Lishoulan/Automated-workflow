@@ -3,10 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import random
 import re
-from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -15,6 +13,7 @@ from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import ArticlePerformance, PublishRecord, WorkflowResult
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
 from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
+from toutiao_content_factory.services.t1_policy import infer_availability_status
 
 try:
     from playwright.sync_api import sync_playwright
@@ -24,7 +23,12 @@ except ImportError:  # pragma: no cover - optional dependency
 
 class PerformanceService:
     HUMAN_WAIT_RANGE_MS = (2000, 5000)
+    # 作品管理翻页深度：每页约 10-20 条，5 页覆盖近 7 天发布量（2026-08-27）
+    MAX_PAGES = 5
     TOUTIAO_ROW_SELECTORS = (
+        "[class*='article-card-bone']",
+        "[class*='article-card']",
+        "[class*='article-item']",
         "table tbody tr",
         ".article-item",
         ".content-list-item",
@@ -41,7 +45,8 @@ class PerformanceService:
         ".list_item",
     )
     TOUTIAO_URLS = (
-        "https://mp.toutiao.com/profile_v4/graphic/publish",
+        "https://mp.toutiao.com/profile_v4/manage/content/all",
+        "https://mp.toutiao.com/profile_v4/manage/content/weitoutiao",
         "https://mp.toutiao.com/profile_v4/graphic/manage",
         "https://mp.toutiao.com/",
     )
@@ -54,9 +59,23 @@ class PerformanceService:
         self.settings = settings
         self.logger = logger
 
-    def collect_performance_data(self, headless: bool | None = None) -> dict[str, Any]:
+    def collect_performance_data(
+        self,
+        headless: bool | None = None,
+        *,
+        observed_at: datetime | None = None,
+        earnings_date: date | str | None = None,
+        target_publish_date: date | str | None = None,
+    ) -> dict[str, Any]:
+        # 数据采集必须使用有头浏览器：头条创作中心在 headless 模式下
+        # 不渲染文章管理表格（与发布一致），强制 headless=False 保证能读到数据。
         if headless is None:
-            headless = os.environ.get("TOUTIAO_PUBLISH_HEADLESS", "0") == "1"
+            headless = False
+        observed_at = observed_at or datetime.now()
+        resolved_earnings_date = self._resolve_date_argument(earnings_date) or (
+            observed_at.date() - timedelta(days=1)
+        )
+        resolved_target_publish_date = self._resolve_date_argument(target_publish_date) or resolved_earnings_date
         errors: list[dict[str, str]] = []
         raw_platforms: dict[str, list[ArticlePerformance]] = {"toutiao": [], "wechat": []}
 
@@ -74,15 +93,43 @@ class PerformanceService:
         matched_records.extend(self._match_metrics_to_local_records("toutiao", raw_platforms["toutiao"]))
         matched_records.extend(self._match_metrics_to_local_records("wechat", raw_platforms["wechat"]))
 
+        self._annotate_collection_semantics(
+            matched_records,
+            observed_at=observed_at,
+            earnings_date=resolved_earnings_date,
+            target_publish_date=resolved_target_publish_date,
+        )
+        platform_payloads: dict[str, list[dict[str, Any]]] = {}
+        for platform, metrics in raw_platforms.items():
+            rows = [metric.to_dict() for metric in metrics]
+            for row in rows:
+                row["platform"] = platform
+            self._annotate_collection_semantics(
+                rows,
+                observed_at=observed_at,
+                earnings_date=resolved_earnings_date,
+                target_publish_date=resolved_target_publish_date,
+            )
+            platform_payloads[platform] = rows
         payload = {
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "generated_at": observed_at.isoformat(timespec="seconds"),
+            "observed_at": observed_at.isoformat(timespec="seconds"),
+            "collection_date": observed_at.date().isoformat(),
+            "earnings_date": resolved_earnings_date.isoformat(),
+            "data_date": resolved_earnings_date.isoformat(),
+            "target_publish_date": resolved_target_publish_date.isoformat(),
+            "earnings_policy": "t_plus_1",
             "records": matched_records,
-            "platforms": {
-                name: [metric.to_dict() for metric in metrics]
-                for name, metrics in raw_platforms.items()
-            },
+            "platforms": platform_payloads,
             "errors": errors,
         }
+        payload["attribution"] = self._sync_attribution_snapshots(
+            matched_records,
+            observed_at=observed_at,
+            earnings_date=resolved_earnings_date,
+            target_publish_date=resolved_target_publish_date,
+        )
+        payload["reports"] = self._build_automatic_reports()
         output_path = self._save_metrics(payload)
         payload["output_path"] = str(output_path)
         return payload
@@ -169,13 +216,32 @@ class PerformanceService:
                         ):
                             continue
 
-                        rows = self._extract_metric_rows(page, row_selectors)
-                        if not rows:
+                        # 头条：点击「作品管理」进入文章列表 iframe 页
+                        if platform == "toutiao":
+                            self._enter_content_manage(page)
+
+                        # 全量采集：翻页聚合（2026-08-27 覆盖率优化）。
+                        # 头条作品管理分页列表，翻页能采集近 7 天全部图文+微头条行，
+                        # 否则只读到第一页（约 10-20 条），绩效闭环数据量偏少。
+                        all_rows: list[dict[str, str]] = []
+                        if platform == "toutiao":
+                            all_rows = self._collect_rows_with_pagination(
+                                page=page,
+                                row_selectors=row_selectors,
+                                max_pages=self.MAX_PAGES,
+                            )
+                        else:
+                            rows = self._extract_metric_rows(page, row_selectors)
+                            if not rows:
+                                rows = self._extract_metric_rows_from_frames(page, row_selectors)
+                            all_rows = list(rows)
+
+                        if not all_rows:
                             self.logger.warning(
                                 "%s performance page did not expose metric rows yet. If a captcha is visible, complete it in the browser window and rerun.",
                                 platform,
                             )
-                        parsed = self._normalize_metric_rows(rows)
+                        parsed = self._normalize_metric_rows(all_rows)
                         recent = [item for item in parsed if self._is_recent_or_unknown(item.publish_date)]
                         if recent:
                             return self._dedupe_metrics(recent)
@@ -226,6 +292,7 @@ class PerformanceService:
             "text=展现",
             "text=草稿箱",
             "text=发表记录",
+            "text=作品管理",
             "table",
         )
         for selector in hints:
@@ -236,9 +303,621 @@ class PerformanceService:
                 continue
         return False
 
+    def _enter_content_manage(self, page: Any) -> None:
+        """头条创作中心：点击「作品管理」进入文章管理列表。
+
+        文章数据渲染在 iframe 内（profile_v4/manage/content/all），
+        必须先点击左侧「作品管理」入口，否则列表区域为空。
+        """
+        for selector in (
+            "text=作品管理",
+            "a:has-text('作品管理')",
+            "span:has-text('作品管理')",
+            "[class*='manage']:has-text('作品管理')",
+        ):
+            try:
+                locator = page.locator(selector).first
+                if locator.count() > 0 and locator.is_visible(timeout=4000):
+                    locator.click(timeout=4000)
+                    page.wait_for_timeout(3000)
+                    self.logger.info("Clicked Toutiao content manage entry: %s", selector)
+                    return
+            except Exception:
+                continue
+        # 兜底：直接导航到文章管理 iframe 页
+        try:
+            page.goto("https://mp.toutiao.com/profile_v4/manage/content/all", wait_until="domcontentloaded")
+            page.wait_for_timeout(3000)
+            self.logger.info("Navigated directly to Toutiao content manage iframe page.")
+            return
+        except Exception as exc:
+            self.logger.warning("Direct navigation to content manage page failed: %s", exc)
+        self.logger.warning("Toutiao content manage entry (作品管理) not found; continuing with page body.")
+
+    def _extract_metric_rows_from_frames(self, page: Any, row_selectors: tuple[str, ...]) -> list[dict[str, str]]:
+        """从页面的 iframe 中提取文章行（头条文章管理列表渲染在 iframe 内）。
+
+        注意：头条管理页的文章列表就在主 frame（manage/content/all）中，
+        不能跳过主 frame——否则永远提取不到数据（2026-08-25 实测修复）。
+        """
+        results: list[dict[str, str]] = []
+        frames = [page.main_frame] + [f for f in page.frames if f != page.main_frame]
+        for frame in frames:
+            try:
+                frame.wait_for_selector("body", timeout=5000)
+            except Exception:
+                continue
+            rows = frame.evaluate(
+                """
+                ({ rowSelectors }) => {
+                  const seen = new Set();
+                  const items = [];
+                  for (const selector of rowSelectors) {
+                    for (const node of document.querySelectorAll(selector)) {
+                      const text = (node.innerText || "").trim();
+                      if (!text || text.length < 8) {
+                        continue;
+                      }
+                      const anchor = node.querySelector("a[href]");
+                      const titleNode = node.querySelector("[title], .title, h1, h2, h3, h4") || anchor;
+                      const title =
+                        (titleNode && (titleNode.getAttribute("title") || titleNode.innerText || "")) ||
+                        (anchor && anchor.innerText) ||
+                        "";
+                      const publishNode = node.querySelector("time, .time, .date, .publish-time, .publish_date, [data-time]");
+                      const publishText =
+                        (publishNode &&
+                          (publishNode.getAttribute("datetime") ||
+                            publishNode.getAttribute("title") ||
+                            publishNode.getAttribute("data-time") ||
+                            publishNode.innerText ||
+                            "")) ||
+                        "";
+                      const href = anchor ? anchor.href || "" : "";
+                      const key = `${title}|${href}|${text.slice(0, 120)}`;
+                      if (!title.trim() || seen.has(key)) {
+                        continue;
+                      }
+                      seen.add(key);
+                      items.push({
+                        title: title.trim(),
+                        url: href.trim(),
+                        publish_text: publishText.trim(),
+                        text,
+                      });
+                    }
+                  }
+                  return items.slice(0, 200);
+                }
+                """,
+                {"rowSelectors": list(row_selectors)},
+            )
+            for item in rows:
+                if isinstance(item, dict) and item not in results:
+                    results.append(item)
+        return results
+
+    def _resolve_date_argument(self, value: date | str | None) -> date | None:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return date.fromisoformat(text[:10])
+        except ValueError:
+            parsed = self._parse_datetime(text)
+            return parsed.date() if parsed is not None else None
+
+    def _availability_status(
+        self,
+        *,
+        platform: str,
+        published_date: date | None,
+        observed_date: date,
+        earnings_date: date,
+    ) -> str:
+        if published_date is None:
+            return "not_available"
+        if published_date > observed_date:
+            return "not_available"
+        if platform.lower() in {"toutiao", "toutiao_weitoutiao"} and published_date > earnings_date:
+            return "pending_t1"
+        return "available"
+
+    def _annotate_collection_semantics(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        observed_at: datetime,
+        earnings_date: date,
+        target_publish_date: date,
+    ) -> None:
+        """Attach explicit T+1 dates before any persistence or analysis."""
+        observed_iso = observed_at.isoformat(timespec="seconds")
+        observed_date = observed_at.date()
+        for item in records:
+            local_record = item.get("local_record") if isinstance(item.get("local_record"), dict) else {}
+            platform = str(item.get("platform") or local_record.get("platform") or "toutiao").strip()
+            published_at = str(
+                local_record.get("published_at")
+                or item.get("published_at")
+                or item.get("publish_date")
+                or ""
+            ).strip()
+            published_date = self._resolve_date_argument(published_at)
+            if published_date is None:
+                published_date = self._resolve_date_argument(item.get("publish_date"))
+            availability = self._availability_status(
+                platform=platform,
+                published_date=published_date,
+                observed_date=observed_date,
+                earnings_date=earnings_date,
+            )
+            has_platform_revenue = "platform_revenue" in item and item.get("platform_revenue") is not None
+            if availability == "pending_t1":
+                revenue_status = "pending_t1"
+                platform_revenue_status = "pending_t1"
+            elif has_platform_revenue:
+                revenue_status = "available"
+                platform_revenue_status = "available"
+            elif availability == "not_available":
+                revenue_status = "not_available"
+                platform_revenue_status = "not_available"
+            else:
+                # The article is eligible for yesterday's query, but an absent
+                # amount is still unknown and must not be treated as zero.
+                revenue_status = "unknown"
+                platform_revenue_status = "unknown"
+
+            item["published_date"] = published_date.isoformat() if published_date else ""
+            item["observed_at"] = observed_iso
+            item["collection_date"] = observed_date.isoformat()
+            item["earnings_date"] = earnings_date.isoformat()
+            item["data_date"] = earnings_date.isoformat()
+            item["target_publish_date"] = target_publish_date.isoformat()
+            item["is_earnings_target"] = bool(published_date == target_publish_date)
+            item["availability_status"] = availability
+            item["revenue_status"] = revenue_status
+            item["platform_revenue_status"] = platform_revenue_status
+            if availability != "available":
+                # A same-day Toutiao row may expose a provisional amount in the
+                # dashboard, but it is not an earnings value until T+1.
+                item["platform_revenue"] = None
+            item["revenue_amount_known"] = has_platform_revenue or bool(
+                str(item.get("revenue_status", "")).strip() in {"available", "partial"}
+                and item.get("revenue_amount") is not None
+            )
+            if availability != "available":
+                item["revenue_amount_known"] = False
+            item["analysis_eligible"] = availability == "available"
+
+    def _sync_attribution_snapshots(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        observed_at: datetime,
+        earnings_date: date | str | None = None,
+        target_publish_date: date | str | None = None,
+    ) -> dict[str, Any]:
+        """Persist matured performance windows and join them to content economics."""
+        from toutiao_content_factory.services.revenue_attribution_service import (
+            PerformanceSnapshot,
+            RevenueAttributionService,
+        )
+
+        earnings_date = self._resolve_date_argument(earnings_date) or (observed_at.date() - timedelta(days=1))
+        target_publish_date = self._resolve_date_argument(target_publish_date) or earnings_date
+        self._annotate_collection_semantics(
+            records,
+            observed_at=observed_at,
+            earnings_date=earnings_date,
+            target_publish_date=target_publish_date,
+        )
+        attribution = RevenueAttributionService(self.settings.output_dir, self.logger)
+        summary: dict[str, Any] = {
+            "observed_at": observed_at.isoformat(timespec="seconds"),
+            "collection_date": observed_at.date().isoformat(),
+            "earnings_date": earnings_date.isoformat(),
+            "data_date": earnings_date.isoformat(),
+            "target_publish_date": target_publish_date.isoformat(),
+            "earnings_policy": "t_plus_1",
+            "recorded_count": 0,
+            "pending_count": 0,
+            "pending_t1_count": 0,
+            "available_count": 0,
+            "not_available_count": 0,
+            "skipped_count": 0,
+            "snapshot_labels": {label: 0 for label in attribution.SNAPSHOT_LABELS},
+            "records": [],
+            "snapshot_ledger": str(attribution.snapshot_ledger_path),
+        }
+        growth_ops = None
+        try:
+            from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
+
+            growth_ops = GrowthOpsService(self.settings, self.logger)
+        except Exception as exc:  # pragma: no cover - legacy/minimal settings
+            self.logger.debug("Growth performance ledger sync unavailable: %s", exc)
+
+        for item in records:
+            availability = str(item.get("availability_status", "not_available")).strip() or "not_available"
+            if availability == "pending_t1":
+                summary["pending_t1_count"] += 1
+            elif availability == "available":
+                summary["available_count"] += 1
+            else:
+                summary["not_available_count"] += 1
+            local_record = item.get("local_record")
+            if not isinstance(local_record, dict):
+                summary["skipped_count"] += 1
+                continue
+            run_dir_text = str(local_record.get("run_dir", "")).strip()
+            if not run_dir_text:
+                summary["skipped_count"] += 1
+                continue
+            run_dir = Path(run_dir_text)
+            try:
+                identity_record = attribution.find_content_record_by_run_dir(run_dir)
+                if identity_record is None:
+                    identity_record = self._register_attribution_identity(
+                        attribution,
+                        platform=str(local_record.get("platform") or item.get("platform") or "toutiao"),
+                        run_dir=run_dir,
+                        local_record=local_record,
+                        metric=item,
+                    )
+                content_id = str(identity_record.get("content_id", "")).strip()
+                if not content_id:
+                    summary["skipped_count"] += 1
+                    continue
+
+                item["content_id"] = content_id
+                published_at = str(
+                    local_record.get("published_at")
+                    or identity_record.get("published_at")
+                    or item.get("publish_date", "")
+                ).strip()
+                label, elapsed_hours = self._resolve_snapshot_window(
+                    published_at,
+                    observed_at=observed_at,
+                )
+                item["hours_since_publish"] = elapsed_hours
+                item["snapshot_label"] = label or ""
+                if not label:
+                    item["snapshot_status"] = (
+                        "pending_t1"
+                        if availability == "pending_t1"
+                        else "pending_1h"
+                        if elapsed_hours is not None
+                        else "published_at_unknown"
+                    )
+                    summary["pending_count"] += 1
+                    continue
+
+                revenue_summary = attribution.summarize_revenue_events(content_id)
+                direct_platform_revenue = item.get("platform_revenue")
+                has_direct_platform_revenue = direct_platform_revenue is not None
+                if has_direct_platform_revenue:
+                    try:
+                        direct_platform_revenue = float(direct_platform_revenue or 0.0)
+                    except (TypeError, ValueError):
+                        direct_platform_revenue = 0.0
+                        has_direct_platform_revenue = False
+                has_platform_event = bool(revenue_summary.get("platform_revenue_known"))
+                has_revenue_event = bool(revenue_summary.get("event_count"))
+                if availability == "pending_t1":
+                    platform_revenue_status = "pending_t1"
+                    revenue_status = "pending_t1"
+                elif has_direct_platform_revenue or has_platform_event:
+                    platform_revenue_status = "available"
+                    revenue_status = "available"
+                elif has_revenue_event:
+                    platform_revenue_status = "unknown"
+                    revenue_status = "partial"
+                else:
+                    platform_revenue_status = str(item.get("platform_revenue_status", "unknown")) or "unknown"
+                    revenue_status = str(item.get("revenue_status", "unknown")) or "unknown"
+                revenue_amount = float(revenue_summary.get("revenue_amount", 0.0) or 0.0)
+                if has_direct_platform_revenue:
+                    revenue_amount += float(direct_platform_revenue or 0.0)
+                snapshot = PerformanceSnapshot(
+                    snapshot_label=label,
+                    snapshot_at=observed_at.isoformat(timespec="seconds"),
+                    collection_date=observed_at.date().isoformat(),
+                    published_date=str(item.get("published_date", "")),
+                    earnings_date=earnings_date.isoformat(),
+                    availability_status=availability,
+                    revenue_status=revenue_status,
+                    platform_revenue_status=platform_revenue_status,
+                    revenue_amount_known=(
+                        has_direct_platform_revenue or has_platform_event
+                    ) and availability != "pending_t1",
+                    platform_revenue=(
+                        float(direct_platform_revenue)
+                        if has_direct_platform_revenue
+                        else None
+                    ),
+                    impression_count=int(item.get("impression_count", 0) or 0),
+                    read_count=int(item.get("read_count", item.get("views", 0)) or 0),
+                    recommendation_read_count=int(item.get("recommendation_read_count", 0) or 0),
+                    like_count=int(item.get("like_count", 0) or 0),
+                    share_count=int(item.get("share_count", 0) or 0),
+                    comment_count=int(item.get("comment_count", 0) or 0),
+                    follower_gain=int(item.get("follower_gain", 0) or 0),
+                    lead_count=int(revenue_summary.get("lead_count", 0) or 0),
+                    revenue_amount=revenue_amount,
+                )
+                attribution.record_snapshot(content_id, snapshot)
+                stored_economics = attribution._load_json(attribution.unit_economics_path, default={})
+                existing_economics = stored_economics.get(content_id, {})
+                platform_revenue = (
+                    float(existing_economics.get("platform_revenue", 0.0) or 0.0)
+                    if isinstance(existing_economics, dict)
+                    else 0.0
+                )
+                economics = attribution.compute_unit_economics(
+                    content_id,
+                    platform_revenue=(
+                        float(direct_platform_revenue)
+                        if has_direct_platform_revenue
+                        else platform_revenue
+                    ),
+                )
+                item["snapshot_status"] = "pending_t1" if availability == "pending_t1" else "recorded"
+                item["lead_count"] = snapshot.lead_count
+                item["revenue_amount"] = snapshot.revenue_amount
+                item["revenue_amount_known"] = snapshot.revenue_amount_known
+                item["revenue_status"] = snapshot.revenue_status
+                item["platform_revenue_status"] = snapshot.platform_revenue_status
+                item["unit_economics"] = economics.to_dict()
+                summary["recorded_count"] += 1
+                summary["snapshot_labels"][label] += 1
+                summary["records"].append(
+                    {
+                        "content_id": content_id,
+                        "run_dir": str(run_dir),
+                        "snapshot_label": label,
+                        "hours_since_publish": elapsed_hours,
+                        "published_date": item.get("published_date", ""),
+                        "earnings_date": earnings_date.isoformat(),
+                        "availability_status": availability,
+                        "revenue_status": revenue_status,
+                    }
+                )
+
+                if growth_ops is not None:
+                    try:
+                        growth_ops.record_performance(
+                            run_dir=run_dir,
+                            platform=str(local_record.get("platform") or item.get("platform") or "toutiao"),
+                            snapshot_date=observed_at.date().isoformat(),
+                            snapshot_label=label,
+                            snapshot_at=observed_at.isoformat(timespec="seconds"),
+                            collection_date=observed_at.date().isoformat(),
+                            published_date=str(item.get("published_date", "")),
+                            earnings_date=earnings_date.isoformat(),
+                            availability_status=availability,
+                            revenue_status=revenue_status,
+                            platform_revenue_status=platform_revenue_status,
+                            revenue_amount_known=snapshot.revenue_amount_known,
+                            platform_revenue=(
+                                float(direct_platform_revenue)
+                                if has_direct_platform_revenue
+                                else None
+                            ),
+                            content_id=content_id,
+                            impression_count=int(item.get("impression_count", 0) or 0),
+                            read_count=int(item.get("read_count", item.get("views", 0)) or 0),
+                            recommendation_read_count=int(item.get("recommendation_read_count", 0) or 0),
+                            like_count=int(item.get("like_count", 0) or 0),
+                            share_count=int(item.get("share_count", 0) or 0),
+                            comment_count=int(item.get("comment_count", 0) or 0),
+                            follower_gain=int(item.get("follower_gain", 0) or 0),
+                            lead_count=snapshot.lead_count,
+                            revenue_amount=snapshot.revenue_amount,
+                        )
+                    except Exception as exc:  # pragma: no cover - ledger compatibility
+                        item["growth_ledger_sync_error"] = str(exc)
+                        self.logger.warning("Growth performance ledger sync failed for %s: %s", content_id, exc)
+            except Exception as exc:  # pragma: no cover - malformed legacy record
+                item["attribution_error"] = str(exc)
+                summary["skipped_count"] += 1
+                self.logger.warning("Performance attribution failed for %s: %s", run_dir_text, exc)
+        return summary
+
+    def _build_automatic_reports(self) -> dict[str, str]:
+        """Refresh the operator-facing reports after each collection run."""
+        reports: dict[str, str] = {}
+        try:
+            from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
+
+            performance_report = GrowthOpsService(self.settings, self.logger).build_performance_report()
+            reports["performance_report"] = str(performance_report["performance_report"])
+        except Exception as exc:  # pragma: no cover - malformed legacy ledger
+            self.logger.warning("Automatic performance report build failed: %s", exc)
+        try:
+            from toutiao_content_factory.services.revenue_attribution_service import RevenueAttributionService
+
+            revenue_service = RevenueAttributionService(self.settings.output_dir, self.logger)
+            revenue_config = getattr(self.settings, "revenue_optimization", None)
+            business_report = revenue_service.build_business_report(
+                lookback_days=int(getattr(revenue_config, "lookback_days", 30)),
+                min_samples=int(getattr(revenue_config, "min_samples", 10)),
+                weak_rpm_threshold=float(getattr(revenue_config, "weak_rpm_threshold", 0.0)),
+                weak_read_rate_threshold=float(getattr(revenue_config, "weak_read_rate_threshold", 3.0)),
+                cooldown_weak_ratio=float(getattr(revenue_config, "cooldown_weak_ratio", 0.5)),
+                stop_weak_ratio=float(getattr(revenue_config, "stop_weak_ratio", 0.8)),
+                cooldown_penalty=int(getattr(revenue_config, "cooldown_penalty", 12)),
+            )
+            reports["business_report"] = str(business_report)
+        except Exception as exc:  # pragma: no cover - malformed legacy ledger
+            self.logger.warning("Automatic revenue report build failed: %s", exc)
+        return reports
+
+    def _register_attribution_identity(
+        self,
+        attribution: Any,
+        *,
+        platform: str,
+        run_dir: Path,
+        local_record: dict[str, Any],
+        metric: dict[str, Any],
+    ) -> dict[str, Any]:
+        metadata = self._load_publish_metadata(run_dir)
+        selected_topic = metadata.get("selected_topic") or {}
+        experiment_tags = metadata.get("experiment_tags") or {}
+        if not experiment_tags:
+            publish_dirname = getattr(getattr(self.settings, "review", None), "publish_dirname", "publish")
+            tags_path = run_dir / publish_dirname / "experiment_tags.json"
+            if tags_path.exists():
+                try:
+                    experiment_tags = json.loads(tags_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    experiment_tags = {}
+        identity = attribution.register_published_run(
+            account_key=str(getattr(self.settings, "account_key", "default")),
+            platform=platform,
+            run_dir=run_dir,
+            publish_dirname=str(getattr(getattr(self.settings, "review", None), "publish_dirname", "publish")),
+            topic_title=str(selected_topic.get("title") or local_record.get("topic_title") or "").strip(),
+            title=str(local_record.get("title") or metric.get("title") or "").strip(),
+            published_at=str(local_record.get("published_at") or metric.get("publish_date") or "").strip(),
+            commercial_intent=str(
+                selected_topic.get("commercial_intent")
+                or experiment_tags.get("commercial_intent")
+                or "medium"
+            ),
+            content_mix=str(
+                selected_topic.get("content_mix")
+                or experiment_tags.get("content_mix")
+                or "professional"
+            ),
+            cta_variant=str(selected_topic.get("cta_variant") or experiment_tags.get("cta_variant") or ""),
+            cta_source_code=str(
+                selected_topic.get("cta_source_code")
+                or experiment_tags.get("cta_source_code")
+                or ""
+            ),
+            title_variant=str(selected_topic.get("title_variant") or experiment_tags.get("title_variant") or ""),
+            cover_variant=str(selected_topic.get("cover_variant") or experiment_tags.get("cover_variant") or ""),
+            platform_variant=str(
+                selected_topic.get("platform_variant")
+                or experiment_tags.get("platform_variant")
+                or ""
+            ),
+            topic_bucket=str(selected_topic.get("topic_bucket") or experiment_tags.get("topic_bucket") or ""),
+            topic=selected_topic,
+        )
+        return {
+            "content_id": identity.content_id,
+            "published_at": identity.published_at,
+        }
+
+    def _load_publish_metadata(self, run_dir: Path) -> dict[str, Any]:
+        publish_dirname = getattr(getattr(self.settings, "review", None), "publish_dirname", "publish")
+        path = run_dir / publish_dirname / "publish_meta.json"
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _resolve_snapshot_window(
+        self,
+        published_at: str,
+        *,
+        observed_at: datetime,
+    ) -> tuple[str | None, float | None]:
+        published = self._parse_datetime(published_at)
+        if published is None:
+            return None, None
+        elapsed_hours = (observed_at - published).total_seconds() / 3600
+        if elapsed_hours < 1:
+            return None, round(max(0.0, elapsed_hours), 2)
+        label: str | None = None
+        for candidate, hours in (("1h", 1), ("6h", 6), ("24h", 24), ("72h", 72)):
+            if elapsed_hours >= hours:
+                label = candidate
+        return label, round(elapsed_hours, 2)
+
     def _human_pause(self, page: Any, *, lower_ms: int | None = None, upper_ms: int | None = None) -> None:
         wait_lower, wait_upper = self.HUMAN_WAIT_RANGE_MS
         page.wait_for_timeout(random.randint(lower_ms or wait_lower, upper_ms or wait_upper))
+
+    def _collect_rows_with_pagination(
+        self,
+        *,
+        page: Any,
+        row_selectors: tuple[str, ...],
+        max_pages: int,
+    ) -> list[dict[str, str]]:
+        """翻页聚合头条作品管理列表（2026-08-27 覆盖率优化）。
+
+        逐页提取行 → 点击"下一页" → 去重合并，直到翻完 max_pages 或
+        无下一页可点。分页按钮兼容常用 class/text 形式；找不到下一页
+        说明已到末页，正常结束。
+        """
+        collected: list[dict[str, str]] = []
+        seen_keys: set[str] = set()
+        next_selectors = (
+            "button[class*='next']",
+            ".next",
+            ".pagination .next",
+            "[class*='pagination'] [class*='next']",
+            "a:has-text('下一页')",
+            "button:has-text('下一页')",
+            ".page-next",
+            "li.next",
+        )
+
+        for _ in range(max_pages):
+            rows = self._extract_metric_rows(page, row_selectors)
+            if not rows:
+                rows = self._extract_metric_rows_from_frames(page, row_selectors)
+            for row in rows:
+                key = f"{row.get('title', '')}|{row.get('url', '')}|{row.get('text', '')[:120]}"
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                collected.append(row)
+
+            # 尝试点击下一页（主 frame 与 iframe 都试）
+            clicked = False
+            for frame in (page.main_frame,) + tuple(f for f in page.frames if f != page.main_frame):
+                try:
+                    next_btn = None
+                    for selector in next_selectors:
+                        locator = frame.query_selector(selector)
+                        if locator is not None:
+                            next_btn = locator
+                            break
+                    if next_btn is None:
+                        continue
+                    disabled = next_btn.evaluate(
+                        "el => el.disabled || el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true'"
+                    )
+                    if disabled:
+                        return collected
+                    next_btn.click()
+                    clicked = True
+                    break
+                except Exception:
+                    continue
+            if not clicked:
+                break
+            self._human_pause(page)
+            # 等新一页渲染
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=8000)
+            except Exception:
+                pass
+
+        return collected
 
     def _extract_metric_rows(self, page: Any, row_selectors: tuple[str, ...]) -> list[dict[str, str]]:
         rows = page.evaluate(
@@ -293,14 +972,20 @@ class PerformanceService:
         for row in rows:
             title = self._clean_text(row.get("title", ""))
             if not title:
-                continue
+                # 微头条行通常无独立标题（内容即首行），用正文前 20 字作占位标题，
+                # 保证微头条绩效数据进入反馈闭环（2026-08-27 微头条高频化）。
+                body_text = self._clean_text(row.get("text", ""))
+                title = body_text[:20] or "(微头条)"
             source_text = "\n".join(
                 part for part in (row.get("publish_text", ""), row.get("text", "")) if str(part).strip()
             )
             publish_date = self._normalize_publish_date(source_text)
             views = self._extract_views(source_text)
+            impressions = self._extract_impressions(source_text)
+            platform_revenue = self._extract_platform_revenue(source_text)
             breakdown = self._extract_interaction_breakdown(source_text)
             interactions = breakdown["like_count"] + breakdown["comment_count"] + breakdown["share_count"]
+            ctr = round(views * 100 / impressions, 2) if impressions > 0 else 0.0
             metrics.append(
                 ArticlePerformance(
                     url=str(row.get("url", "")).strip(),
@@ -312,6 +997,10 @@ class PerformanceService:
                     like_count=breakdown["like_count"],
                     comment_count=breakdown["comment_count"],
                     share_count=breakdown["share_count"],
+                    impression_count=impressions,
+                    read_count=views,
+                    ctr=ctr,
+                    platform_revenue=platform_revenue,
                 )
             )
         return metrics
@@ -327,13 +1016,28 @@ class PerformanceService:
         for metric in metrics:
             matched = self._find_best_local_entry(metric, local_entries)
             workflow = self._load_workflow_result(matched.get("run_dir")) if matched else None
+            # 保留 matched 记录的 platform：微头条行匹配到 toutiao_weitoutiao 记录时
+            # 标记为微头条，反馈闭环可按平台区分学习（2026-08-27）。
+            record_platform = str(matched.get("platform") or platform) if matched else platform
             results.append(
                 {
-                    "platform": platform,
+                    "platform": record_platform,
                     "title": metric.title,
                     "url": metric.url,
                     "publish_date": metric.publish_date,
+                    "platform_revenue": metric.platform_revenue,
                     "views": metric.views,
+                    "read_count": metric.read_count or metric.views,
+                    "impression_count": metric.impression_count,
+                    "ctr": metric.ctr
+                    or (
+                        round(metric.views * 100 / metric.impression_count, 2)
+                        if metric.impression_count > 0
+                        else 0.0
+                    ),
+                    "like_count": metric.like_count,
+                    "comment_count": metric.comment_count,
+                    "share_count": metric.share_count,
                     "interactions": metric.interactions,
                     "roi_score": metric.roi_score,
                     "matched": bool(matched),
@@ -347,6 +1051,8 @@ class PerformanceService:
     def _load_local_entries(self, platform: str) -> list[dict[str, Any]]:
         if platform == "toutiao":
             records = self._load_publish_records(self.settings.output_dir / self.settings.publishing.history_filename)
+            # 图文 + 微头条一起纳入匹配（2026-08-27）：微头条行无独立标题、
+            # 靠正文占位标题 + 发布日匹配，须允许 platform=toutiao_weitoutiao 记录参与。
             return [
                 {
                     "platform": record.platform or "toutiao",
@@ -359,7 +1065,7 @@ class PerformanceService:
                     "status": record.status,
                 }
                 for record in records
-                if (record.platform or "toutiao") == "toutiao"
+                if (record.platform or "toutiao") in ("toutiao", "toutiao_weitoutiao")
             ]
 
         history_path = self.settings.output_dir / self.settings.wechat.history_filename
@@ -459,8 +1165,161 @@ class PerformanceService:
     def _save_metrics(self, payload: dict[str, Any]) -> Path:
         target = self.settings.output_dir / "performance_metrics.json"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        merged_payload = dict(payload)
+        previous_payload: dict[str, Any] = {}
+        if target.exists():
+            try:
+                loaded = json.loads(target.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    previous_payload = loaded
+            except (OSError, json.JSONDecodeError):
+                self.logger.warning("Previous performance payload could not be read; writing the new collection.")
+
+        if previous_payload:
+            merged_payload["records"] = self._merge_collected_rows(
+                previous_payload.get("records", []),
+                payload.get("records", []),
+            )
+            merged_payload["platforms"] = {
+                platform: self._merge_collected_rows(
+                    previous_payload.get("platforms", {}).get(platform, [])
+                    if isinstance(previous_payload.get("platforms"), dict)
+                    else [],
+                    payload.get("platforms", {}).get(platform, [])
+                    if isinstance(payload.get("platforms"), dict)
+                    else [],
+                )
+                for platform in { 
+                    *(
+                        previous_payload.get("platforms", {}).keys()
+                        if isinstance(previous_payload.get("platforms"), dict)
+                        else set()
+                    ),
+                    *(
+                        payload.get("platforms", {}).keys()
+                        if isinstance(payload.get("platforms"), dict)
+                        else set()
+                    ),
+                }
+            }
+            merged_payload["previous_generated_at"] = str(previous_payload.get("generated_at", ""))
+        target.write_text(json.dumps(merged_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return target
+
+    def _merge_collected_rows(self, previous: object, current: object) -> list[dict[str, Any]]:
+        previous_rows = [item for item in previous if isinstance(item, dict)] if isinstance(previous, list) else []
+        current_rows = [item for item in current if isinstance(item, dict)] if isinstance(current, list) else []
+        by_key: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        availability_rank = {"not_available": 0, "pending_t1": 1, "available": 2}
+        status_rank = {"unknown": 0, "pending_t1": 1, "not_available": 1, "partial": 2, "available": 3}
+        numeric_fields = {
+            "impression_count",
+            "read_count",
+            "views",
+            "recommendation_read_count",
+            "like_count",
+            "wow_count",
+            "share_count",
+            "comment_count",
+            "interactions",
+            "follower_gain",
+        }
+        for row in previous_rows + current_rows:
+            key = self._collected_row_key(row)
+            if key not in by_key:
+                order.append(key)
+                by_key[key] = dict(row)
+                continue
+            previous_row = by_key[key]
+            merged = dict(previous_row)
+            old_availability = infer_availability_status(previous_row)
+            new_availability = infer_availability_status(row)
+            old_availability_rank = availability_rank.get(old_availability, -1)
+            new_availability_rank = availability_rank.get(new_availability, -1)
+            if new_availability == "pending_t1":
+                merged["availability_status"] = "pending_t1"
+            elif new_availability and new_availability_rank >= old_availability_rank:
+                merged["availability_status"] = new_availability
+
+            for field in ("revenue_status", "platform_revenue_status"):
+                old_status = str(previous_row.get(field, "unknown")).strip() or "unknown"
+                new_status = str(row.get(field, "unknown")).strip() or "unknown"
+                old_rank = status_rank.get(old_status, 0)
+                new_rank = status_rank.get(new_status, 0)
+                if new_availability == "pending_t1":
+                    merged[field] = "pending_t1"
+                elif new_rank > old_rank or (new_rank == old_rank and old_status == "unknown" and new_status != "unknown"):
+                    merged[field] = new_status
+
+            for field, value in row.items():
+                if field in {"availability_status", "revenue_status", "platform_revenue_status", "revenue_amount_known"}:
+                    continue
+                if field in numeric_fields:
+                    try:
+                        merged[field] = max(int(previous_row.get(field, 0) or 0), int(value or 0))
+                    except (TypeError, ValueError):
+                        if value not in (None, ""):
+                            merged[field] = value
+                    continue
+                if field == "platform_revenue":
+                    if value is not None:
+                        merged[field] = value
+                    continue
+                if field == "revenue_amount":
+                    continue
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    continue
+                if isinstance(value, (dict, list, tuple, set)) and not value:
+                    continue
+                merged[field] = value
+
+            old_local = previous_row.get("local_record")
+            new_local = row.get("local_record")
+            if isinstance(old_local, dict) and isinstance(new_local, dict):
+                merged["local_record"] = {**old_local, **new_local}
+            elif isinstance(new_local, dict) and new_local:
+                merged["local_record"] = dict(new_local)
+
+            old_platform_revenue = previous_row.get("platform_revenue")
+            new_platform_revenue = row.get("platform_revenue")
+            old_platform_status = str(previous_row.get("platform_revenue_status", "")).strip()
+            new_platform_status = str(row.get("platform_revenue_status", "")).strip()
+            old_known = bool(previous_row.get("revenue_amount_known", False)) or (
+                old_platform_revenue is not None and old_platform_status in {"", "available"}
+            )
+            new_known = bool(row.get("revenue_amount_known", False)) or (
+                new_platform_revenue is not None and new_platform_status in {"", "available"}
+            )
+            if new_availability == "pending_t1":
+                merged["platform_revenue"] = None
+            elif new_known and new_platform_revenue is not None:
+                merged["platform_revenue"] = new_platform_revenue
+            elif old_known and old_platform_revenue is not None:
+                merged["platform_revenue"] = old_platform_revenue
+
+            old_revenue_amount = previous_row.get("revenue_amount")
+            new_revenue_amount = row.get("revenue_amount")
+            if new_availability == "pending_t1":
+                merged["revenue_amount"] = None
+            elif new_known and new_revenue_amount is not None:
+                merged["revenue_amount"] = new_revenue_amount
+            elif old_known and old_revenue_amount is not None:
+                merged["revenue_amount"] = old_revenue_amount
+            merged["revenue_amount_known"] = False if new_availability == "pending_t1" else old_known or new_known
+            merged["analysis_eligible"] = merged.get("availability_status", "available") == "available"
+            by_key[key] = merged
+        return [by_key[key] for key in order]
+
+    def _collected_row_key(self, row: dict[str, Any]) -> str:
+        local_record = row.get("local_record") if isinstance(row.get("local_record"), dict) else {}
+        content_id = str(row.get("content_id", "") or local_record.get("content_id", "")).strip()
+        run_dir = str(local_record.get("run_dir", "")).strip()
+        platform = str(row.get("platform", "")).strip()
+        url = str(row.get("url", "")).strip()
+        title = self._normalize_text(str(row.get("title", "")))
+        publish_date = str(row.get("published_date") or row.get("publish_date", "")).strip()
+        return "|".join((content_id, run_dir, platform, url, title, publish_date))
 
     def _resolve_toutiao_profile_dir(self) -> Path:
         path = Path(self.settings.publishing.user_data_dir)
@@ -472,20 +1331,63 @@ class PerformanceService:
         return self.settings.account_runtime_dir / "wechat_profile"
 
     def _compute_roi_score(self, views: int) -> float:
+        # views = 阅读量（真正的浏览量），是风格进化的核心指标。
+        # 新文章阅读可能为 0（刚发布），保留小基数避免全部 0 分。
         if views <= 0:
-            return 0.0
+            return 1.0
         return round(min(100.0, math.log10(max(views, 1)) * 25.0), 2)
 
     def _extract_views(self, text: str) -> int:
+        """提取阅读量（头条管理页"阅读"字段 = 真正的浏览量）。
+
+        注意：头条管理页文本形如「展现 70 阅读 0 点赞 0 评论 1」，
+        展现（推荐曝光）在前、阅读（真实点击）在后，必须精确匹配"阅读"而非"展现"。
+        """
         patterns = (
-            r"(?:阅读量|阅读|浏览量|浏览|展现量|展现)\s*[:：]?\s*([\d.,万wWkK]+)",
-            r"([\d.,万wWkK]+)\s*(?:阅读量|阅读|浏览量|浏览|展现量|展现)",
+            r"阅读量?\s*[:：]?\s*([\d.,万wWkK]+)",
+            r"([\d.,万wWkK]+)\s*阅读量?",
         )
         for pattern in patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 return self._parse_number(match.group(1))
         return 0
+
+    def _extract_impressions(self, text: str) -> int:
+        """提取展现量（头条管理页"展现"字段 = 推荐曝光次数，不是浏览量）。"""
+        patterns = (
+            r"展现量?\s*[:：]?\s*([\d.,万wWkK]+)",
+            r"([\d.,万wWkK]+)\s*展现量?",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return self._parse_number(match.group(1))
+        return 0
+
+    def _extract_platform_revenue(self, text: str) -> float | None:
+        """Extract an article-level earnings amount when the dashboard exposes it."""
+        label = r"(?:\u9884\u4f30\u6536\u76ca|\u521b\u4f5c\u6536\u76ca|\u5e73\u53f0\u6536\u76ca|\u6536\u76ca)"
+        amount = r"([0-9][0-9,]*(?:\.[0-9]+)?)"
+        unit = r"([\u4e07\u5343wkWK]?)"
+        patterns = (
+            rf"{label}\s*[:\uff1a]?\s*(?:[\u00a5\uffe5]|CNY)?\s*{amount}\s*{unit}",
+            rf"(?:[\u00a5\uffe5]|CNY)\s*{amount}\s*{unit}\s*{label}",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, str(text or ""), re.IGNORECASE)
+            if not match:
+                continue
+            try:
+                value = float(match.group(1).replace(",", ""))
+            except (TypeError, ValueError):
+                continue
+            multiplier = {"\u4e07": 10000.0, "\u5343": 1000.0, "w": 10000.0, "k": 1000.0}.get(
+                str(match.group(2) or "").lower(),
+                1.0,
+            )
+            return round(value * multiplier, 4)
+        return None
 
     def _extract_interaction_breakdown(self, text: str) -> dict[str, int]:
         """Extract like/comment/share counts as independent fields."""
@@ -615,9 +1517,34 @@ class PerformanceService:
     def _normalize_url(self, url: str) -> str:
         return str(url or "").strip().rstrip("/")
 
+    def _parse_datetime(self, value: object) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone().replace(tzinfo=None)
+            return parsed
+        except ValueError:
+            return None
+
     def _clean_text(self, text: str) -> str:
         return re.sub(r"\s+", " ", str(text or "").strip())
 
 
-def collect_performance_data(settings: AppSettings, logger: logging.Logger) -> dict[str, Any]:
-    return PerformanceService(settings, logger).collect_performance_data()
+def collect_performance_data(
+    settings: AppSettings,
+    logger: logging.Logger,
+    *,
+    headless: bool | None = None,
+    observed_at: datetime | None = None,
+    earnings_date: date | str | None = None,
+    target_publish_date: date | str | None = None,
+) -> dict[str, Any]:
+    return PerformanceService(settings, logger).collect_performance_data(
+        headless=headless,
+        observed_at=observed_at,
+        earnings_date=earnings_date,
+        target_publish_date=target_publish_date,
+    )

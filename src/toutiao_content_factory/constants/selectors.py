@@ -451,6 +451,29 @@ _DEFAULTS: dict[str, Any] = {
                 ],
             },
         ),
+        "weitoutiao_page": PageSelectors(
+            name="toutiao_weitoutiao",
+            selectors={
+                "editor": [
+                    "div.ProseMirror",
+                    "div[contenteditable='true'][data-placeholder*='微头条']",
+                    "div[contenteditable='true'][data-placeholder*='正文']",
+                    "div[contenteditable='true'][role='textbox']",
+                    "div[contenteditable='true']",
+                ],
+                "publish_button": [
+                    "button:has-text('发布')",
+                    "button:has-text('发表')",
+                    "button:has-text('发布微头条')",
+                ],
+                "success_indicator": [
+                    "text=发布成功",
+                    "text=提交成功",
+                    "text=审核中",
+                    "text=已发布",
+                ],
+            },
+        ),
     },
     "editor_135": {
         "login_page": PageSelectors(
@@ -639,6 +662,7 @@ WECHAT_SUCCESS_MARKERS = _resolved_constants["wechat"]["success_markers"]
 
 TOUTIAO_HOME_PAGE = _resolved["toutiao"]["home_page"]
 TOUTIAO_EDITOR_PAGE = _resolved["toutiao"]["editor_page"]
+TOUTIAO_WEITOUTIAO_PAGE = _resolved["toutiao"].get("weitoutiao_page", _DEFAULTS["toutiao"]["weitoutiao_page"])
 
 
 # ========================================================================
@@ -678,6 +702,7 @@ def get_toutiao_page(page_name: str) -> PageSelectors | None:
     pages = {
         "home": TOUTIAO_HOME_PAGE,
         "editor": TOUTIAO_EDITOR_PAGE,
+        "weitoutiao": TOUTIAO_WEITOUTIAO_PAGE,
     }
     return pages.get(page_name)
 

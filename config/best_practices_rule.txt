@@ -1,37 +1,65 @@
 [
   {
-    "rule_id": "RULE_001",
-    "category": "headline",
-    "rule": "避免在标题中使用'惊爆'、'炸裂'、'不可思议'等营销套话，采用[好奇型]与[理性型]结合的双标题模式。",
-    "weight": 0.8,
-    "trigger_patterns": ["营销", "标题", "爆款"]
-  },
-  {
-    "rule_id": "RULE_002",
-    "category": "evidence",
-    "rule": "正文前10%必须包含至少一个具体数字证据或公司主体锚点，增加信息密度与可信度。",
+    "rule_id": "R001",
+    "category": "title_attraction",
+    "rule": "标题必须用‘热点表象+隐藏受益者/关键变化’制造信息缺口",
     "weight": 0.9,
-    "trigger_patterns": ["开头", "证据", "数据"]
+    "trigger_patterns": [
+      "选题已有机器人、具身智能等热门标签时"
+    ]
   },
   {
-    "rule_id": "RULE_003",
+    "rule_id": "R003",
+    "category": "conflict_design",
+    "rule": "正文必须设置‘宣传指标/技术突破’与‘真实商业兑现’的对照冲突",
+    "weight": 0.9,
+    "trigger_patterns": [
+      "素材包含奖项、论文、发布会、技术参数或企业通报时"
+    ]
+  },
+  {
+    "rule_id": "R002",
     "category": "opening_hook",
-    "rule": "开头前两句必须给出问题、反常识判断或具体结果，禁止空泛导语。",
+    "rule": "开头必须在首句抛出反常结论，并在前三句交代读者将得到的答案",
     "weight": 0.85,
-    "trigger_patterns": ["开头", "钩子", "第一句"]
+    "trigger_patterns": [
+      "文章需要解释产业热点而非单纯报道事件时"
+    ]
   },
   {
-    "rule_id": "RULE_004",
-    "category": "paragraph_density",
-    "rule": "正文每段控制在2到3句，避免大段密集排版，用短段落制造节奏顿挫感。",
+    "rule_id": "R004",
+    "category": "data_anchor",
+    "rule": "每个核心判断必须绑定一个可核验数字，并说明数字对应的业务含义",
+    "weight": 0.8,
+    "trigger_patterns": [
+      "文章出现市场规模、交付、利润、订单或技术性能判断时"
+    ]
+  },
+  {
+    "rule_id": "R006",
+    "category": "anti_ai_flavor",
+    "rule": "删除‘持续提升、全面重构、值得关注’等套话，改写为具体主体、动作和结果",
     "weight": 0.7,
-    "trigger_patterns": ["段落", "排版", "疏密"]
+    "trigger_patterns": [
+      "段落出现泛化趋势判断或无主体的行业结论时"
+    ]
   },
   {
-    "rule_id": "RULE_005",
-    "category": "closing_interaction",
-    "rule": "结尾必须抛出一个具体问题，引导读者站队或补充观点，禁止总结式收束。",
+    "rule_id": "R005",
+    "category": "paragraph_density",
+    "rule": "每段只承担一个判断，采用‘结论—证据—影响’三句结构，连续长段不得超过120字",
     "weight": 0.65,
-    "trigger_patterns": ["结尾", "互动", "提问"]
+    "trigger_patterns": [
+      "需要同时解释产业链、商业模式和企业影响时"
+    ]
+  },
+  {
+    "rule_id": "R007",
+    "category": "closing_interaction",
+    "rule": "结尾必须提出一个可站队的判断题，要求读者在两种商业结果中选择",
+    "weight": 0.6,
+    "trigger_patterns": [
+      "文章完成产业链、企业竞争或商业模式分析时"
+    ]
   }
 ]

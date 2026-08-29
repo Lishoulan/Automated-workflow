@@ -6,6 +6,7 @@
 
 平台: {{platform}}
 品牌: {{brand_name}}
+定位: {{brand_positioning}}
 行业: {{industry_focus}}
 受众: {{audience}}
 
@@ -38,6 +39,10 @@
 2. 在文中自然地引用 supporting_data 作为支撑
 3. 用 counterarguments 增加文章的深度和可信度
 4. prediction 放在文章最后，作为展望
+5. 如果存在 originality_angle，必须把它变成贯穿全文的解释框架，不能只换同义词
+6. 按 causal_chain 解释“事实 -> 机制 -> 结果”，按 industry_chain 落到具体产业环节
+7. evidence_gaps 和 risk_boundaries 只能用于降低断言强度或提出待验证问题，不得被补写成事实
+8. expert_perspectives 只吸收相互印证或经过反方质询的判断，不要把所有观点机械拼接
 
 ## 输出要求
 

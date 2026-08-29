@@ -51,6 +51,7 @@ class PublishReviewAgent(BaseAgent):
             evidence_notes_json=self.json_text(data_report.evidence_notes),
             risk_flags_json=self.json_text(data_report.risk_flags),
             preflight_json=self.json_text(preflight_summary or {}),
+            hot_topic_note=self._hot_topic_publish_note(data_report),
         )
         payload = self.request_json("你是 PublishReviewAgent，只输出 JSON。", prompt)
         if payload:
@@ -75,6 +76,19 @@ class PublishReviewAgent(BaseAgent):
             self_benchmark_context=self_benchmark_context,
         )
 
+    def _hot_topic_publish_note(self, data_report: DataReport) -> str:
+        """热榜快评发布审查提示：标题型热点无原文素材，就绪度按快评标准评估。"""
+        if not bool(getattr(data_report, "is_hot_topic", False)):
+            return ""
+        return (
+            "\n\n【本次为热榜快评模式】本文基于实时热榜标题创作（600-900字短评），"
+            "缺少订单/营收等硬数据是正常形态。发布就绪度评估请注意：\n"
+            "1. 不要把『缺数据锚点』作为主要扣分项，短评的价值在观点密度与热点时效；\n"
+            "2. 重点检查：标题是否过长/标题党、是否有违禁词/绝对化表述、"
+            "是否有明显 AI 套话、是否会误导读者；\n"
+            "3. publish_readiness_score 达到 55 以上即视为可发布快评。"
+        )
+
     def _fallback(
         self,
         content: GeneratedContent,
@@ -88,6 +102,7 @@ class PublishReviewAgent(BaseAgent):
         publish_risk_flags: list[str] = []
         publish_notes: list[str] = []
         readiness = 60
+        is_hot_topic = bool(getattr(data_report, "is_hot_topic", False))
 
         if content_score.ai_generated_risk <= 35:
             readiness += 10
@@ -110,7 +125,11 @@ class PublishReviewAgent(BaseAgent):
         if data_report.evidence_notes:
             readiness += 8
         else:
-            publish_risk_flags.append("缺少来源说明，建议补一句数据或报告出处。")
+            if is_hot_topic:
+                # 热榜快评：标题型热点无原文素材，缺来源说明是正常形态，不扣 readiness
+                publish_notes.append("热榜快评模式：基于公开热点展开观点，不引用具体来源。")
+            else:
+                publish_risk_flags.append("缺少来源说明，建议补一句数据或报告出处。")
 
         if content.tags:
             readiness += 5
@@ -187,6 +206,9 @@ class PublishReviewAgent(BaseAgent):
             readiness += 5
         elif len(matched) == 2:
             readiness += 2
+        elif getattr(data_report, "is_hot_topic", False):
+            # 热榜快评：无历史自对标样本可比，不因命中少扣分
+            pass
         else:
             readiness -= 4
             risk_flags.append(f"这篇稿子对你自己的高表现样本命中较少，优先补齐：{'、'.join(patterns[:3])}")

@@ -15,6 +15,7 @@ from toutiao_content_factory.services.schema_guard_service import SchemaGuardSer
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.monetization_service import MonetizationService
 from toutiao_content_factory.services.publish_service import PublishService
+from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 from toutiao_content_factory.agents.base import BaseAgent
 
 
@@ -202,14 +203,31 @@ class ReviewWorkflowService:
             "source_run_dir": str(run_dir),
             "validation_notes": bundle.validation_notes,
         }
+        selected_topic_payload = selected_topic.__dict__ if selected_topic is not None else {}
+        topic_title_text = str(selected_topic_payload.get("title", ""))
+        content_intent = str(selected_topic_payload.get("commercial_intent", "")).strip() or "medium"
+        content_mix_value = str(selected_topic_payload.get("content_mix", "")).strip() or "professional"
+        cta_variant_value = str(selected_topic_payload.get("cta_variant", "")).strip()
+        cta_source_code_value = str(selected_topic_payload.get("cta_source_code", "")).strip()
+        title_variant_value = str(selected_topic_payload.get("title_variant", "")).strip()
+        cover_variant_value = str(selected_topic_payload.get("cover_variant", "")).strip()
+        platform_variant_value = str(selected_topic_payload.get("platform_variant", "")).strip()
+
         experiment_tags = self.growth_ops_service.build_experiment_tags(
             title=clean_title,
             article=clean_article,
             summary=clean_summary,
-            topic_title=str((selected_topic.__dict__ if selected_topic is not None else {}).get("title", "")),
+            topic_title=topic_title_text,
             platform=self.settings.platform,
             recommended_topics=bundle.recommended_topics,
             raw_tags=bundle.tags,
+            commercial_intent=content_intent,
+            content_mix=content_mix_value,
+            cta_variant=cta_variant_value,
+            cta_source_code=cta_source_code_value,
+            title_variant=title_variant_value,
+            cover_variant=cover_variant_value,
+            platform_variant=platform_variant_value,
         )
         experiment_tags_path = publish_dir / "experiment_tags.json"
         experiment_tags_path.write_text(json.dumps(experiment_tags, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -248,6 +266,66 @@ class ReviewWorkflowService:
         if auto_publish:
             result.update(self.publish_service.publish_run(run_dir))
         return result
+
+    def select_auto_title(self, run_dir: Path) -> dict[str, object]:
+        """Choose the first title that passes the final title-level quality gate.
+
+        The score model ranks candidates, but it does not guarantee that the
+        selected title is compliant after generation. Keep this gate next to
+        title resolution so both scheduled and manual callers can inspect the
+        same candidate list and diagnostics.
+        """
+        bundle, selected_topic = self._load_bundle(run_dir)
+        candidates = self._title_candidates(bundle)
+        checker = ArticleQualityChecker()
+        evaluations: list[dict[str, object]] = []
+        publishing = self.settings.publishing
+        duplicate_guard_enabled = (
+            bool(getattr(publishing, "enabled", False))
+            and not bool(getattr(publishing, "draft_only", False))
+            and not bool(getattr(publishing, "allow_duplicate_topics", False))
+        )
+        topic_duplicate = False
+        if duplicate_guard_enabled and selected_topic is not None:
+            topic_duplicate = self.publish_service._was_topic_published(
+                str(getattr(selected_topic, "title", "")),
+                str(getattr(selected_topic, "url", "")),
+            )
+
+        for index, candidate in enumerate(candidates, start=1):
+            title = self.publish_service._clip_title(
+                self._text_cleaner.strip_prompt_leakage(candidate).strip()
+            )
+            result = checker._check_title(title, bundle.article)
+            issues = [str(item) for item in result.get("issues", []) if str(item).strip()]
+            if duplicate_guard_enabled:
+                if topic_duplicate:
+                    issues.append("选题与近7天已发布选题重复")
+                if self.publish_service._was_article_title_published_recently(title):
+                    issues.append("标题与近7天已发布文章标题重复或高度相似")
+                if self.publish_service._blocked_by_template_dedup(title):
+                    issues.append("标题复用了近7天已发布的高频模板")
+            evaluation = {
+                "index": index,
+                "title": title,
+                "passed": not issues,
+                "issues": issues,
+                "suggestions": [str(item) for item in result.get("suggestions", [])],
+            }
+            evaluations.append(evaluation)
+            if not issues:
+                return {
+                    "selected_title": title,
+                    "selected_title_index": index,
+                    "evaluations": evaluations,
+                }
+
+        return {
+            "selected_title": "",
+            "selected_title_index": 0,
+            "evaluations": evaluations,
+            "reason": "No candidate title passed the final title quality gate.",
+        }
 
     def reject_review(self, run_dir: Path, reviewer_notes: str | None = None) -> dict[str, Path]:
         bundle, _selected_topic = self._load_bundle(run_dir)
@@ -291,6 +369,9 @@ class ReviewWorkflowService:
 
     def publish_run(self, run_dir: Path, *, declare_first_release: bool = True) -> dict[str, Path]:
         return self.publish_service.publish_run(run_dir, declare_first_release=declare_first_release)
+
+    def publish_weitoutiao(self, run_dir: Path, *, draft_only: bool = False) -> dict[str, Path]:
+        return self.publish_service.publish_weitoutiao(run_dir, draft_only=draft_only)
 
     def _load_published_run_dirs(self) -> set[str]:
         history_path = self.settings.output_dir / self.settings.publishing.history_filename
@@ -360,11 +441,13 @@ class ReviewWorkflowService:
         ai_risk = int(bundle.score_snapshot.get("ai_generated_risk", 100))
         validation_score = int(bundle.score_snapshot.get("validation_score", 0))
         publish_readiness = int(bundle.score_snapshot.get("publish_readiness_score", 0))
+        is_hot_topic = bool(bundle.score_snapshot.get("is_hot_topic", 0))
         if self.settings.review.qualifies_for_auto_publish(
             overall_score=overall_score,
             ai_risk=ai_risk,
             validation_score=validation_score,
             publish_readiness_score=publish_readiness,
+            is_hot_topic=is_hot_topic,
         ):
             return "approve_after_light_check"
         return "revise_before_publish"
@@ -397,6 +480,7 @@ class ReviewWorkflowService:
                 "publish_readiness_score": workflow.content_score.publish_readiness_score,
                 "validation_score": workflow.content.validation_score,
                 "publish_recommendation": workflow.content_score.publish_recommendation,
+                "is_hot_topic": 1 if bool(getattr(workflow.data_report, "is_hot_topic", False)) else 0,
             },
         )
 

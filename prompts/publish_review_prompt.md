@@ -30,6 +30,7 @@ $summary
 
 正文：
 $article
+$hot_topic_note
 
 请输出 JSON，字段如下：
 {

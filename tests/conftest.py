@@ -54,6 +54,7 @@ def app_settings(tmp_path: Path) -> AppSettings:
         article_word_target=1200,
         brand_name="测试品牌",
         industry_focus="新能源、机器人",
+        brand_positioning="测试科技产业分析",
         audience="测试读者",
         platform="今日头条",
         logging_level="WARNING",

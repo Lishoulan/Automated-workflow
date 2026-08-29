@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from toutiao_content_factory.config import AppSettings, RPAResilienceSettings
-from toutiao_content_factory.constants.selectors import TOUTIAO_EDITOR_PAGE
+from toutiao_content_factory.constants.selectors import TOUTIAO_EDITOR_PAGE, TOUTIAO_WEITOUTIAO_PAGE
 from toutiao_content_factory.models import PublishRecord
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
 from toutiao_content_factory.services.browser_launch_guard import (
@@ -429,6 +429,7 @@ class PublishService:
 
         article = self._sanitize_article_for_publish(self._read_text(publish_dir / "article.md").strip())
         article_char_count = len(article.replace("\n", "").replace(" ", ""))
+        article_quality_warnings: list[str] = []
         if article_char_count < 1500:
             self.logger.warning(
                 "Article has only %d chars after sanitization (minimum 1500 for Toutiao first-release incentive). "
@@ -437,17 +438,44 @@ class PublishService:
             )
             declare_first_release = False
             notes_warning = f"质量检查：字数不足1500字（当前{article_char_count}字），自动取消头条首发声明"
-        preflight_summary = self._collect_preflight_summary_locked()
+            article_quality_warnings.append(notes_warning)
+        platform_preflight_summary = self._collect_preflight_summary_locked()
+        if article_quality_warnings:
+            platform_preflight_summary = {
+                **platform_preflight_summary,
+                "warnings": self._unique_texts(
+                    list(platform_preflight_summary.get("warnings", []))
+                    + article_quality_warnings
+                ),
+            }
         content_guard_report = self.content_guard_service.build_publish_guard_report(run_dir)
-        preflight_summary = self._merge_content_guard_summary(preflight_summary, content_guard_report)
-        blocking_flags = list(preflight_summary.get("blocking_flags", []))
-        should_bypass_preflight = self._should_bypass_preflight_blockers(preflight_summary)
-        if blocking_flags and not should_bypass_preflight:
-            raise RuntimeError("Publish preflight blocked: " + " | ".join(str(item) for item in blocking_flags))
-        if blocking_flags and should_bypass_preflight:
+        preflight_summary = self._merge_content_guard_summary(platform_preflight_summary, content_guard_report)
+        quality_check = content_guard_report.get("quality_check", {})
+        if (
+            not bool(self.settings.publishing.draft_only)
+            and isinstance(quality_check, dict)
+            and quality_check.get("is_passed") is False
+        ):
+            quality_issues = [str(item) for item in quality_check.get("issues", [])[:5]]
+            issue_suffix = " | ".join(quality_issues)
+            raise RuntimeError(
+                "Publish quality gate blocked: final article quality check did not pass."
+                + (f" {issue_suffix}" if issue_suffix else "")
+            )
+        platform_blocking_flags = list(platform_preflight_summary.get("blocking_flags", []))
+        if platform_blocking_flags and not self._should_bypass_preflight_blockers(platform_preflight_summary):
+            raise RuntimeError("Publish preflight blocked: " + " | ".join(str(item) for item in platform_blocking_flags))
+        if platform_blocking_flags:
             self.logger.warning(
                 "Publish preflight reported blocking flags, but the run is allowed to continue: %s",
-                " | ".join(str(item) for item in blocking_flags),
+                " | ".join(str(item) for item in platform_blocking_flags),
+            )
+
+        # 内容守卫属于文章本身的风险，不能因为平台页面可用而绕过；否则重复、敏感词或高 AI 风险内容仍可能被真实发布。
+        content_guard_blocking_flags = list(content_guard_report.get("blocking_flags", []))
+        if content_guard_blocking_flags:
+            raise RuntimeError(
+                "Publish content guard blocked: " + " | ".join(str(item) for item in content_guard_blocking_flags)
             )
 
         # 发布前最终合规预检：作为 sanitize 之后的最后防线，
@@ -517,6 +545,31 @@ class PublishService:
             if last_publish_exc is not None:
                 raise last_publish_exc
 
+        result_status = str(result_payload.get("status", "")).strip().lower() or "published"
+        result_payload["status"] = result_status
+        if result_status in {
+            "failed",
+            "error",
+            "blocked",
+            "blocked_by_ip",
+            "publish_login_required",
+        }:
+            result_error = str(
+                result_payload.get("error")
+                or result_payload.get("message")
+                or f"Toutiao publish returned status={result_status}"
+            )
+            self._write_failed_publish_result(
+                publish_dir=publish_dir,
+                run_dir=run_dir,
+                title=title,
+                topic_title=topic_title,
+                topic_url=topic_url,
+                error=result_error,
+                preflight_summary=preflight_summary,
+            )
+            raise RuntimeError(f"Toutiao publish failed: {result_error}")
+
         record = PublishRecord(
             published_at=datetime.now().isoformat(timespec="seconds"),
             platform=self.settings.publishing.platform,
@@ -548,12 +601,10 @@ class PublishService:
                     "发布验证未通过，状态标记为 publish_uncertain，请人工确认。title=%s",
                     title[:30],
                 )
-        history = self._load_history()
-        history.append(record)
-        self._save_history(history)
-
         publish_result_path = publish_dir / "publish_result.json"
         result_payload = self._normalize_publish_result_payload(result_payload)
+        result_payload["requested_draft_only"] = bool(self.settings.publishing.draft_only)
+        result_payload["effective_draft_only"] = bool(effective_draft_only)
         publish_result_path.write_text(
             json.dumps(
                 {
@@ -567,11 +618,41 @@ class PublishService:
             ),
             encoding="utf-8",
         )
-        growth_exports = self.growth_ops_service.register_publish_event(
-            platform=self.settings.publishing.platform,
-            run_dir=run_dir,
-            result_path=publish_result_path,
-        )
+        if result_status != "draft_saved":
+            history = self._load_history()
+            history.append(record)
+            self._save_history(history)
+
+        growth_exports: dict[str, Path] = {}
+        if result_status != "draft_saved":
+            growth_exports = self.growth_ops_service.register_publish_event(
+                platform=self.settings.publishing.platform,
+                run_dir=run_dir,
+                result_path=publish_result_path,
+            )
+            try:
+                from toutiao_content_factory.services.revenue_attribution_service import (
+                    RevenueAttributionService,
+                )
+
+                attribution_service = RevenueAttributionService(self.settings.output_dir, self.logger)
+                identity = attribution_service.register_published_run(
+                    account_key=self.settings.account_key,
+                    platform=self.settings.publishing.platform,
+                    run_dir=run_dir,
+                    publish_dirname=self.settings.review.publish_dirname,
+                    title=title,
+                    published_at=str(result_payload.get("published_at", "")),
+                    topic=topic,
+                    result_payload=result_payload,
+                )
+                growth_exports["content_id"] = identity.content_id
+                growth_exports["content_index"] = str(attribution_service.content_index_path)
+                growth_exports["cost_ledger"] = str(attribution_service.cost_ledger_path)
+            except Exception as exc:  # pragma: no cover - attribution best-effort
+                self.logger.warning("Revenue attribution registration failed (non-fatal): %s", exc)
+        else:
+            self.logger.info("Draft-only result saved without publish history or revenue attribution: %s", run_dir)
         self.logger.info("Publish finished for run: %s", run_dir)
         return {
             "publish_result": publish_result_path,
@@ -921,6 +1002,11 @@ class PublishService:
                     draft_watch_start = len(publish_events)
                     title_locator = page.locator(title_selector).first
                     editor_locator = page.locator(editor_selector).first
+                    # 关键修复：在第一次触发 autosave 之前就安装 save=1 + coverType=1 覆盖路由，
+                    # 否则首个 autosave 会以 save=0(发布模式)+coverType=2+空封面发出，
+                    # 被头条后端以 7050 保存失败 拒绝，导致草稿永远无法保存、后续发布点击无草稿可提交。
+                    if not draft_only:
+                        self._install_save_mode_override(page, notes)
                     self._retry_playwright_action(
                         lambda: self._set_editor_content(page, editor_selector, article, notes),
                         description="set_editor_content",
@@ -958,7 +1044,7 @@ class PublishService:
                         notes.append(f"Publish preflight: {preflight_blockers.strip()}")
 
                     if not draft_only:
-                        self._install_save_mode_override(page, notes)
+                        # 覆盖路由已在上方（首次 autosave 前）安装，这里只触发一次 autosave
                         self._nudge_editor_to_trigger_autosave(page, editor_selector, notes)
 
                     if not self._wait_for_draft_save(
@@ -1030,6 +1116,9 @@ class PublishService:
                         guard.sweep_before(notes, stage="publish_click")
                     except Exception as exc:
                         self.logger.debug("PopupGuard pre-publish sweep failed (non-blocking): %s", exc)
+                    # 健壮性增强：封面上传面板可能残留并遮挡发布按钮。
+                    # 若面板仍打开：图片已上传则点"确定"完成封面；否则点"取消"关闭面板。
+                    self._close_stray_cover_panel(page, notes)
                     debug_dir = self._capture_debug_artifacts(page, extra_payload={"notes": notes})
                     notes.append(f"Debug snapshot saved to {debug_dir}")
                     preview_start_index = len(publish_events)
@@ -1133,6 +1222,230 @@ class PublishService:
             policy=policy,
             logger=self.logger,
         )
+
+    def _build_weitoutiao_content(self, article: str, publish_dir: Path) -> str:
+        """构建微头条引流短内容：开头观点 + 核心结论 + 互动问题 + 关注引导 + 话题标签。
+
+        微头条在头条信息流中以"短观点 + 话题标签"形态获得推荐与涨粉，
+        不宜直接粘贴整篇长文。策略（2026-08-26 涨粉优化）：
+        1. 取正文前 2 段（核心观点）
+        2. 若正文有结尾互动问题则附加
+        3. 追加"关注引导"（提升粉丝转化，粉丝阅读 CPM 是普通阅读 3-6 倍）
+        4. 补 2-4 个 #话题标签（来自 tags.txt / 文章关键词）
+        """
+        try:
+            paragraphs = [p.strip() for p in re.split(r"\n\s*\n", article) if p.strip()]
+            if not paragraphs:
+                return ""
+            parts: list[str] = []
+            # 开头 1-2 段（观点主体）
+            for para in paragraphs[:2]:
+                clean = self._clean_visible_text(para)
+                if clean:
+                    parts.append(clean)
+                if sum(len(p) for p in parts) >= 240:
+                    break
+            # 结尾互动问题（找含"？/?"的句子）
+            tail = "\n".join(paragraphs[-2:])
+            question = re.search(r"[^。！？\n]*[？?][^。！？\n]*", tail)
+            if question and len(question.group(0)) <= 60:
+                parts.append(question.group(0).strip())
+            # 关注引导（涨粉核心：粉丝阅读 CPM 3-6 倍）
+            # 2026-08-27：从"机器人专属"改为体现账号定位的通用话术，
+            # 与 config.yaml industry.positioning 一致。
+            positioning = str(getattr(self.settings, "brand_positioning", "") or "").strip()
+            if positioning:
+                parts.append(f"关注我。{positioning}")
+            else:
+                parts.append("关注我，每天拆解一个机器人产业链真相，带你读懂人形机器人怎么落地赚钱。")
+            # 话题标签
+            tags: list[str] = []
+            tags_path = publish_dir / "tags.txt"
+            if tags_path.exists():
+                for line in self._read_text(tags_path).splitlines()[:4]:
+                    tag = self._clean_visible_text(line).strip()
+                    if tag and not tag.startswith("#"):
+                        tags.append(f"#{tag}")
+            if not tags:
+                for kw in ("机器人", "具身智能", "AI", "科技"):
+                    tags.append(f"#{kw}")
+            body = "\n\n".join(parts).strip()
+            if body and tags:
+                body = body + "\n\n" + " ".join(tags[:4])
+            return body[:1200]
+        except Exception as exc:
+            self.logger.debug("WeiToutiao content build failed (fallback to article): %s", exc)
+            return ""
+
+    def publish_weitoutiao(
+        self,
+        run_dir: Path,
+        *,
+        draft_only: bool = False,
+        content_override: str | None = None,
+    ) -> dict[str, Any]:
+        """发布微头条（短内容）。
+
+        微头条发布页与图文发布页不同：无标题栏，仅正文内容区（+可选图片）。
+        复用持久化登录会话与弹窗守卫基础设施，仅替换页面/选择器。
+
+        content_override: 独立微头条直接传入整条短内容（不再从 article.md 截取），
+        用于「独立微头条选题+写作」高频化场景。
+        """
+        if sync_playwright is None:
+            raise RuntimeError(
+                "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`."
+            )
+        if not self.settings.publishing.weitoutiao_enabled:
+            raise RuntimeError(
+                "WeiToutiao publishing is disabled. Set TOUTIAO_WEITOUTIAO_ENABLED=1 or weitoutiao_enabled: true."
+            )
+
+        publish_dir = run_dir / self.settings.review.publish_dirname
+        if not publish_dir.exists():
+            raise FileNotFoundError(f"Publish package not found: {publish_dir}")
+        publish_meta = self._load_json(publish_dir / "publish_meta.json") or {}
+        article = self._sanitize_article_for_publish(self._read_text(publish_dir / "article.md").strip())
+        if len(article.replace("\n", "").replace(" ", "")) < 200:
+            raise RuntimeError("WeiToutiao content is too short after sanitization (minimum 200 chars).")
+
+        # 微头条专用短内容：取文章开头 + 结尾互动问题 + 话题标签，
+        # 避免把整篇 1500 字长文直接塞进微头条（信息流里微头条以短观点+标签引流效果最好）。
+        # 独立微头条场景传入 content_override，直接使用已写好的短内容，不再截取。
+        if content_override and len(content_override.replace("\n", "").replace(" ", "")) >= 200:
+            wtt_content = self._sanitize_article_for_publish(content_override.strip())
+        else:
+            wtt_content = self._build_weitoutiao_content(article, publish_dir)
+            if not wtt_content:
+                wtt_content = article
+
+        profile_dir = self._resolve_profile_dir()
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        publish_url = (
+            self.settings.publishing.weitoutiao_publish_url
+            or "https://mp.toutiao.com/profile_v4/weitoutiao/publish"
+        )
+        wtt_selectors = self.settings.publishing.weitoutiao_selectors or {}
+        editor_selectors = wtt_selectors.get("editor") or TOUTIAO_WEITOUTIAO_PAGE.get("editor")
+        publish_button_selectors = wtt_selectors.get("publish_button") or TOUTIAO_WEITOUTIAO_PAGE.get("publish_button")
+        success_selectors = wtt_selectors.get("success_indicator") or TOUTIAO_WEITOUTIAO_PAGE.get("success_indicator")
+        notes: list[str] = []
+
+        prepare_browser_profile(
+            profile_dir=profile_dir,
+            project_root=self.settings.project_root,
+            logger=self.logger,
+            label="publish:weitoutiao",
+            extra_paths=[self.settings.account_runtime_dir],
+        )
+
+        def _run() -> dict[str, Any]:
+            with sync_playwright() as playwright:
+                browser = self._launch_persistent_browser(playwright, profile_dir=profile_dir)
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                    self._ensure_browser_session_ready(browser, page, publish_url)
+                    publish_events: list[dict[str, Any]] = []
+                    self._install_publish_event_capture(page, publish_events)
+                    self._goto_publish_page(page, publish_url)
+                    page.wait_for_timeout(1500)
+                    self._check_toutiao_login(page, notes)
+                    self._dismiss_ai_assistant_drawer(page, notes)
+
+                    editor_selector = self._resolve_editor_selector(page, editor_selectors, editor_selectors)
+                    if not editor_selector:
+                        debug_dir = self._capture_debug_artifacts(
+                            page, extra_payload={"notes": notes, "step": "weitoutiao_editor_locate"}
+                        )
+                        raise RuntimeError(
+                            "Could not locate WeiToutiao editor. "
+                            f"Current URL: {page.url}. Debug files saved to: {debug_dir}"
+                        )
+
+                    self._retry_playwright_action(
+                        lambda: self._set_editor_content(page, editor_selector, wtt_content, notes),
+                        description="set_weitoutiao_editor_content",
+                    )
+                    page.wait_for_timeout(600)
+
+                    if draft_only:
+                        notes.append("Draft-only mode: WeiToutiao content filled, publish click skipped.")
+                        return {
+                            "status": "draft_saved",
+                            "published_at": datetime.now().isoformat(timespec="seconds"),
+                            "external_url": page.url,
+                            "notes": self._finalize_notes(notes),
+                            "platform": "toutiao_weitoutiao",
+                        }
+
+                    try:
+                        guard = self._make_popup_guard(page)
+                        guard.sweep_before(notes, stage="weitoutiao_publish_click")
+                    except Exception as exc:
+                        self.logger.debug("PopupGuard weitoutiao sweep failed (non-blocking): %s", exc)
+
+                    if not self._click_immediate_publish_button(page, publish_button_selectors, notes):
+                        debug_dir = self._capture_debug_artifacts(
+                            page, extra_payload={"notes": notes, "step": "weitoutiao_publish_button"}
+                        )
+                        raise RuntimeError(
+                            "WeiToutiao publish button not found. "
+                            f"Current URL: {page.url}. Debug files saved to: {debug_dir}"
+                        )
+
+                    page.wait_for_timeout(1200)
+                    success_selector = self._wait_for_any(page, success_selectors)
+                    if success_selector:
+                        notes.append(f"Detected WeiToutiao success indicator: {success_selector}")
+                    else:
+                        notes.append("WeiToutiao backend accepted publish, but no explicit success toast detected.")
+
+                    result_payload = {
+                        "status": "submitted_for_review",
+                        "published_at": datetime.now().isoformat(timespec="seconds"),
+                        "external_url": page.url,
+                        "notes": self._finalize_notes(notes),
+                        "platform": "toutiao_weitoutiao",
+                    }
+                    # 微头条发布记录写入 publish_history（供日报统计微头条引流效果）
+                    try:
+                        from toutiao_content_factory.models import PublishRecord
+                        topic = publish_meta.get("selected_topic") or {}
+                        wtt_record = PublishRecord(
+                            published_at=str(result_payload["published_at"]),
+                            platform="toutiao_weitoutiao",
+                            title=str(publish_meta.get("selected_title", "")).strip() or self._load_topic_title(publish_dir),
+                            run_dir=str(run_dir),
+                            topic_title=str(topic.get("title", "")),
+                            topic_url=str(topic.get("url", "")),
+                            status=str(result_payload["status"]),
+                            notes=[str(item) for item in result_payload.get("notes", [])],
+                            external_url=str(result_payload.get("external_url", "")),
+                        )
+                        history = self._load_history()
+                        history.append(wtt_record)
+                        self._save_history(history)
+                        self.logger.info(
+                            "WeiToutiao record saved to publish_history: %s",
+                            wtt_record.title[:30],
+                        )
+                    except Exception as exc:
+                        self.logger.warning("WeiToutiao history save failed (non-fatal): %s", exc)
+
+                    return result_payload
+                finally:
+                    browser.close()
+
+        return run_sync_playwright_safe(_run, timeout=600)
+
+    def _load_topic_title(self, publish_dir: Path) -> str:
+        """从 publish_meta.json 读取选题标题（微头条记录用）。"""
+        try:
+            meta = self._load_json(publish_dir / "publish_meta.json") or {}
+            topic = meta.get("selected_topic") or {}
+            return str(topic.get("title", "")).strip()
+        except Exception:
+            return ""
 
     def _resolve_profile_dir(self) -> Path:
         path = Path(self.settings.publishing.user_data_dir)
@@ -1532,6 +1845,40 @@ class PublishService:
                 notes.append(f"PopupGuard additionally dismissed: {', '.join(extra_dismissed)}")
         except Exception as exc:
             self.logger.debug("PopupGuard sweep failed (non-blocking): %s", exc)
+
+    def _hide_ai_drawer_mask_css(self, page, notes: list[str]) -> None:
+        """用 CSS 强制隐藏 AI 助手抽屉及其遮罩，防止拦截封面/按钮点击。
+
+        实测（2026-08-24）：头条发布页的 AI 助手抽屉（byte-drawer-wrapper.ai-assistant-drawer）
+        及其遮罩（byte-drawer-mask）会拦截封面触发区域的点击，
+        导致 file-chooser 永远不出现、封面一直上传失败（文章以无封面发布）。
+        """
+        try:
+            page.evaluate(
+                """() => {
+                    const style = document.createElement('style');
+                    style.id = 'ai-drawer-hard-blocker';
+                    style.textContent = `
+                        .byte-drawer-wrapper.ai-assistant-drawer,
+                        .byte-drawer-mask,
+                        [class*="ai-assistant-drawer"],
+                        [class*="ai-assistant-panel"],
+                        [class*="ai-writer-sidebar"] {
+                            display: none !important;
+                            visibility: hidden !important;
+                            pointer-events: none !important;
+                            opacity: 0 !important;
+                            z-index: -1 !important;
+                        }
+                    `;
+                    if (!document.getElementById('ai-drawer-hard-blocker')) {
+                        document.head.appendChild(style);
+                    }
+                }"""
+            )
+            notes.append("AI assistant drawer mask force-hidden via CSS (ai-drawer-hard-blocker).")
+        except Exception as exc:
+            self.logger.debug("AI drawer mask CSS injection failed (non-blocking): %s", exc)
 
     def _set_editor_content(self, page, selector: str, article: str, notes: list[str]) -> None:
         locator = page.locator(selector).first
@@ -2832,6 +3179,7 @@ class PublishService:
 
     def _apply_cover_image(self, page, cover_path: Path, notes: list[str]) -> None:
         self._dismiss_ai_assistant_drawer(page, notes)
+        self._hide_ai_drawer_mask_css(page, notes)
         self._ensure_single_cover_mode(page)
         self._clear_existing_cover(page, notes)
 
@@ -2886,6 +3234,7 @@ class PublishService:
 
     def _upload_cover_via_file_chooser(self, page, cover_path: Path, notes: list[str]) -> bool:
         try:
+            self._hide_ai_drawer_mask_css(page, notes)
             trigger_locator = self._resolve_cover_trigger(page)
             if trigger_locator is None:
                 notes.append("Cover upload trigger not found for file-chooser strategy.")
@@ -2964,59 +3313,117 @@ class PublishService:
             self.logger.warning("File-chooser cover upload strategy failed: %s", exc)
             return False
 
+    def _upload_cover_via_js_data_transfer(self, page, cover_path: Path, notes: list[str]) -> bool:
+        """JS DataTransfer 注入方式上传封面（2026-08-24 实测有效）。
+
+        步骤：点击封面触发 → 打开上传面板 → JS 构造 File 对象注入 input →
+        触发 change → 点"确定" → 等待封面区出现图片。
+        绕过 Playwright file-chooser 事件与 is_visible 时序判断（此前两处都不可靠）。
+        """
+        try:
+            import base64
+
+            trigger_locator = self._resolve_cover_trigger(page)
+            if trigger_locator is None:
+                return False
+            self._click_cover_trigger(trigger_locator)
+            page.wait_for_timeout(1800)
+
+            file_bytes = cover_path.read_bytes()
+            b64 = base64.b64encode(file_bytes).decode("ascii")
+            result = page.evaluate(
+                """({b64, filename}) => {
+                    const inputs = document.querySelectorAll("input[type='file']");
+                    if (!inputs.length) return 'NO_INPUT';
+                    let target = null;
+                    for (const inp of inputs) {
+                        const accept = (inp.getAttribute('accept') || '').toLowerCase();
+                        if (accept.includes('image')) { target = inp; break; }
+                    }
+                    if (!target) target = inputs[inputs.length - 1];
+                    const binary = atob(b64);
+                    const bytes = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                    const file = new File([bytes], filename, { type: 'image/png' });
+                    const dt = new DataTransfer();
+                    dt.items.add(file);
+                    target.files = dt.files;
+                    target.dispatchEvent(new Event('change', { bubbles: true }));
+                    target.dispatchEvent(new Event('input', { bubbles: true }));
+                    return 'OK';
+                }""",
+                {"b64": b64, "filename": cover_path.name},
+            )
+            if result != "OK":
+                notes.append(f"JS DataTransfer upload failed: {result}")
+                return False
+            notes.append("Cover uploaded via JS DataTransfer injection.")
+
+            page.wait_for_timeout(4000)
+
+            # 点"确定"确认封面
+            confirm_result = page.evaluate("""() => {
+                const btn = document.querySelector("[data-e2e='imageUploadConfirm-btn']");
+                if (btn) { btn.click(); return 'CLICKED'; }
+                const buttons = document.querySelectorAll('.upload-image-panel button, .byte-modal__footer button');
+                for (const b of buttons) {
+                    if ((b.textContent || '').includes('确定')) { b.click(); return 'CLICKED2'; }
+                }
+                return 'NO_BTN';
+            }""")
+            if confirm_result.startswith("CLICKED"):
+                notes.append("Cover upload confirm clicked via JS.")
+            page.wait_for_timeout(3000)
+
+            return self._verify_cover_applied(page)
+        except Exception as exc:
+            self.logger.warning("JS DataTransfer cover upload failed: %s", exc)
+            return False
+
     def _upload_cover_via_direct_input(self, page, cover_path: Path, notes: list[str]) -> bool:
         try:
+            self._hide_ai_drawer_mask_css(page, notes)
             trigger_locator = self._resolve_cover_trigger(page)
             if trigger_locator is None:
                 notes.append("Cover upload trigger not found for direct-input strategy.")
                 return False
 
-            try:
-                existing_input_count = page.locator("input[type='file']").count()
-            except Exception:
-                existing_input_count = 0
+            # 首选：JS DataTransfer 注入文件（2026-08-24 实测最可靠，
+            # 不依赖 file-chooser 事件与 is_visible 时序判断）
+            if self._upload_cover_via_js_data_transfer(page, cover_path, notes):
+                return True
 
-            file_chooser = self._open_cover_file_chooser(page, trigger_locator)
-            if file_chooser is not None:
-                file_chooser.set_files(str(cover_path))
-            else:
+            # 点击封面触发点打开上传面板（面板内含 file input，直接 set_input_files 最可靠）
+            self._click_cover_trigger(trigger_locator)
+            page.wait_for_timeout(1500)
+            upload_input = self._wait_for_cover_upload_input(page, existing_count=-1)
+            if upload_input is None:
+                page.wait_for_timeout(800)
                 self._click_cover_trigger(trigger_locator)
-                upload_input = self._wait_for_cover_upload_input(page, existing_input_count)
-                if upload_input is None:
-                    page.wait_for_timeout(600)
-                    self._click_cover_trigger(trigger_locator)
-                    upload_input = self._wait_for_cover_upload_input(page, existing_input_count)
-                if upload_input is None:
-                    notes.append("Direct-input strategy: no file input found.")
-                    return False
-                upload_input.set_input_files(str(cover_path), timeout=max(self.settings.publishing.wait_timeout_ms, 60000))
+                upload_input = self._wait_for_cover_upload_input(page, existing_count=-1)
+            if upload_input is None:
+                notes.append("Direct-input strategy: no file input found.")
+                return False
+            upload_input.set_input_files(str(cover_path), timeout=max(self.settings.publishing.wait_timeout_ms, 60000))
 
             page.wait_for_timeout(3000)
 
             if self._is_cover_upload_panel_hidden(page):
                 notes.append("Cover image auto-applied via direct input (panel closed).")
+                # 面板刚关闭时图片可能还在渲染到封面区，先等待图片真正出现再验证，
+                # 避免误判"未应用"导致回退到无封面模式（2026-08-24 实测修复）。
+                try:
+                    page.locator(".article-cover img, .article-cover-images img").first.wait_for(
+                        state="visible", timeout=8000
+                    )
+                except Exception:
+                    pass
+                page.wait_for_timeout(1500)
                 return self._verify_cover_applied(page)
 
             self._select_uploaded_image_in_panel(page, notes)
 
-            confirm_selectors = [
-                "[data-e2e='imageUploadConfirm-btn']",
-                ".upload-image-panel .footer .byte-btn-primary",
-                ".upload-image-panel button:has-text('确定')",
-                ".byte-modal__footer button.byte-btn-primary",
-                "button.byte-btn-primary:has-text('确定')",
-                ".upload-image-panel .footer button",
-                ".byte-modal__footer button",
-                "button:has-text('确定')",
-                "button:has-text('完成')",
-                "button:has-text('确认')",
-                "[class*='upload'] button[class*='primary']",
-                "[class*='image'] button[class*='primary']",
-            ]
-            confirm_clicked = self._maybe_click(page, confirm_selectors, required=False)
-            if not confirm_clicked:
-                page.wait_for_timeout(1500)
-                confirm_clicked = self._maybe_click(page, confirm_selectors, required=False)
+            confirm_clicked = self._click_confirm_in_upload_panel(page, notes)
             if not confirm_clicked:
                 try:
                     page.keyboard.press("Enter")
@@ -3076,6 +3483,7 @@ class PublishService:
         notes.append("Could not manually select cover image in picker; proceeding to confirm step.")
 
     def _click_confirm_in_upload_panel(self, page, notes: list[str]) -> bool:
+        self._hide_ai_drawer_mask_css(page, notes)
         confirm_selectors = [
             "[data-e2e='imageUploadConfirm-btn']",
             ".upload-image-panel .footer .byte-btn-primary",
@@ -3094,6 +3502,23 @@ class PublishService:
         if not confirm_clicked:
             page.wait_for_timeout(1500)
             confirm_clicked = self._maybe_click(page, confirm_selectors, required=False)
+        if not confirm_clicked:
+            # JS 兜底：直接触发确认按钮的 click 事件（2026-08-24 实测）
+            try:
+                clicked = page.evaluate("""() => {
+                    const btn = document.querySelector("[data-e2e='imageUploadConfirm-btn']");
+                    if (btn) { btn.click(); return true; }
+                    const buttons = document.querySelectorAll('.upload-image-panel button');
+                    for (const b of buttons) {
+                        if ((b.textContent || '').includes('确定')) { b.click(); return true; }
+                    }
+                    return false;
+                }""")
+                if clicked:
+                    notes.append("Cover upload confirm via JS click fallback.")
+                    confirm_clicked = True
+            except Exception as exc:
+                self.logger.debug("Cover upload confirm JS fallback failed: %s", exc)
         if not confirm_clicked:
             notes.append("Cover upload confirm button not available; tried keyboard Enter as fallback.")
         return confirm_clicked
@@ -3330,6 +3755,141 @@ class PublishService:
                     return
             except Exception:
                 continue
+
+    def _close_stray_cover_panel(self, page, notes: list[str]) -> None:
+        """关闭可能残留的封面上传面板/抽屉，避免其遮挡发布按钮。
+
+        面板仍打开时优先点"确定"（图片已上传则完成封面选择并关闭面板），
+        否则点"取消"或关闭图标；仍无法关闭时按 Escape 兜底，
+        最后通过 CSS 强制隐藏 byte-drawer-wrapper 抽屉，保证发布按钮可点。
+        """
+        try:
+            panel = page.locator(".upload-image-panel").first
+            panel_visible = panel.is_visible(timeout=500)
+        except Exception:
+            panel_visible = False
+        try:
+            drawer = page.locator(".byte-drawer-wrapper").first
+            drawer_visible = drawer.is_visible(timeout=500)
+        except Exception:
+            drawer_visible = False
+
+        if not panel_visible and not drawer_visible:
+            return
+        notes.append("Detected stray cover upload panel/drawer before publish click; closing it.")
+
+        if panel_visible:
+            for selector in [
+                "[data-e2e='imageUploadConfirm-btn']",
+                ".upload-image-panel .footer .byte-btn-primary",
+                ".upload-image-panel button:has-text('确定')",
+            ]:
+                try:
+                    locator = page.locator(selector).first
+                    if not locator.is_visible(timeout=400):
+                        continue
+                    if self._click_button_candidate(locator):
+                        page.wait_for_timeout(1200)
+                        try:
+                            if not panel.is_visible(timeout=1000):
+                                notes.append(f"Closed stray cover panel via confirm `{selector}`.")
+                                panel_visible = False
+                                break
+                        except Exception:
+                            panel_visible = False
+                            break
+                except Exception:
+                    continue
+            if panel_visible:
+                for selector in [
+                    ".upload-image-panel button:has-text('取消')",
+                    ".upload-image-panel .byte-modal-close-x",
+                    ".upload-image-panel .byte-modal-close-icon",
+                    ".upload-image-panel .footer button.byte-btn-default",
+                ]:
+                    try:
+                        locator = page.locator(selector).first
+                        if not locator.is_visible(timeout=400):
+                            continue
+                        if self._click_button_candidate(locator):
+                            page.wait_for_timeout(800)
+                            try:
+                                if not panel.is_visible(timeout=800):
+                                    notes.append(f"Closed stray cover panel via cancel `{selector}`.")
+                                    panel_visible = False
+                                    break
+                            except Exception:
+                                panel_visible = False
+                                break
+                    except Exception:
+                        continue
+
+        # 关闭 byte-drawer-wrapper 抽屉（如 mp-ic-img-drawer 封面选择抽屉）
+        if drawer_visible:
+            for selector in [
+                ".byte-drawer-close-icon",
+                ".byte-drawer-wrapper .byte-drawer-close-icon",
+                ".mp-ic-img-drawer .byte-drawer-close-icon",
+                ".byte-drawer-header .byte-drawer-close",
+                ".byte-drawer-wrapper .byte-drawer-header button",
+            ]:
+                try:
+                    locator = page.locator(selector).first
+                    if not locator.is_visible(timeout=400):
+                        continue
+                    if self._click_button_candidate(locator):
+                        page.wait_for_timeout(800)
+                        try:
+                            if not drawer.is_visible(timeout=800):
+                                notes.append(f"Closed stray drawer via `{selector}`.")
+                                drawer_visible = False
+                                break
+                        except Exception:
+                            drawer_visible = False
+                            break
+                except Exception:
+                    continue
+
+        # Escape 兜底
+        if panel_visible or drawer_visible:
+            try:
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(800)
+                panel_visible = bool(
+                    panel.is_visible(timeout=600) if panel_visible else False
+                )
+                drawer_visible = bool(
+                    drawer.is_visible(timeout=600) if drawer_visible else False
+                )
+                if not panel_visible and not drawer_visible:
+                    notes.append("Closed stray cover panel/drawer via Escape key.")
+                    return
+            except Exception:
+                pass
+
+        # 最终兜底：CSS 强制隐藏 byte-drawer-wrapper（AI 抽屉 + 封面抽屉）
+        if panel_visible or drawer_visible:
+            try:
+                page.evaluate("""() => {
+                    const style = document.createElement('style');
+                    style.id = 'stray-drawer-blocker';
+                    style.textContent = `
+                        .byte-drawer-wrapper,
+                        .byte-drawer-mask,
+                        .mp-ic-img-drawer,
+                        [class*="mp-ic-img-drawer"] {
+                            display: none !important;
+                            visibility: hidden !important;
+                            pointer-events: none !important;
+                        }
+                    `;
+                    if (!document.getElementById('stray-drawer-blocker')) {
+                        document.head.appendChild(style);
+                    }
+                }""")
+                notes.append("Stray drawer hidden via CSS injection (stray-drawer-blocker).")
+            except Exception as exc:
+                notes.append(f"Stray drawer CSS injection failed: {exc}")
 
     def _resolve_cover_mode(self, cover_path: Path) -> str:
         configured = (self.settings.publishing.cover_mode or "auto").strip().lower()
@@ -3601,7 +4161,7 @@ class PublishService:
                     continue
 
                 for index in range(count - 1, -1, -1):
-                    if selector == "input[type='file']" and count <= existing_count and index < existing_count:
+                    if existing_count >= 0 and selector == "input[type='file']" and count <= existing_count and index < existing_count:
                         continue
                     locator = locator_group.nth(index)
                     try:
@@ -4339,6 +4899,7 @@ class PublishService:
 
     def _save_history(self, records: list[PublishRecord]) -> None:
         content = json.dumps([asdict(item) for item in records], ensure_ascii=False, indent=2)
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.history_path.with_suffix(".tmp")
         try:
             tmp_path.write_text(content, encoding="utf-8")

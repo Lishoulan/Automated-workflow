@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import os
 import re
@@ -35,6 +36,53 @@ class TopicCollectionService:
         "newsrss.bbc.co.uk",
         "bbc.co.uk",
     })
+
+    # 实时热榜源类型（头条热榜 / 百度热搜）：标题即热点，天然具备高讨论度
+    HOT_SOURCE_TYPES = frozenset({"hot_board", "baidu_hot"})
+    # 热度值达到该阈值视为"真热点"，可放宽标题型话题的质量门禁
+    HOT_HEAT_THRESHOLD = 5_000_000
+    # 敏感/高危话题拦截词：避免热点二创踩平台红线（自杀、恶性案件、医疗争议等）
+    HOT_TOPIC_BLOCKLIST = (
+        "自缢",
+        "自杀",
+        "跳楼",
+        "轻生",
+        "割腕",
+        "凶杀",
+        "弑",
+        "奸杀",
+        "分尸",
+        "碎尸",
+        "命案",
+        "恶性案件",
+        "枪击",
+        "爆炸事故",
+        "矿难",
+        "坍塌",
+        "坠机",
+        "车祸",
+        "中毒身亡",
+        "猝死",
+        "虐童",
+        "性侵",
+        "猥亵",
+        "嫖娼",
+        "毒品",
+        "贩毒",
+        "涉黑",
+        "恐怖袭击",
+        "暴恐",
+        "传销",
+        "缅北",
+        "器官",
+        "遗体",
+        "尸检",
+        "死刑",
+        "冤案",
+        "医疗事故",
+        "医闹",
+        "疫苗事故",
+    )
 
     NUMBER_PATTERN = re.compile(
         r"\d+(?:\.\d+)?(?:%|倍|年|季度|个月|周|天|小时|分钟|亿元|亿美元|万元|万台|万辆|万套|万吨|万千瓦|万千瓦时|"
@@ -420,7 +468,11 @@ class TopicCollectionService:
 
             source_type = str(source_config.get("type", "html"))
             collector_name = str(source_config.get("collector_name", source_name)).strip() or source_name
-            if source_type in {"rss", "google_rss"}:
+            if source_type == "hot_board":
+                collectors.append(_HotBoardTopicCollector(source_name, source_config, self))
+            elif source_type == "baidu_hot":
+                collectors.append(_BaiduHotTopicCollector(source_name, source_config, self))
+            elif source_type in {"rss", "google_rss"}:
                 collectors.append(_RssTopicCollector(source_name, source_config, self, google_mode=source_type == "google_rss"))
             else:
                 same_domain_only = bool(source_config.get("same_domain_only", collector_name == "gg_robot"))
@@ -585,6 +637,11 @@ class TopicCollectionService:
     def _enrich_topic(self, topic: TopicCandidate) -> TopicCandidate:
         combined = f"{topic.title}\n{topic.snippet}\n{topic.summary}"
         matched_industries, matched_keywords = self._match_industries(combined)
+        # 实时热榜话题天然归属"热点"赛道：无论是否命中行业关键词，
+        # 只要账号启用了 hot_topic 赛道即视为聚焦热点内容。
+        if topic.source_type in self.HOT_SOURCE_TYPES:
+            if "hot_topic" not in matched_industries:
+                matched_industries = [*matched_industries, "hot_topic"]
         numbers = self._extract_numbers(combined)
         freshness_score = self._freshness_score(topic.published_at)
         topic.matched_industries = matched_industries
@@ -629,6 +686,12 @@ class TopicCollectionService:
             + topic.quality_score * 0.25
             + topic.title_potential_score * 0.20
         )
+        # 热榜真实热点：平台热度是浏览量的最强先验，直接加权进总分
+        # （标题型热点没有证据分/收藏分优势，若不加权会被行业深度稿压到后面）
+        if topic.source_type in self.HOT_SOURCE_TYPES and topic.heat_value > 0:
+            import math as _math
+            heat_priority = min(34, max(4, int(_math.log10(max(topic.heat_value, 1)) * 4)))
+            topic.total_score = min(self.MAX_SCORE_BOUND, topic.total_score + heat_priority)
         topic.total_score = max(1, topic.total_score - self._selection_penalty(topic))
         topic.is_high_read = topic.read_score >= self.MAX_HIGH_READ_SCORE
         topic.is_high_save = topic.save_score >= self.MAX_HIGH_SAVE_SCORE
@@ -862,9 +925,12 @@ class TopicCollectionService:
             if any(industry in focus_set for industry in item.matched_industries)
         ]
 
-        # 过滤掉仅匹配泛关键词的话题
+        # 过滤掉仅匹配泛关键词的话题（热榜话题标题即热点，无需具体关键词佐证）
         specific_filtered = []
         for item in (focused_topics if focused_topics else matched_topics):
+            if item.source_type in self.HOT_SOURCE_TYPES:
+                specific_filtered.append(item)
+                continue
             specific_keywords = [
                 k for k in (item.matched_keywords or [])
                 if k not in self.GENERIC_KEYWORD_BLACKLIST
@@ -902,6 +968,10 @@ class TopicCollectionService:
         if self._is_weak_event_topic(topic):
             score -= 10
         score -= self._macro_noise_penalty(topic)
+        # 热榜来源直接用平台热度值归一化：热度越高，heat_score 越高
+        if topic.source_type in self.HOT_SOURCE_TYPES and topic.heat_value > 0:
+            heat_bonus = int(min(40, max(8, (topic.heat_value ** 0.22) / 10)))
+            score += heat_bonus
         return min(self.MAX_SCORE_BOUND, score)
 
     def _score_read(self, topic: TopicCandidate, freshness_score: int) -> int:
@@ -1311,6 +1381,18 @@ class TopicCollectionService:
         pattern_score = self._high_performance_pattern_score(topic)
         title_text = str(topic.title or "")
         body_text = f"{topic.title} {topic.summary} {topic.snippet}"
+        # 热榜来源：标题即热点。只要账号启用了 hot_topic 赛道，且热度达标，
+        # 不要求关键词命中（热点标题往往不含行业关键词，但浏览量价值最高）。
+        if (
+            topic.source_type in self.HOT_SOURCE_TYPES
+            and "hot_topic" in set(self.topic_settings.focus_industries)
+            and topic.heat_value >= self.HOT_HEAT_THRESHOLD
+        ):
+            # 敏感/高危话题直接拦截，避免账号被平台限流或封禁
+            if any(token in title_text or token in body_text for token in self.HOT_TOPIC_BLOCKLIST):
+                filtered_out["low_quality"] += 1
+                return False
+            return True
         if self._has_blocking_quality_issue(topic):
             filtered_out["low_quality"] += 1
             return False
@@ -1416,6 +1498,8 @@ class TopicCollectionService:
         for index, industry in enumerate(self.topic_settings.focus_industries[:5]):
             if industry in topic.matched_industries:
                 bonus += max(6 - index * 2, 1)
+        if "hot_topic" in topic.matched_industries:
+            bonus += 4
         return bonus
     def _keyword_hits_in_title(self, topic: TopicCandidate) -> int:
         title = topic.title.lower()
@@ -1444,6 +1528,15 @@ class TopicCollectionService:
         flags = set(topic.quality_flags)
         pattern_score = self._high_performance_pattern_score(topic)
         title_text = str(topic.title or "")
+        # 热榜话题：标题即全部素材，天然 title_only。热度达标时放宽质量门禁，
+        # 否则真实热榜话题会被误杀。质量把关交给 review agent。
+        is_hot_pass = (
+            topic.source_type in self.HOT_SOURCE_TYPES
+            and "hot_topic" in set(self.topic_settings.focus_industries)
+            and topic.heat_value >= self.HOT_HEAT_THRESHOLD
+        )
+        if is_hot_pass:
+            return False
         if "old_statistics" in flags:
             return True
         if any(token in title_text for token in self.INTERNATIONAL_FALSE_POSITIVE_TOKENS):
@@ -1730,6 +1823,124 @@ class _BaseTopicCollector:
 
     async def collect(self) -> TopicSourceResult:
         raise NotImplementedError
+
+
+class _HotBoardTopicCollector(_BaseTopicCollector):
+    """头条热榜实时热点采集（官方 JSON API，含热度值）。
+
+    URL: https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc
+    返回 data[] 数组，每项含 Title / HotValue / Url / Label。
+    """
+
+    TOUTIAO_HOT_BOARD_URL = "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
+
+    async def collect(self) -> TopicSourceResult:
+        items: list[TopicCandidate] = []
+        errors: list[str] = []
+        urls = [str(item) for item in self.source_config.get("urls", [])] or [self.TOUTIAO_HOT_BOARD_URL]
+        results = await asyncio.gather(*(self.service.fetch_text(url) for url in urls), return_exceptions=True)
+
+        for url, payload in zip(urls, results):
+            if isinstance(payload, Exception):
+                errors.append(f"{url}: {payload}")
+                continue
+            try:
+                items.extend(self._parse_hot_board(payload))
+            except Exception as exc:  # pragma: no cover - defensive
+                errors.append(f"{url}: {exc}")
+
+        return TopicSourceResult(
+            source_name=self.source_name,
+            items=items[: self.service.topic_settings.max_items_per_source],
+            errors=errors,
+        )
+
+    def _parse_hot_board(self, payload: str) -> list[TopicCandidate]:
+        data = json.loads(payload)
+        board_items = data.get("data") or []
+        candidates: list[TopicCandidate] = []
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        for item in board_items:
+            if not isinstance(item, dict):
+                continue
+            title = self.service._clean_text(str(item.get("Title", "") or ""))
+            if not title:
+                continue
+            heat_raw = str(item.get("HotValue", "") or "").strip()
+            heat_value = 0
+            if heat_raw.isdigit():
+                heat_value = int(heat_raw)
+            url = str(item.get("Url", "") or "")
+            if not url.startswith("http"):
+                url = f"https://www.toutiao.com/trending/{item.get('ClusterId', '')}"
+            candidates.append(
+                TopicCandidate(
+                    title=title,
+                    url=url,
+                    source=self.source_name,
+                    source_type="hot_board",
+                    published_at=now_iso,
+                    snippet="",
+                    heat_value=heat_value,
+                )
+            )
+        return candidates
+
+
+class _BaiduHotTopicCollector(_BaseTopicCollector):
+    """百度实时热搜采集（HTML 内嵌 JSON）。
+
+    URL: https://top.baidu.com/board?tab=realtime
+    页面内嵌 "query":"标题" 与 "hotScore":"热度" 的 JSON 片段。
+    """
+
+    BAIDU_HOT_URL = "https://top.baidu.com/board?tab=realtime"
+    QUERY_PATTERN = re.compile(r'"query":"((?:[^"\\]|\\.)*)"')
+    HOTSCORE_PATTERN = re.compile(r'"hotScore":"?(\d+)"?')
+
+    async def collect(self) -> TopicSourceResult:
+        items: list[TopicCandidate] = []
+        errors: list[str] = []
+        urls = [str(item) for item in self.source_config.get("urls", [])] or [self.BAIDU_HOT_URL]
+        results = await asyncio.gather(*(self.service.fetch_text(url) for url in urls), return_exceptions=True)
+
+        for url, payload in zip(urls, results):
+            if isinstance(payload, Exception):
+                errors.append(f"{url}: {payload}")
+                continue
+            try:
+                items.extend(self._parse_hot_page(payload))
+            except Exception as exc:  # pragma: no cover - defensive
+                errors.append(f"{url}: {exc}")
+
+        return TopicSourceResult(
+            source_name=self.source_name,
+            items=items[: self.service.topic_settings.max_items_per_source],
+            errors=errors,
+        )
+
+    def _parse_hot_page(self, payload: str) -> list[TopicCandidate]:
+        queries = self.QUERY_PATTERN.findall(payload)
+        scores = [int(value) for value in self.HOTSCORE_PATTERN.findall(payload)]
+        candidates: list[TopicCandidate] = []
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        for index, raw_title in enumerate(queries[: self.service.topic_settings.max_items_per_source]):
+            title = self.service._clean_text(raw_title)
+            if not title or len(title) < 6:
+                continue
+            heat_value = scores[index] if index < len(scores) else 0
+            candidates.append(
+                TopicCandidate(
+                    title=title,
+                    url="",
+                    source=self.source_name,
+                    source_type="baidu_hot",
+                    published_at=now_iso,
+                    snippet="",
+                    heat_value=heat_value,
+                )
+            )
+        return candidates
 
 
 class _RssTopicCollector(_BaseTopicCollector):

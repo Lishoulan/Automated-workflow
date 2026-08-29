@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +21,15 @@ from toutiao_content_factory.services.openai_service import OpenAIContentService
 class WriterAgent(BaseAgent):
     agent_name = "WriterAgent"
     REQUIRED_HEADING_COUNT = (3, 4)
+    INTERNAL_ARTICLE_MARKERS = (
+        "manual_paste",
+        "来源摘要",
+        "source_document",
+        "source_material",
+        "benchmark_hotspot",
+        "evergreen_pool",
+        "evergreen://",
+    )
 
     INVALID_ANGLE_FRAGMENTS = (
         "这不只是",
@@ -78,6 +88,7 @@ class WriterAgent(BaseAgent):
             "article_prompt_v2.md",
             platform=self.settings.platform,
             brand_name=self.settings.brand_name,
+            brand_positioning=self.settings.brand_positioning,
             industry_focus=self.settings.industry_focus,
             audience=self.settings.audience,
             style_digest=self.style_digest(style),
@@ -89,7 +100,7 @@ class WriterAgent(BaseAgent):
             trend_json=self.json_text(trend_report.__dict__),
             data_json=self.json_text(data_report.__dict__),
             article_word_target=str(data_report.word_target or self.settings.article_word_target),
-            min_word_target=str(max(1500, int(data_report.word_target or self.settings.article_word_target) // 2)),
+            min_word_target=self._min_word_target_for(data_report),
             content_format_label=data_report.content_format_label or "深度分析",
             format_brief=data_report.format_brief or "写成完整产业分析稿。",
             paragraph_instruction=data_report.paragraph_instruction or "5到7段，每段2到3句。",
@@ -164,6 +175,7 @@ class WriterAgent(BaseAgent):
             "writer_with_insights_prompt.md",
             platform=self.settings.platform,
             brand_name=self.settings.brand_name,
+            brand_positioning=self.settings.brand_positioning,
             industry_focus=self.settings.industry_focus,
             audience=self.settings.audience,
             style_digest=self.style_digest(style),
@@ -176,10 +188,11 @@ class WriterAgent(BaseAgent):
             data_json=self.json_text(data_report.__dict__),
             insight_json=self.json_text(insight_report.__dict__),
             article_word_target=str(data_report.word_target or self.settings.article_word_target),
-            min_word_target=str(max(1500, int(data_report.word_target or self.settings.article_word_target) // 2)),
+            min_word_target=self._min_word_target_for(data_report),
             content_format_label=data_report.content_format_label or "深度分析",
             format_brief=data_report.format_brief or "写成完整产业分析稿。",
             paragraph_instruction=data_report.paragraph_instruction or "5到7段，每段2到3句。",
+            best_practices=self.best_practices_instruction(),
         )
         system_prompt = f"{self._writer_system_prompt(style)}{self._dynamic_rules_for(data_report)}"
         # 模块 C 合并新增：从 best_practices_rule.txt 加载并注入活跃规则
@@ -286,7 +299,14 @@ class WriterAgent(BaseAgent):
         scene_anchor = self._scene_anchor(data_report, trend_report)
         content_mode = self._content_mode(data_report)
 
-        if content_format == "quick_commentary":
+        if content_mode == "hot_topic":
+            # 热点快评兜底：围绕热点标题展开观点短评，不套用产业链模板
+            paragraphs = [
+                self._hot_topic_opening(data_report, trend_report),
+                self._hot_topic_body(data_report, trend_report),
+                self._hot_topic_close(comment_prompt, data_report),
+            ]
+        elif content_format == "quick_commentary":
             paragraphs = [
                 " ".join(opening_lines[:3]),
                 self._build_data_paragraph(primary, core_data[:2], evidence),
@@ -336,6 +356,34 @@ class WriterAgent(BaseAgent):
             benchmark_track=benchmark_track,
             self_benchmark_context=self_benchmark_context,
         )
+
+    def _hot_topic_opening(self, data_report: DataReport, trend_report: TrendReport) -> str:
+        title = self.clean_publish_text(data_report.topic_title).rstrip("。")
+        angle = self.clean_publish_text(trend_report.recommended_angle or data_report.suggested_angle).rstrip("。")
+        if angle:
+            return f"{title}这件事，{angle}。"
+        return f"{title}上了热榜，真正值得拆的不是热度本身，而是它背后反映出的趋势变化。"
+
+    def _hot_topic_body(self, data_report: DataReport, trend_report: TrendReport) -> str:
+        points = self.clean_publish_list(data_report.key_points[:2] or trend_report.platform_topics[:2])
+        body_parts: list[str] = []
+        if points:
+            body_parts.append("这条热点里，最值得关注的信号是" + "、".join(points) + "。")
+        else:
+            body_parts.append("这类热点通常有三层信息：表面发生了什么、大家为什么讨论它、以及它接下来会怎么演化。")
+        body_parts.append(
+            "对普通读者来说，比追热度更重要的是抓住变化的主线：谁受影响、谁会受益、哪些变量会决定下一步走向。"
+        )
+        return "".join(body_parts)
+
+    def _hot_topic_close(self, comment_prompt: str, data_report: DataReport) -> str:
+        question = self.clean_publish_text(comment_prompt or "").rstrip("。！？!?")
+        if not question:
+            primary = self._primary_keyword(data_report)
+            question = f"你觉得{primary}这件事，接下来最值得关注的变化是什么"
+        if question[-1] not in "？?":
+            question += "？"
+        return f"当然，这只是基于公开信息的初步判断，实际情况还要看后续进展。{question}"
 
     def _build_opening_lines(
         self,
@@ -550,7 +598,9 @@ class WriterAgent(BaseAgent):
         self_benchmark_context: dict[str, object] | None = None,
     ) -> str:
         cleaned = self.strip_prompt_leakage(article)
-        cleaned = clean_article_text(cleaned)
+        # The sanitizer only normalizes and removes leakage; length is handled
+        # later by the evidence-aware workflow gate.
+        cleaned = clean_article_text(cleaned, min_word_count=0)
         paragraphs = [self._normalize_paragraph(block) for block in cleaned.split("\n\n") if block.strip()]
         paragraphs = [block for block in paragraphs if block]
 
@@ -670,6 +720,20 @@ class WriterAgent(BaseAgent):
             content_format=content_format,
             limit=3,
         )
+
+    def _min_word_target_for(self, data_report: DataReport) -> str:
+        """根据内容体裁计算提示词中的最低字数要求。
+
+        热点快评 / 快讯点评：600~900 字；其余体裁维持 1500 字长文标准。
+        """
+        content_format = str(getattr(data_report, "content_format", "") or "")
+        word_target = int(getattr(data_report, "word_target", 0) or 0)
+        if self._content_mode(data_report) == "hot_topic":
+            floor = max(600, min(int(word_target * 0.8) if word_target > 0 else 700, 900))
+            return str(floor)
+        if content_format in ("quick_commentary", "short_comment", "news_flash"):
+            return str(max(600, min(int(word_target * 0.8) if word_target > 0 else 800, 900)))
+        return str(max(1500, int(word_target or self.settings.article_word_target) // 2))
 
     def _writer_system_prompt(self, style: StyleProfile) -> str:
         return (
@@ -845,6 +909,18 @@ class WriterAgent(BaseAgent):
         content_mode = self._content_mode(data_report)
         primary = self._primary_keyword(data_report) if data_report is not None else "这个赛道"
         content_format = data_report.content_format if data_report is not None else ""
+        content_mix = str(getattr(data_report, "content_mix", "")).strip().lower() if data_report is not None else ""
+        cta_variant = str(getattr(data_report, "cta_variant", "")).strip().lower() if data_report is not None else ""
+        if cta_variant == "consultation":
+            return self._varied_consultation_cta(primary)
+        if cta_variant == "newsletter":
+            return self._varied_newsletter_cta(primary)
+        if cta_variant == "discussion":
+            return self._varied_discussion_cta(primary)
+        if content_mix == "conversion":
+            return self._varied_consultation_cta(primary)
+        if content_mix == "professional":
+            return self._varied_newsletter_cta(primary)
         if content_mode == "sports":
             return self._varied_sports_comment_prompt()
         if content_mode == "international":
@@ -856,6 +932,30 @@ class WriterAgent(BaseAgent):
         if content_format == "quick_commentary":
             return self._varied_quick_comment_prompt(primary)
         return self._varied_default_comment_prompt(primary)
+
+    def _varied_consultation_cta(self, primary: str) -> str:
+        options = [
+            f"如果你也在关注{primary}的订单与利润兑现，回复“咨询”，我可以给你一份定制诊断清单。",
+            f"想判断{primary}是否值得投入，回复“咨询”，我们聊一次具体卡点。",
+            f"如果你的业务正卡在{primary}这一环，回复“咨询”，我给你一个可执行的增长切入点。",
+        ]
+        return random.choice(options)
+
+    def _varied_newsletter_cta(self, primary: str) -> str:
+        options = [
+            f"想持续跟踪{primary}的产业链变化，回复“周报”，我把每周关键信号整理给你。",
+            f"如果你不想错过{primary}的下一轮兑现节点，回复“周报”，领取行业情报样刊。",
+            f"这类内容我会持续更新，回复“周报”，把高价值判断直接送到你手上。",
+        ]
+        return random.choice(options)
+
+    def _varied_discussion_cta(self, primary: str) -> str:
+        options = [
+            f"你觉得{primary}里哪个环节最有机会？",
+            f"{primary}接下来最值得盯的变量是什么？",
+            f"在你看来，{primary}会不会改变当前格局？",
+        ]
+        return random.choice(options)
 
     def _varied_sports_comment_prompt(self) -> str:
         options = [
@@ -990,6 +1090,10 @@ class WriterAgent(BaseAgent):
         data_report: DataReport,
     ) -> list[str]:
         blocks = [item.strip() for item in paragraphs if item.strip()]
+        # 热点快评 / 快讯点评不强制小标题，避免把短评硬拆成研报结构
+        content_format = getattr(data_report, "content_format", "") or ""
+        if self._content_mode(data_report) == "hot_topic" or content_format in ("quick_commentary", "short_comment", "news_flash"):
+            return blocks
         heading_count = sum(1 for item in blocks if item.startswith("### "))
         if self.REQUIRED_HEADING_COUNT[0] <= heading_count <= self.REQUIRED_HEADING_COUNT[1]:
             return blocks
@@ -1312,7 +1416,7 @@ class WriterAgent(BaseAgent):
             or int(getattr(data_report, "evidence_strength", 0) or 0) >= 70
         )
 
-    def _trim_low_confidence_paragraphs(
+    def _legacy_trim_low_confidence_paragraphs(
         self,
         paragraphs: list[str],
         data_report: "DataReport",
@@ -1362,11 +1466,15 @@ class WriterAgent(BaseAgent):
     # 若不设上限会反复消耗 token 并拖长单次运行（历史 auto-run 达 17 分钟）。
     MAX_LLM_EXPANSION_CALLS = 1
 
-    def _ensure_min_char_count(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 0) -> list[str]:
+    def _legacy_ensure_min_char_count(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 0) -> list[str]:
         # 动态获取最小字数：优先 data_report.word_target，其次 settings.article_word_target，最后 1500
+        content_mode = self._content_mode(data_report)
         if min_chars <= 0:
             word_target = getattr(data_report, "word_target", 0) or 0
-            if word_target > 0:
+            if content_mode == "hot_topic":
+                # 热点快评：600~900 字即可，不强制 1500 字长文
+                min_chars = max(600, min(int(word_target * 0.8) if word_target > 0 else 700, 900))
+            elif word_target > 0:
                 min_chars = max(1500, int(word_target * 0.8))
             else:
                 min_chars = max(1500, int(getattr(self.settings, "article_word_target", 2000) * 0.8))
@@ -1464,11 +1572,24 @@ class WriterAgent(BaseAgent):
             if not isinstance(expansion_paragraphs, list):
                 return paragraphs
 
-            new_paragraphs = [
-                str(item).strip()
-                for item in expansion_paragraphs
-                if isinstance(item, str) and str(item).strip()
-            ]
+            new_paragraphs: list[str] = []
+            for item in expansion_paragraphs:
+                if not isinstance(item, str) or not item.strip():
+                    continue
+                sanitized = clean_article_text(item, min_word_count=0)
+                for paragraph in sanitized.split("\n\n"):
+                    paragraph = paragraph.strip()
+                    if not paragraph:
+                        continue
+                    if any(marker in paragraph.lower() for marker in self.INTERNAL_ARTICLE_MARKERS):
+                        continue
+                    if self._unsupported_numeric_tokens(paragraph, data_report):
+                        continue
+                    if self._has_unknown_company_mention(paragraph, data_report):
+                        continue
+                    if self._is_duplicate_paragraph(paragraph, [*paragraphs, *new_paragraphs]):
+                        continue
+                    new_paragraphs.append(paragraph)
             if not new_paragraphs:
                 return paragraphs
 
@@ -1483,9 +1604,13 @@ class WriterAgent(BaseAgent):
             return paragraphs
 
     def _ensure_min_char_count(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 0) -> list[str]:
+        content_mode = self._content_mode(data_report)
         if min_chars <= 0:
             word_target = getattr(data_report, "word_target", 0) or 0
-            if word_target > 0:
+            if content_mode == "hot_topic":
+                # 热点快评：600~900 字即可，不强制 1500 字长文
+                min_chars = max(600, min(int(word_target * 0.8) if word_target > 0 else 700, 900))
+            elif word_target > 0:
                 min_chars = max(1200, int(word_target * 0.8))
             else:
                 min_chars = max(1200, int(getattr(self.settings, "article_word_target", 1500) * 0.8))
@@ -1546,6 +1671,15 @@ class WriterAgent(BaseAgent):
     def _build_supplementary_paragraphs(self, data_report: "DataReport", existing_paragraphs: list[str] | None = None) -> list[str]:
         existing_text = "\n".join(existing_paragraphs) if existing_paragraphs else ""
         paragraphs = []
+        # 实时热榜二创：不要用产业链模板段落填充，保持短评形态
+        if self._content_mode(data_report) == "hot_topic":
+            if len(existing_text.replace("\n", "").replace(" ", "")) < 500:
+                title = self.clean_publish_text(data_report.topic_title).rstrip("。")
+                paragraphs.append(
+                    f"围绕{title}，还可以再看一层：这条热点后续的走向，取决于关键变量是否兑现，"
+                    "比如相关方是否会给出进一步说明、数据是否会更新、市场情绪是否会延续。"
+                )
+            return paragraphs
         if data_report.watch_metrics:
             items = data_report.watch_metrics[:5]
             if items:
@@ -1659,69 +1793,113 @@ class WriterAgent(BaseAgent):
         seen_openings: set[str] = set()
 
         for paragraph in paragraphs:
-            text = str(paragraph or "").strip()
-            if not text:
-                continue
-            if any(marker in text for marker in rejected_markers):
-                continue
-            if self._unsupported_numeric_tokens(text, data_report):
-                continue
-            if self._has_unknown_company_mention(text, data_report):
-                continue
-            if self._looks_like_template_paragraph(text, data_report):
-                continue
-            if not grounded and any(marker in text for marker in generic_guess_markers):
-                continue
+            sanitized = clean_article_text(str(paragraph or ""), min_word_count=0)
+            for candidate in sanitized.split("\n\n"):
+                text = candidate.strip()
+                if not text:
+                    continue
+                lowered = text.lower()
+                if any(marker in lowered for marker in self.INTERNAL_ARTICLE_MARKERS):
+                    continue
+                if any(marker in text for marker in rejected_markers):
+                    continue
+                if self._unsupported_numeric_tokens(text, data_report):
+                    continue
+                if self._has_unknown_company_mention(text, data_report):
+                    continue
+                if self._looks_like_template_paragraph(text, data_report):
+                    continue
+                if not grounded and any(marker in text for marker in generic_guess_markers):
+                    continue
 
-            opening = re.sub(r"\s+", "", text[:16].lower())
-            if opening and opening in seen_openings:
-                continue
-            seen_openings.add(opening)
+                opening = re.sub(r"\s+", "", text[:16].lower())
+                if opening and opening in seen_openings:
+                    continue
+                if self._is_duplicate_paragraph(text, cleaned):
+                    continue
+                seen_openings.add(opening)
+                cleaned.append(text)
 
-            if cleaned and text == cleaned[-1]:
-                continue
-            cleaned.append(text)
+        return cleaned
 
-        return cleaned or paragraphs
-
-    def _build_supplementary_paragraphs(self, data_report: "DataReport", existing_paragraphs: list[str] | None = None) -> list[str]:
-        existing_text = "\n".join(existing_paragraphs) if existing_paragraphs else ""
+    def _legacy_build_supplementary_paragraphs(self, data_report: "DataReport", existing_paragraphs: list[str] | None = None) -> list[str]:
         paragraphs: list[str] = []
 
-        if data_report.watch_metrics:
-            metrics = [str(item).strip() for item in data_report.watch_metrics[:4] if str(item).strip()]
-            if metrics:
-                text = (
-                    "后续更值得盯的是"
-                    + "、".join(metrics)
-                    + "。这些指标如果同步改善，说明这条线开始从预期走向兑现；如果只有订单没有回款，热度很可能先走一步。"
+        existing = list(existing_paragraphs or [])
+
+        def clean_items(items: list[str], limit: int) -> list[str]:
+            result: list[str] = []
+            for item in items[:limit]:
+                value = self.clean_publish_text(str(item)).strip()
+                value = clean_article_text(value, min_word_count=0).strip()
+                if not value or any(marker in value.lower() for marker in self.INTERNAL_ARTICLE_MARKERS):
+                    continue
+                if value not in result:
+                    result.append(value)
+            return result
+
+        def append_if_new(candidate: str) -> None:
+            value = clean_article_text(candidate, min_word_count=0).strip()
+            if not value:
+                return
+            for item in value.split("\n\n"):
+                item = item.strip()
+                if not item or any(marker in item.lower() for marker in self.INTERNAL_ARTICLE_MARKERS):
+                    continue
+                if self._unsupported_numeric_tokens(item, data_report):
+                    continue
+                if self._is_duplicate_paragraph(item, [*existing, *paragraphs]):
+                    continue
+                paragraphs.append(item)
+
+        # 实时热榜二创：不要用产业链模板段落填充，保持短评形态
+        if self._content_mode(data_report) == "hot_topic":
+            existing_chars = sum(len(item.replace("\n", "").replace(" ", "")) for item in existing)
+            if existing_chars < 500:
+                title = self.clean_publish_text(data_report.topic_title).rstrip("。")
+                append_if_new(
+                    f"围绕{title}，还可以再看一层：这条热点后续的走向，取决于关键变量是否兑现，"
+                    "比如相关方是否会给出进一步说明、数据是否会更新、市场情绪是否会延续。"
                 )
-                if text[:20] not in existing_text:
-                    paragraphs.append(text)
+            return paragraphs
 
-        if data_report.risk_flags:
-            risks = [str(item).strip() for item in data_report.risk_flags[:3] if str(item).strip()]
-            if risks:
-                text = "风险不在情绪，而在节奏：" + "；".join(risks) + "。只要其中一环明显延后，利润兑现时间表就要整体后移。"
-                if text[:20] not in existing_text:
-                    paragraphs.append(text)
+        metrics = clean_items(data_report.watch_metrics, 4)
+        if metrics:
+            append_if_new(
+                "后续更值得盯的是"
+                + "、".join(metrics)
+                + "。这些指标如果同步改善，说明这条线开始从预期走向兑现；如果只有订单没有回款，热度很可能先走一步。"
+            )
 
-        if data_report.evidence_notes:
-            notes = [str(item).strip() for item in data_report.evidence_notes[:3] if str(item).strip()]
-            if notes:
-                text = "目前能确认的公开信息主要到这里：" + "；".join(notes) + "。再往下的判断，最好等公告、财报或项目进展把口径补齐。"
-                if text[:20] not in existing_text:
-                    paragraphs.append(text)
+        risks = clean_items(data_report.risk_flags, 3)
+        if risks:
+            append_if_new("风险不在情绪，而在节奏：" + "；".join(risks) + "。只要其中一环明显延后，利润兑现时间表就要整体后移。")
 
-        if data_report.growth_numbers and len(data_report.growth_numbers) >= 2:
-            first = str(data_report.growth_numbers[0]).strip()
-            second = str(data_report.growth_numbers[1]).strip()
-            if first and second:
-                text = f"如果一定要抓两个数字锚点，先看{first}和{second}。这两个数字一旦继续改善，市场会更快把它从题材重估成业绩。"
-                if text[:20] not in existing_text:
-                    paragraphs.append(text)
+        notes = clean_items(data_report.evidence_notes, 3)
+        if notes:
+            append_if_new("目前能确认的公开信息主要到这里：" + "；".join(notes) + "。再往下的判断，最好等公告、财报或项目进展把口径补齐。")
+
+        numbers = clean_items(data_report.growth_numbers, 2)
+        if len(numbers) >= 2:
+            append_if_new(f"如果一定要抓两个数字锚点，先看{numbers[0]}和{numbers[1]}。这两个数字一旦继续改善，市场会更快把它从题材重估成业绩。")
 
         return paragraphs
+
+    @staticmethod
+    def _is_duplicate_paragraph(candidate: str, existing: list[str]) -> bool:
+        normalized = re.sub(r"[\W_]+", "", str(candidate or "")).lower()
+        if not normalized:
+            return True
+        for item in existing:
+            previous = re.sub(r"[\W_]+", "", str(item or "")).lower()
+            if not previous:
+                continue
+            if normalized == previous:
+                return True
+            if len(normalized) >= 60 and len(previous) >= 60:
+                if SequenceMatcher(None, normalized, previous).ratio() >= 0.88:
+                    return True
+        return False
 
     def _ensure_closing_question(self, paragraphs: list[str], comment_prompt: str) -> list[str]:
         if not paragraphs:

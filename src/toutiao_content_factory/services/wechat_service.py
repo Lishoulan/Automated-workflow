@@ -377,6 +377,27 @@ class WechatPublishService:
             run_dir=run_dir,
             result_path=result_path,
         )
+        try:
+            from toutiao_content_factory.services.revenue_attribution_service import (
+                RevenueAttributionService,
+            )
+
+            attribution_service = RevenueAttributionService(self.settings.output_dir, self.logger)
+            identity = attribution_service.register_published_run(
+                account_key=self.settings.account_key,
+                platform="wechat",
+                run_dir=run_dir,
+                publish_dirname=self.settings.review.publish_dirname,
+                title=title,
+                published_at=str(result_payload.get("published_at", "")),
+                topic=publish_meta.get("selected_topic") or {},
+                result_payload=result_payload,
+            )
+            growth_exports["content_id"] = identity.content_id
+            growth_exports["content_index"] = str(attribution_service.content_index_path)
+            growth_exports["cost_ledger"] = str(attribution_service.cost_ledger_path)
+        except Exception as exc:  # pragma: no cover - attribution best-effort
+            self.logger.warning("WeChat revenue attribution registration failed (non-fatal): %s", exc)
 
         self.logger.info("Wechat publish completed for run: %s (api=%s)", run_dir, api_available)
         return {

@@ -97,12 +97,18 @@ accounts:
       - "机器人热点"
     notes: "适合补充科技号的传播感和热点响应速度。"
     source_feeds:
-      - label: "Google News AI"
-        type: google_rss
+      - label: "量子位 RSS"
+        type: rss
         urls:
-          - "https://news.google.com/rss/search?q=OpenAI&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-          - "https://news.google.com/rss/search?q=%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-          - "https://news.google.com/rss/search?q=%E6%9C%BA%E5%99%A8%E4%BA%BA&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+          - "https://www.qbitai.com/feed"
+      - label: "IT之家 RSS"
+        type: rss
+        urls:
+          - "https://www.ithome.com/rss/"
+      - label: "solidot RSS"
+        type: rss
+        urls:
+          - "https://www.solidot.org/index.rss"
     observation_articles:
       - published_at: "近期"
         title: "一条AI热搜真正值得看的，不是参数，而是商业化窗口"

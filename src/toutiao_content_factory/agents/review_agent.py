@@ -39,6 +39,7 @@ class ReviewAgent(BaseAgent):
             recommended_titles_json=self.json_text(content.recommended_titles),
             summary=content.summary,
             article=content.article,
+            hot_topic_note=self._hot_topic_review_note(data_report),
         )
 
         local_opening_lines = self._optimize_opening(content, data_report)
@@ -213,6 +214,20 @@ class ReviewAgent(BaseAgent):
             "content_score": score,
         }
 
+    def _hot_topic_review_note(self, data_report: DataReport) -> str:
+        """热榜快评提示：标题型热点无原文素材是正常形态，评分标准相应放宽。"""
+        if not bool(getattr(data_report, "is_hot_topic", False)):
+            return ""
+        return (
+            "\n\n【本次为热榜快评模式】本文基于实时热榜标题创作（无原文素材），"
+            "属于短评/观点快评体裁（600-900字）。评分请注意：\n"
+            "1. 缺少订单金额、营收、出货量等硬数据是正常形态，不要因此大幅扣信息密度；\n"
+            "2. ai_generated_risk 主要看句式模板化、套话堆砌、段落重复等写作腔调问题，"
+            "不要因为『缺数据/缺来源』扣高；\n"
+            "3. 信息密度按『观点密度+热点关联+互动引导』评估；\n"
+            "4. 综合分达到 60-70 即可视为可发布的快评。"
+        )
+
     def _score_title(self, title: str) -> int:
         score = 56
         if any(char.isdigit() for char in title):
@@ -246,6 +261,14 @@ class ReviewAgent(BaseAgent):
             score += 6
         if self._has_benefit_shift_signal(article):
             score += 6
+        # 实时热榜二创：标题型热点没有完整原文/证据链是正常形态，
+        # 信息密度按"观点密度 + 热点关联 + 互动引导"评估，而不是硬性数字证据
+        if bool(getattr(data_report, "is_hot_topic", False)):
+            score += 12
+            if self._has_strong_judgment_opening(self._paragraphs(article)[0] if self._paragraphs(article) else ""):
+                score += 6
+            if self._has_tracking_variable_close(article):
+                score += 6
         return min(98, score)
 
     def _score_save_potential(self, content: GeneratedContent, data_report: DataReport) -> int:
@@ -333,6 +356,7 @@ class ReviewAgent(BaseAgent):
         article = self._clean_article(content)
         paragraphs = self._paragraphs(article)
         first_paragraph = paragraphs[0] if paragraphs else ""
+        is_hot_topic = bool(getattr(data_report, "is_hot_topic", False))
         generic_hits = len(
             re.findall(
                 r"值得关注的是|不难发现|换句话说|需要指出的是|从某种意义上说|可以看到|总体来看",
@@ -344,29 +368,39 @@ class ReviewAgent(BaseAgent):
         unsupported_count = len(self._unsupported_numeric_tokens(content, data_report))
 
         risk = 48
-        risk -= min(16, len(data_report.growth_numbers) * 3)
-        risk -= min(10, len(data_report.companies[:4]) * 2)
-        risk -= min(8, len(data_report.evidence_notes[:4]) * 2)
-        risk -= min(8, content.validation_score // 15)
-        if self._has_source_anchor(article):
-            risk -= 6
-        if average_length > 150:
-            risk += 5
+        if is_hot_topic:
+            # 热榜快评：标题型热点无原文素材是正常形态，素材缺失不算 AI 痕迹。
+            # 只保留句式模板、段落长度、套话等真正反映写作腔调的信号。
+            risk -= min(8, len(data_report.companies[:4]) * 2)
+            risk -= min(6, len(data_report.evidence_notes[:4]) * 2)
+            risk -= min(6, content.validation_score // 16)
+            if average_length > 170:
+                risk += 5
+        else:
+            risk -= min(16, len(data_report.growth_numbers) * 3)
+            risk -= min(10, len(data_report.companies[:4]) * 2)
+            risk -= min(8, len(data_report.evidence_notes[:4]) * 2)
+            risk -= min(8, content.validation_score // 15)
+            if self._has_source_anchor(article):
+                risk -= 6
+            if average_length > 150:
+                risk += 5
         risk += generic_hits * 5
         risk += max(0, repeated_transitions - 3) * 3
         risk += min(24, unsupported_count * 6)
-        if not self._has_scene_anchor(article):
-            risk += 4
-        if not self._has_conflict_shape(article):
-            risk += 5
-        if not self._has_benefit_shift_signal(article):
-            risk += 5
-        if not self._has_strong_judgment_opening(first_paragraph):
-            risk += 4
-        if not self._has_tracking_variable_close(article):
-            risk += 4
-        else:
-            risk -= 4
+        if not is_hot_topic:
+            if not self._has_scene_anchor(article):
+                risk += 4
+            if not self._has_conflict_shape(article):
+                risk += 5
+            if not self._has_benefit_shift_signal(article):
+                risk += 5
+            if not self._has_strong_judgment_opening(first_paragraph):
+                risk += 4
+            if not self._has_tracking_variable_close(article):
+                risk += 4
+            else:
+                risk -= 4
         if cache_context.similar_hit:
             risk -= 3
         return max(18, min(80, risk))

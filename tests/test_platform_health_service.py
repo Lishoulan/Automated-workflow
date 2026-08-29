@@ -113,6 +113,9 @@ class TestQuickHealthCheck:
         """WeChat 启用且 token 正常时，不应阻塞。"""
         mock_cookie_health.return_value = {"healthy": True}
         object.__setattr__(app_settings.wechat, "enabled", True)
+        object.__setattr__(app_settings.wechat, "editor_135_enabled", False)
+        object.__setattr__(app_settings.wechat, "app_id", "test-app-id")
+        object.__setattr__(app_settings.wechat, "app_secret", "test-app-secret")
 
         result = health_service.quick_health_check()
 
@@ -125,11 +128,34 @@ class TestQuickHealthCheck:
         mock_cookie_health.return_value = {"healthy": True}
         mock_wechat_service._get_access_token.side_effect = Exception("app_id invalid")
         object.__setattr__(app_settings.wechat, "enabled", True)
+        object.__setattr__(app_settings.wechat, "auto_publish", True)
+        object.__setattr__(app_settings.wechat, "editor_135_enabled", False)
+        object.__setattr__(app_settings.wechat, "app_id", "test-app-id")
+        object.__setattr__(app_settings.wechat, "app_secret", "test-app-secret")
 
         result = health_service.quick_health_check()
 
         assert "wechat" in result["blocking_platforms"]
         assert result["platforms"]["wechat"]["status"] == "blocked"
+
+    @patch("toutiao_content_factory.services.platform_health_service.check_cookie_health")
+    def test_wechat_token_fail_without_auto_publish_is_warning(
+        self, mock_cookie_health, health_service, app_settings, mock_wechat_service
+    ):
+        """WeChat is enabled for optional/manual use, so token failure must not block the run."""
+        mock_cookie_health.return_value = {"healthy": True}
+        mock_wechat_service._get_access_token.side_effect = Exception("app_id invalid")
+        object.__setattr__(app_settings.wechat, "enabled", True)
+        object.__setattr__(app_settings.wechat, "auto_publish", False)
+        object.__setattr__(app_settings.wechat, "editor_135_enabled", False)
+        object.__setattr__(app_settings.wechat, "app_id", "test-app-id")
+        object.__setattr__(app_settings.wechat, "app_secret", "test-app-secret")
+
+        result = health_service.quick_health_check()
+
+        assert "wechat" not in result["blocking_platforms"]
+        assert result["platforms"]["wechat"]["status"] == "blocked"
+        assert result["platforms"]["wechat"]["required"] is False
 
 
 

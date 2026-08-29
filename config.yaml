@@ -16,18 +16,21 @@
   },
   "industry": {
     "brand_name": "手蓝数据笔记",
-    "focus": "新能源、机器人、智能装备、储能",
+    "focus": "科技商业、AI产业、先进制造（机器人、新能源、智能装备、储能）",
     "platform": "今日头条",
-    "audience": "科技行业从业者与关注产业升级的读者"
+    "audience": "关注科技商业与产业升级的从业者、投资者与决策者",
+    "positioning": "聚焦科技商业、AI产业与先进制造，用数据拆热点，用产业链看趋势兑现。"
   },
   "topic_collection": {
     "lookback_days": 2,
     "max_topic_age_hours": 12,
     "drop_topics_without_timestamp": true,
-    "max_items_per_source": 12,
-    "max_export_topics": 20,
+    "max_items_per_source": 24,
+    "max_export_topics": 40,
     "request_timeout_seconds": 12,
     "enabled_sources": [
+      "toutiao_hot",
+      "baidu_hot",
       "36kr",
       "zhidx",
       "ofweek",
@@ -37,6 +40,7 @@
       "solidot"
     ],
     "focus_industries": [
+      "hot_topic",
       "humanoid_robot",
       "new_energy",
       "energy_storage",
@@ -44,6 +48,18 @@
       "industrial_automation"
     ],
     "keyword_map": {
+      "hot_topic": [
+        "热点",
+        "热搜",
+        "热议",
+        "爆火",
+        "刷屏",
+        "官宣",
+        "突发",
+        "通报",
+        "回应",
+        "反转"
+      ],
       "humanoid_robot": [
         "人形机器人",
         "具身智能",
@@ -104,6 +120,18 @@
       ]
     },
     "sources": {
+      "toutiao_hot": {
+        "type": "hot_board",
+        "urls": [
+          "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
+        ]
+      },
+      "baidu_hot": {
+        "type": "baidu_hot",
+        "urls": [
+          "https://top.baidu.com/board?tab=realtime"
+        ]
+      },
       "36kr": {
         "type": "rss",
         "urls": [
@@ -161,24 +189,42 @@
     "default_topic_rank": 1,
     "daily_run_times": [
       "07:00",
+      "09:30",
       "12:30",
-      "18:00"
+      "15:30",
+      "18:00",
+      "21:30"
     ],
     "weekend_run_times": [
-      "08:00"
+      "08:00",
+      "14:00",
+      "20:00"
     ],
     "archive_outputs": true,
     "archive_dirname": "runs",
     "selected_topic_basename": "selected_topic"
   },
+  "revenue_optimization": {
+    "enabled": true,
+    "lookback_days": 30,
+    "min_samples": 10,
+    "weak_rpm_threshold": 0.0,
+    "weak_read_rate_threshold": 3.0,
+    "cooldown_weak_ratio": 0.5,
+    "stop_weak_ratio": 0.8,
+    "cooldown_penalty": 12
+  },
   "review": {
     "auto_prepare": true,
     "min_overall_score": 72,
     "max_ai_risk": 45,
-    "min_auto_publish_overall_score": 78,
+    "min_auto_publish_overall_score": 70,
     "max_auto_publish_ai_risk": 42,
     "min_auto_publish_validation_score": 70,
-    "min_auto_publish_readiness_score": 70,
+    "min_auto_publish_readiness_score": 60,
+    "hot_topic_min_auto_publish_overall_score": 65,
+    "hot_topic_max_auto_publish_ai_risk": 50,
+    "hot_topic_min_auto_publish_readiness_score": 50,
     "publish_dirname": "publish"
   },
   "compliance": {
@@ -263,7 +309,32 @@
     "history_filename": "publish_history.json",
     "allow_duplicate_topics": false,
     "title_max_length": 30,
-    "cover_mode": "three"
+    "cover_mode": "three",
+    "weitoutiao_enabled": true,
+    "weitoutiao_publish_url": "https://mp.toutiao.com/profile_v4/weitoutiao/publish",
+    "weitoutiao_daily_target": 3,
+    "weitoutiao_standalone_enabled": true,
+    "weitoutiao_local_fallback_enabled": true,
+    "weitoutiao_personas": ["hot_comment", "warm", "sanhuo"],
+    "weitoutiao_selectors": {
+      "editor": [
+        "div.ProseMirror",
+        "div[contenteditable='true'][data-placeholder*='微头条']",
+        "div[contenteditable='true'][data-placeholder*='正文']",
+        "div[contenteditable='true']"
+      ],
+      "publish_button": [
+        "button:has-text('发布')",
+        "button:has-text('发表')",
+        "button:has-text('发布微头条')"
+      ],
+      "success_indicator": [
+        "text=发布成功",
+        "text=提交成功",
+        "text=审核中",
+        "text=已发布"
+      ]
+    }
   },
   "wechat": {
     "enabled": true,
@@ -350,6 +421,8 @@
         "max_topic_age_hours": 12,
         "drop_topics_without_timestamp": true,
         "enabled_sources": [
+          "toutiao_hot",
+          "baidu_hot",
           "36kr",
           "zhidx",
           "ofweek",
@@ -359,6 +432,7 @@
           "solidot"
         ],
         "focus_industries": [
+          "hot_topic",
           "humanoid_robot",
           "new_energy",
           "energy_storage",
@@ -374,7 +448,8 @@
       "industry": {
         "brand_name": "手蓝机器人笔记",
         "focus": "人形机器人、具身智能、AI硬件、工业自动化、新能源",
-        "audience": "关注人形机器人、具身智能与AI硬件技术进展的头条读者"
+        "audience": "关注人形机器人、具身智能与AI硬件技术进展的头条读者",
+        "positioning": "聚焦科技商业、AI产业与先进制造，用数据拆热点，用产业链看趋势兑现。"
       },
       "writing": {
         "default_style": "tech_media"
@@ -383,6 +458,8 @@
         "max_topic_age_hours": 12,
         "drop_topics_without_timestamp": false,
         "enabled_sources": [
+          "toutiao_hot",
+          "baidu_hot",
           "36kr",
           "zhidx",
           "ofweek",
@@ -393,6 +470,7 @@
           "solidot"
         ],
         "focus_industries": [
+          "hot_topic",
           "humanoid_robot",
           "ai_hardware",
           "industrial_automation",
@@ -499,6 +577,18 @@
           ]
         },
         "sources": {
+          "toutiao_hot": {
+            "type": "hot_board",
+            "urls": [
+              "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
+            ]
+          },
+          "baidu_hot": {
+            "type": "baidu_hot",
+            "urls": [
+              "https://top.baidu.com/board?tab=realtime"
+            ]
+          },
           "36kr": {
             "type": "rss",
             "urls": [
@@ -558,9 +648,12 @@
       "topic_collection": {
         "max_topic_age_hours": 48,
         "enabled_sources": [
+          "toutiao_hot",
+          "baidu_hot",
           "36kr"
         ],
         "focus_industries": [
+          "hot_topic",
           "international"
         ],
         "keyword_map": {
@@ -586,6 +679,18 @@
           ]
         },
         "sources": {
+          "toutiao_hot": {
+            "type": "hot_board",
+            "urls": [
+              "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
+            ]
+          },
+          "baidu_hot": {
+            "type": "baidu_hot",
+            "urls": [
+              "https://top.baidu.com/board?tab=realtime"
+            ]
+          },
           "36kr": {
             "type": "rss",
             "urls": [
@@ -612,11 +717,14 @@
       "topic_collection": {
         "max_topic_age_hours": 48,
         "enabled_sources": [
+          "toutiao_hot",
+          "baidu_hot",
           "zhibo8",
           "hupu_sports",
           "sina_sports"
         ],
         "focus_industries": [
+          "hot_topic",
           "sports"
         ],
         "keyword_map": {
@@ -649,6 +757,18 @@
           ]
         },
         "sources": {
+          "toutiao_hot": {
+            "type": "hot_board",
+            "urls": [
+              "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
+            ]
+          },
+          "baidu_hot": {
+            "type": "baidu_hot",
+            "urls": [
+              "https://top.baidu.com/board?tab=realtime"
+            ]
+          },
           "zhibo8": {
             "type": "html",
             "same_domain_only": true,
@@ -726,7 +846,31 @@
     "enabled": true,
     "multi_source": false,
     "historical": false,
-    "data_mining": false
+    "data_mining": true
+  },
+  "expert_council": {
+    "enabled": true,
+    "roles": [
+      "evidence-auditor",
+      "industry-strategist",
+      "reader-editor",
+      "devils-advocate",
+      "originality-editor"
+    ]
+  },
+  "quality_review_council": {
+    "enabled": true,
+    "auto_revise": true,
+    "max_auto_revisions": 1,
+    "min_overall_score": 78,
+    "min_dimension_score": 65,
+    "roles": [
+      "quality-fact-checker",
+      "quality-logic-auditor",
+      "quality-structure-editor",
+      "quality-originality-auditor",
+      "quality-compliance-editor"
+    ]
   },
   "one_person_company": {
     "deerflow_enabled": false,

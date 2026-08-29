@@ -10,6 +10,12 @@
 - 关键要点: {{key_points}}
 - 关注指标: {{watch_metrics}}
 
+## 风格与策略参考
+
+{{style_digest}}
+
+{{benchmark_digest}}
+
 ## 输出要求
 
 请输出 JSON 格式，包含以下字段：

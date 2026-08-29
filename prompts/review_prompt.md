@@ -20,6 +20,7 @@ ${summary}
 
 正文：
 ${article}
+${hot_topic_note}
 
 只输出 JSON，格式如下：
 

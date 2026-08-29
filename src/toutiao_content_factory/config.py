@@ -33,6 +33,22 @@ import platform
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+DEFAULT_EXPERT_COUNCIL_ROLES = [
+    "evidence-auditor",
+    "industry-strategist",
+    "reader-editor",
+    "devils-advocate",
+    "originality-editor",
+]
+DEFAULT_QUALITY_REVIEW_COUNCIL_ROLES = [
+    "quality-fact-checker",
+    "quality-logic-auditor",
+    "quality-structure-editor",
+    "quality-originality-auditor",
+    "quality-compliance-editor",
+]
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -155,8 +171,8 @@ class TopicCollectionSettings(BaseModel):
             max_topic_age_hours=int(payload.get("max_topic_age_hours", 24)),
             drop_topics_without_timestamp=bool(payload.get("drop_topics_without_timestamp", True)),
             max_ranked_items_per_source=int(payload.get("max_ranked_items_per_source", 4)),
-            max_items_per_source=int(payload.get("max_items_per_source", 12)),
-            max_export_topics=int(payload.get("max_export_topics", 20)),
+            max_items_per_source=int(payload.get("max_items_per_source", 24)),
+            max_export_topics=int(payload.get("max_export_topics", 40)),
             request_timeout_seconds=int(payload.get("request_timeout_seconds", 18)),
             enabled_sources=[str(item) for item in payload.get("enabled_sources", [])],
             focus_industries=[str(item) for item in payload.get("focus_industries", [])],
@@ -247,10 +263,10 @@ class AutomationSettings:
     default_topic_rank: int
     max_daily_topic_attempts: int
     daily_run_times: list[str]
-    weekend_run_times: list[str]
-    archive_outputs: bool
-    archive_dirname: str
-    selected_topic_basename: str
+    weekend_run_times: list[str] = field(default_factory=list)
+    archive_outputs: bool = True
+    archive_dirname: str = "runs"
+    selected_topic_basename: str = "selected_topic"
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "AutomationSettings":
@@ -275,6 +291,11 @@ class ReviewSettings:
     min_auto_publish_validation_score: int
     min_auto_publish_readiness_score: int
     publish_dirname: str
+    # 热榜快评专用自动发布门槛：标题型热点无原文素材，信息密度天然低于深度文。
+    # 单独放宽门槛，让热点及时发布起量（仍拦截明显低质内容）。
+    hot_topic_min_auto_publish_overall_score: int = 65
+    hot_topic_max_auto_publish_ai_risk: int = 50
+    hot_topic_min_auto_publish_readiness_score: int = 50
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ReviewSettings":
@@ -291,6 +312,15 @@ class ReviewSettings:
             min_auto_publish_validation_score=int(payload.get("min_auto_publish_validation_score", 80)),
             min_auto_publish_readiness_score=int(payload.get("min_auto_publish_readiness_score", 70)),
             publish_dirname=str(payload.get("publish_dirname", "publish")),
+            hot_topic_min_auto_publish_overall_score=int(
+                payload.get("hot_topic_min_auto_publish_overall_score", 65)
+            ),
+            hot_topic_max_auto_publish_ai_risk=int(
+                payload.get("hot_topic_max_auto_publish_ai_risk", 50)
+            ),
+            hot_topic_min_auto_publish_readiness_score=int(
+                payload.get("hot_topic_min_auto_publish_readiness_score", 50)
+            ),
         )
 
     def qualifies_for_auto_publish(
@@ -299,12 +329,52 @@ class ReviewSettings:
         ai_risk: int,
         validation_score: int,
         publish_readiness_score: int,
+        is_hot_topic: bool = False,
     ) -> bool:
+        if is_hot_topic:
+            # 热榜快评：标题型热点无原文素材，信息密度天然偏低，
+            # 使用放宽后的门槛，让热点及时发布起量。
+            return (
+                overall_score >= self.hot_topic_min_auto_publish_overall_score
+                and ai_risk <= self.hot_topic_max_auto_publish_ai_risk
+                and validation_score >= self.min_auto_publish_validation_score
+                and publish_readiness_score >= self.hot_topic_min_auto_publish_readiness_score
+            )
         return (
             overall_score >= self.min_auto_publish_overall_score
             and ai_risk <= self.max_auto_publish_ai_risk
             and validation_score >= self.min_auto_publish_validation_score
             and publish_readiness_score >= self.min_auto_publish_readiness_score
+        )
+
+
+@dataclass(frozen=True)
+class QualityReviewSettings:
+    """独立文章质量审核委员会的运行策略。"""
+
+    enabled: bool = True
+    roles: list[str] = field(default_factory=lambda: list(DEFAULT_QUALITY_REVIEW_COUNCIL_ROLES))
+    auto_revise: bool = True
+    max_auto_revisions: int = 1
+    min_overall_score: int = 78
+    min_dimension_score: int = 65
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "QualityReviewSettings":
+        payload = payload if isinstance(payload, dict) else {}
+        raw_roles = payload.get("roles", DEFAULT_QUALITY_REVIEW_COUNCIL_ROLES)
+        roles = (
+            [str(item).strip() for item in raw_roles if str(item).strip()]
+            if isinstance(raw_roles, list)
+            else list(DEFAULT_QUALITY_REVIEW_COUNCIL_ROLES)
+        )
+        return cls(
+            enabled=bool(payload.get("enabled", True)),
+            roles=roles or list(DEFAULT_QUALITY_REVIEW_COUNCIL_ROLES),
+            auto_revise=bool(payload.get("auto_revise", True)),
+            max_auto_revisions=max(0, min(3, int(payload.get("max_auto_revisions", 1)))),
+            min_overall_score=max(0, min(100, int(payload.get("min_overall_score", 78)))),
+            min_dimension_score=max(0, min(100, int(payload.get("min_dimension_score", 65)))),
         )
 
 
@@ -326,6 +396,17 @@ class PublishSettings:
     title_max_length: int
     cover_mode: str
     selectors: dict[str, list[str]]
+    weitoutiao_enabled: bool = False
+    weitoutiao_publish_url: str = ""
+    weitoutiao_selectors: dict[str, list[str]] = field(default_factory=dict)
+    # 微头条高频化（2026-08-27）：每日微头条目标条数（含图文伴生 1 条），
+    # 超出部分由「独立微头条选题+写作」能力补齐（weitoutiao_standalone_enabled 时生效）。
+    weitoutiao_daily_target: int = 1
+    weitoutiao_standalone_enabled: bool = False
+    # Allow deterministic short-content generation when the model gateway is transiently unavailable.
+    weitoutiao_local_fallback_enabled: bool = True
+    # 独立微头条人设（hot_comment / warm / sanhuo / shoulan），按序轮换
+    weitoutiao_personas: list[str] = field(default_factory=lambda: ["hot_comment", "warm"])
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PublishSettings":
@@ -333,6 +414,16 @@ class PublishSettings:
             str(key): [str(item) for item in value]
             for key, value in dict(payload.get("selectors", {})).items()
         }
+        weitoutiao_selectors = {
+            str(key): [str(item) for item in value]
+            for key, value in dict(payload.get("weitoutiao_selectors", {})).items()
+        }
+        raw_personas = payload.get("weitoutiao_personas", ["hot_comment", "warm"])
+        personas = (
+            [str(item).strip() for item in raw_personas if str(item).strip()]
+            if isinstance(raw_personas, list)
+            else ["hot_comment", "warm"]
+        )
         return cls(
             enabled=bool(payload.get("enabled", False)),
             auto_publish=bool(payload.get("auto_publish", False)),
@@ -350,6 +441,13 @@ class PublishSettings:
             title_max_length=int(payload.get("title_max_length", 30)),
             cover_mode=str(payload.get("cover_mode", "auto")),
             selectors=selectors,
+            weitoutiao_enabled=bool(payload.get("weitoutiao_enabled", False)),
+            weitoutiao_publish_url=str(payload.get("weitoutiao_publish_url", "")),
+            weitoutiao_selectors=weitoutiao_selectors,
+            weitoutiao_daily_target=int(payload.get("weitoutiao_daily_target", 1)),
+            weitoutiao_standalone_enabled=bool(payload.get("weitoutiao_standalone_enabled", False)),
+            weitoutiao_local_fallback_enabled=bool(payload.get("weitoutiao_local_fallback_enabled", True)),
+            weitoutiao_personas=personas,
         )
 
 
@@ -573,6 +671,59 @@ class EvolutionSettings:
 
 
 @dataclass(frozen=True)
+class RevenueOptimizationSettings:
+    """收益归因驱动的选题冷却策略。
+
+    Defaults are intentionally conservative: the policy cannot remove a topic
+    until enough mature performance observations have accumulated.
+    """
+
+    enabled: bool = True
+    lookback_days: int = 30
+    min_samples: int = 10
+    weak_rpm_threshold: float = 0.0
+    weak_read_rate_threshold: float = 3.0
+    cooldown_weak_ratio: float = 0.5
+    stop_weak_ratio: float = 0.8
+    cooldown_penalty: int = 12
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RevenueOptimizationSettings":
+        payload = data if isinstance(data, dict) else {}
+
+        def _int_value(key: str, default: int, env_name: str) -> int:
+            raw = os.getenv(env_name, payload.get(key, default))
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return default
+
+        def _float_value(key: str, default: float, env_name: str) -> float:
+            raw = os.getenv(env_name, payload.get(key, default))
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                return default
+            return value if value == value and abs(value) != float("inf") else default
+
+        cooldown_ratio = max(0.0, min(1.0, _float_value("cooldown_weak_ratio", 0.5, "REVENUE_COOLDOWN_WEAK_RATIO")))
+        stop_ratio = max(cooldown_ratio, min(1.0, _float_value("stop_weak_ratio", 0.8, "REVENUE_STOP_WEAK_RATIO")))
+        return cls(
+            enabled=_env_flag("REVENUE_OPTIMIZATION_ENABLED", bool(payload.get("enabled", True))),
+            lookback_days=max(1, _int_value("lookback_days", 30, "REVENUE_OPTIMIZATION_LOOKBACK_DAYS")),
+            min_samples=max(1, _int_value("min_samples", 10, "REVENUE_OPTIMIZATION_MIN_SAMPLES")),
+            weak_rpm_threshold=_float_value("weak_rpm_threshold", 0.0, "REVENUE_WEAK_RPM_THRESHOLD"),
+            weak_read_rate_threshold=max(
+                0.0,
+                _float_value("weak_read_rate_threshold", 3.0, "REVENUE_WEAK_READ_RATE_THRESHOLD"),
+            ),
+            cooldown_weak_ratio=cooldown_ratio,
+            stop_weak_ratio=stop_ratio,
+            cooldown_penalty=max(0, _int_value("cooldown_penalty", 12, "REVENUE_COOLDOWN_PENALTY")),
+        )
+
+
+@dataclass(frozen=True)
 class IterationOverrides:
     """基于发布数据观察的内容迭代调整项。
 
@@ -629,6 +780,7 @@ class AppSettings:
     brand_name: str
     industry_focus: str
     audience: str
+    brand_positioning: str
     platform: str
     logging_level: str
     default_style: str
@@ -645,6 +797,7 @@ class AppSettings:
     account_profiles: dict[str, AccountProfile]
     raw_account_profiles: dict[str, dict[str, Any]]
     available_account_keys: list[str]
+    quality_review: QualityReviewSettings = field(default_factory=QualityReviewSettings)
     fast_mode: bool = False
     skip_image_generation: bool = False
     skip_review_agent: bool = False
@@ -653,6 +806,10 @@ class AppSettings:
     enhanced_insights_use_multi_source: bool = False
     enhanced_insights_use_historical: bool = False
     enhanced_insights_use_data_mining: bool = False
+    expert_council_enabled: bool = True
+    expert_council_roles: list[str] = field(
+        default_factory=lambda: list(DEFAULT_EXPERT_COUNCIL_ROLES)
+    )
     # ---- One-Person Company AI Services ----
     deerflow_enabled: bool = False
     deerflow_base_url: str = "http://deerflow:8001"
@@ -684,6 +841,7 @@ class AppSettings:
     rpa_resilience: RPAResilienceSettings = field(default_factory=RPAResilienceSettings)
     content_guard: ContentGuardSettings = field(default_factory=ContentGuardSettings)
     evolution: EvolutionSettings = field(default_factory=EvolutionSettings)
+    revenue_optimization: RevenueOptimizationSettings = field(default_factory=RevenueOptimizationSettings)
     # 基于发布数据观察的内容迭代调整项（默认空对象，向下兼容）
     iteration_overrides: IterationOverrides = field(default_factory=IterationOverrides)
 
@@ -770,11 +928,17 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     review_config = ReviewSettings.from_dict(merged_payload.get("review", {}))
     publishing_config = PublishSettings.from_dict(merged_payload.get("publishing", {}))
     wechat_config = WechatSettings.from_dict(merged_payload.get("wechat", {}))
+    quality_review_config = QualityReviewSettings.from_dict(
+        merged_payload.get("quality_review_council", {})
+    )
 
     # 模块 A/B/C 合并新增配置加载（全部通过 from_dict 兜底默认值，向下兼容）
     rpa_resilience_config = RPAResilienceSettings.from_dict(merged_payload.get("rpa_resilience", {}))
     content_guard_config = ContentGuardSettings.from_dict(merged_payload.get("content_guard", {}))
     evolution_config = EvolutionSettings.from_dict(merged_payload.get("evolution", {}))
+    revenue_optimization_config = RevenueOptimizationSettings.from_dict(
+        merged_payload.get("revenue_optimization", {})
+    )
 
     # 基于发布数据观察的迭代调整项：从 config/iteration_overrides/<account>.json 加载
     # 文件不存在时使用空默认值，不影响现有流程
@@ -796,6 +960,16 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     publishing_final = _load_publishing_config_final(merged_payload, account_profile, is_default_account, automation_config, publishing_config, paths)
     wechat_final = _load_wechat_config_final(merged_payload, account_profile, wechat_config)
     image_final = _load_image_config(merged_payload, image_config)
+    quality_review_final = _load_quality_review_config(merged_payload, quality_review_config)
+    expert_council_payload = merged_payload.get("expert_council", {})
+    if not isinstance(expert_council_payload, dict):
+        expert_council_payload = {}
+    expert_council_roles = expert_council_payload.get("roles", DEFAULT_EXPERT_COUNCIL_ROLES)
+    if not isinstance(expert_council_roles, list):
+        expert_council_roles = list(DEFAULT_EXPERT_COUNCIL_ROLES)
+    expert_council_roles = [str(role).strip() for role in expert_council_roles if str(role).strip()]
+    if not expert_council_roles:
+        expert_council_roles = list(DEFAULT_EXPERT_COUNCIL_ROLES)
 
     return AppSettings(
         project_root=project_root,
@@ -818,6 +992,7 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         brand_name=writing_overrides["brand_name"],
         industry_focus=writing_overrides["industry_focus"],
         audience=writing_overrides["audience"],
+        brand_positioning=writing_overrides["brand_positioning"],
         platform=writing_overrides["platform"],
         logging_level=os.getenv("LOG_LEVEL", "INFO"),
         default_style=default_style if default_style in styles else "deep_industry_analysis",
@@ -845,6 +1020,7 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
             for key, profile in raw_account_profiles.items()
         },
         available_account_keys=sorted(raw_account_profiles),
+        quality_review=quality_review_final,
         fast_mode=_env_flag("TOUTIAO_FAST_MODE", False),
         skip_image_generation=_env_flag("TOUTIAO_SKIP_IMAGE_GENERATION", False),
         skip_review_agent=_env_flag("TOUTIAO_SKIP_REVIEW_AGENT", False),
@@ -853,6 +1029,11 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         enhanced_insights_use_multi_source=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_MULTI_SOURCE", bool(merged_payload.get("enhanced_insights", {}).get("multi_source", False))),
         enhanced_insights_use_historical=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_HISTORICAL", bool(merged_payload.get("enhanced_insights", {}).get("historical", False))),
         enhanced_insights_use_data_mining=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_DATA_MINING", bool(merged_payload.get("enhanced_insights", {}).get("data_mining", False))),
+        expert_council_enabled=_env_flag(
+            "TOUTIAO_EXPERT_COUNCIL_ENABLED",
+            bool(expert_council_payload.get("enabled", True)),
+        ),
+        expert_council_roles=expert_council_roles,
         # One-Person Company AI Services
         deerflow_enabled=_env_flag("DEERFLOW_ENABLED", False),
         deerflow_base_url=os.getenv("DEERFLOW_BASE_URL", "http://deerflow:8001"),
@@ -884,6 +1065,7 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         rpa_resilience=rpa_resilience_config,
         content_guard=content_guard_config,
         evolution=evolution_config,
+        revenue_optimization=revenue_optimization_config,
         # 内容迭代调整项
         iteration_overrides=iteration_overrides_config,
     )
@@ -922,6 +1104,16 @@ def _load_writing_config(merged_payload: dict[str, Any], account_key: str) -> di
             "TARGET_AUDIENCE",
             account_key,
             str(industry_config.get("audience", "科技行业从业者与关注产业升级的读者")),
+        ),
+        "brand_positioning": _env_value_scoped(
+            "BRAND_POSITIONING",
+            account_key,
+            str(
+                industry_config.get(
+                    "positioning",
+                    "聚焦科技商业、AI产业与先进制造，用数据拆热点，用产业链看趋势兑现。",
+                )
+            ),
         ),
         "platform": _env_value_scoped(
             "TARGET_PLATFORM",
@@ -992,6 +1184,72 @@ def _load_review_config(merged_payload: dict[str, Any], review_config: ReviewSet
             )
         ),
         publish_dirname=os.getenv("TOUTIAO_REVIEW_PUBLISH_DIR", review_config.publish_dirname),
+        hot_topic_min_auto_publish_overall_score=int(
+            os.getenv(
+                "TOUTIAO_HOT_TOPIC_MIN_AUTO_PUBLISH_OVERALL_SCORE",
+                str(review_config.hot_topic_min_auto_publish_overall_score),
+            )
+        ),
+        hot_topic_max_auto_publish_ai_risk=int(
+            os.getenv(
+                "TOUTIAO_HOT_TOPIC_MAX_AUTO_PUBLISH_AI_RISK",
+                str(review_config.hot_topic_max_auto_publish_ai_risk),
+            )
+        ),
+        hot_topic_min_auto_publish_readiness_score=int(
+            os.getenv(
+                "TOUTIAO_HOT_TOPIC_MIN_AUTO_PUBLISH_READINESS_SCORE",
+                str(review_config.hot_topic_min_auto_publish_readiness_score),
+            )
+        ),
+    )
+
+
+def _load_quality_review_config(
+    merged_payload: dict[str, Any],
+    quality_review_config: QualityReviewSettings,
+) -> QualityReviewSettings:
+    roles_value = os.getenv("TOUTIAO_QUALITY_REVIEW_COUNCIL_ROLES", "").strip()
+    roles = (
+        [item.strip() for item in roles_value.split(",") if item.strip()]
+        if roles_value
+        else list(quality_review_config.roles)
+    )
+    return QualityReviewSettings(
+        enabled=_env_flag("TOUTIAO_QUALITY_REVIEW_COUNCIL_ENABLED", quality_review_config.enabled),
+        roles=roles or list(DEFAULT_QUALITY_REVIEW_COUNCIL_ROLES),
+        auto_revise=_env_flag("TOUTIAO_QUALITY_REVIEW_AUTO_REVISE", quality_review_config.auto_revise),
+        max_auto_revisions=max(
+            0,
+            min(
+                3,
+                int(
+                    os.getenv(
+                        "TOUTIAO_QUALITY_REVIEW_MAX_AUTO_REVISIONS",
+                        str(quality_review_config.max_auto_revisions),
+                    )
+                ),
+            ),
+        ),
+        min_overall_score=max(
+            0,
+            min(
+                100,
+                int(os.getenv("TOUTIAO_QUALITY_REVIEW_MIN_SCORE", str(quality_review_config.min_overall_score))),
+            ),
+        ),
+        min_dimension_score=max(
+            0,
+            min(
+                100,
+                int(
+                    os.getenv(
+                        "TOUTIAO_QUALITY_REVIEW_MIN_DIMENSION_SCORE",
+                        str(quality_review_config.min_dimension_score),
+                    )
+                ),
+            ),
+        ),
     )
 
 
@@ -1086,6 +1344,28 @@ def _load_publishing_config_final(
         ),
         cover_mode=os.getenv("TOUTIAO_PUBLISH_COVER_MODE", publishing_config.cover_mode),
         selectors=publishing_config.selectors,
+        weitoutiao_enabled=_env_flag("TOUTIAO_WEITOUTIAO_ENABLED", publishing_config.weitoutiao_enabled),
+        weitoutiao_publish_url=os.getenv("TOUTIAO_WEITOUTIAO_PUBLISH_URL", publishing_config.weitoutiao_publish_url),
+        weitoutiao_selectors=publishing_config.weitoutiao_selectors,
+        weitoutiao_daily_target=int(
+            os.getenv("TOUTIAO_WEITOUTIAO_DAILY_TARGET", str(publishing_config.weitoutiao_daily_target))
+        ),
+        weitoutiao_standalone_enabled=_env_flag(
+            "TOUTIAO_WEITOUTIAO_STANDALONE_ENABLED",
+            publishing_config.weitoutiao_standalone_enabled,
+        ),
+        weitoutiao_local_fallback_enabled=_env_flag(
+            "TOUTIAO_WEITOUTIAO_LOCAL_FALLBACK_ENABLED",
+            publishing_config.weitoutiao_local_fallback_enabled,
+        ),
+        weitoutiao_personas=[
+            item.strip()
+            for item in os.getenv(
+                "TOUTIAO_WEITOUTIAO_PERSONAS",
+                ",".join(publishing_config.weitoutiao_personas),
+            ).split(",")
+            if item.strip()
+        ],
     )
 
 
@@ -1305,19 +1585,22 @@ def _default_config_payload() -> dict[str, Any]:
         },
         "industry": {
             "brand_name": "手蓝数据笔记",
-            "focus": "新能源、机器人、智能装备、储能",
+            "focus": "科技商业、AI产业、先进制造（机器人、新能源、智能装备、储能）",
             "platform": "今日头条",
-            "audience": "科技行业从业者与关注产业升级的读者",
+            "audience": "关注科技商业与产业升级的从业者、投资者与决策者",
+            "positioning": "聚焦科技商业、AI产业与先进制造，用数据拆热点，用产业链看趋势兑现。",
         },
         "topic_collection": {
             "lookback_days": 2,
             "max_topic_age_hours": 12,
             "drop_topics_without_timestamp": True,
             "max_ranked_items_per_source": 4,
-            "max_items_per_source": 12,
-            "max_export_topics": 20,
+            "max_items_per_source": 24,
+            "max_export_topics": 40,
             "request_timeout_seconds": 22,
             "enabled_sources": [
+                "toutiao_hot",
+                "baidu_hot",
                 "36kr",
                 "zhidx",
                 "ofweek",
@@ -1328,6 +1611,7 @@ def _default_config_payload() -> dict[str, Any]:
                 "solidot",
             ],
             "focus_industries": [
+                "hot_topic",
                 "humanoid_robot",
                 "new_energy",
                 "energy_storage",
@@ -1335,6 +1619,18 @@ def _default_config_payload() -> dict[str, Any]:
                 "industrial_automation",
             ],
             "keyword_map": {
+                "hot_topic": [
+                    "热点",
+                    "热搜",
+                    "热议",
+                    "爆火",
+                    "刷屏",
+                    "官宣",
+                    "突发",
+                    "通报",
+                    "回应",
+                    "反转",
+                ],
                 "humanoid_robot": [
                     "人形机器人",
                     "具身智能",
@@ -1395,6 +1691,18 @@ def _default_config_payload() -> dict[str, Any]:
                 ],
             },
             "sources": {
+                "toutiao_hot": {
+                    "type": "hot_board",
+                    "urls": [
+                        "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc",
+                    ],
+                },
+                "baidu_hot": {
+                    "type": "baidu_hot",
+                    "urls": [
+                        "https://top.baidu.com/board?tab=realtime",
+                    ],
+                },
                 "ithome": {
                     "type": "rss",
                     "urls": [
@@ -1504,6 +1812,9 @@ def _default_config_payload() -> dict[str, Any]:
             "max_auto_publish_ai_risk": 40,
             "min_auto_publish_validation_score": 80,
             "min_auto_publish_readiness_score": 70,
+            "hot_topic_min_auto_publish_overall_score": 65,
+            "hot_topic_max_auto_publish_ai_risk": 50,
+            "hot_topic_min_auto_publish_readiness_score": 50,
             "publish_dirname": "publish",
         },
         "publishing": {
@@ -1521,6 +1832,31 @@ def _default_config_payload() -> dict[str, Any]:
             "allow_duplicate_topics": False,
             "title_max_length": 30,
             "cover_mode": "none",
+            "weitoutiao_enabled": False,
+            "weitoutiao_publish_url": "https://mp.toutiao.com/profile_v4/weitoutiao/publish",
+            "weitoutiao_daily_target": 1,
+            "weitoutiao_standalone_enabled": False,
+            "weitoutiao_local_fallback_enabled": True,
+            "weitoutiao_personas": ["hot_comment", "warm"],
+            "weitoutiao_selectors": {
+                "editor": [
+                    "div.ProseMirror",
+                    "div[contenteditable='true'][data-placeholder*='微头条']",
+                    "div[contenteditable='true'][data-placeholder*='正文']",
+                    "div[contenteditable='true']",
+                ],
+                "publish_button": [
+                    "button:has-text('发布')",
+                    "button:has-text('发表')",
+                    "button:has-text('发布微头条')",
+                ],
+                "success_indicator": [
+                    "text=发布成功",
+                    "text=提交成功",
+                    "text=审核中",
+                    "text=已发布",
+                ],
+            },
             "selectors": {
                 "new_post_button": [
                     "a:has-text('发文')",
@@ -1603,6 +1939,18 @@ def _default_config_payload() -> dict[str, Any]:
             "multi_source": False,
             "historical": False,
             "data_mining": False,
+        },
+        "expert_council": {
+            "enabled": True,
+            "roles": list(DEFAULT_EXPERT_COUNCIL_ROLES),
+        },
+        "quality_review_council": {
+            "enabled": True,
+            "roles": list(DEFAULT_QUALITY_REVIEW_COUNCIL_ROLES),
+            "auto_revise": True,
+            "max_auto_revisions": 1,
+            "min_overall_score": 78,
+            "min_dimension_score": 65,
         },
     }
 

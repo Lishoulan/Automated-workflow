@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$AccountKey = "default",
     [string]$PythonPath = "",
     [string]$Style = "",
@@ -358,10 +358,16 @@ function Convert-ToPlatformState {
         "completed" { return "success" }
         "published" { return "success" }
         "submitted" { return "success" }
+        "submitted_for_review" { return "success" }
         "draft_created" { return "success" }
+        "draft_saved" { return "success" }
         "approved" { return "success" }
         "review_required" { return "failed" }
         "publish_login_required" { return "failed" }
+        "publish_uncertain" { return "failed" }
+        "partial_success" { return "partial_success" }
+        "already_published" { return "success" }
+        "draft_only" { return "success" }
         "blocked" { return "failed" }
         "failed" { return "failed" }
         "retrying" { return "running" }
@@ -385,7 +391,7 @@ function Build-PlatformStatusMap {
         $existingPlatforms = Convert-ToHashtable -Value $Current.platforms
     }
 
-    foreach ($platform in @("toutiao", "wechat", "douyin")) {
+    foreach ($platform in @("toutiao", "wechat", "douyin", "weitoutiao")) {
         $previous = @{}
         if ($existingPlatforms.ContainsKey($platform)) {
             $previous = Convert-ToHashtable -Value $existingPlatforms[$platform]
@@ -461,6 +467,22 @@ function Build-PlatformStatusMap {
         }
     }
 
+    if ($extraTable.ContainsKey("weitoutiao_status") -and [string]$extraTable["weitoutiao_status"]) {
+        $weitoutiaoState = Convert-ToPlatformState -State ([string]$extraTable["weitoutiao_status"])
+        $weitoutiaoMessage = if ($extraTable.ContainsKey("weitoutiao_message") -and [string]$extraTable["weitoutiao_message"]) {
+            [string]$extraTable["weitoutiao_message"]
+        } elseif ($Message) {
+            $Message
+        } else {
+            "WeiToutiao task updated."
+        }
+        $platforms["weitoutiao"] = [ordered]@{
+            status = $weitoutiaoState
+            last_run = $now
+            message = $weitoutiaoMessage
+        }
+    }
+
     return $platforms
 }
 
@@ -470,6 +492,9 @@ function Resolve-OverallStatus {
     $values = @($Platforms.Values | ForEach-Object { ([string]$_.status).Trim().ToLower() })
     if ($values -contains "running") {
         return "running"
+    }
+    if ($values -contains "partial_success") {
+        return "partial_success"
     }
     $successCount = @($values | Where-Object { $_ -eq "success" }).Count
     $failedCount = @($values | Where-Object { $_ -eq "failed" }).Count
@@ -734,11 +759,27 @@ $PythonCandidates = @(
     $PythonPath,
     $env:TOUTIAO_PYTHON,
     (Join-Path $ProjectRoot ".venv\Scripts\python.exe"),
+    "py",
     "python"
 ) | Where-Object { $_ -and $_.Trim() }
 
 $PythonExe = $null
 foreach ($candidate in $PythonCandidates) {
+    if ($candidate -eq "py") {
+        try {
+            $pyCommand = Get-Command py.exe -ErrorAction Stop
+            $resolved = (& $pyCommand.Source -3 -c "import sys; print(sys.executable)" 2>$null | Select-Object -Last 1)
+            $resolved = if ($resolved) { ([string]$resolved).Trim() } else { "" }
+            if ($resolved -and (Test-Path -LiteralPath $resolved)) {
+                $PythonExe = $resolved
+                break
+            }
+        }
+        catch {
+            continue
+        }
+    }
+
     if ($candidate -eq "python") {
         try {
             $null = & python --version
@@ -1013,6 +1054,34 @@ try {
                     break
                 }
 
+                if ($runResultStatus -eq "already_published") {
+                    $message = if ($runResultMessage) {
+                        $runResultMessage
+                    }
+                    else {
+                        "Daily publish limit was already reached; no new article was generated."
+                    }
+                    Update-Status -CurrentState "already_published" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 0 -Message $message -Extra $lastRunSummary
+                    Add-Notification -Level "info" -Title "Daily publish limit reached" -Message $message -Data $lastRunSummary
+                    Write-Log $message
+                    $exitCode = 0
+                    break
+                }
+
+                if ($runResultStatus -eq "draft_only") {
+                    $message = if ($runResultMessage) {
+                        $runResultMessage
+                    }
+                    else {
+                        "Scheduled pipeline saved a draft; no public submission was made."
+                    }
+                    Update-Status -CurrentState "draft_only" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 0 -Message $message -Extra $lastRunSummary
+                    Add-Notification -Level "warn" -Title "Draft saved without publish" -Message $message -Data $lastRunSummary
+                    Write-Log $message
+                    $exitCode = 0
+                    break
+                }
+
                 if ($runResultStatus -eq "publish_login_required") {
                     $message = if ($runResultMessage) {
                         $runResultMessage
@@ -1020,10 +1089,70 @@ try {
                     else {
                         "Scheduled run generated content, but the Toutiao publish session requires manual login."
                     }
-                    Update-Status -CurrentState "publish_login_required" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 0 -Message $message -Extra $lastRunSummary
+                    Update-Status -CurrentState "publish_login_required" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 2 -Message $message -Extra $lastRunSummary
                     Add-Notification -Level "warn" -Title "Publish login required" -Message $message -Data $lastRunSummary
                     Write-Log $message
+                    $exitCode = 2
+                    break
+                }
+
+                if ($runResultStatus -eq "publish_uncertain") {
+                    $message = if ($runResultMessage) {
+                        $runResultMessage
+                    }
+                    else {
+                        "Toutiao publish verification is uncertain; manual confirmation is required before retry."
+                    }
+                    Update-Status -CurrentState "publish_uncertain" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 2 -Message $message -Extra $lastRunSummary
+                    Add-Notification -Level "error" -Title "Publish verification uncertain" -Message $message -Data $lastRunSummary
+                    Write-Log $message
+                    $exitCode = 2
+                    break
+                }
+
+                if ($runResultStatus -eq "partial_success") {
+                    $message = if ($runResultMessage) {
+                        $runResultMessage
+                    }
+                    else {
+                        "At least one platform completed, but another platform failed."
+                    }
+                    Update-Status -CurrentState "partial_success" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 2 -Message $message -Extra $lastRunSummary
+                    Add-Notification -Level "warn" -Title "Platform partial success" -Message $message -Data $lastRunSummary
+                    Write-Log $message
+                    $exitCode = 2
+                    break
+                }
+
+                if ($runResultStatus -eq "review_required") {
+                    $message = if ($runResultMessage) {
+                        $runResultMessage
+                    }
+                    else {
+                        "Scheduled pipeline completed, but this run still requires manual review."
+                    }
+                    Update-Status -CurrentState "review_required" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 0 -Message $message -Extra $lastRunSummary
+                    Add-Notification -Level "warn" -Title "Manual review required" -Message $message -Data $lastRunSummary
+                    Write-Log $message
                     $exitCode = 0
+                    break
+                }
+
+                if (-not $runResult -and $exitCode -eq 0) {
+                    $message = "Scheduled pipeline exited successfully but did not write last_daily_run_result.json."
+                    Update-Status -CurrentState "failed" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 2 -Message $message -Extra $lastRunSummary
+                    Add-Notification -Level "error" -Title "Scheduled result missing" -Message $message -Data $lastRunSummary
+                    Write-Log $message
+                    $exitCode = 2
+                    break
+                }
+
+                if ($runResult -and $exitCode -eq 0 -and $runResultStatus -notin @("success")) {
+                    $message = "Scheduled pipeline returned an unrecognized terminal status: $runResultStatus."
+                    Update-Status -CurrentState "failed" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 2 -Message $message -Extra $lastRunSummary
+                    Add-Notification -Level "error" -Title "Unrecognized scheduled status" -Message $message -Data $lastRunSummary
+                    Write-Log $message
+                    $exitCode = 2
                     break
                 }
 
@@ -1035,15 +1164,31 @@ try {
                     $douyinStatus = [string]$lastRunSummary["douyin_status"]
 
                     if ($workflowStatus -eq "platform_publish_failed") {
-                        $message = "Scheduled pipeline completed content generation, but one or more platform publish steps failed. Treating as success since content was generated."
-                        Update-Status -CurrentState "success" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode $exitCode -Message $message -Extra $lastRunSummary
+                        $message = "Scheduled pipeline generated content, but one or more platform publish steps failed."
+                        Update-Status -CurrentState "failed" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 2 -Message $message -Extra $lastRunSummary
                         Add-Notification -Level "warn" -Title "Platform publish failed" -Message $message -Data $lastRunSummary
                         Write-Log $message
+                        $exitCode = 2
                     }
                     elseif ($workflowStatus -eq "platform_partial_success") {
                         $message = "Scheduled pipeline partially succeeded. At least one platform completed, but another platform failed."
-                        Update-Status -CurrentState "success" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode $exitCode -Message $message -Extra $lastRunSummary
+                        Update-Status -CurrentState "partial_success" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 2 -Message $message -Extra $lastRunSummary
                         Add-Notification -Level "warn" -Title "Platform partial success" -Message $message -Data $lastRunSummary
+                        $exitCode = 2
+                    }
+                    elseif ($publishStatus -in @("failed", "publish_uncertain", "publish_login_required", "blocked", "blocked_by_ip", "circuit_open", "missing", "invalid")) {
+                        $message = "Scheduled pipeline produced a non-publishable Toutiao result: $publishStatus."
+                        $terminalState = if ($publishStatus -eq "publish_login_required") { "publish_login_required" } elseif ($publishStatus -eq "publish_uncertain") { "publish_uncertain" } else { "failed" }
+                        Update-Status -CurrentState $terminalState -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 2 -Message $message -Extra $lastRunSummary
+                        Add-Notification -Level "error" -Title "Toutiao publish did not complete" -Message $message -Data $lastRunSummary
+                        Write-Log $message
+                        $exitCode = 2
+                    }
+                    elseif ($publishStatus -eq "draft_saved") {
+                        $message = "Scheduled pipeline saved a Toutiao draft; no public submission was made."
+                        Update-Status -CurrentState "draft_only" -Attempt $attempt -MaxAttempts $maxAttempts -ExitCode 0 -Message $message -Extra $lastRunSummary
+                        Add-Notification -Level "warn" -Title "Toutiao draft saved" -Message $message -Data $lastRunSummary
+                        Write-Log $message
                     }
                     elseif ($publishStatus -or $wechatStatus -or $douyinStatus) {
                         $parts = @()

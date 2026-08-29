@@ -5,9 +5,10 @@ import logging
 import re
 from difflib import SequenceMatcher
 import shutil
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from toutiao_content_factory.config import AppSettings, sanitize_account_slug
 from toutiao_content_factory.models import DailyTopicsReport, TopicCandidate
@@ -143,6 +144,7 @@ class TopicAutomationService:
         "industrial_automation": "工业自动化",
         "international": "国际热点",
         "sports": "体育赛事",
+        "hot_topic": "实时热点",
     }
 
     ROBOT_TOKENS = (
@@ -243,6 +245,7 @@ class TopicAutomationService:
         "industrial_automation": "工业自动化",
         "international": "国际热点",
         "sports": "体育赛事",
+        "hot_topic": "实时热点",
     }
 
     def __init__(self, settings: AppSettings, logger: logging.Logger) -> None:
@@ -421,7 +424,8 @@ class TopicAutomationService:
             f"主关键词：{primary_keywords}\n"
             f"匹配赛道：{industries}\n"
             f"匹配关键词：{keywords}\n"
-            f"可确认数字：{numbers}\n\n"
+            f"可确认数字：{numbers}\n"
+            f"平台热度值：{topic.heat_value}\n\n"
             f"选题类型：{topic.topic_type}\n"
             f"内容体裁：{topic.recommended_format}\n"
             f"体裁要求：{format_brief}\n"
@@ -485,6 +489,8 @@ class TopicAutomationService:
             return "sports"
         if self._is_international_topic(topic):
             return "international"
+        if topic.source_type in {"hot_board", "baidu_hot"} and "hot_topic" in (topic.matched_industries or []):
+            return "hot_topic"
         return "generic"
 
     def _resolve_prompt_track(self, topic: TopicCandidate, primary_industry: str) -> str:
@@ -522,6 +528,17 @@ class TopicAutomationService:
                 "全文自然分成5到6段，每段2到3句，不要出现 #、##、项目符号或空泛口号。"
                 "如果事实不足，就明确写到已知边界，不要补造细节。"
             )
+        if topic_mode == "hot_topic":
+            return (
+                "这是实时热点二创：你拿到的素材只有热点标题和热度值，没有完整原文。"
+                "请围绕热点标题展开，写成一篇有观点、有信息量的头条快评。"
+                "写作要求："
+                "1. 前两句直接给判断/钩子，不要铺垫，不要复述标题本身。"
+                "2. 中段展开：这个热点为什么今天值得看、背后的原因/影响/争议点是什么、谁最关心它。"
+                "3. 只能基于常识和公开背景做有限推断，明确区分事实与推测，禁止编造具体数字、人名、时间、公司或细节。"
+                "4. 结尾留一个具体的开放式互动问题，引导评论区表达立场。"
+                "5. 全文600到900字，5到7个短段，不要使用 #、## 小标题，不要写成行业研报。"
+            )
         return (
             "请围绕这条产业线索，重点分析："
             "这条线索目前处于什么阶段、涉及哪些公司/项目/订单主体、融资或订单意味着什么、它在产业链里卡住了哪一段、"
@@ -555,57 +572,65 @@ class TopicAutomationService:
         report: DailyTopicsReport,
         input_text: str,
     ) -> dict[str, Path]:
+        enriched_topic = self._enrich_topic_revenue_metadata(topic)
         basename = self.settings.automation.selected_topic_basename
         json_path = self.settings.output_dir / f"{basename}.json"
         md_path = self.settings.output_dir / f"{basename}.md"
         json_payload = {
             "selected_at": datetime.now().isoformat(timespec="seconds"),
             "generated_topics_at": report.generated_at,
-            "selected_topic": asdict(topic),
+            "selected_topic": asdict(enriched_topic),
             "auto_input_text": input_text,
         }
         json_path.write_text(json.dumps(json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        humanized_industries = self._humanize_industries(topic.matched_industries)
+        humanized_industries = self._humanize_industries(enriched_topic.matched_industries)
         primary_industry = humanized_industries[0] if humanized_industries else "相关赛道"
-        primary_keywords = "、".join(topic.matched_keywords[:4]) if topic.matched_keywords else "关键词待补充"
-        prompt_track = self._resolve_prompt_track(topic, primary_industry)
+        primary_keywords = "、".join(enriched_topic.matched_keywords[:4]) if enriched_topic.matched_keywords else "关键词待补充"
+        prompt_track = self._resolve_prompt_track(enriched_topic, primary_industry)
         selection_reason = self._build_selection_reason(
-            topic,
+            enriched_topic,
             primary_industry,
             primary_keywords,
-            "、".join(topic.extracted_numbers) if topic.extracted_numbers else "暂无明确数字",
+            "、".join(enriched_topic.extracted_numbers) if enriched_topic.extracted_numbers else "暂无明确数字",
         )
         suggested_angle = self._build_suggested_angle(
-            topic,
+            enriched_topic,
             primary_industry,
             primary_keywords,
-            "、".join(topic.extracted_numbers) if topic.extracted_numbers else "暂无明确数字",
+            "、".join(enriched_topic.extracted_numbers) if enriched_topic.extracted_numbers else "暂无明确数字",
         )
-        follow_up_focus = self._build_follow_up_focus(topic, primary_industry, primary_keywords)
-        content_format_label = topic.recommended_format_label or "深度分析"
-        format_brief = self._build_content_format_brief(topic, primary_industry)
-        paragraph_instruction = self._build_paragraph_instruction(topic)
+        follow_up_focus = self._build_follow_up_focus(enriched_topic, primary_industry, primary_keywords)
+        content_format_label = enriched_topic.recommended_format_label or "深度分析"
+        format_brief = self._build_content_format_brief(enriched_topic, primary_industry)
+        paragraph_instruction = self._build_paragraph_instruction(enriched_topic)
 
         markdown = (
             "# 今日自动选题\n\n"
-            f"- 标题：{topic.title}\n"
-            f"- 排名：{topic.rank or 1}\n"
-            f"- 来源：{_humanize_source(topic.source)}\n"
-            f"- 发布时间：{topic.published_at or '未知'}\n"
-            f"- 原文链接：{topic.url}\n"
+            f"- 标题：{enriched_topic.title}\n"
+            f"- 排名：{enriched_topic.rank or 1}\n"
+            f"- 来源：{_humanize_source(enriched_topic.source)}\n"
+            f"- 发布时间：{enriched_topic.published_at or '未知'}\n"
+            f"- 原文链接：{enriched_topic.url}\n"
             f"- 匹配赛道：{'、'.join(humanized_industries) or '无'}\n"
-            f"- 关键词：{'、'.join(topic.matched_keywords) or '无'}\n"
-            f"- 关键数字：{'、'.join(topic.extracted_numbers) or '无'}\n"
-            f"- 评分：总分 {topic.total_score} / 阅读 {topic.read_score} / 收藏 {topic.save_score} / 讨论 {topic.discussion_score} / 标题潜力 {topic.title_potential_score}\n\n"
+            f"- 关键词：{'、'.join(enriched_topic.matched_keywords) or '无'}\n"
+            f"- 关键数字：{'、'.join(enriched_topic.extracted_numbers) or '无'}\n"
+            f"- 评分：总分 {enriched_topic.total_score} / 阅读 {enriched_topic.read_score} / 收藏 {enriched_topic.save_score} / 讨论 {enriched_topic.discussion_score} / 标题潜力 {enriched_topic.title_potential_score}\n"
+            f"- 商业意图：{enriched_topic.commercial_intent}\n"
+            f"- 内容组合：{enriched_topic.content_mix}\n"
+            f"- CTA 变体：{enriched_topic.cta_variant or '未指定'}\n"
+            f"- CTA 来源码：{enriched_topic.cta_source_code or '未指定'}\n"
+            f"- 标题变体：{enriched_topic.title_variant or '未指定'}\n"
+            f"- 封面变体：{enriched_topic.cover_variant or '未指定'}\n"
+            f"- 平台改写：{enriched_topic.platform_variant or '未指定'}\n\n"
             "## 质量判断\n\n"
-            f"- 选题类型：{topic.topic_type_label or topic.topic_type or '行业事件'}\n"
+            f"- 选题类型：{enriched_topic.topic_type_label or enriched_topic.topic_type or '行业事件'}\n"
             f"- 推荐体裁：{content_format_label}\n"
-            f"- 证据强度：{topic.evidence_strength}\n"
-            f"- 选题质量分：{topic.quality_score}\n"
+            f"- 证据强度：{enriched_topic.evidence_strength}\n"
+            f"- 选题质量分：{enriched_topic.quality_score}\n"
             f"- 标题打法赛道：{prompt_track}\n"
-            f"- 标题抓手：{'、'.join(topic.title_potential_reasons) or '无'}\n"
-            f"- 质量标记：{'、'.join(topic.quality_flags) or '无'}\n"
+            f"- 标题抓手：{'、'.join(enriched_topic.title_potential_reasons) or '无'}\n"
+            f"- 质量标记：{'、'.join(enriched_topic.quality_flags) or '无'}\n"
             f"- 体裁要求：{format_brief}\n"
             f"- 段落要求：{paragraph_instruction}\n\n"
             "## 选题判断\n\n"
@@ -613,7 +638,7 @@ class TopicAutomationService:
             f"- 推荐主结论：{suggested_angle}\n"
             f"- 跟踪变量：{follow_up_focus}\n\n"
             "## 摘要\n\n"
-            f"{topic.summary or topic.snippet or topic.title}\n\n"
+            f"{enriched_topic.summary or enriched_topic.snippet or enriched_topic.title}\n\n"
             "## 自动生成输入\n\n"
             "```text\n"
             f"{input_text}\n"
@@ -624,6 +649,128 @@ class TopicAutomationService:
             "selected_topic_json": json_path,
             "selected_topic_markdown": md_path,
         }
+
+    def _enrich_topic_revenue_metadata(self, topic: TopicCandidate) -> TopicCandidate:
+        """为选题补齐收益优化所需的元数据。"""
+        commercial_intent = str(getattr(topic, "commercial_intent", "")).strip()
+        if not commercial_intent:
+            commercial_intent = self._infer_commercial_intent(topic)
+        content_mix_value = str(getattr(topic, "content_mix", "")).strip()
+        if not content_mix_value:
+            content_mix_value = self._infer_content_mix(topic, commercial_intent)
+        cta_variant = str(getattr(topic, "cta_variant", "")).strip()
+        if not cta_variant:
+            cta_variant = self._infer_cta_variant(content_mix_value)
+        cta_source_code = str(getattr(topic, "cta_source_code", "")).strip()
+        if not cta_source_code:
+            cta_source_code = self._build_cta_source_code(topic, cta_variant)
+        title_variant = str(getattr(topic, "title_variant", "")).strip()
+        if not title_variant:
+            title_variant = self._infer_title_variant(topic)
+        cover_variant = str(getattr(topic, "cover_variant", "")).strip()
+        if not cover_variant:
+            cover_variant = self._infer_cover_variant(topic)
+        platform_variant = str(getattr(topic, "platform_variant", "")).strip()
+        if not platform_variant:
+            platform_variant = "multi_platform_rewrite"
+        topic_bucket = str(getattr(topic, "topic_bucket", "")).strip()
+        if not topic_bucket:
+            from toutiao_content_factory.services.revenue_attribution_service import (
+                RevenueAttributionService,
+            )
+
+            topic_bucket = RevenueAttributionService(self.settings.output_dir, self.logger).topic_bucket_for(
+                topic_title=topic.title,
+                title=topic.title,
+                summary=topic.summary or topic.snippet,
+            )
+        return TopicCandidate(
+            title=topic.title,
+            url=topic.url,
+            source=topic.source,
+            source_type=topic.source_type,
+            published_at=topic.published_at,
+            snippet=topic.snippet,
+            summary=topic.summary,
+            matched_industries=list(topic.matched_industries),
+            matched_keywords=list(topic.matched_keywords),
+            extracted_numbers=list(topic.extracted_numbers),
+            heat_value=topic.heat_value,
+            heat_score=topic.heat_score,
+            read_score=topic.read_score,
+            save_score=topic.save_score,
+            discussion_score=topic.discussion_score,
+            total_score=topic.total_score,
+            title_potential_score=topic.title_potential_score,
+            title_playbook_track=topic.title_playbook_track,
+            title_potential_reasons=list(topic.title_potential_reasons),
+            is_high_read=topic.is_high_read,
+            is_high_save=topic.is_high_save,
+            is_high_discussion=topic.is_high_discussion,
+            topic_type=topic.topic_type,
+            topic_type_label=topic.topic_type_label,
+            evidence_strength=topic.evidence_strength,
+            quality_score=topic.quality_score,
+            quality_flags=list(topic.quality_flags),
+            recommended_format=topic.recommended_format,
+            recommended_format_label=topic.recommended_format_label,
+            rank=topic.rank,
+            commercial_intent=commercial_intent,
+            content_mix=content_mix_value,
+            cta_variant=cta_variant,
+            cta_source_code=cta_source_code,
+            title_variant=title_variant,
+            cover_variant=cover_variant,
+            platform_variant=platform_variant,
+            topic_bucket=topic_bucket,
+        )
+
+    def _infer_commercial_intent(self, topic: TopicCandidate) -> str:
+        text = f"{topic.title} {topic.summary} {topic.snippet}"
+        high_tokens = ("融资", "订单", "中标", "签约", "交付", "量产", "毛利率", "利润", "客户验证")
+        medium_tokens = ("产业链", "芯片", "储能", "机器人", "AI硬件", "电站", "光伏", "风电")
+        if any(token in text for token in high_tokens):
+            return "high"
+        if any(token in text for token in medium_tokens):
+            return "medium"
+        return "low"
+
+    def _infer_content_mix(self, topic: TopicCandidate, commercial_intent: str) -> str:
+        mode = self._topic_mode(topic)
+        if mode in {"sports", "hot_topic"}:
+            return "traffic"
+        if commercial_intent == "high":
+            return "conversion"
+        if topic.is_high_save or topic.save_score >= 60:
+            return "professional"
+        return "traffic"
+
+    def _infer_cta_variant(self, content_mix: str) -> str:
+        if content_mix == "conversion":
+            return "consultation"
+        if content_mix == "professional":
+            return "newsletter"
+        return "discussion"
+
+    def _build_cta_source_code(self, topic: TopicCandidate, cta_variant: str) -> str:
+        track = str(topic.title_playbook_track or "").strip() or "general"
+        intent = str(getattr(topic, "commercial_intent", "medium")).strip()
+        return f"{track}_{intent}_{cta_variant}"
+
+    def _infer_title_variant(self, topic: TopicCandidate) -> str:
+        reasons = list(topic.title_potential_reasons or [])
+        if any("对比" in reason for reason in reasons):
+            return "contrast_hook"
+        if any("数字" in reason for reason in reasons) or topic.extracted_numbers:
+            return "data_hook"
+        return "insight_hook"
+
+    def _infer_cover_variant(self, topic: TopicCandidate) -> str:
+        if topic.extracted_numbers:
+            return "data_anchor"
+        if any(token in topic.title for token in ("机场", "工厂", "车间", "港口", "电站")):
+            return "scene_anchor"
+        return "industry_contrast"
 
     def _humanize_industries(self, industries: list[str]) -> list[str]:
         result: list[str] = []
@@ -765,6 +912,8 @@ class TopicAutomationService:
 
     def _build_content_format_brief(self, topic: TopicCandidate, primary_industry: str) -> str:
         topic_mode = self._topic_mode(topic)
+        if topic_mode == "hot_topic":
+            return "适合写成热点快评：有观点、有信息量、适合移动端快速阅读，不要强行拉成长篇行业分析。"
         if topic_mode == "sports":
             return "适合写成深度分析稿，重点解释影响产业格局的关键变量、争议点和后续走势。"
         if topic_mode == "international":
@@ -779,6 +928,8 @@ class TopicAutomationService:
 
     def _build_paragraph_instruction(self, topic: TopicCandidate) -> str:
         topic_mode = self._topic_mode(topic)
+        if topic_mode == "hot_topic":
+            return "5到7段，每段2到3句，首段直接给判断，结尾只留一个互动问题，段落短平快。"
         if topic_mode == "sports":
             return "4到6段，每段3到5句，每段不少于120字，优先保证段落自然，图片应放在完整段落之间，不要切断句子。"
         if topic_mode == "international":
@@ -793,6 +944,8 @@ class TopicAutomationService:
 
     def _build_word_target(self, topic: TopicCandidate) -> int:
         topic_mode = self._topic_mode(topic)
+        if topic_mode == "hot_topic":
+            return max(800, 600)
         if topic_mode == "sports":
             return max(900, 800)
         if topic_mode == "international":
@@ -847,7 +1000,9 @@ class TopicAutomationService:
         allow_generated_duplicates: bool = False,
     ) -> list[TopicCandidate]:
         if self.settings.publishing.allow_duplicate_topics:
-            return list(topics)
+            return self._apply_revenue_policy(
+                [self._enrich_topic_revenue_metadata(topic) for topic in topics]
+            )
 
         published_keys = self._load_published_keys_for_today()
         generated_keys = (
@@ -884,8 +1039,8 @@ class TopicAutomationService:
                 continue
             if self._is_similar_to_generated(normalized_title, generated_keys["titles"], cross_account_generated_keys["titles"]):
                 continue
-            available.append(topic)
-        return available
+            available.append(self._enrich_topic_revenue_metadata(topic))
+        return self._apply_revenue_policy(available)
 
     def _available_topics_soft(
         self,
@@ -893,7 +1048,9 @@ class TopicAutomationService:
         allow_generated_duplicates: bool = False,
     ) -> list[TopicCandidate]:
         if self.settings.publishing.allow_duplicate_topics:
-            return list(topics)
+            return self._apply_revenue_policy(
+                [self._enrich_topic_revenue_metadata(topic) for topic in topics]
+            )
 
         published_keys = self._load_published_keys_for_today()
         generated_keys = (
@@ -914,8 +1071,77 @@ class TopicAutomationService:
                 continue
             if normalized_title and normalized_title in generated_keys["titles"]:
                 continue
-            available.append(topic)
-        return available
+            available.append(self._enrich_topic_revenue_metadata(topic))
+        return self._apply_revenue_policy(available)
+
+    def _revenue_optimization_config(self) -> dict[str, Any]:
+        config = getattr(self.settings, "revenue_optimization", None)
+        defaults = {
+            "enabled": True,
+            "lookback_days": 30,
+            "min_samples": 10,
+            "weak_rpm_threshold": 0.0,
+            "weak_read_rate_threshold": 3.0,
+            "cooldown_weak_ratio": 0.5,
+            "stop_weak_ratio": 0.8,
+            "cooldown_penalty": 12,
+        }
+        if config is None:
+            return defaults
+        for key in defaults:
+            defaults[key] = getattr(config, key, defaults[key])
+        return defaults
+
+    def _load_revenue_cooling_candidates(self) -> dict[str, dict[str, Any]]:
+        config = self._revenue_optimization_config()
+        if not bool(config.get("enabled", True)):
+            return {}
+        try:
+            from toutiao_content_factory.services.revenue_attribution_service import (
+                RevenueAttributionService,
+            )
+
+            service = RevenueAttributionService(self.settings.output_dir, self.logger)
+            report = service.build_cooling_candidates(
+                lookback_days=int(config["lookback_days"]),
+                min_samples=int(config["min_samples"]),
+                weak_rpm_threshold=float(config["weak_rpm_threshold"]),
+                weak_read_rate_threshold=float(config["weak_read_rate_threshold"]),
+                cooldown_weak_ratio=float(config["cooldown_weak_ratio"]),
+                stop_weak_ratio=float(config["stop_weak_ratio"]),
+                cooldown_penalty=int(config["cooldown_penalty"]),
+            )
+            return {
+                str(item.get("bucket", "")): item
+                for item in report.get("candidates", [])
+                if isinstance(item, dict) and str(item.get("bucket", "")).strip()
+            }
+        except Exception as exc:  # pragma: no cover - legacy/partial ledgers must not block selection
+            self.logger.warning("Revenue cooling policy unavailable; keeping topic selection unchanged: %s", exc)
+            return {}
+
+    def _apply_revenue_policy(self, topics: list[TopicCandidate]) -> list[TopicCandidate]:
+        """Remove only hard-stop buckets and move cooldown buckets behind healthy ones."""
+        candidates = self._load_revenue_cooling_candidates()
+        if not candidates:
+            return topics
+        config = self._revenue_optimization_config()
+        result: list[tuple[bool, int, TopicCandidate]] = []
+        for topic in topics:
+            bucket = str(getattr(topic, "topic_bucket", "")).strip() or "general"
+            policy = candidates.get(bucket, {})
+            if str(policy.get("recommendation", policy.get("action", ""))).strip().lower() == "stop":
+                self.logger.info("[Topic Engine] Revenue policy stopped bucket=%s title=%s", bucket, topic.title)
+                continue
+            penalty = int(policy.get("score_penalty", config.get("cooldown_penalty", 12)) or 0)
+            if policy:
+                topic = replace(
+                    topic,
+                    total_score=max(0, int(topic.total_score or 0) - penalty),
+                )
+            result.append((bool(policy), -int(topic.total_score or 0), topic))
+        result.sort(key=lambda item: (item[0], item[1]))
+        return [item[2] for item in result]
 
     _SIMILARITY_THRESHOLD = 0.6
 
@@ -1060,6 +1286,24 @@ class TopicAutomationService:
 
     def _topic_matches_account_boundary(self, topic: TopicCandidate) -> bool:
         account_key = self.settings.account_key
+        is_hot_source = topic.source_type in {"hot_board", "baidu_hot"}
+        # 账号启用了 hot_topic 赛道时，热榜话题直接放行（热点二创是涨浏览量的核心路径）。
+        # 垂直账号（机器人/能源等）只接与自己赛道相关（含关键词命中）的热榜话题，
+        # 避免"机器人笔记"发无关社会热点导致账号定位漂移。
+        if is_hot_source and "hot_topic" in set(self.settings.topic_collection.focus_industries):
+            if account_key in {"robot_notes", "energy_notes", "politics_notes", "sports_notes"}:
+                robot_score, energy_score, international_score, sports_score = self._topic_domain_scores(topic)
+                if account_key == "robot_notes" and (robot_score >= 1 or energy_score >= 1):
+                    return True
+                if account_key == "energy_notes" and energy_score >= 1:
+                    return True
+                if account_key == "politics_notes" and international_score >= 1:
+                    return True
+                if account_key == "sports_notes" and sports_score >= 1:
+                    return True
+                # 未命中垂直赛道关键词的热榜话题，交给默认账号消化
+                return False
+            return True
         if account_key == "robot_notes":
             return self._is_robot_topic(topic)
         if account_key == "energy_notes":

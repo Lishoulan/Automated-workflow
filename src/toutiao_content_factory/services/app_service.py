@@ -4,10 +4,12 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 
 def _safe_json_loads(text: str, *, default: dict | list | None = None) -> dict | list | None:
@@ -42,6 +44,7 @@ from toutiao_content_factory.services.company_os_service import CompanyOSService
 from toutiao_content_factory.services.lead_ops_service import LeadOpsService
 from toutiao_content_factory.services.monetization_service import MonetizationService
 from toutiao_content_factory.services.revenue_engine_service import RevenueEngineService
+from toutiao_content_factory.services.weitoutiao_generator import WeiToutiaoStandaloneGenerator
 
 
 class ContentFactoryAppService:
@@ -75,6 +78,8 @@ class ContentFactoryAppService:
             notification_service=self.notification_service,
         )
         self.circuit_breaker = PlatformCircuitBreaker()
+        # Preserve scheduled auth failures after settings are downgraded to draft mode.
+        self._daily_blocked_platforms: set[str] = set()
 
     def collect_topics(self) -> dict[str, str]:
         topic_collector = TopicCollectionService(self.settings, self.logger)
@@ -558,6 +563,60 @@ class ContentFactoryAppService:
         fast_mode: bool = False,
         skip_wait: bool = False,
     ) -> dict[str, str]:
+        # ── 当日已发布短路：每日 1 篇上限下，发布成功后的后续时段任务
+        # 不再重复选题、写作、评分（这些环节会持续消耗 LLM token 且无法再发布），
+        # 直接返回 already_published，由定时任务快速跳过。
+        # 注意：不依赖 auto_publish 开关——即使脚本因缺少 -EnableAutoPublish 把
+        # TOUTIAO_AUTO_PUBLISH 设为 0，只要当日已发布过，生成就是纯浪费。
+        if not dry_run:
+            try:
+                from toutiao_content_factory.services.compliance_service import (
+                    count_today_published_by_platform,
+                )
+                history_path = self.settings.output_dir / self.settings.publishing.history_filename
+                # 只按「图文」平台计数判断今日图文是否已发布：
+                # 独立微头条（platform=toutiao_weitoutiao）不算图文已发布，
+                # 避免早间先发微头条导致当日图文被短路跳过。
+                if count_today_published_by_platform(
+                    history_path, platform=self.settings.publishing.platform
+                ) >= 1:
+                    self.logger.info(
+                        "Daily publish limit already reached for today; skipping generation to save tokens. "
+                        "account=%s platform=%s",
+                        self.settings.account_key,
+                        self.settings.publishing.platform,
+                    )
+                    # 微头条高频化：图文已发但微头条未达每日目标时，后续时段补发独立微头条，
+                    # 仍保持生成短内容的轻量成本，不重新走图文选题/写作/评分。
+                    topup_exports: dict[str, Any] = {}
+                    if (
+                        self.settings.publishing.weitoutiao_enabled
+                        and self.settings.publishing.weitoutiao_standalone_enabled
+                    ):
+                        try:
+                            topup_exports = self._top_up_standalone_weitoutiao(max_count=1)
+                        except Exception as topup_exc:
+                            topup_exports = {
+                                "standalone_topup_status": "failed",
+                                "standalone_topup_summary": str(topup_exc),
+                                "standalone_topup_requested": "1",
+                                "standalone_topup_selected": "0",
+                                "standalone_topup_accepted": "0",
+                                "standalone_topup_skipped": "1",
+                                "standalone_topup_fallback_count": "0",
+                            }
+                            self.logger.warning(
+                                "WeiToutiao standalone top-up in already-published branch failed (non-fatal): %s",
+                                topup_exc,
+                            )
+                    return {
+                        "status": "already_published",
+                        "message": "Daily publish limit reached; skipped generation for this scheduled slot.",
+                        **topup_exports,
+                    }
+            except Exception as exc:
+                self.logger.warning("Daily publish limit pre-check failed (non-fatal): %s", exc)
+
         # 轻量级健康检查：blocking 时优雅退出，warnings 时继续执行
         if not dry_run:
             try:
@@ -603,6 +662,7 @@ class ContentFactoryAppService:
             exported_files["platform_health"] = platform_health_path
         blocking_platforms = [str(item) for item in auth_health.get("blocking_platforms", []) if str(item).strip()]
         if blocking_platforms:
+            self._daily_blocked_platforms = set(blocking_platforms)
             self._degrade_blocked_platforms_to_draft(blocking_platforms)
             message = (
                 "Publish login precheck failed, degraded to draft mode. "
@@ -697,7 +757,40 @@ class ContentFactoryAppService:
 
             run_dir = self._resolve_run_dir_from_exports(attempt_exports)
             score_snapshot = self._load_run_score_snapshot(run_dir)
-            qualifies = self._qualifies_for_auto_approval(score_snapshot)
+            content_guard_report: dict[str, Any] | None = None
+            content_guard_error = ""
+            if run_dir is not None and not no_archive:
+                content_guard_report = self._load_content_guard_report(run_dir)
+                if not content_guard_report:
+                    try:
+                        # The archive step normally writes this report. Rebuild it
+                        # here when an older or interrupted run did not, so the
+                        # automatic approval gate never relies on a missing check.
+                        content_guard_report = self.content_guard_service.evaluate_run(run_dir)
+                    except Exception as exc:
+                        content_guard_error = str(exc)
+                        content_guard_report = {
+                            "blocked": True,
+                            "blocking_flags": [f"内容守卫检查失败，禁止自动发布：{exc}"],
+                        }
+            qualifies = self._qualifies_for_auto_approval(
+                score_snapshot,
+                content_guard_report=content_guard_report,
+            )
+            title_selection: dict[str, object] = {}
+            if qualifies and run_dir is not None:
+                try:
+                    title_selection = self.review_service.select_auto_title(run_dir)
+                except Exception as exc:
+                    self.logger.warning("Automatic title quality gate failed: %s", exc)
+                    title_selection = {
+                        "selected_title": "",
+                        "selected_title_index": 0,
+                        "evaluations": [],
+                        "reason": f"Automatic title quality gate failed: {exc}",
+                    }
+                if not str(title_selection.get("selected_title", "")).strip():
+                    qualifies = False
             attempt_record = {
                 "attempt_index": attempt_index,
                 "candidate_rank": int(candidate["rank"]),
@@ -707,6 +800,28 @@ class ContentFactoryAppService:
                 "score_snapshot": score_snapshot,
                 "qualified_for_auto_approval": qualifies,
             }
+            content_guard_blocked = bool(
+                content_guard_report
+                and (
+                    content_guard_report.get("blocked")
+                    or content_guard_report.get("bad_words_blocked")
+                    or content_guard_report.get("blocking_flags")
+                )
+            )
+            if content_guard_report is not None:
+                attempt_record["content_guard_blocked"] = content_guard_blocked
+                attempt_record["content_guard_warnings"] = [
+                    str(item)
+                    for item in (
+                        list(content_guard_report.get("blocking_flags", []))
+                        + list(content_guard_report.get("warnings", []))
+                    )
+                    if str(item).strip()
+                ][:5]
+            if content_guard_error:
+                attempt_record["content_guard_error"] = content_guard_error
+            if title_selection:
+                attempt_record["title_quality_gate"] = title_selection
 
             if best_attempt is None or self._is_better_attempt(attempt_record, best_attempt):
                 best_attempt = {
@@ -728,8 +843,9 @@ class ContentFactoryAppService:
             if qualifies:
                 approve_exports = self.approve_run(
                     str(run_dir),
-                    selected_title_index=1,
-                    review_notes="Auto-approved by the daily automation workflow.",
+                    selected_title=str(title_selection.get("selected_title", "")),
+                    selected_title_index=int(title_selection.get("selected_title_index", 0) or 0),
+                    review_notes="Auto-approved by the daily automation workflow after the title quality gate.",
                     auto_publish=False,
                 )
                 attempt_exports.update(approve_exports)
@@ -763,7 +879,23 @@ class ContentFactoryAppService:
                 exported_files.update(report_exports)
                 return exported_files
 
-            attempt_record["status"] = "candidate_rejected"
+            if content_guard_blocked:
+                attempt_record["status"] = "content_guard_rejected"
+                guard_reasons = attempt_record.get("content_guard_warnings", [])
+                attempt_record["skip_reason"] = (
+                    "Content guard blocked automatic approval: "
+                    + " | ".join(str(item) for item in guard_reasons[:3])
+                    if guard_reasons
+                    else "Content guard blocked automatic approval."
+                )
+            else:
+                attempt_record["status"] = (
+                    "title_quality_rejected" if title_selection else "candidate_rejected"
+                )
+            if title_selection and not content_guard_blocked:
+                attempt_record["skip_reason"] = str(
+                    title_selection.get("reason", "No candidate title passed the final title quality gate.")
+                )
             losing_attempts.append(attempt_record)
 
         if best_attempt is None:
@@ -854,6 +986,280 @@ class ContentFactoryAppService:
         exported["resolved_run_dir"] = str(resolved)
         return exported
 
+    def publish_weitoutiao_run(self, run_dir: str | None = None, draft_only: bool = False) -> dict[str, Any]:
+        """把已审核通过的 run 以微头条（短内容）形式发布。"""
+        resolved = self.review_service.resolve_run_dir(run_dir)
+        previous_draft_only = self.settings.publishing.draft_only
+        object.__setattr__(self.settings.publishing, "draft_only", bool(draft_only))
+        try:
+            result = self.review_service.publish_weitoutiao(resolved, draft_only=draft_only)
+        finally:
+            object.__setattr__(self.settings.publishing, "draft_only", previous_draft_only)
+        return self._format_weitoutiao_publish_exports(resolved, result)
+
+    def publish_weitoutiao_latest_approved(
+        self,
+        unpublished_only: bool = True,
+        today_only: bool = True,
+        draft_only: bool = False,
+    ) -> dict[str, str]:
+        """把最新审核通过、尚未发布的 run 以微头条形式发布。"""
+        resolved = self.review_service.resolve_latest_approved_run(
+            unpublished_only=unpublished_only,
+            today_only=today_only,
+        )
+        previous_draft_only = self.settings.publishing.draft_only
+        object.__setattr__(self.settings.publishing, "draft_only", bool(draft_only))
+        try:
+            result = self.review_service.publish_weitoutiao(resolved, draft_only=draft_only)
+        finally:
+            object.__setattr__(self.settings.publishing, "draft_only", previous_draft_only)
+        exported = {name: str(path) for name, path in result.items()}
+        exported["resolved_run_dir"] = str(resolved)
+        return exported
+
+    def publish_standalone_weitoutiao(self, count: int = 1, *, draft_only: bool = False) -> dict[str, Any]:
+        """生成并发布 count 条独立微头条（微头条高频化）。
+
+        独立选题（与图文/伴生微头条去重）+ 独立写作（多个人设轮换）+
+        复用 publish_weitoutiao 浏览器发布，并写入 publish_history。
+        """
+        generator = WeiToutiaoStandaloneGenerator(self.settings, self.logger)
+        previous_draft_only = self.settings.publishing.draft_only
+        object.__setattr__(self.settings.publishing, "draft_only", bool(draft_only))
+        try:
+            result = generator.publish_standalone(count=count, draft_only=draft_only, purpose="standalone")
+        finally:
+            object.__setattr__(self.settings.publishing, "draft_only", previous_draft_only)
+        exports = {name: str(path) for name, path in result.get("exports", {}).items()}
+        if result.get("result_path"):
+            exports["standalone_result"] = str(result["result_path"])
+        if result.get("latest_result_path"):
+            exports["standalone_latest_result"] = str(result["latest_result_path"])
+        exports["standalone_status"] = str(result.get("status", ""))
+        exports["standalone_summary"] = (
+            f"status={result.get('status', '')} accepted={result.get('accepted', 0)} "
+            f"skipped={result.get('skipped_count', len(result.get('skipped', [])))}"
+        )
+        for index, item in enumerate(result.get("published", []), start=1):
+            exports[f"wtt_published_{index}"] = str(item.get("topic_title", ""))
+        return exports
+
+    def _top_up_standalone_weitoutiao(self, max_count: int = 2) -> dict[str, Any]:
+        """微头条高频化：按每日目标补齐独立微头条。
+
+        图文伴生 1 条 + 独立微头条补到 weitoutiao_daily_target（默认 3，即每日 2-3 条）。
+        仅在 weitoutiao_enabled 且 weitoutiao_standalone_enabled 时生效；
+        今日微头条已达目标或独立微头条关闭时直接返回空，不阻塞主流程。
+        """
+        publishing = self.settings.publishing
+        if not publishing.weitoutiao_enabled or not publishing.weitoutiao_standalone_enabled:
+            return {"standalone_topup_status": "disabled"}
+        generator = WeiToutiaoStandaloneGenerator(self.settings, self.logger)
+        remaining = generator.remaining_for_target()
+        count = min(remaining, max(0, int(max_count)))
+        self.logger.info(
+            "WeiToutiao high-frequency top-up: target=%s today=%s remaining=%s publishing=%s",
+            publishing.weitoutiao_daily_target,
+            generator.today_weitoutiao_count(),
+            remaining,
+            count,
+        )
+        result = generator.publish_standalone(
+            count=count,
+            draft_only=publishing.draft_only,
+            purpose="topup",
+        )
+        exports = {name: str(path) for name, path in result.get("exports", {}).items()}
+        if result.get("result_path"):
+            exports["standalone_topup_result"] = str(result["result_path"])
+        if result.get("latest_result_path"):
+            exports["standalone_topup_latest_result"] = str(result["latest_result_path"])
+        exports["standalone_topup_status"] = str(result.get("status", ""))
+        exports["standalone_topup_requested"] = str(result.get("requested", count))
+        exports["standalone_topup_selected"] = str(result.get("selected", 0))
+        exports["standalone_topup_accepted"] = str(result.get("accepted", 0))
+        exports["standalone_topup_skipped"] = str(result.get("skipped_count", len(result.get("skipped", []))))
+        exports["standalone_topup_fallback_count"] = str(result.get("fallback_count", 0))
+        exports["standalone_topup_summary"] = (
+            f"status={result.get('status', '')} accepted={result.get('accepted', 0)} "
+            f"skipped={result.get('skipped_count', len(result.get('skipped', [])))}"
+        )
+        return exports
+
+    @staticmethod
+    def _is_accepted_weitoutiao_status(status: object) -> bool:
+        return str(status or "").strip().lower() in {
+            "published",
+            "submitted",
+            "submitted_for_review",
+            "success",
+        }
+
+    @staticmethod
+    def _is_failed_weitoutiao_status(status: object) -> bool:
+        return str(status or "").strip().lower() in {
+            "failed",
+            "error",
+            "blocked",
+            "blocked_by_ip",
+            "publish_login_required",
+            "publish_uncertain",
+            "circuit_open",
+            "missing",
+            "invalid",
+            "no_topics",
+            "draft_only",
+        }
+
+    def _load_weitoutiao_batch_result(self, exports: dict[str, Any]) -> dict[str, Any]:
+        result_path = str(
+            exports.get("standalone_topup_result")
+            or exports.get("standalone_result")
+            or ""
+        ).strip()
+        if result_path:
+            payload = _safe_json_loads(
+                Path(result_path).read_text(encoding="utf-8-sig"),
+                default={},
+            ) if Path(result_path).exists() else {}
+            if isinstance(payload, dict):
+                payload.setdefault("result_path", result_path)
+                return payload
+        status = str(
+            exports.get("standalone_topup_status")
+            or exports.get("standalone_status")
+            or "not_attempted"
+        ).strip()
+        return {
+            "status": status,
+            "message": str(exports.get("standalone_topup_summary") or exports.get("standalone_summary") or ""),
+            "requested": int(exports.get("standalone_topup_requested", 0) or 0),
+            "selected": int(exports.get("standalone_topup_selected", 0) or 0),
+            "accepted": int(exports.get("standalone_topup_accepted", 0) or 0),
+            "skipped_count": int(exports.get("standalone_topup_skipped", 0) or 0),
+            "fallback_count": int(exports.get("standalone_topup_fallback_count", 0) or 0),
+            "result_path": result_path,
+        }
+
+    def _load_weitoutiao_companion_result(
+        self,
+        run_dir: Path,
+        exports: dict[str, Any],
+    ) -> dict[str, Any]:
+        result_path = str(exports.get("weitoutiao_publish_result", "")).strip()
+        candidates: list[Path] = []
+        if result_path:
+            candidate = Path(result_path)
+            if not candidate.is_absolute():
+                candidate = run_dir / candidate
+            candidates.append(candidate)
+        candidates.append(run_dir / self.settings.review.publish_dirname / "weitoutiao_publish_result.json")
+
+        for candidate in candidates:
+            try:
+                payload = _safe_json_loads(candidate.read_text(encoding="utf-8-sig"), default={})
+            except OSError:
+                continue
+            if isinstance(payload, dict):
+                payload.setdefault("result_path", str(candidate))
+                payload.setdefault("status", str(exports.get("weitoutiao_status", "")).strip())
+                return payload
+
+        status = str(exports.get("weitoutiao_status", "")).strip() or "not_attempted"
+        return {
+            "status": status,
+            "message": str(exports.get("weitoutiao_message", "")).strip(),
+            "external_url": str(exports.get("weitoutiao_external_url", "")).strip(),
+            "result_path": result_path,
+        }
+
+    def _summarize_weitoutiao_status(
+        self,
+        companion: dict[str, Any],
+        topup: dict[str, Any],
+    ) -> str:
+        neutral_statuses = {"", "not_attempted", "disabled", "target_reached"}
+        companion_status = str(companion.get("status", "")).strip().lower()
+        topup_status = str(topup.get("status", "")).strip().lower()
+        attempted_statuses = [
+            value
+            for value in (companion_status, topup_status)
+            if value not in neutral_statuses
+        ]
+        failure_count = sum(
+            1
+            for value in attempted_statuses
+            if self._is_failed_weitoutiao_status(value)
+            or (value not in neutral_statuses and not self._is_accepted_weitoutiao_status(value))
+        )
+        success_count = sum(
+            1
+            for value in attempted_statuses
+            if self._is_accepted_weitoutiao_status(value) or value == "target_reached"
+        )
+        if failure_count:
+            return "partial_success" if success_count else "failed"
+        if success_count:
+            return "success"
+        return "not_attempted"
+
+    def _write_weitoutiao_daily_result(
+        self,
+        run_dir: Path,
+        *,
+        companion: dict[str, Any],
+        topup: dict[str, Any],
+    ) -> tuple[Path, dict[str, Any]]:
+        status = self._summarize_weitoutiao_status(companion, topup)
+        details: list[str] = []
+        companion_error = str(companion.get("error", "")).strip()
+        if companion_error:
+            details.append(f"companion: {companion_error}")
+        topup_message = str(topup.get("message", "")).strip()
+        if topup_message and str(topup.get("status", "")).strip().lower() not in {
+            "success",
+            "target_reached",
+        }:
+            details.append(f"top-up: {topup_message}")
+        skipped_items = topup.get("skipped", [])
+        if isinstance(skipped_items, list):
+            for item in skipped_items:
+                if not isinstance(item, dict):
+                    continue
+                error = str(item.get("error") or item.get("reason") or "").strip()
+                if error:
+                    details.append(f"top-up: {error}")
+                    break
+        if status == "success":
+            message = "WeiToutiao companion and top-up workflow completed."
+        elif status == "partial_success":
+            message = "WeiToutiao workflow partially succeeded; one or more items need follow-up."
+        elif status == "failed":
+            message = "WeiToutiao workflow did not complete successfully."
+        else:
+            message = "WeiToutiao workflow was not attempted."
+        if details:
+            message = f"{message} {'; '.join(details[:3])}"
+        result_path = run_dir / self.settings.review.publish_dirname / "weitoutiao_daily_result.json"
+        payload = {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "account_key": self.settings.account_key,
+            "account_slug": self.settings.account_slug,
+            "run_dir": str(run_dir),
+            "status": status,
+            "message": message,
+            "companion": companion,
+            "topup": topup,
+            "result_path": str(result_path),
+        }
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        return result_path, payload
+
     def reset_account_state(self) -> dict[str, str]:
         automation_dir = self.settings.automation_dir
         automation_dir.mkdir(parents=True, exist_ok=True)
@@ -886,6 +1292,7 @@ class ContentFactoryAppService:
                 "platforms": {
                     "toutiao": {"status": "idle", "last_run": "", "message": ""},
                     "wechat": {"status": "idle", "last_run": "", "message": ""},
+                    "weitoutiao": {"status": "idle", "last_run": "", "message": ""},
                 },
             },
             "platform_health.json": {
@@ -1218,7 +1625,11 @@ class ContentFactoryAppService:
         status: str = "new",
         estimated_value: float = 0.0,
         next_follow_up_at: str = "",
-    ) -> dict[str, str]:
+        source_content_id: str = "",
+        cta_source_code: str = "",
+        platform: str = "",
+    ) -> dict[str, Any]:
+        self._daily_blocked_platforms = set()
         entry = self.lead_ops_service.record_lead(
             name=name,
             contact=contact,
@@ -1228,10 +1639,15 @@ class ContentFactoryAppService:
             status=status,
             estimated_value=estimated_value,
             next_follow_up_at=next_follow_up_at,
+            source_content_id=source_content_id,
+            cta_source_code=cta_source_code,
+            platform=platform,
         )
         assets = self.lead_ops_service.ensure_assets()
         result = {name: str(path) for name, path in assets.items()}
         result["lead_entry_id"] = str(entry.get("id", ""))
+        result["source_content_id"] = str(entry.get("source_content_id", ""))
+        result["attribution_status"] = str(entry.get("attribution_status", "unattributed"))
         return result
 
     def update_lead(
@@ -1255,6 +1671,8 @@ class ContentFactoryAppService:
         assets = self.lead_ops_service.ensure_assets()
         result = {name: str(path) for name, path in assets.items()}
         result["lead_entry_id"] = str(entry.get("id", ""))
+        result["source_content_id"] = str(entry.get("source_content_id", ""))
+        result["attribution_status"] = str(entry.get("attribution_status", "unattributed"))
         return result
 
     def generate_lead_proposal(
@@ -1541,6 +1959,15 @@ class ContentFactoryAppService:
         *,
         platform: str,
         snapshot_date: str | None = None,
+        snapshot_label: str | None = None,
+        snapshot_at: str | None = None,
+        published_date: str | None = None,
+        earnings_date: str | None = None,
+        availability_status: str = "available",
+        revenue_status: str = "unknown",
+        platform_revenue_status: str = "unknown",
+        revenue_amount_known: bool = False,
+        platform_revenue: float | None = None,
         impression_count: int | None = None,
         read_count: int | None = None,
         recommendation_read_count: int | None = None,
@@ -1555,6 +1982,15 @@ class ContentFactoryAppService:
             run_dir=resolved,
             platform=platform,
             snapshot_date=snapshot_date,
+            snapshot_label=snapshot_label,
+            snapshot_at=snapshot_at,
+            published_date=published_date,
+            earnings_date=earnings_date,
+            availability_status=availability_status,
+            revenue_status=revenue_status,
+            platform_revenue_status=platform_revenue_status,
+            revenue_amount_known=revenue_amount_known,
+            platform_revenue=platform_revenue,
             impression_count=impression_count,
             read_count=read_count,
             recommendation_read_count=recommendation_read_count,
@@ -1564,13 +2000,186 @@ class ContentFactoryAppService:
             comment_count=comment_count,
             follower_gain=follower_gain,
         )
-        exported = {name: str(path) for name, path in result.items()}
-        exported["resolved_run_dir"] = str(resolved)
+        return self._format_weitoutiao_publish_exports(resolved, result)
+
+    def _format_weitoutiao_publish_exports(self, run_dir: Path, result: object) -> dict[str, Any]:
+        """Persist a companion result without overwriting the graphic publish result."""
+        raw_result = dict(result) if isinstance(result, dict) else {}
+        exported = {name: str(value) for name, value in raw_result.items()}
+        exported["resolved_run_dir"] = str(run_dir)
+        publish_dir = run_dir / self.settings.review.publish_dirname
+        result_path = publish_dir / "weitoutiao_publish_result.json"
+        payload = {
+            **raw_result,
+            "platform": "toutiao_weitoutiao",
+            "run_dir": str(run_dir),
+        }
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        exported["weitoutiao_publish_result"] = str(result_path)
+        exported["weitoutiao_status"] = str(raw_result.get("status", "")).strip()
+        exported["weitoutiao_published_at"] = str(raw_result.get("published_at", "")).strip()
+        exported["weitoutiao_external_url"] = str(raw_result.get("external_url", "")).strip()
         return exported
 
     def build_performance_report(self) -> dict[str, str]:
         result = self.growth_ops_service.build_performance_report()
         return {name: str(path) for name, path in result.items()}
+
+    def build_revenue_attribution_report(self) -> dict[str, str]:
+        """生成收益归因与经营分析报表。"""
+        from toutiao_content_factory.services.revenue_attribution_service import (
+            RevenueAttributionService,
+        )
+
+        service = RevenueAttributionService(self.settings.output_dir, self.logger)
+        revenue_config = getattr(self.settings, "revenue_optimization", None)
+        report_kwargs = {
+            "lookback_days": int(getattr(revenue_config, "lookback_days", 30)),
+            "min_samples": int(getattr(revenue_config, "min_samples", 10)),
+            "weak_rpm_threshold": float(getattr(revenue_config, "weak_rpm_threshold", 0.0)),
+            "weak_read_rate_threshold": float(getattr(revenue_config, "weak_read_rate_threshold", 3.0)),
+            "cooldown_weak_ratio": float(getattr(revenue_config, "cooldown_weak_ratio", 0.5)),
+            "stop_weak_ratio": float(getattr(revenue_config, "stop_weak_ratio", 0.8)),
+            "cooldown_penalty": int(getattr(revenue_config, "cooldown_penalty", 12)),
+        }
+        business_report = service.build_business_report(**report_kwargs)
+        return {
+            "business_report": str(business_report),
+            "content_mix_report": str(service.mix_report_path),
+            "cooling_report": str(service.cooling_report_path),
+            "experiment_report": str(service.experiment_report_path),
+            "unit_economics": str(service.unit_economics_path),
+            "snapshot_ledger": str(service.snapshot_ledger_path),
+            "content_index": str(service.content_index_path),
+        }
+
+    def register_content_identity(
+        self,
+        *,
+        platform: str,
+        run_dir: str | Path,
+        title: str = "",
+        topic_title: str = "",
+        published_at: str = "",
+        commercial_intent: str = "medium",
+        content_mix: str = "professional",
+        cta_variant: str = "",
+        cta_source_code: str = "",
+        title_variant: str = "",
+        cover_variant: str = "",
+        platform_variant: str = "",
+        topic_bucket: str = "",
+    ) -> dict[str, str]:
+        """注册内容级 ID 并返回归因元数据路径。"""
+        from toutiao_content_factory.services.revenue_attribution_service import (
+            RevenueAttributionService,
+        )
+
+        resolved_run_dir = Path(run_dir).resolve()
+        service = RevenueAttributionService(self.settings.output_dir, self.logger)
+        identity = service.build_content_identity(
+            account_key=self.settings.account_key,
+            platform=platform,
+            run_dir=resolved_run_dir,
+            topic_title=topic_title,
+            title=title,
+            published_at=published_at or datetime.now().isoformat(timespec="seconds"),
+            commercial_intent=commercial_intent,
+            content_mix=content_mix,
+            cta_variant=cta_variant,
+            cta_source_code=cta_source_code,
+            title_variant=title_variant,
+            cover_variant=cover_variant,
+            platform_variant=platform_variant,
+            topic_bucket=topic_bucket,
+        )
+        index_path = service.register_content(identity)
+        return {
+            "content_id": identity.content_id,
+            "content_index": str(index_path),
+        }
+
+    def record_content_cost(
+        self,
+        content_id: str,
+        *,
+        api_cost: float = 0.0,
+        image_cost: float = 0.0,
+        labor_minutes: float = 0.0,
+        labor_rate_per_hour: float = 0.0,
+        currency: str = "CNY",
+    ) -> dict[str, str]:
+        from toutiao_content_factory.services.revenue_attribution_service import (
+            CostRecord,
+            RevenueAttributionService,
+        )
+
+        service = RevenueAttributionService(self.settings.output_dir, self.logger)
+        cost = CostRecord(
+            api_cost=api_cost,
+            image_cost=image_cost,
+            labor_minutes=labor_minutes,
+            labor_rate_per_hour=labor_rate_per_hour,
+            currency=currency,
+        )
+        ledger_path = service.record_cost(content_id, cost)
+        return {"cost_ledger": str(ledger_path), "content_id": content_id}
+
+    def record_content_revenue_event(
+        self,
+        content_id: str,
+        *,
+        event_type: str,
+        amount: float,
+        currency: str = "CNY",
+        lead_id: str = "",
+        product_key: str = "",
+        channel: str = "",
+        note: str = "",
+        event_id: str = "",
+        replace_existing: bool = False,
+    ) -> dict[str, str]:
+        from toutiao_content_factory.services.revenue_attribution_service import (
+            RevenueAttributionService,
+            RevenueEvent,
+        )
+
+        service = RevenueAttributionService(self.settings.output_dir, self.logger)
+        event = RevenueEvent(
+            event_type=event_type,
+            amount=amount,
+            currency=currency,
+            source_article_id=content_id,
+            lead_id=lead_id,
+            product_key=product_key,
+            channel=channel,
+            note=note,
+            event_id=event_id,
+        )
+        ledger_path = service.record_revenue_event(
+            content_id,
+            event,
+            replace_existing=replace_existing,
+        )
+        return {"revenue_ledger": str(ledger_path), "content_id": content_id}
+
+    def compute_unit_economics(
+        self,
+        content_id: str,
+        *,
+        platform_revenue: float = 0.0,
+    ) -> dict[str, Any]:
+        from toutiao_content_factory.services.revenue_attribution_service import (
+            RevenueAttributionService,
+        )
+
+        service = RevenueAttributionService(self.settings.output_dir, self.logger)
+        economics = service.compute_unit_economics(content_id, platform_revenue=platform_revenue)
+        return {"unit_economics": str(service.unit_economics_path), "metrics": economics.to_dict()}
 
     def evaluate_latest_run_publish_readiness(self, run_dir: str | None = None) -> dict[str, str]:
         resolved = self.review_service.resolve_run_dir(run_dir)
@@ -1593,6 +2202,13 @@ class ContentFactoryAppService:
                 publish_review.get("publish_recommendation", "manual_review")
             )
             workflow.content_score.publish_notes = list(publish_review.get("publish_notes", []))
+            # Re-evaluating publish readiness must preserve the independent
+            # quality council gate stored with the workflow result.
+            workflow_service._apply_quality_review_gate(
+                workflow.content_score,
+                workflow.quality_review_council,
+            )
+            workflow_service._apply_bad_words_gate(workflow.content, workflow.content_score)
             workflow_path = resolved / "workflow_result.json"
             score_path = resolved / "content_score.json"
             workflow_path.write_text(json.dumps(workflow.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1663,13 +2279,34 @@ class ContentFactoryAppService:
             ]
 
         max_attempts = max(1, int(self.settings.automation.max_daily_topic_attempts))
+        # 混合候选策略：
+        # 1) 热榜话题时效性最强，但标题型热点无原文素材，评分常不达标；
+        #    因此只保留 1 个最热的热榜话题作为第一候选（兼顾时效与发布成功率）。
+        # 2) 其余名额优先给有完整素材的高潜力话题（evidence_strength >= 55），
+        #    保证每天至少有一个"能写出达标文章"的候选可尝试，提高自动发布成功率。
+        hot_topics = [t for t in available_topics if t.source_type in {"hot_board", "baidu_hot"}]
+        material_topics = [
+            t for t in available_topics
+            if t.source_type not in {"hot_board", "baidu_hot"}
+            and int(getattr(t, "evidence_strength", 0) or 0) >= 55
+        ]
+        ordered: list = []
+        if hot_topics:
+            ordered.append(hot_topics[0])
+        ordered.extend(material_topics)
+        # 若仍有空缺，补剩余话题（优先其他非热榜素材，其次剩余热榜）
+        for topic in available_topics:
+            if len(ordered) >= max_attempts:
+                break
+            if topic not in ordered:
+                ordered.append(topic)
         return [
             {
                 "rank": available_rank,
                 "title": topic.title,
                 "url": topic.url,
             }
-            for available_rank, topic in enumerate(available_topics[:max_attempts], start=1)
+            for available_rank, topic in enumerate(ordered[:max_attempts], start=1)
         ]
 
     def _resolve_run_dir_from_exports(self, exported_files: dict[str, str]) -> Path | None:
@@ -1707,6 +2344,14 @@ class ContentFactoryAppService:
             "validation_score": int(raw_scores.get("validation_score", 0)),
             "publish_readiness_score": int(raw_scores.get("publish_readiness_score", 0)),
         }
+        # 读取热榜快评标记：标题型热点使用放宽的自动发布门槛
+        workflow_path = run_dir / "workflow_result.json"
+        if workflow_path.exists():
+            wf = _safe_json_loads(workflow_path.read_text(encoding="utf-8"), default={})
+            if isinstance(wf, dict):
+                data_report = wf.get("data_report") or {}
+                if isinstance(data_report, dict):
+                    snapshot["is_hot_topic"] = 1 if bool(data_report.get("is_hot_topic", False)) else 0
         article_path = run_dir / "publish" / "article.md"
         if not article_path.exists():
             article_path = run_dir / "article.md"
@@ -1715,7 +2360,12 @@ class ContentFactoryAppService:
             snapshot["article_char_count"] = len(article_text)
         return snapshot
 
-    def _qualifies_for_auto_approval(self, score_snapshot: dict[str, int]) -> bool:
+    def _qualifies_for_auto_approval(
+        self,
+        score_snapshot: dict[str, int],
+        *,
+        content_guard_report: dict[str, Any] | None = None,
+    ) -> bool:
         if not score_snapshot:
             return False
         article_chars = int(score_snapshot.get("article_char_count", 0))
@@ -1726,12 +2376,42 @@ class ContentFactoryAppService:
                 article_chars,
             )
             return False
+        if content_guard_report is not None and (
+            content_guard_report.get("blocked")
+            or content_guard_report.get("bad_words_blocked")
+            or content_guard_report.get("blocking_flags")
+        ):
+            self.logger.warning(
+                "Content guard blocked automatic approval for the generated run: %s",
+                " | ".join(
+                    str(item)
+                    for item in (
+                        list(content_guard_report.get("blocking_flags", []))
+                        + list(content_guard_report.get("warnings", []))
+                    )
+                    if str(item).strip()
+                )[:500],
+            )
+            return False
         return self.settings.review.qualifies_for_auto_publish(
             overall_score=int(score_snapshot.get("overall_score", 0)),
             ai_risk=int(score_snapshot.get("ai_generated_risk", 100)),
             validation_score=int(score_snapshot.get("validation_score", 0)),
             publish_readiness_score=int(score_snapshot.get("publish_readiness_score", 0)),
+            is_hot_topic=bool(score_snapshot.get("is_hot_topic", 0)),
         )
+
+    def _load_content_guard_report(self, run_dir: Path | None) -> dict[str, Any]:
+        if run_dir is None:
+            return {}
+        report_path = run_dir / "content_guard_report.json"
+        if not report_path.exists():
+            return {}
+        try:
+            payload = _safe_json_loads(report_path.read_text(encoding="utf-8-sig"), default={})
+        except OSError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     def _is_better_attempt(self, candidate: dict[str, object], current_best: dict[str, object]) -> bool:
         candidate_scores = dict(candidate.get("score_snapshot", {}))
@@ -1765,11 +2445,19 @@ class ContentFactoryAppService:
         exported_files: dict[str, str] = {}
         platform_results: dict[str, dict[str, object]] = {}
         platform_errors: list[str] = []
+        weitoutiao_enabled = bool(self.settings.publishing.weitoutiao_enabled)
+        companion: dict[str, Any] = {
+            "status": "not_attempted" if weitoutiao_enabled else "disabled",
+        }
+        topup: dict[str, Any] = {
+            "status": "not_attempted" if weitoutiao_enabled else "disabled",
+        }
 
+        daily_wechat_enabled = bool(self.settings.wechat.enabled and self.settings.wechat.auto_publish)
         should_generate_images = (
             not self.settings.skip_image_generation
             and (
-                self.settings.wechat.enabled
+                daily_wechat_enabled
                 or str(self.settings.publishing.cover_mode or "auto").strip().lower() != "none"
             )
         )
@@ -1777,7 +2465,7 @@ class ContentFactoryAppService:
             try:
                 image_exports = self.image_generation_service.generate_for_run(
                     run_dir,
-                    include_infographics=bool(self.settings.wechat.enabled),
+                    include_infographics=daily_wechat_enabled,
                 )
                 exported_files.update({name: str(path) for name, path in image_exports.items()})
             except Exception as exc:
@@ -1790,12 +2478,19 @@ class ContentFactoryAppService:
                 run_dir,
             )
 
+        blocked_platforms = set(getattr(self, "_daily_blocked_platforms", set()))
         wechat_completed = False
         wechat_blocked_by_ip = False
-        if self.settings.wechat.enabled:
+        if "wechat" in blocked_platforms:
+            message = "WeChat publish blocked by auth preflight; login is required before retry."
+            platform_results["wechat"] = {"status": "publish_login_required", "error": message}
+            platform_errors.append(message)
+        elif self.settings.wechat.enabled and self.settings.wechat.auto_publish:
             if self.circuit_breaker.is_open("wechat"):
                 self.logger.warning("WeChat publish skipped: circuit breaker is open for wechat.")
-                platform_results["wechat"] = {"status": "circuit_open", "error": "Circuit breaker is open for wechat"}
+                message = "WeChat publish skipped because the circuit breaker is open."
+                platform_results["wechat"] = {"status": "circuit_open", "error": message}
+                platform_errors.append(message)
             else:
                 try:
                     wechat_result = self.wechat_service.publish_run_via_135(run_dir, submit=True)
@@ -1847,13 +2542,19 @@ class ContentFactoryAppService:
                     if self._is_session_expired_error(exc):
                         self._notify_session_expired("WeChat", exc)
 
-        if self.settings.publishing.enabled and self.settings.publishing.auto_publish:
+        if "toutiao" in blocked_platforms:
+            message = "Toutiao publish blocked by auth preflight; login is required before retry."
+            platform_results["toutiao"] = {"status": "publish_login_required", "error": message}
+            platform_errors.append(message)
+        elif self.settings.publishing.enabled and self.settings.publishing.auto_publish:
             if self.circuit_breaker.is_open("toutiao"):
                 self.logger.warning("Toutiao publish skipped: circuit breaker is open for toutiao.")
-                platform_results["toutiao"] = {"status": "circuit_open", "error": "Circuit breaker is open for toutiao"}
+                message = "Toutiao publish skipped because the circuit breaker is open."
+                platform_results["toutiao"] = {"status": "circuit_open", "error": message}
+                platform_errors.append(message)
             else:
                 wechat_blocks_toutiao = (
-                    self.settings.wechat.enabled
+                    daily_wechat_enabled
                     and not wechat_completed
                     and not wechat_blocked_by_ip
                 )
@@ -1867,7 +2568,7 @@ class ContentFactoryAppService:
                 if skip_wait and delay_seconds > 0:
                     delay_seconds = 5
                     self.logger.info("--skip-wait enabled: shortening WeChat→Toutiao delay to %d seconds.", delay_seconds)
-                if delay_seconds > 0 and wechat_completed and self.settings.wechat.enabled:
+                if delay_seconds > 0 and wechat_completed and daily_wechat_enabled:
                     self.logger.info(
                         "Waiting %s seconds after successful WeChat publish before Toutiao distribution.",
                         delay_seconds,
@@ -1879,13 +2580,82 @@ class ContentFactoryAppService:
                         self.logger.info("WeChat did not publish successfully, declaring Toutiao first-release.")
                     toutiao_exports = self.publish_run(str(run_dir), declare_first_release=toutiao_declare_first)
                     exported_files.update(toutiao_exports)
-                    platform_results["toutiao"] = self._load_toutiao_publish_snapshot(run_dir)
-                    self.circuit_breaker.record_success("toutiao")
-                    self.notification_service.notify_success(
-                        platform="Toutiao",
-                        article_title=self._load_selected_title(run_dir),
-                        run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    )
+                    toutiao_snapshot = self._load_toutiao_publish_snapshot(run_dir)
+                    platform_results["toutiao"] = toutiao_snapshot
+                    toutiao_status = str(toutiao_snapshot.get("status", "")).strip().lower()
+                    if self._is_accepted_publish_status(toutiao_status):
+                        self.circuit_breaker.record_success("toutiao")
+                        self.notification_service.notify_success(
+                            platform="Toutiao",
+                            article_title=self._load_selected_title(run_dir),
+                            run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        )
+                    elif toutiao_status == "draft_saved" and bool(self.settings.publishing.draft_only):
+                        self.logger.info(
+                            "Toutiao daily workflow intentionally stopped at draft_saved because draft_only is enabled."
+                        )
+                    else:
+                        message = (
+                            "Toutiao publish did not reach an accepted state: "
+                            f"{toutiao_status or 'missing'}. Manual confirmation is required before retry."
+                        )
+                        platform_errors.append(message)
+                        self.circuit_breaker.record_failure("toutiao")
+                        self.logger.warning(message)
+                        self.notification_service.notify_failure(
+                            platform="Toutiao",
+                            stage="publish_verification",
+                            error_msg=message,
+                            run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        )
+                    # 图文发布成功后，同步发一条微头条引流（涨粉 + 图文双通道）。
+                    # 微头条内容取自同一 run，可复用登录会话与内容包。
+                    if self._is_accepted_publish_status(toutiao_status) and self.settings.publishing.weitoutiao_enabled:
+                        try:
+                            wtt_exports = self.publish_weitoutiao_run(str(run_dir))
+                            exported_files.update(wtt_exports)
+                            companion = self._load_weitoutiao_companion_result(run_dir, wtt_exports)
+                            companion_status = str(companion.get("status", "")).strip().lower()
+                            if self._is_accepted_weitoutiao_status(companion_status):
+                                self.logger.info(
+                                    "WeiToutiao companion post published for run: %s", run_dir
+                                )
+                                self.notification_service.notify_success(
+                                    platform="WeiToutiao",
+                                    article_title=self._load_selected_title(run_dir),
+                                    run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                )
+                        except Exception as wtt_exc:
+                            companion = {
+                                "status": "failed",
+                                "error": str(wtt_exc),
+                            }
+                            # 微头条失败不阻塞主流程，仅记录
+                            self.logger.warning(
+                                "WeiToutiao companion post failed (non-fatal): %s", wtt_exc
+                            )
+
+                    # 微头条高频化（2026-08-27）：伴生 1 条之外，按每日目标
+                    # 补齐独立微头条（独立选题 + 独立写作），每日共 2-3 条。
+                    # 独立微头条失败同样不阻塞主流程。
+                    if (
+                        self._is_accepted_publish_status(toutiao_status)
+                        and self.settings.publishing.weitoutiao_enabled
+                        and self.settings.publishing.weitoutiao_standalone_enabled
+                    ):
+                        try:
+                            topup_exports = self._top_up_standalone_weitoutiao(max_count=2)
+                            exported_files.update(topup_exports)
+                            topup = self._load_weitoutiao_batch_result(topup_exports)
+                        except Exception as topup_exc:
+                            topup = {
+                                "status": "failed",
+                                "message": "WeiToutiao standalone top-up raised an exception.",
+                                "error": str(topup_exc),
+                            }
+                            self.logger.warning(
+                                "WeiToutiao standalone top-up failed (non-fatal): %s", topup_exc
+                            )
                 except Exception as exc:
                     self.circuit_breaker.record_failure("toutiao")
                     message = f"Toutiao publish failed: {exc}"
@@ -1902,6 +2672,28 @@ class ContentFactoryAppService:
                         self._notify_session_expired("Toutiao", exc)
 
         # ── 多平台发布（知乎 / 小红书） ──
+        if weitoutiao_enabled:
+            neutral_statuses = {"", "not_attempted", "disabled", "target_reached"}
+            for label, payload in (("companion", companion), ("standalone top-up", topup)):
+                status = str(payload.get("status", "")).strip().lower()
+                if status in neutral_statuses or self._is_accepted_weitoutiao_status(status):
+                    continue
+                error = str(
+                    payload.get("error")
+                    or payload.get("message")
+                    or f"status={status or 'missing'}"
+                ).strip()
+                payload["error"] = error
+                platform_errors.append(f"WeiToutiao {label} failed: {error}")
+
+            weitoutiao_result_path, weitoutiao_daily_result = self._write_weitoutiao_daily_result(
+                run_dir,
+                companion=companion,
+                topup=topup,
+            )
+            exported_files["weitoutiao_daily_result"] = str(weitoutiao_result_path)
+            platform_results["weitoutiao"] = weitoutiao_daily_result
+
         self._publish_to_extra_platforms(
             run_dir, platform_results, platform_errors, exported_files
         )
@@ -2008,6 +2800,15 @@ class ContentFactoryAppService:
             "success",
         }
 
+    @staticmethod
+    def _is_accepted_publish_status(status: str) -> bool:
+        return str(status or "").strip().lower() in {
+            "published",
+            "submitted",
+            "submitted_for_review",
+            "success",
+        }
+
     def _get_wechat_toutiao_sync_delay_seconds(self) -> int:
         delay = int(getattr(self.settings.wechat, "toutiao_sync_delay_seconds", 1800) or 0)
         return max(delay, 0)
@@ -2059,9 +2860,28 @@ class ContentFactoryAppService:
         normalized = str(status or "").strip().lower()
         if normalized in {"running", "retrying"}:
             return "running"
-        if normalized in {"success", "completed", "published", "submitted", "approved", "draft_created", "ready"}:
+        if normalized in {
+            "success",
+            "completed",
+            "published",
+            "submitted",
+            "submitted_for_review",
+            "approved",
+            "draft_created",
+            "draft_saved",
+            "ready",
+        }:
             return "success"
-        if normalized in {"failed", "error", "blocked", "blocked_by_ip", "publish_login_required", "missing", "invalid"}:
+        if normalized in {
+            "failed",
+            "error",
+            "blocked",
+            "blocked_by_ip",
+            "publish_login_required",
+            "publish_uncertain",
+            "missing",
+            "invalid",
+        }:
             return "failed"
         return "idle"
 
@@ -2178,7 +2998,14 @@ class ContentFactoryAppService:
         return "platform_publish_failed"
 
     def _count_successful_platform_results(self, platform_results: dict[str, dict[str, object]]) -> int:
-        successful_statuses = {"published", "submitted", "draft_created"}
+        successful_statuses = {
+            "published",
+            "submitted",
+            "submitted_for_review",
+            "success",
+            "draft_created",
+            "draft_saved",
+        }
         count = 0
         for payload in platform_results.values():
             status = str(payload.get("status", "")).strip()
@@ -2189,11 +3016,32 @@ class ContentFactoryAppService:
     def _summarize_distribution_status(self, platform_results: dict[str, dict[str, object]]) -> str:
         if not platform_results:
             return "approved"
-        statuses = {str(item.get("status", "")).strip() for item in platform_results.values()}
-        if "submitted" in statuses or "published" in statuses:
-            return "published"
-        if "draft_created" in statuses:
-            return "draft_created"
+        statuses = {
+            str(item.get("status", "")).strip().lower()
+            for item in platform_results.values()
+            if isinstance(item, dict)
+        }
+        for status in (
+            "published",
+            "submitted_for_review",
+            "submitted",
+            "success",
+            "draft_saved",
+            "draft_created",
+        ):
+            if status in statuses:
+                return status
+        for status in (
+            "publish_uncertain",
+            "publish_login_required",
+            "failed",
+            "blocked",
+            "circuit_open",
+            "missing",
+            "invalid",
+        ):
+            if status in statuses:
+                return status
         return "approved"
 
     def _mark_attempts_skipped(self, attempts: list[dict[str, object]]) -> None:
@@ -2201,7 +3049,9 @@ class ContentFactoryAppService:
             run_dir = self._path_or_none(attempt.get("run_dir"))
             if run_dir is None:
                 continue
-            reason = self._build_skip_reason(dict(attempt.get("score_snapshot", {})))
+            reason = str(attempt.get("skip_reason", "")).strip() or self._build_skip_reason(
+                dict(attempt.get("score_snapshot", {}))
+            )
             self.review_service.mark_skipped_review(run_dir, reviewer_notes=reason)
             attempt["status"] = "skipped"
 

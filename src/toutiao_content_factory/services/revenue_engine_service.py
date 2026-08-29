@@ -108,6 +108,13 @@ class RevenueEngineService:
         )
         sync_candidates = customer_sync_candidates
         sync_result = self.lead_ops_service.sync_generated_opportunities(sync_candidates)
+        recommendation_result = self.lead_ops_service.enrich_generated_leads_with_recommendations()
+        proposal_result = self.lead_ops_service.auto_draft_generated_proposals()
+        sync_result = {
+            **sync_result,
+            "recommendation_enrichment": recommendation_result,
+            "proposal_drafting": proposal_result,
+        }
         opportunity_sync_report = self._build_opportunity_sync_report(
             opportunity_queue=opportunity_queue,
             sync_candidates=sync_candidates,
@@ -1965,7 +1972,9 @@ class RevenueEngineService:
             "",
             f"- Generated at: {datetime.now().isoformat(timespec='seconds')}",
             f"- Actual revenue: {float(lead_summary.get('actual_revenue', 0.0) or 0.0):.2f}",
-            f"- Estimated pipeline revenue: {float(lead_summary.get('estimated_revenue', 0.0) or 0.0):.2f}",
+            f"- Verified estimated pipeline revenue: {float(lead_summary.get('verified_estimated_pipeline_revenue', 0.0) or 0.0):.2f}",
+            f"- Weighted pipeline revenue: {float(lead_summary.get('weighted_pipeline_revenue', 0.0) or 0.0):.2f}",
+            f"- Unverified auto-opportunity pipeline: {float(lead_summary.get('auto_estimated_pipeline_revenue', 0.0) or 0.0):.2f}",
             f"- Sponsor revenue: {float(sponsor_revenue_report.get('revenue', {}).get('won_sponsor_revenue', 0.0) or 0.0):.2f}",
             f"- Paying members: {len([item for item in subscriber_ledger if str(item.get('status', '')).strip() in {'member_won', 'renewed'}])}",
             f"- Open opportunities this week: {int(queue_summary.get('total_items', 0) or 0)}",
@@ -2015,6 +2024,10 @@ class RevenueEngineService:
             "revenue_snapshot": {
                 "actual_revenue": float(lead_summary.get("actual_revenue", 0.0) or 0.0),
                 "estimated_revenue": float(lead_summary.get("estimated_revenue", 0.0) or 0.0),
+                "estimated_pipeline_revenue": float(lead_summary.get("estimated_pipeline_revenue", 0.0) or 0.0),
+                "weighted_pipeline_revenue": float(lead_summary.get("weighted_pipeline_revenue", 0.0) or 0.0),
+                "verified_estimated_pipeline_revenue": float(lead_summary.get("verified_estimated_pipeline_revenue", 0.0) or 0.0),
+                "auto_estimated_pipeline_revenue": float(lead_summary.get("auto_estimated_pipeline_revenue", 0.0) or 0.0),
                 "sponsor_revenue": float(sponsor_revenue_report.get("revenue", {}).get("won_sponsor_revenue", 0.0) or 0.0),
                 "letter_member_revenue": float(letter_revenue_report.get("revenue", {}).get("member_revenue", 0.0) or 0.0),
                 "letter_renewal_revenue": float(letter_revenue_report.get("revenue", {}).get("renewal_revenue", 0.0) or 0.0),

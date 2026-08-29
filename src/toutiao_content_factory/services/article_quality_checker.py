@@ -45,6 +45,15 @@ class ArticleQualityChecker:
     _TEMPLATE_PATTERNS_COMPILED = [re.compile(pattern) for pattern in TEMPLATE_PATTERNS]
 
     # 违规风险词汇
+    # "第一条/第一步/第一阶段" are ordinary ordinal phrases, while an
+    # unqualified "第一" is still treated as a potentially absolute claim.
+    _FIRST_ORDINAL_SUFFIXES = (
+        "\u65f6\u95f4", "\u7ec4", "\u6761", "\u6b65", "\u7c7b", "\u9879", "\u70b9",
+        "\u90e8\u5206", "\u9636\u6bb5", "\u8f6e", "\u53e5", "\u5f20", "\u4ef6", "\u6b3e",
+        "\u4ee3", "\u5c42", "\u73af\u8282", "\u65b9\u9762", "\u79cd", "\u4e2a", "\u6b21",
+        "\u4f4d", "\u7bc7", "\u7ae0", "\u6ce2", "\u5b63\u5ea6", "\u5468", "\u5929", "\u5e74",
+    )
+
     RISKY_WORDS = [
         "绝对", "完全", "一定", "必然", "肯定", "无疑",
         "首次", "第一", "首创", "独家",
@@ -369,6 +378,12 @@ class ArticleQualityChecker:
         re.compile(r".+验证期[，,].+先流向"),
         re.compile(r".+之后，.+重排利润"),
         re.compile(r".+筛选期$"),
+        # 2026-08-24 新增：抽象悬念开头（头条热榜对标发现"有曝光无点击"的高频失败模式）
+        re.compile(r"^(.+)?背后，"),
+        re.compile(r"谁在抢跑$"),
+        re.compile(r"利润先流向谁$"),
+        re.compile(r"真正的收入来自什么$"),
+        re.compile(r"^(90%|.*\d+%)背后"),
     ]
 
     # RULE_006: 具象元素检测
@@ -376,6 +391,9 @@ class ArticleQualityChecker:
         r"(宇树|特斯拉|英伟达|Optimus|澜起|富士康|宁德时代|比亚迪|华为|Walker|优必选|智元|Anthropic|OpenAI|苹果|Macmini|HBM|DDR5)"
     )
     _TITLE_PLACE_PATTERN = re.compile(r"(日本|中国|美国|韩国|德国|机场|工厂|电站|产线|海外)")
+    _TITLE_SUBJECT_PATTERN = re.compile(
+        r"(机器人|人形机器人|具身智能|灵巧手|宇树|特斯拉|英伟达|Optimus|澜起|富士康|宁德时代|比亚迪|华为|Walker|优必选|智元|Anthropic|OpenAI|苹果|Macmini|HBM|DDR5|波士顿动力)"
+    )
 
     def _check_title(self, title: str, content: str = "") -> dict:
         """检查标题质量
@@ -395,11 +413,11 @@ class ArticleQualityChecker:
                 issues.append("标题存在标题党嫌疑")
                 break
 
-        # 检查标题长度
+        # 检查标题长度（头条实测爆款标题可达 38 字，上限放宽到 40 避免误杀高信息密度标题）
         title_len = len(title)
-        if title_len > 30:
+        if title_len > 40:
             issues.append("标题过长，可能影响展示")
-            suggestions.append("建议标题控制在30字以内")
+            suggestions.append("建议标题控制在40字以内")
         elif title_len < 10:
             issues.append("标题过短，信息量不足")
             suggestions.append("建议标题至少10个字")
@@ -417,14 +435,35 @@ class ArticleQualityChecker:
                 )
                 break
 
-        # RULE_006: 纯抽象标题硬校验
+        # RULE_006: 纯抽象标题硬校验（主体词含"机器人/具身智能"等）
         has_number = bool(re.search(r"\d", title))
-        has_company = bool(self._TITLE_COMPANY_PATTERN.search(title))
+        has_company = bool(self._TITLE_SUBJECT_PATTERN.search(title))
         has_place = bool(self._TITLE_PLACE_PATTERN.search(title))
         if not has_number and not has_company and not has_place:
             issues.append(
                 "标题为纯抽象概念堆砌（RULE_006）。历史数据：具象标题平均展现6806，"
                 "纯抽象标题仅1753，差距3.9倍。必须加入具象数字、公司名或地名。"
+            )
+
+        # RULE_009: 高阅读四要素校验（2026-08-25 头条真实数据：1.3万 vs 23 阅读）
+        # 标题必须含"主体/动作/数字/结果"中至少 2 项，否则信息密度不足、点击率极低
+        _ACTION_PATTERN = re.compile(
+            r"(夺冠|跳远|跑完|飞起|进厂|开工|敬礼|复刻|跌破|暴跌|暴涨|降价|量产|上市|发布|亮相|超越|刷新|纪录|签约|交付|订单|跌去|跌逾|降超|演示|实测|开跑|夺冠)"
+        )
+        _RESULT_PATTERN = re.compile(
+            r"(冠军|纪录|跌破|暴跌|暴涨|降价|跌去|跌逾|降超|突破|超越|第一|新纪录|创纪录|里程碑|首台|首批|量产|交付|签约|回落|蒸发)"
+        )
+        element_count = sum(
+            [
+                bool(has_number or has_company or has_place),
+                bool(_ACTION_PATTERN.search(title)),
+                bool(_RESULT_PATTERN.search(title)),
+            ]
+        )
+        if element_count < 2:
+            issues.append(
+                "标题信息密度不足（RULE_009）。头条实测：同一事件完整标题（主体+数字+后果）阅读1.3万，"
+                "简略标题仅23阅读。必须包含具体主体/数字 + 强动作或结果词。"
             )
 
         # 标题-正文一致性校验：标题中的核心实体应在正文中出现
@@ -451,11 +490,25 @@ class ArticleQualityChecker:
         issues = []
 
         for word in self.RISKY_WORDS:
+            if word == "\u7b2c\u4e00" and not self._contains_unqualified_first(content_lower):
+                continue
             if word in content_lower:
                 issues.append(f"存在绝对化表述：'{word}'")
                 break
 
         return issues
+
+    def _contains_unqualified_first(self, content_lower: str) -> bool:
+        first_marker = "\u7b2c\u4e00"
+        start = 0
+        while True:
+            index = content_lower.find(first_marker, start)
+            if index < 0:
+                return False
+            suffix = content_lower[index + len(first_marker):]
+            if not any(suffix.startswith(item) for item in self._FIRST_ORDINAL_SUFFIXES):
+                return True
+            start = index + len(first_marker)
 
     def _check_depth(self, content: str) -> int:
         score = 0

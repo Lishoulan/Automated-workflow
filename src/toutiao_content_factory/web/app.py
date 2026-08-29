@@ -454,6 +454,9 @@ def create_app(project_root: Path, account_key: str | None = None) -> FastAPI:
         lead_notes: str = Form(default=""),
         lead_estimated_value: float = Form(default=0.0),
         lead_next_follow_up: str = Form(default=""),
+        lead_content_id: str = Form(default=""),
+        lead_cta_source_code: str = Form(default=""),
+        lead_platform: str = Form(default=""),
     ):
         ctx = get_account_context(account)
         ctx.app_service.record_lead(
@@ -464,6 +467,9 @@ def create_app(project_root: Path, account_key: str | None = None) -> FastAPI:
             notes=lead_notes,
             estimated_value=lead_estimated_value,
             next_follow_up_at=lead_next_follow_up,
+            source_content_id=lead_content_id,
+            cta_source_code=lead_cta_source_code,
+            platform=lead_platform,
         )
         return redirect("/dashboard", "新线索已记录。", ctx.settings.account_key)
 

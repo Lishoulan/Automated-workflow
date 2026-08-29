@@ -112,6 +112,7 @@ class DocumentLoader:
             "topic_quality_score": r"选题质量分：([^\n]+)",
             "topic_quality_flags": r"质量标记：([^\n]+)",
             "word_target": r"建议字数：([^\n]+)",
+            "topic_heat_value": r"平台热度值：([^\n]+)",
         }
         for key, pattern in patterns.items():
             match = re.search(pattern, text)

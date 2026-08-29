@@ -47,6 +47,7 @@ class EngagementRecord:
     content: str  # comment/reply content
     timestamp: datetime
     success: bool
+    failure_reason: str = ""  # page_open_error / button_missing / invalid_url / exception / api_error
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +64,11 @@ _DEEPSEEK_MODEL = os.getenv("OPENAI_MODEL", "deepseek-v4-flash")
 
 
 def _call_deepseek(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int = 200) -> str:
-    """调用 DeepSeek Chat API，返回助手回复文本。"""
+    """调用 DeepSeek Chat API，返回助手回复文本。
+
+    限流韧性（2026-08-27）：上游 429/5xx 时按 5s×attempt 退避重试最多 3 次，
+    与 OpenAIContentService 策略一致，避免限流时互动评论全部生成失败。
+    """
     payload = json.dumps({
         "model": _DEEPSEEK_MODEL,
         "messages": [
@@ -84,12 +89,24 @@ def _call_deepseek(api_key: str, system_prompt: str, user_prompt: str, max_token
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-        return body.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-    except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"DeepSeek API 调用失败: {exc}") from exc
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            return body.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            retryable = exc.code in (429, 500, 502, 503, 504)
+            if not retryable or attempt >= 3:
+                raise RuntimeError(f"DeepSeek API 调用失败: {exc}") from exc
+        except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError) as exc:
+            last_exc = exc
+            retryable = True
+            if attempt >= 3:
+                raise RuntimeError(f"DeepSeek API 调用失败: {exc}") from exc
+        time.sleep(min(5.0 * attempt, 30.0))
+    raise RuntimeError(f"DeepSeek API 调用失败: {last_exc}") from last_exc
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +122,8 @@ CREATE TABLE IF NOT EXISTS engagement_records (
     target_title TEXT   NOT NULL DEFAULT '',
     content     TEXT    NOT NULL DEFAULT '',
     timestamp   TEXT    NOT NULL,
-    success     INTEGER NOT NULL DEFAULT 0
+    success     INTEGER NOT NULL DEFAULT 0,
+    failure_reason TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -193,17 +211,30 @@ class EngagementAgent:
                 like_count_today = self._count_today_actions("like")
                 remaining_likes = max(0, self._strategy.max_daily_likes - like_count_today)
                 items_to_like = target_items[:remaining_likes]
+                # 连续"致命"失败（页面打不开/异常）达到阈值才停止；
+                # 找不到点赞按钮/URL无效属于单篇跳过，不拖慢整轮（2026-08-27）。
+                fatal_like_failures = 0
+                max_fatal_like_failures = 3
 
                 for item in items_to_like:
                     record = self._perform_like_in_session(browser, platform, item)
                     records.append(record)
                     if not record.success:
-                        consecutive_failures += 1
-                        if consecutive_failures >= max_consecutive_failures:
-                            self.logger.warning("连续 %d 次点赞失败，停止互动", consecutive_failures)
-                            break
+                        if record.failure_reason in ("page_open_error", "exception"):
+                            fatal_like_failures += 1
+                            if fatal_like_failures >= max_fatal_like_failures:
+                                self.logger.warning(
+                                    "连续 %d 次点赞致命失败（页面/异常），停止互动", fatal_like_failures
+                                )
+                                break
+                        else:
+                            self.logger.info(
+                                "点赞单篇跳过（%s）: %s",
+                                record.failure_reason,
+                                item.get("title", "")[:30],
+                            )
                     else:
-                        consecutive_failures = 0
+                        fatal_like_failures = 0
                     self._random_delay(min_s=3.0, max_s=10.0)
 
                 # 4b. 点赞和评论之间增加间隔
@@ -214,20 +245,32 @@ class EngagementAgent:
                 remaining_comments = max(0, self._strategy.max_daily_comments - comment_count_today)
                 items_to_comment = target_items[:remaining_comments]
 
-                consecutive_failures = 0
+                fatal_comment_failures = 0
+                max_fatal_comment_failures = 3
                 for item in items_to_comment:
                     comment_text = self._generate_comment(item.get("title", ""), item.get("summary", ""))
                     if not comment_text:
+                        # API 生成失败属于单篇跳过，不拖慢整轮（2026-08-27）
+                        self.logger.info("评论生成失败（跳过该篇）: %s", item.get("title", "")[:30])
                         continue
                     record = self._perform_comment_in_session(browser, platform, item, comment_text)
                     records.append(record)
                     if not record.success:
-                        consecutive_failures += 1
-                        if consecutive_failures >= max_consecutive_failures:
-                            self.logger.warning("连续 %d 次评论失败，停止互动", consecutive_failures)
-                            break
+                        if record.failure_reason in ("page_open_error", "exception"):
+                            fatal_comment_failures += 1
+                            if fatal_comment_failures >= max_fatal_comment_failures:
+                                self.logger.warning(
+                                    "连续 %d 次评论致命失败（页面/异常），停止互动", fatal_comment_failures
+                                )
+                                break
+                        else:
+                            self.logger.info(
+                                "评论单篇跳过（%s）: %s",
+                                record.failure_reason,
+                                item.get("title", "")[:30],
+                            )
                     else:
-                        consecutive_failures = 0
+                        fatal_comment_failures = 0
                     # 评论间隔比点赞更长，模拟真实用户行为
                     self._random_delay(min_s=8.0, max_s=25.0)
 
@@ -454,7 +497,12 @@ class EngagementAgent:
         return unique
 
     def _perform_like_in_session(self, browser, platform: str, item: dict) -> EngagementRecord:
-        """在已有浏览器会话中执行点赞操作。"""
+        """在已有浏览器会话中执行点赞操作。
+
+        失败原因分类（2026-08-27）：无法打开页面（网络/反爬）与找不到点赞按钮
+        属于不同问题——前者应计入连续失败快速停止，后者通常是该文章本身无点赞
+        入口（视频/图文详情页差异），应跳过该文章而不是拖慢整轮互动。
+        """
         record = EngagementRecord(
             platform=platform,
             action="like",
@@ -464,15 +512,27 @@ class EngagementAgent:
             timestamp=datetime.now(),
             success=False,
         )
+        # 失败原因：page_open_error（页面打不开）/ button_missing（无点赞按钮）/
+        # exception（异常），供外层跳过决策使用。
+        failure_reason = ""
         try:
             page = browser.new_page()
             url = item.get("url", "")
             if url and url.startswith("http"):
-                page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                page.wait_for_timeout(1500)
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                    page.wait_for_timeout(1500)
+                except Exception as exc:
+                    failure_reason = "page_open_error"
+                    self.logger.warning("点赞页面打开失败 %s: %s", item.get("title", "")[:30], exc)
+                    page.close()
+                    self._save_record(record)
+                    record.failure_reason = failure_reason
+                    return record
 
-                # 头条文章页点赞按钮
+                # 头条文章页点赞按钮（2026-08-24 实测 DOM：div.detail-like > div.digg-icon）
                 like_btn = page.query_selector(
+                    "div.detail-like, div.digg-wrapper, "
                     "button[class*='like'], div[class*='like'], "
                     "span[class*='like'], [data-action='like'], "
                     "svg[class*='like'], [aria-label*='赞'], "
@@ -483,21 +543,29 @@ class EngagementAgent:
                     record.success = True
                     self.logger.info("点赞成功: %s", item.get("title", "")[:30])
                 else:
-                    self.logger.debug("未找到点赞按钮: %s", item.get("title", "")[:30])
+                    failure_reason = "button_missing"
+                    self.logger.debug("未找到点赞按钮（跳过）: %s", item.get("title", "")[:30])
             else:
+                failure_reason = "invalid_url"
                 self.logger.debug("URL无效，跳过: %s", item.get("title", "")[:30])
 
             page.close()
         except Exception as exc:
+            failure_reason = failure_reason or "exception"
             self.logger.error("点赞操作异常: %s", exc)
 
+        record.failure_reason = failure_reason
         self._save_record(record)
         return record
 
     def _perform_comment_in_session(
         self, browser, platform: str, item: dict, comment_text: str
     ) -> EngagementRecord:
-        """在已有浏览器会话中执行评论操作。"""
+        """在已有浏览器会话中执行评论操作。
+
+        失败原因分类同点赞：page_open_error / button_missing / invalid_url /
+        exception，供外层决定跳过单篇还是停止整轮（2026-08-27）。
+        """
         record = EngagementRecord(
             platform=platform,
             action="comment",
@@ -507,20 +575,32 @@ class EngagementAgent:
             timestamp=datetime.now(),
             success=False,
         )
+        failure_reason = ""
         try:
             page = browser.new_page()
             url = item.get("url", "")
             if not url or not url.startswith("http"):
+                failure_reason = "invalid_url"
                 self.logger.debug("URL无效，跳过评论: %s", item.get("title", "")[:30])
                 page.close()
                 self._save_record(record)
+                record.failure_reason = failure_reason
                 return record
 
-            page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            page.wait_for_timeout(2000)
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                page.wait_for_timeout(2000)
+            except Exception as exc:
+                failure_reason = "page_open_error"
+                self.logger.warning("评论页面打开失败 %s: %s", item.get("title", "")[:30], exc)
+                page.close()
+                self._save_record(record)
+                record.failure_reason = failure_reason
+                return record
 
-            # 头条文章页评论输入框（多种选择器兼容）
+            # 头条文章页评论输入框（2026-08-24 实测 DOM：div.comment-textarea[contenteditable]）
             comment_input = page.query_selector(
+                "div.comment-textarea[contenteditable='true'], "
                 "textarea[class*='comment'], div[contenteditable='true'][class*='comment'], "
                 "textarea[placeholder*='评论'], textarea[placeholder*='说'], "
                 "div[contenteditable='true'][placeholder*='评论'], "
@@ -528,7 +608,22 @@ class EngagementAgent:
                 "textarea#comment-textarea, textarea.input-area"
             )
             if comment_input:
-                comment_input.fill(comment_text)
+                try:
+                    comment_input.click()
+                    page.wait_for_timeout(300)
+                    comment_input.fill(comment_text)
+                except Exception:
+                    # contenteditable div 不支持 fill，用键盘输入
+                    try:
+                        comment_input.click()
+                        page.keyboard.type(comment_text, delay=30)
+                    except Exception as exc:
+                        failure_reason = "exception"
+                        self.logger.debug("评论输入失败: %s", exc)
+                        page.close()
+                        self._save_record(record)
+                        record.failure_reason = failure_reason
+                        return record
                 page.wait_for_timeout(500)
 
                 submit_btn = page.query_selector(
@@ -543,14 +638,18 @@ class EngagementAgent:
                     record.success = True
                     self.logger.info("评论成功: %s", item.get("title", "")[:30])
                 else:
-                    self.logger.debug("未找到评论提交按钮: %s", item.get("title", "")[:30])
+                    failure_reason = "button_missing"
+                    self.logger.debug("未找到评论提交按钮（跳过）: %s", item.get("title", "")[:30])
             else:
-                self.logger.debug("未找到评论输入框: %s", item.get("title", "")[:30])
+                failure_reason = "button_missing"
+                self.logger.debug("未找到评论输入框（跳过）: %s", item.get("title", "")[:30])
 
             page.close()
         except Exception as exc:
+            failure_reason = failure_reason or "exception"
             self.logger.error("评论操作异常: %s", exc)
 
+        record.failure_reason = failure_reason
         self._save_record(record)
         return record
 
@@ -662,10 +761,16 @@ class EngagementAgent:
     def _save_record(self, record: EngagementRecord) -> None:
         """保存互动记录到 SQLite。"""
         try:
+            # 兼容旧库：缺 failure_reason 列时先补列（2026-08-27）
+            try:
+                self.db.execute("ALTER TABLE engagement_records ADD COLUMN failure_reason TEXT NOT NULL DEFAULT ''")
+                self.db.commit()
+            except sqlite3.Error:
+                pass
             self.db.execute(
                 "INSERT INTO engagement_records "
-                "(platform, action, target_id, target_title, content, timestamp, success) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(platform, action, target_id, target_title, content, timestamp, success, failure_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     record.platform,
                     record.action,
@@ -674,6 +779,7 @@ class EngagementAgent:
                     record.content,
                     record.timestamp.isoformat(),
                     1 if record.success else 0,
+                    record.failure_reason,
                 ),
             )
             self.db.commit()

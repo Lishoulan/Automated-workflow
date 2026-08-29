@@ -109,7 +109,7 @@ class PlatformHealthService:
                     if isinstance(cached, dict) and cached.get("state") == "ready":
                         return {
                             "enabled": True,
-                            "required": True,
+                            "required": bool(self.settings.wechat.auto_publish),
                             "status": "ready",
                             "blocking_flags": [],
                             "warnings": ["Using 135 Editor for WeChat publishing (bypassing WeChat backend login)."],
@@ -119,7 +119,7 @@ class PlatformHealthService:
             warnings.append("135 Editor login preflight not found. Run --init-135editor-login if WeChat publishing is needed.")
             return {
                 "enabled": True,
-                "required": True,
+                "required": bool(self.settings.wechat.auto_publish),
                 "status": "ready",
                 "blocking_flags": [],
                 "warnings": warnings,
@@ -146,7 +146,7 @@ class PlatformHealthService:
             )
         return {
             "enabled": True,
-            "required": True,
+            "required": bool(self.settings.wechat.auto_publish),
             "status": "blocked" if blockers else "ready",
             "blocking_flags": self._unique_texts(blockers),
             "warnings": self._unique_texts(warnings),
@@ -196,7 +196,7 @@ class PlatformHealthService:
                     if isinstance(cached, dict) and cached.get("state") == "ready":
                         return {
                             "enabled": True,
-                            "required": True,
+                            "required": bool(self.settings.wechat.auto_publish),
                             "status": "ready",
                             "blocking_flags": [],
                             "warnings": ["Using 135 Editor for WeChat publishing (bypassing WeChat backend login)."],
@@ -207,7 +207,7 @@ class PlatformHealthService:
             warnings.append("135 Editor login preflight not found. Run --init-135editor-login if WeChat publishing is needed.")
             return {
                 "enabled": True,
-                "required": True,
+                "required": bool(self.settings.wechat.auto_publish),
                 "status": "ready",
                 "blocking_flags": [],
                 "warnings": warnings,
@@ -237,7 +237,7 @@ class PlatformHealthService:
 
         return {
             "enabled": True,
-            "required": True,
+            "required": bool(self.settings.wechat.auto_publish),
             "status": "blocked" if blockers else "ready",
             "blocking_flags": self._unique_texts(blockers),
             "warnings": self._unique_texts(warnings),

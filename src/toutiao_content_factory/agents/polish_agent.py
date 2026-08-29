@@ -394,7 +394,9 @@ class PolishAgent(BaseAgent):
     ) -> str:
         content_mode = self._content_mode(data_report)
         cleaned = self.strip_prompt_leakage(article)
-        cleaned = clean_article_text(cleaned)
+        # Sanitization must be content-preserving; evidence-aware length
+        # handling is performed by the workflow after polishing.
+        cleaned = clean_article_text(cleaned, min_word_count=0)
         cleaned = self._remove_ai_cliches(cleaned)
         paragraphs = [self._normalize_paragraph(block) for block in cleaned.split("\n\n") if block.strip()]
         paragraphs = [block for block in paragraphs if block]

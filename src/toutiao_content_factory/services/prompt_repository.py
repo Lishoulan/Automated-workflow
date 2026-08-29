@@ -12,6 +12,7 @@ class PromptRepository:
     _SERVICE_ACCOUNT_PATTERN = re.compile(r"服务账号是[“\"].*?[”\"]")
     _RESPONSIBLE_ACCOUNT_PATTERN = re.compile(r"负责账号[“\"].*?[”\"]的头条内容生产")
     _WRITING_STYLE_PATTERN = re.compile(r"按.*?的写法来写")
+    _BRACED_VARIABLE_PATTERN = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
     def __init__(self, prompts_dir: Path) -> None:
         self.prompts_dir = prompts_dir
@@ -25,6 +26,12 @@ class PromptRepository:
             self._template_cache[template_name] = content
         content = self._template_cache[template_name]
         rendered = Template(content).safe_substitute(**kwargs)
+        # Some legacy prompts use Jinja-style braces. Support them while
+        # keeping string.Template as the canonical syntax for new prompts.
+        rendered = self._BRACED_VARIABLE_PATTERN.sub(
+            lambda match: str(kwargs.get(match.group(1), match.group(0))),
+            rendered,
+        )
         return self._normalize_prompt(rendered)
 
     def _normalize_prompt(self, text: str) -> str:

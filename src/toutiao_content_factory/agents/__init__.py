@@ -1,10 +1,12 @@
 from .benchmark_monitor_agent import BenchmarkMonitorAgent
 from .data_agent import DataAgent
 from .data_mining_agent import DataMiningAgent
+from .editorial_council_agent import EditorialCouncilAgent
 from .evolution_agent import EvolutionAgent
 from .insight_agent import InsightAgent
 from .polish_agent import PolishAgent
 from .publish_review_agent import PublishReviewAgent
+from .quality_review_council_agent import QualityReviewCouncilAgent
 from .sample_collector_agent import SampleCollectorAgent
 from .review_agent import ReviewAgent
 from .title_agent import TitleAgent
@@ -17,6 +19,7 @@ __all__ = [
     "BenchmarkMonitorAgent",
     "DataAgent",
     "DataMiningAgent",
+    "EditorialCouncilAgent",
     "EvolutionAgent",
     "InsightAgent",
     "WriterAgent",
@@ -24,6 +27,7 @@ __all__ = [
     "PolishAgent",
     "ReviewAgent",
     "PublishReviewAgent",
+    "QualityReviewCouncilAgent",
     "SampleCollectorAgent",
     "WechatLayoutAgent",
 ]

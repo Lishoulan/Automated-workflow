@@ -132,6 +132,13 @@ class SignalExtractor:
         topic_quality_score = self._parse_metadata_int(self._first_metadata_value(documents, "topic_quality_score"))
         topic_quality_flags = self._parse_metadata_list(self._first_metadata_value(documents, "topic_quality_flags"))
         word_target = self._parse_metadata_int(self._first_metadata_value(documents, "word_target"))
+        topic_heat_value = self._parse_metadata_int(self._first_metadata_value(documents, "topic_heat_value"))
+        primary_industry = self._first_metadata_value(documents, "primary_industry")
+        # 头条热榜 / 百度热搜的标题型热点：热度值 > 0 即视为热榜二创题材，
+        # 后续放宽"必须有证据/公司"类质量门禁（热点二创以观点和时效取胜）
+        is_hot_topic = topic_heat_value > 0 or "hot_topic" in self._parse_metadata_list(
+            self._first_metadata_value(documents, "topic_quality_flags")
+        ) or ("实时热点" in primary_industry)
 
         focus_keywords = self._resolve_focus_keywords(documents, analysis_text, focus_industry)
         filtered_sentences = self._filter_sentences_by_focus(analysis_sentences, focus_industry, focus_keywords)
@@ -179,6 +186,7 @@ class SignalExtractor:
             word_target=word_target,
             evidence_items=evidence_items,
             source_summaries=source_summaries,
+            is_hot_topic=is_hot_topic,
         )
 
     def _resolve_focus_documents(self, documents: list[SourceDocument], focus_industry: str) -> list[SourceDocument]:

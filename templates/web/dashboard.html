@@ -234,6 +234,14 @@
         <strong>{{ dashboard.performance_feedback.with_metrics_count }}</strong>
       </div>
       <div class="score-card">
+        <span>可分析样本</span>
+        <strong>{{ dashboard.performance_feedback.analysis_eligible_count }}</strong>
+      </div>
+      <div class="score-card">
+        <span>T+1待结算</span>
+        <strong>{{ dashboard.performance_feedback.pending_t1_count }}</strong>
+      </div>
+      <div class="score-card">
         <span>平均阅读率</span>
         <strong>{{ '%.2f'|format(dashboard.performance_feedback.averages.read_rate or 0) }}%</strong>
       </div>
@@ -241,7 +249,18 @@
         <span>平均互动率</span>
         <strong>{{ '%.2f'|format(dashboard.performance_feedback.averages.interaction_rate or 0) }}%</strong>
       </div>
+      <div class="score-card">
+        <span>昨日平台收益</span>
+        <strong>
+          {% if dashboard.performance_feedback.platform_revenue_known_count %}
+          {{ '%.2f'|format(dashboard.performance_feedback.known_platform_revenue or 0) }}
+          {% else %}
+          待回流
+          {% endif %}
+        </strong>
+      </div>
     </div>
+    <p class="muted">收益归属日：{{ dashboard.performance_feedback.earnings_date or "昨日" }} · 今日文章 T+1 待结算，不按 0 收益处理。</p>
     <p class="muted">{{ dashboard.performance_feedback.summary_message }}</p>
     <div class="meta-line">
       {% if dashboard.performance_feedback.artifacts.report_json %}
@@ -301,6 +320,7 @@
           </p>
           {% if item.has_metrics %}
           <p class="muted">阅读 {{ item.read_count }} · 曝光 {{ item.impression_count }} · 阅读率 {{ '%.2f'|format(item.read_rate or 0) }}% · 互动率 {{ '%.2f'|format(item.interaction_rate or 0) }}%</p>
+          <p class="muted">采集日 {{ item.collection_date or "未知" }} · 收益归属日 {{ item.earnings_date or "未知" }} · {% if item.availability_status == "pending_t1" or item.revenue_status == "pending_t1" or item.platform_revenue_status == "pending_t1" %}T+1 待结算{% elif item.platform_revenue_known %}平台收益已回流{% else %}平台收益待回流{% endif %}</p>
           {% else %}
           <p class="muted">当前样本还没有回流指标。</p>
           {% endif %}

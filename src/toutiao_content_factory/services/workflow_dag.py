@@ -60,6 +60,13 @@ DEFAULT_WORKFLOW_STEPS: list[WorkflowStep] = [
         depends_on=["write"],
     ),
     WorkflowStep(
+        name="quality_review_council",
+        description="Independent post-polish article quality audit",
+        depends_on=["polish"],
+        optional=True,
+        condition="quality_review_enabled",
+    ),
+    WorkflowStep(
         name="title",
         description="Generate and optimize titles",
         depends_on=["polish"],

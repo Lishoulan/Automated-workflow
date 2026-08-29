@@ -48,11 +48,16 @@ class TestStripPromptLeakage:
 
     def test_preserves_single_blank_lines(self, base_agent: BaseAgent) -> None:
         # strip_prompt_leakage normalizes multi-space runs to single space,
-        # so a blank line between content lines becomes a single newline
+        # while preserving the paragraph boundary.
         text = "行1\n\n行2"
         result = base_agent.strip_prompt_leakage(text)
         assert "行1" in result
         assert "行2" in result
+
+    def test_preserves_paragraph_boundaries_when_normalizing_spaces(self, base_agent: BaseAgent) -> None:
+        text = "第一段   内容\n\n第二段\t内容"
+
+        assert base_agent.strip_prompt_leakage(text) == "第一段 内容\n\n第二段 内容"
 
 
 class TestCleanPublishText:

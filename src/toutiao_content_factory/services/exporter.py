@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 import json
 from pathlib import Path
 
@@ -24,6 +25,7 @@ class ExportService:
         titles_path = self.output_dir / "titles.txt"
         score_path = self.output_dir / "content_score.json"
         workflow_path = self.output_dir / "workflow_result.json"
+        quality_review_path = self.output_dir / "quality_review_council.json"
         benchmark_path = self.output_dir / "benchmark_strategy.json"
 
         benchmark_strategy = self._build_benchmark_strategy(result)
@@ -42,12 +44,23 @@ class ExportService:
             json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        quality_review_path.write_text(
+            json.dumps(
+                asdict(result.quality_review_council)
+                if result.quality_review_council is not None
+                else {"enabled": False, "verdict": "not_run"},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
         exported = {
             "article": article_path,
             "editorial_packet": editorial_path,
             "titles": titles_path,
             "content_score": score_path,
+            "quality_review_council": quality_review_path,
             "benchmark_strategy": benchmark_path,
             "workflow_result": workflow_path,
         }
@@ -74,6 +87,19 @@ class ExportService:
         validation_notes = "\n".join(f"- {item}" for item in content.validation_notes) or "- 无"
         publish_risks = "\n".join(f"- {item}" for item in score.publish_risk_flags) or "- 无"
         publish_notes = "\n".join(f"- {item}" for item in score.publish_notes) or "- 无"
+        quality_report = result.quality_review_council
+        quality_review_text = "- 未运行"
+        if quality_report is not None:
+            quality_review_text = (
+                f"- 结论：{quality_report.verdict}\n"
+                f"- 综合质量分：{quality_report.overall_score}\n"
+                f"- 事实/逻辑/结构/原创/合规："
+                f"{quality_report.fact_score}/{quality_report.logic_score}/"
+                f"{quality_report.structure_score}/{quality_report.originality_score}/"
+                f"{quality_report.compliance_score}\n"
+                f"- 硬阻断：{'; '.join(quality_report.hard_blockers) or '无'}\n"
+                + "\n".join(f"- 必须修改：{item}" for item in quality_report.required_revisions[:6])
+            )
         article = (
             content.polished_article or content.article
         ).strip()
@@ -112,6 +138,8 @@ class ExportService:
             "## 正文校验\n\n"
             f"- 校验分：{content.validation_score}\n"
             f"{validation_notes}\n\n"
+            "## 文章质量审核专家团\n\n"
+            f"{quality_review_text}\n\n"
             "## 评分摘要\n\n"
             f"- 综合得分：{score.overall_score}\n"
             f"- 标题吸引力：{score.title_attraction}\n"

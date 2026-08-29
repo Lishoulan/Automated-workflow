@@ -20,11 +20,11 @@ import yaml
 
 from toutiao_content_factory.agents.evolution_agent import EvolutionAgent
 from toutiao_content_factory.config import AppSettings
-from toutiao_content_factory.database.models import Article, Topic
 from toutiao_content_factory.database.service import DatabaseService
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.services.performance_service import PerformanceService
 from toutiao_content_factory.services.prompt_repository import PromptRepository
+from toutiao_content_factory.services.t1_policy import infer_availability_status
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,10 @@ class FeedbackLoopService:
 
         # Step 1: Collect performance data
         performance_data = self._collect_performance()
-        if not performance_data:
+        used_local_fallback = not isinstance(performance_data, dict) or not isinstance(
+            performance_data.get("records"), list
+        ) or not performance_data.get("records")
+        if used_local_fallback:
             self.logger.warning("No performance data collected, using local run records instead.")
             performance_data = self._build_performance_from_local_records()
 
@@ -94,6 +97,17 @@ class FeedbackLoopService:
         summary = {
             "status": "ok",
             "articles_collected": len(performance_data.get("records", [])),
+            "analysis_eligible_count": sum(
+                1 for record in performance_data.get("records", []) if self._is_analysis_eligible(record)
+            ),
+            "pending_t1_count": sum(
+                1
+                for record in performance_data.get("records", [])
+                if infer_availability_status(record) == "pending_t1"
+            ),
+            "collection_date": str(performance_data.get("collection_date", "")).strip(),
+            "earnings_date": str(performance_data.get("earnings_date", "")).strip(),
+            "used_local_fallback": used_local_fallback,
             "rules_generated": bool(rules),
             "prompts_updated": bool(top_articles),
             "benchmark_updated": len(top_articles),
@@ -122,6 +136,8 @@ class FeedbackLoopService:
         if self.db and self.db.available:
             articles = self.db.list_articles(limit=50)
             for article in articles:
+                run_dir = Path(getattr(self.settings, "runs_dir", self.settings.output_dir / "runs")) / article.run_name
+                published_at = article.published_at.isoformat(timespec="seconds") if article.published_at else ""
                 records.append({
                     "title": article.title,
                     "article": article.article_text or article.polished_article,
@@ -130,11 +146,19 @@ class FeedbackLoopService:
                     "roi_score": max(1, article.overall_score),
                     "platform": article.platform,
                     "created_at": article.created_at.isoformat() if article.created_at else "",
+                    "published_at": published_at,
+                    "local_record": {
+                        "platform": article.platform,
+                        "title": article.title,
+                        "topic_title": article.topic_title,
+                        "published_at": published_at,
+                        "run_dir": str(run_dir),
+                    },
                 })
 
         # If no database, read from run directories
         if not records:
-            runs_dir = self.settings.output_dir / "runs"
+            runs_dir = Path(getattr(self.settings, "runs_dir", self.settings.output_dir / "runs"))
             if runs_dir.exists():
                 for run_dir in sorted(runs_dir.iterdir(), reverse=True)[:30]:
                     if run_dir.is_dir():
@@ -142,11 +166,27 @@ class FeedbackLoopService:
                         if record:
                             records.append(record)
 
+        observed_at = datetime.now()
+        earnings_date = observed_at.date() - timedelta(days=1)
+        self.performance_service._annotate_collection_semantics(
+            records,
+            observed_at=observed_at,
+            earnings_date=earnings_date,
+            target_publish_date=earnings_date,
+        )
+
         return {
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "generated_at": observed_at.isoformat(timespec="seconds"),
+            "observed_at": observed_at.isoformat(timespec="seconds"),
+            "collection_date": observed_at.date().isoformat(),
+            "earnings_date": earnings_date.isoformat(),
+            "data_date": earnings_date.isoformat(),
+            "target_publish_date": earnings_date.isoformat(),
+            "earnings_policy": "t_plus_1",
             "records": records,
             "platforms": {},
             "errors": [],
+            "source": "local_fallback",
         }
 
     def _read_run_record(self, run_dir: Path) -> dict[str, Any] | None:
@@ -155,28 +195,137 @@ class FeedbackLoopService:
             workflow_path = run_dir / "workflow_result.json"
             if not workflow_path.exists():
                 workflow_path = run_dir / "workflow.json"
-            if not workflow_path.exists():
-                return None
+            data = {}
+            if workflow_path.exists():
+                loaded = json.loads(workflow_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data = loaded
 
-            data = json.loads(workflow_path.read_text(encoding="utf-8"))
-            title = ""
-            for key in ("recommended_titles", "titles"):
-                titles = data.get(key, [])
-                if titles and isinstance(titles, list) and titles[0]:
-                    title = titles[0]
+            publish_dirname = str(getattr(getattr(self.settings, "review", None), "publish_dirname", "publish"))
+            result_payload: dict[str, Any] = {}
+            for result_path in (
+                run_dir / publish_dirname / "publish_result.json",
+                run_dir / publish_dirname / "weitoutiao_publish_result.json",
+                run_dir / publish_dirname / "wechat" / "wechat_publish_result.json",
+                run_dir / "publish_result.json",
+            ):
+                if not result_path.exists():
+                    continue
+                loaded = json.loads(result_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    result_payload = loaded
                     break
 
+            publish_meta: dict[str, Any] = {}
+            publish_meta_path = run_dir / publish_dirname / "publish_meta.json"
+            if publish_meta_path.exists():
+                loaded = json.loads(publish_meta_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    publish_meta = loaded
+
+            history_payload = self._find_publish_history_record(run_dir)
+            published_at = self._published_at_from_payload(result_payload)
+            if not published_at:
+                published_at = self._published_at_from_payload(history_payload)
+            title = str(
+                publish_meta.get("selected_title")
+                or result_payload.get("title")
+                or history_payload.get("title")
+                or data.get("title")
+                or ""
+            ).strip()
+            if not title:
+                for key in ("recommended_titles", "titles"):
+                    titles = data.get(key, [])
+                    if titles and isinstance(titles, list) and titles[0]:
+                        title = str(titles[0]).strip()
+                        break
+            selected_topic = publish_meta.get("selected_topic") if isinstance(publish_meta.get("selected_topic"), dict) else {}
+            platform = str(
+                result_payload.get("platform")
+                or history_payload.get("platform")
+                or data.get("platform")
+                or "toutiao"
+            ).strip()
+            topic_title = str(
+                selected_topic.get("title")
+                or history_payload.get("topic_title")
+                or data.get("topic_title")
+                or ""
+            ).strip()
+
+            if not data and not result_payload and not history_payload:
+                return None
+
             return {
-                "title": title or data.get("title", run_dir.name),
+                "title": title or run_dir.name,
                 "article": data.get("article", "") or data.get("polished_article", ""),
                 "summary": data.get("summary", ""),
-                "topic_title": data.get("topic_title", ""),
+                "topic_title": topic_title,
                 "roi_score": float(data.get("overall_score", 50)),
-                "platform": data.get("platform", "toutiao"),
+                "platform": platform,
                 "created_at": data.get("created_at", ""),
+                "published_at": published_at,
+                "local_record": {
+                    "platform": platform,
+                    "title": title or run_dir.name,
+                    "topic_title": topic_title,
+                    "published_at": published_at,
+                    "run_dir": str(run_dir),
+                },
             }
         except Exception:
             return None
+
+    def _find_publish_history_record(self, run_dir: Path) -> dict[str, Any]:
+        history_filename = str(getattr(getattr(self.settings, "publishing", None), "history_filename", "publish_history.json"))
+        history_path = self.settings.output_dir / history_filename
+        if not history_path.exists():
+            return {}
+        try:
+            payload = json.loads(history_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if isinstance(payload, dict):
+            payload = payload.get("records", [])
+        if not isinstance(payload, list):
+            return {}
+        run_text = str(run_dir)
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            item_run_dir = str(item.get("run_dir", "")).strip()
+            if not item_run_dir:
+                continue
+            if item_run_dir in {run_text, run_dir.as_posix()}:
+                return item
+            try:
+                if Path(item_run_dir).resolve() == run_dir.resolve():
+                    return item
+            except OSError:
+                continue
+        return {}
+
+    def _published_at_from_payload(self, payload: dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        for key in ("published_at", "publish_time", "published_time"):
+            value = str(payload.get(key, "")).strip()
+            if value:
+                return value
+        record = payload.get("record")
+        if isinstance(record, dict):
+            for key in ("published_at", "publish_time", "published_time"):
+                value = str(record.get(key, "")).strip()
+                if value:
+                    return value
+        nested = payload.get("publish_response")
+        if isinstance(nested, dict):
+            for key in ("published_at", "publish_time", "published_time", "created_at"):
+                value = str(nested.get(key, "")).strip()
+                if value:
+                    return value
+        return ""
 
     # ====================================================================
     # Step 2: Normalize for EvolutionAgent
@@ -191,23 +340,40 @@ class FeedbackLoopService:
         # Transform to EvolutionAgent-compatible format
         evolution_records = []
         for record in records:
+            if not self._is_analysis_eligible(record):
+                continue
             roi_score = self._compute_roi_score(record)
+            # 微头条行标题是正文占位截断，匹配到本地记录后用真实标题（2026-08-27）
+            local_record = record.get("local_record") or {}
+            real_title = str(local_record.get("title") or record.get("title") or "").strip()
+            views = int(record.get("views", 0) or record.get("read_count", 0) or 0)
+            read_count = int(record.get("read_count", 0) or views)
+            impression_count = int(record.get("impression_count", 0) or 0)
+            ctr = float(record.get("ctr", 0) or 0)
+            if ctr <= 0 and impression_count > 0 and read_count > 0:
+                ctr = round(read_count * 100 / impression_count, 2)
             evolution_records.append({
-                "title": record.get("title", ""),
+                "title": real_title,
                 "article": record.get("article", "") or record.get("article_text", ""),
                 "summary": record.get("summary", ""),
-                "topic_title": record.get("topic_title", ""),
+                "topic_title": record.get("topic_title", "") or str(local_record.get("topic_title") or ""),
                 "roi_score": roi_score,
-                "impression_count": record.get("impression_count", 0),
-                "read_count": record.get("read_count", 0),
-                "ctr": record.get("ctr", 0),
+                "views": views,  # 阅读量（真正的浏览量）
+                "impression_count": impression_count,
+                "read_count": read_count,
+                "ctr": ctr,
                 "platform": record.get("platform", "toutiao"),
             })
 
         evolution_records.sort(key=lambda r: r["roi_score"], reverse=True)
 
+        if not evolution_records:
+            self.logger.info("No T+1-matured performance records are eligible for evolution.")
+            return None
+
         # Save to the path EvolutionAgent looks for
         metrics_path = self.settings.automation_dir / "performance_metrics.json"
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
         metrics_path.write_text(
             json.dumps(evolution_records, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -215,15 +381,39 @@ class FeedbackLoopService:
         self.logger.info("Normalized %d records for EvolutionAgent at %s", len(evolution_records), metrics_path)
         return metrics_path
 
+    def _is_analysis_eligible(self, record: dict[str, Any]) -> bool:
+        """Exclude same-day/T+1-pending rows from prompt evolution."""
+        availability = infer_availability_status(record)
+        if availability in {"pending_t1", "not_available"}:
+            return False
+        if str(record.get("snapshot_status", "")).strip() == "pending_t1":
+            return False
+        if str(record.get("revenue_status", "")).strip() == "pending_t1":
+            return False
+        if str(record.get("platform_revenue_status", "")).strip() == "pending_t1":
+            return False
+        return bool(record.get("analysis_eligible", True))
+
     def _compute_roi_score(self, record: dict[str, Any]) -> float:
-        """Compute a normalized ROI score from available metrics."""
-        read_count = int(record.get("read_count", 0) or 0)
+        """Compute a normalized ROI score from available metrics.
+
+        核心指标 = 阅读量（views，真正的浏览量）；展现量（impressions）为辅助参考。
+        """
+        views = int(record.get("views", 0) or record.get("read_count", 0) or 0)
+        read_count = int(record.get("read_count", 0) or views)
         impression_count = int(record.get("impression_count", 0) or 0)
+        interactions = int(record.get("interactions", 0) or 0)
         ctr = float(record.get("ctr", 0) or 0)
+        if ctr <= 0 and impression_count > 0 and read_count > 0:
+            ctr = read_count * 100 / impression_count
         overall_score = int(record.get("overall_score", 0) or 0)
 
-        if read_count > 0:
-            return float(read_count + impression_count * 0.1 + ctr * 1000)
+        # 阅读量优先：阅读是真正的浏览量（用户真的点开看了）
+        if views > 0 or read_count > 0:
+            return float(max(views, read_count) + interactions * 20 + ctr * 1000)
+        # 无阅读时退而求其次：展现量（曝光）也有参考价值
+        if impression_count > 0:
+            return float(impression_count * 0.1)
         if overall_score > 0:
             return float(overall_score)
         return 50.0
@@ -258,13 +448,24 @@ class FeedbackLoopService:
         performance_data: dict[str, Any],
         top_k: int = 3,
     ) -> list[dict[str, Any]]:
-        """Extract the top-k performing articles."""
+        """Extract the top-k performing articles.
+
+        2026-08-27：few-shot 只取图文（platform=toutiao），微头条占位标题
+        不进图文标题模板；微头条绩效数据通过 EvolutionAgent 规则学习生效。
+        """
         records = performance_data.get("records", [])
         if not records:
             return []
-        scored = [(self._compute_roi_score(r), r) for r in records]
+        scored = [
+            (self._compute_roi_score(r), r)
+            for r in records
+            if self._is_analysis_eligible(r)
+        ]
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [r for _, r in scored[:top_k] if r.get("title")]
+        return [
+            r for _, r in scored[:top_k]
+            if r.get("title") and str(r.get("platform", "toutiao")) == "toutiao"
+        ]
 
     def _update_prompt_templates(
         self,
@@ -446,8 +647,12 @@ class FeedbackLoopService:
         if not metrics_path.exists():
             return ""
         try:
-            records = json.loads(metrics_path.read_text(encoding="utf-8"))
-            return self._build_title_few_shot(records[:3])
+            payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+            records = payload.get("records", []) if isinstance(payload, dict) else payload
+            if not isinstance(records, list):
+                return ""
+            eligible = [record for record in records if isinstance(record, dict) and self._is_analysis_eligible(record)]
+            return self._build_title_few_shot(eligible[:3])
         except Exception:
             return ""
 
@@ -457,7 +662,11 @@ class FeedbackLoopService:
         if not metrics_path.exists():
             return ""
         try:
-            records = json.loads(metrics_path.read_text(encoding="utf-8"))
-            return self._build_style_notes(records[:3])
+            payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+            records = payload.get("records", []) if isinstance(payload, dict) else payload
+            if not isinstance(records, list):
+                return ""
+            eligible = [record for record in records if isinstance(record, dict) and self._is_analysis_eligible(record)]
+            return self._build_style_notes(eligible[:3])
         except Exception:
             return ""

@@ -43,6 +43,8 @@ class ExtractionResult:
     word_target: int = 0
     evidence_items: list[dict[str, str]] = field(default_factory=list)
     source_summaries: list[dict[str, str]] = field(default_factory=list)
+    # 实时热榜二创标记：来自头条热榜/百度热搜的标题型话题，放宽证据型质量门禁
+    is_hot_topic: bool = False
     # 模块 C 合并新增：演进规则提取结果（向下兼容，旧序列化文件无此字段时默认空列表）
     extracted_rules: list[dict[str, Any]] = field(default_factory=list)
 
@@ -76,6 +78,7 @@ class ExtractionResult:
             word_target=int(payload.get("word_target", 0)),
             evidence_items=list(payload.get("evidence_items", [])),
             source_summaries=list(payload.get("source_summaries", [])),
+            is_hot_topic=bool(payload.get("is_hot_topic", False)),
             extracted_rules=list(payload.get("extracted_rules", [])),
         )
 
@@ -130,6 +133,7 @@ class DataReport:
     topic_quality_score: int = 0
     topic_quality_flags: list[str] = field(default_factory=list)
     word_target: int = 0
+    is_hot_topic: bool = False
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DataReport":
@@ -161,6 +165,7 @@ class DataReport:
             topic_quality_score=int(payload.get("topic_quality_score", 0)),
             topic_quality_flags=list(payload.get("topic_quality_flags", [])),
             word_target=int(payload.get("word_target", 0)),
+            is_hot_topic=bool(payload.get("is_hot_topic", False)),
         )
 
 
@@ -265,13 +270,24 @@ class WorkflowResult:
     model_used: str
     created_at: str
     estimated_cost: float = 0.0
+    content_id: str = ""
+    commercial_intent: str = "medium"
+    content_mix: str = "professional"
+    cta_variant: str = ""
+    cta_source_code: str = ""
+    title_variant: str = ""
+    cover_variant: str = ""
+    platform_variant: str = ""
+    topic_bucket: str = ""
+    editorial_council: EditorialCouncilReport | None = None
+    quality_review_council: QualityReviewReport | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "WorkflowResult":
-        return cls(
+        result = cls(
             extraction=ExtractionResult.from_dict(payload.get("extraction", {})),
             trend_report=TrendReport.from_dict(payload.get("trend_report", {})),
             data_report=DataReport.from_dict(payload.get("data_report", {})),
@@ -284,7 +300,21 @@ class WorkflowResult:
             model_used=str(payload.get("model_used", "")),
             created_at=str(payload.get("created_at", "")),
             estimated_cost=float(payload.get("estimated_cost", 0.0) or 0.0),
+            content_id=str(payload.get("content_id", "")),
+            commercial_intent=str(payload.get("commercial_intent", "medium")),
+            content_mix=str(payload.get("content_mix", "professional")),
+            cta_variant=str(payload.get("cta_variant", "")),
+            cta_source_code=str(payload.get("cta_source_code", "")),
+            title_variant=str(payload.get("title_variant", "")),
+            cover_variant=str(payload.get("cover_variant", "")),
+            platform_variant=str(payload.get("platform_variant", "")),
+            topic_bucket=str(payload.get("topic_bucket", "")),
         )
+        if isinstance(payload.get("editorial_council"), dict):
+            result.editorial_council = EditorialCouncilReport.from_dict(payload["editorial_council"])
+        if isinstance(payload.get("quality_review_council"), dict):
+            result.quality_review_council = QualityReviewReport.from_dict(payload["quality_review_council"])
+        return result
 
 
 @dataclass
@@ -292,12 +322,18 @@ class ArticlePerformance:
     url: str
     title: str
     publish_date: str
-    views: int
+    views: int  # 阅读量（真正的浏览量，头条管理页"阅读"字段）
     interactions: int
     roi_score: float
     like_count: int = 0
     comment_count: int = 0
     share_count: int = 0
+    impression_count: int = 0  # 展现量（头条管理页"展现"字段，推荐曝光次数）
+    # Compatibility fields used by the feedback and growth pipelines. Keep
+    # ``views`` as the canonical source value for older persisted records.
+    read_count: int = 0
+    ctr: float = 0.0
+    platform_revenue: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -312,16 +348,31 @@ class ArticlePerformance:
             interactions = like_count + comment_count + share_count
         else:
             interactions = int(interactions_raw or 0)
+        views = int(payload.get("views", payload.get("read_count", 0)) or 0)
+        impression_count = int(payload.get("impression_count", 0) or 0)
+        read_count = int(payload.get("read_count", views) or 0)
+        ctr_raw = payload.get("ctr")
+        ctr = float(ctr_raw or 0.0)
+        if ctr <= 0 and impression_count > 0 and read_count > 0:
+            ctr = round(read_count * 100 / impression_count, 2)
         return cls(
             url=str(payload.get("url", "")),
             title=str(payload.get("title", "")),
             publish_date=str(payload.get("publish_date", "")),
-            views=int(payload.get("views", 0) or 0),
+            views=views,
             interactions=interactions,
             roi_score=float(payload.get("roi_score", 0.0) or 0.0),
             like_count=like_count,
             comment_count=comment_count,
             share_count=share_count,
+            impression_count=impression_count,
+            read_count=read_count,
+            ctr=ctr,
+            platform_revenue=(
+                float(payload.get("platform_revenue"))
+                if payload.get("platform_revenue") is not None
+                else None
+            ),
         )
 
 
@@ -384,6 +435,7 @@ class TopicCandidate:
     matched_industries: list[str] = field(default_factory=list)
     matched_keywords: list[str] = field(default_factory=list)
     extracted_numbers: list[str] = field(default_factory=list)
+    heat_value: int = 0  # 平台原始热度值（头条热榜 HotValue / 百度热搜 hotScore）
     heat_score: int = 0
     read_score: int = 0
     save_score: int = 0
@@ -403,6 +455,14 @@ class TopicCandidate:
     recommended_format: str = ""
     recommended_format_label: str = ""
     rank: int = 0
+    commercial_intent: str = "medium"
+    content_mix: str = "professional"
+    cta_variant: str = ""
+    cta_source_code: str = ""
+    title_variant: str = ""
+    cover_variant: str = ""
+    platform_variant: str = ""
+    topic_bucket: str = ""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "TopicCandidate":
@@ -417,6 +477,7 @@ class TopicCandidate:
             matched_industries=list(payload.get("matched_industries", [])),
             matched_keywords=list(payload.get("matched_keywords", [])),
             extracted_numbers=list(payload.get("extracted_numbers", [])),
+            heat_value=int(payload.get("heat_value", 0) or 0),
             heat_score=int(payload.get("heat_score", 0)),
             read_score=int(payload.get("read_score", 0)),
             save_score=int(payload.get("save_score", 0)),
@@ -436,6 +497,14 @@ class TopicCandidate:
             recommended_format=str(payload.get("recommended_format", "")),
             recommended_format_label=str(payload.get("recommended_format_label", "")),
             rank=int(payload.get("rank", 0)),
+            commercial_intent=str(payload.get("commercial_intent", "medium")),
+            content_mix=str(payload.get("content_mix", "professional")),
+            cta_variant=str(payload.get("cta_variant", "")),
+            cta_source_code=str(payload.get("cta_source_code", "")),
+            title_variant=str(payload.get("title_variant", "")),
+            cover_variant=str(payload.get("cover_variant", "")),
+            platform_variant=str(payload.get("platform_variant", "")),
+            topic_bucket=str(payload.get("topic_bucket", "")),
         )
 
 
@@ -514,6 +583,13 @@ class InsightReport:
     counterarguments: list[str] = field(default_factory=list)
     prediction: str = ""
     confidence_score: float = 0.0
+    # Editorial council extensions. Defaults keep older persisted reports compatible.
+    causal_chain: list[str] = field(default_factory=list)
+    industry_chain: list[str] = field(default_factory=list)
+    originality_angle: str = ""
+    evidence_gaps: list[str] = field(default_factory=list)
+    risk_boundaries: list[str] = field(default_factory=list)
+    expert_perspectives: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "InsightReport":
@@ -524,6 +600,266 @@ class InsightReport:
             counterarguments=list(payload.get("counterarguments", [])),
             prediction=str(payload.get("prediction", "")),
             confidence_score=float(payload.get("confidence_score", 0.0)),
+            causal_chain=list(payload.get("causal_chain", [])),
+            industry_chain=list(payload.get("industry_chain", [])),
+            originality_angle=str(payload.get("originality_angle", "")),
+            evidence_gaps=list(payload.get("evidence_gaps", [])),
+            risk_boundaries=list(payload.get("risk_boundaries", [])),
+            expert_perspectives=list(payload.get("expert_perspectives", [])),
+        )
+
+
+@dataclass
+class EditorialCouncilReport:
+    """多专家编辑委员会的结构化裁决结果。"""
+
+    topic_title: str = ""
+    editorial_thesis: str = ""
+    originality_angle: str = ""
+    evidence_chain: list[str] = field(default_factory=list)
+    causal_chain: list[str] = field(default_factory=list)
+    industry_chain: list[str] = field(default_factory=list)
+    counterarguments: list[str] = field(default_factory=list)
+    risk_boundaries: list[str] = field(default_factory=list)
+    evidence_gaps: list[str] = field(default_factory=list)
+    follow_up_questions: list[str] = field(default_factory=list)
+    avoid_claims: list[str] = field(default_factory=list)
+    perspectives: list[dict[str, Any]] = field(default_factory=list)
+    chief_editor_note: str = ""
+    confidence_score: float = 0.0
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "EditorialCouncilReport":
+        if not isinstance(payload, dict):
+            return cls()
+
+        chief_editor = payload.get("chief_editor")
+        chief = chief_editor if isinstance(chief_editor, dict) else payload
+
+        def text_list(value: Any) -> list[str]:
+            if isinstance(value, (list, tuple)):
+                return [str(item).strip() for item in value if str(item).strip()]
+            if value is None:
+                return []
+            text = str(value).strip()
+            return [text] if text else []
+
+        def dict_list(value: Any) -> list[dict[str, Any]]:
+            if not isinstance(value, list):
+                return []
+            return [dict(item) for item in value if isinstance(item, dict)]
+
+        def first_text(*keys: str) -> str:
+            for key in keys:
+                value = chief.get(key, payload.get(key, ""))
+                text = str(value or "").strip()
+                if text:
+                    return text
+            return ""
+
+        try:
+            confidence = float(payload.get("confidence_score", chief.get("confidence_score", 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        return cls(
+            topic_title=str(payload.get("topic_title", "")).strip(),
+            editorial_thesis=first_text("editorial_thesis", "thesis", "main_insight"),
+            originality_angle=first_text("originality_angle", "distinctive_angle"),
+            evidence_chain=text_list(payload.get("evidence_chain", chief.get("evidence_chain", []))),
+            causal_chain=text_list(payload.get("causal_chain", chief.get("causal_chain", []))),
+            industry_chain=text_list(payload.get("industry_chain", chief.get("industry_chain", []))),
+            counterarguments=text_list(payload.get("counterarguments", chief.get("counterarguments", []))),
+            risk_boundaries=text_list(payload.get("risk_boundaries", chief.get("risk_boundaries", []))),
+            evidence_gaps=text_list(payload.get("evidence_gaps", chief.get("evidence_gaps", []))),
+            follow_up_questions=text_list(payload.get("follow_up_questions", chief.get("follow_up_questions", []))),
+            avoid_claims=text_list(payload.get("avoid_claims", chief.get("avoid_claims", []))),
+            perspectives=dict_list(payload.get("perspectives", [])),
+            chief_editor_note=first_text("chief_editor_note", "editorial_note", "note"),
+            confidence_score=max(0.0, min(1.0, confidence)),
+        )
+
+    def is_usable(self) -> bool:
+        return bool(
+            self.editorial_thesis.strip()
+            and (self.evidence_chain or self.causal_chain or self.originality_angle)
+        )
+
+    def to_insight_report(self) -> InsightReport:
+        alternative_angles: list[str] = []
+        for perspective in self.perspectives:
+            for key in ("alternative_angle", "angle", "judgment"):
+                value = str(perspective.get(key, "")).strip()
+                if value and value not in alternative_angles:
+                    alternative_angles.append(value)
+                    break
+        if self.originality_angle and self.originality_angle not in alternative_angles:
+            alternative_angles.insert(0, self.originality_angle)
+
+        prediction = self.follow_up_questions[0] if self.follow_up_questions else "继续观察证据是否兑现。"
+        return InsightReport(
+            main_insight=self.editorial_thesis,
+            supporting_data=self.evidence_chain,
+            alternative_angles=alternative_angles[:5],
+            counterarguments=self.counterarguments,
+            prediction=prediction,
+            confidence_score=self.confidence_score,
+            causal_chain=self.causal_chain,
+            industry_chain=self.industry_chain,
+            originality_angle=self.originality_angle,
+            evidence_gaps=self.evidence_gaps,
+            risk_boundaries=self.risk_boundaries,
+            expert_perspectives=self.perspectives,
+        )
+
+
+@dataclass
+class QualityReviewReport:
+    """文章成稿质量审核专家团的结构化报告。
+
+    This report is deliberately separate from :class:`ContentScore`: the
+    latter estimates distribution potential, while this report records an
+    independent editorial gate and its actionable findings.
+    """
+
+    article_version: str = "post_polish"
+    overall_score: int = 0
+    fact_score: int = 0
+    logic_score: int = 0
+    structure_score: int = 0
+    originality_score: int = 0
+    compliance_score: int = 0
+    verdict: str = "needs_revision"
+    needs_revision: bool = True
+    hard_blockers: list[str] = field(default_factory=list)
+    fact_issues: list[str] = field(default_factory=list)
+    logic_issues: list[str] = field(default_factory=list)
+    structure_issues: list[str] = field(default_factory=list)
+    originality_issues: list[str] = field(default_factory=list)
+    compliance_issues: list[str] = field(default_factory=list)
+    required_revisions: list[str] = field(default_factory=list)
+    optional_improvements: list[str] = field(default_factory=list)
+    role_reviews: list[dict[str, Any]] = field(default_factory=list)
+    chief_editor_conclusion: str = ""
+    reviewed_char_count: int = 0
+    revision_round: int = 0
+    used_fallback: bool = False
+
+    def __post_init__(self) -> None:
+        for name in (
+            "overall_score",
+            "fact_score",
+            "logic_score",
+            "structure_score",
+            "originality_score",
+            "compliance_score",
+        ):
+            value = getattr(self, name, 0)
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                value = 0
+            setattr(self, name, max(0, min(100, value)))
+
+        verdict = str(self.verdict or "needs_revision").strip().lower()
+        verdict_aliases = {
+            "pass": "approved",
+            "ready": "approved",
+            "approve": "approved",
+            "通过": "approved",
+            "阻断": "blocked",
+            "block": "blocked",
+            "reject": "blocked",
+            "驳回": "blocked",
+            "返工": "needs_revision",
+        }
+        self.verdict = verdict_aliases.get(verdict, verdict)
+        if self.verdict not in {"approved", "needs_revision", "blocked"}:
+            self.verdict = "needs_revision"
+        if self.hard_blockers:
+            self.verdict = "blocked"
+        self.needs_revision = self.verdict != "approved"
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "QualityReviewReport":
+        if not isinstance(payload, dict):
+            return cls()
+
+        chief_editor = payload.get("chief_editor")
+        chief = chief_editor if isinstance(chief_editor, dict) else {}
+
+        def text_list(*keys: str) -> list[str]:
+            for key in keys:
+                value = payload.get(key, chief.get(key))
+                if isinstance(value, (list, tuple)):
+                    return [str(item).strip() for item in value if str(item).strip()]
+                if value is not None and str(value).strip():
+                    return [str(value).strip()]
+            return []
+
+        def dict_list(*keys: str) -> list[dict[str, Any]]:
+            for key in keys:
+                value = payload.get(key, chief.get(key))
+                if isinstance(value, list):
+                    return [dict(item) for item in value if isinstance(item, dict)]
+            return []
+
+        def text_value(*keys: str) -> str:
+            for key in keys:
+                value = payload.get(key, chief.get(key, ""))
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+            return ""
+
+        def score_value(key: str) -> int:
+            value = payload.get(key, chief.get(key, 0))
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+
+        verdict = text_value("verdict", "decision") or "needs_revision"
+        return cls(
+            article_version=text_value("article_version") or "post_polish",
+            overall_score=score_value("overall_score"),
+            fact_score=score_value("fact_score"),
+            logic_score=score_value("logic_score"),
+            structure_score=score_value("structure_score"),
+            originality_score=score_value("originality_score"),
+            compliance_score=score_value("compliance_score"),
+            verdict=verdict,
+            hard_blockers=text_list("hard_blockers", "blocking_issues"),
+            fact_issues=text_list("fact_issues", "factual_issues", "evidence_issues"),
+            logic_issues=text_list("logic_issues", "causal_issues"),
+            structure_issues=text_list("structure_issues", "readability_issues"),
+            originality_issues=text_list("originality_issues", "ai_style_issues"),
+            compliance_issues=text_list("compliance_issues", "risk_issues"),
+            required_revisions=text_list("required_revisions", "must_fix"),
+            optional_improvements=text_list("optional_improvements", "suggestions"),
+            role_reviews=dict_list("role_reviews", "perspectives"),
+            chief_editor_conclusion=text_value(
+                "chief_editor_conclusion", "chief_editor_note", "conclusion", "summary"
+            ),
+            reviewed_char_count=score_value("reviewed_char_count"),
+            revision_round=score_value("revision_round"),
+            used_fallback=bool(payload.get("used_fallback", False)),
+        )
+
+    def is_usable(self) -> bool:
+        return bool(
+            self.chief_editor_conclusion
+            or self.role_reviews
+            or self.hard_blockers
+            or any(
+                (
+                    self.fact_issues,
+                    self.logic_issues,
+                    self.structure_issues,
+                    self.originality_issues,
+                    self.compliance_issues,
+                    self.required_revisions,
+                )
+            )
         )
 
 

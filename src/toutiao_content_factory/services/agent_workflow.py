@@ -6,10 +6,12 @@ import logging
 from toutiao_content_factory.agents import (
     DataAgent,
     DataMiningAgent,
+    EditorialCouncilAgent,
     EvolutionAgent,
     InsightAgent,
     PolishAgent,
     PublishReviewAgent,
+    QualityReviewCouncilAgent,
     ReviewAgent,
     TitleAgent,
     TrendAgent,
@@ -17,8 +19,16 @@ from toutiao_content_factory.agents import (
 )
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import LowQualityAbortException
-from toutiao_content_factory.models import CacheContext, ExtractionResult, InsightReport, WorkflowResult
+from toutiao_content_factory.models import (
+    CacheContext,
+    EditorialCouncilReport,
+    ExtractionResult,
+    InsightReport,
+    QualityReviewReport,
+    WorkflowResult,
+)
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
+from toutiao_content_factory.services.article_sanitizer import clean_article_text
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.letta_client import LettaClient
 from toutiao_content_factory.services.openai_service import OpenAIContentService
@@ -28,6 +38,9 @@ from toutiao_content_factory.services.prompt_repository import PromptRepository
 class AgentWorkflowService:
     LOW_QUALITY_THRESHOLD = 60
     ARTICLE_MIN_CHARS = 1500
+    # Leave room for publish-time sanitization and CTA removal.  The Toutiao
+    # quality gate evaluates the public article, not the generated draft.
+    AUTO_PUBLISH_ARTICLE_MIN_CHARS = 1750
     # 整个 workflow 生命周期内 LLM expansion 最大调用次数
     # DeepSeek-V4-Flash 单次 expansion 耗时 5-7 分钟，多次累计会导致云端 30 分钟超时
     MAX_LLM_EXPANSION_CALLS = 1
@@ -51,8 +64,12 @@ class AgentWorkflowService:
         self.title_agent = TitleAgent(settings, prompt_repository, openai_service, logger, iteration_overrides=iteration_overrides)
         self.review_agent = ReviewAgent(settings, prompt_repository, openai_service, logger)
         self.publish_review_agent = PublishReviewAgent(settings, prompt_repository, openai_service, logger)
+        self.quality_review_council_agent = QualityReviewCouncilAgent(
+            settings, prompt_repository, openai_service, logger
+        )
         self.insight_agent = InsightAgent(settings, prompt_repository, openai_service, logger)
         self.data_mining_agent = DataMiningAgent(settings, prompt_repository, openai_service, logger)
+        self.editorial_council_agent = EditorialCouncilAgent(settings, prompt_repository, openai_service, logger)
         self.content_guard_service = ContentGuardService(settings, logger)
         self.quality_checker = ArticleQualityChecker()
         self.openai_service = openai_service
@@ -112,11 +129,44 @@ class AgentWorkflowService:
         try:
             self._abort_if_low_quality(extraction, data_report)
             insight_report: InsightReport | None = None
-            if self.settings.enhanced_insights_enabled:
+            editorial_council_report: EditorialCouncilReport | None = None
+            quality_review_council_report: QualityReviewReport | None = None
+            memory_context = ""
+            if self.settings.expert_council_enabled or self.settings.enhanced_insights_enabled:
+                memory_context = self._get_memory_context(extraction.topic_title)
+                if memory_context:
+                    self.logger.info("Letta memory context loaded: %d chars", len(memory_context))
+
+            if self.settings.expert_council_enabled:
                 try:
-                    memory_context = self._get_memory_context(extraction.topic_title)
-                    if memory_context:
-                        self.logger.info("Letta memory context loaded: %d chars", len(memory_context))
+                    data_mining_report = None
+                    if self.settings.enhanced_insights_use_data_mining:
+                        self.logger.info("Running DataMiningAgent for council evidence...")
+                        data_mining_report = self.data_mining_agent.run(extraction, style)
+                    self.logger.info(
+                        "Running EditorialCouncilAgent with roles: %s",
+                        ", ".join(self.settings.expert_council_roles),
+                    )
+                    editorial_council_report = self.editorial_council_agent.run(
+                        extraction,
+                        trend_report,
+                        data_report,
+                        style,
+                        cache_context,
+                        memory_context=memory_context,
+                        data_mining_report=data_mining_report,
+                    )
+                    insight_report = editorial_council_report.to_insight_report()
+                    self.logger.info(
+                        "Editorial council thesis: %s",
+                        insight_report.main_insight[:120],
+                    )
+                except Exception as exc:
+                    self.logger.warning("EditorialCouncilAgent failed, falling back to InsightAgent: %s", exc)
+                    editorial_council_report = None
+
+            if insight_report is None and self.settings.enhanced_insights_enabled:
+                try:
                     self.logger.info("Running InsightAgent for enhanced opinions...")
                     insight_report = self.insight_agent.run(
                         extraction, trend_report, data_report, style, cache_context
@@ -135,6 +185,17 @@ class AgentWorkflowService:
 
             polish_pack = self.polish_agent.run(content, trend_report, data_report, style, cache_context)
             self._apply_polish_pack(content, polish_pack, data_report)
+
+            quality_review_council_report = self._run_quality_review_council(
+                content=content,
+                trend_report=trend_report,
+                data_report=data_report,
+                style=style,
+                cache_context=cache_context,
+                editorial_council=editorial_council_report,
+                fast_mode=fast_mode,
+            )
+            quality_reviewed_article = self._quality_review_article(content)
 
             title_pack = self.title_agent.run(content, trend_report, data_report, style, cache_context)
             self._apply_title_pack(content, title_pack)
@@ -175,6 +236,28 @@ class AgentWorkflowService:
                     self._apply_review_pack(content, review_pack, cache_context)
                     content_score = review_pack["content_score"]
 
+            # Review-triggered polishing happens after the first council pass.
+            # Re-audit only when the public article actually changed so the
+            # persisted quality report always describes the publishable text.
+            if (
+                quality_review_council_report is not None
+                and self._quality_review_article(content) != quality_reviewed_article
+            ):
+                self.logger.info(
+                    "Article changed after the initial quality audit; running final quality audit before publish review."
+                )
+                quality_review_council_report = self._run_quality_review_council(
+                    content=content,
+                    trend_report=trend_report,
+                    data_report=data_report,
+                    style=style,
+                    cache_context=cache_context,
+                    editorial_council=editorial_council_report,
+                    fast_mode=fast_mode,
+                    article_version="post_review",
+                    allow_auto_revise=False,
+                )
+
             if skip_publish_review:
                 publish_review = self.publish_review_agent._fallback(
                     content,
@@ -194,6 +277,7 @@ class AgentWorkflowService:
             content_score.publish_risk_flags = list(publish_review.get("publish_risk_flags", []))
             content_score.publish_recommendation = str(publish_review.get("publish_recommendation", "manual_review"))
             content_score.publish_notes = list(publish_review.get("publish_notes", []))
+            self._apply_quality_review_gate(content_score, quality_review_council_report)
             self._apply_bad_words_gate(content, content_score)
         except LowQualityAbortException as exc:
             self.logger.info("Skipping low-quality topic: %s", exc)
@@ -218,9 +302,177 @@ class AgentWorkflowService:
             model_used=model_used,
             created_at=datetime.now().isoformat(timespec="seconds"),
             estimated_cost=self.openai_service.estimated_cost,
+            editorial_council=editorial_council_report,
+            quality_review_council=quality_review_council_report,
         )
 
+    def _run_quality_review_council(
+        self,
+        *,
+        content,
+        trend_report,
+        data_report,
+        style,
+        cache_context,
+        editorial_council: EditorialCouncilReport | None,
+        fast_mode: bool,
+        article_version: str = "post_polish",
+        allow_auto_revise: bool = True,
+    ) -> QualityReviewReport | None:
+        quality_settings = getattr(self.settings, "quality_review", None)
+        if not bool(getattr(quality_settings, "enabled", True)):
+            self.logger.info("Quality review council is disabled by configuration.")
+            return None
+
+        try:
+            report = self.quality_review_council_agent.run(
+                content,
+                data_report,
+                style,
+                cache_context,
+                editorial_council=editorial_council,
+                revision_round=0,
+            )
+        except Exception as exc:
+            self.logger.warning("Quality review council failed; using local fallback: %s", exc)
+            report = self.quality_review_council_agent._fallback(
+                content,
+                data_report,
+                revision_round=0,
+            )
+        report.article_version = article_version
+
+        max_revisions = int(getattr(quality_settings, "max_auto_revisions", 1))
+        can_auto_revise = bool(
+            report.needs_revision
+            and getattr(quality_settings, "auto_revise", True)
+            and allow_auto_revise
+            and max_revisions > 0
+            and not fast_mode
+            and self.openai_service.available
+        )
+        revision_count = 0
+        while can_auto_revise and revision_count < max_revisions:
+            revision_focus = self._build_quality_review_revision_focus(report)
+            try:
+                revised_pack = self.polish_agent.run(
+                    content,
+                    trend_report,
+                    data_report,
+                    style,
+                    cache_context,
+                    revision_focus=revision_focus,
+                )
+            except Exception as exc:
+                self.logger.warning("Quality review revision pass failed; retaining the audited article: %s", exc)
+                break
+            revised_article = str(revised_pack.get("polished_article", "")).strip()
+            if not revised_article or revised_article == content.article:
+                self.logger.info("Quality review council requested revision, but the polish pass produced no new article.")
+                break
+
+            revision_count += 1
+            self.logger.info(
+                "Quality review council triggered automatic revision pass %d/%d.",
+                revision_count,
+                max_revisions,
+            )
+            self._apply_polish_pack(content, revised_pack, data_report)
+            report = self.quality_review_council_agent.run(
+                content,
+                data_report,
+                style,
+                cache_context,
+                editorial_council=editorial_council,
+                revision_round=revision_count,
+            )
+            report.article_version = article_version
+            if not report.needs_revision:
+                break
+
+        if report.needs_revision:
+            mode = "audit-only" if fast_mode or revision_count == 0 else "after-revision"
+            self.logger.warning(
+                "Quality review council verdict=%s score=%d (%s); auto publish will be blocked.",
+                report.verdict,
+                report.overall_score,
+                mode,
+            )
+        return report
+
+    @staticmethod
+    def _quality_review_article(content) -> str:
+        return str(getattr(content, "polished_article", "") or getattr(content, "article", "") or "").strip()
+
+    def _build_quality_review_revision_focus(self, report: QualityReviewReport) -> list[str]:
+        focus = [
+            *report.hard_blockers,
+            *report.required_revisions,
+            *report.fact_issues,
+            *report.logic_issues,
+            *report.structure_issues,
+            *report.originality_issues,
+            *report.compliance_issues,
+        ]
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in focus:
+            text = str(item).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+        return result[:8]
+
+    def _apply_quality_review_gate(
+        self,
+        content_score,
+        report: QualityReviewReport | None,
+    ) -> None:
+        if report is None or not report.needs_revision:
+            return
+
+        findings = self._unique(
+            [
+                *report.hard_blockers,
+                *report.required_revisions,
+                *report.fact_issues,
+                *report.logic_issues,
+                *report.structure_issues,
+                *report.originality_issues,
+                *report.compliance_issues,
+            ]
+        )
+        prefix = "质量审核专家团"
+        if report.hard_blockers or report.verdict == "blocked":
+            content_score.publish_readiness_score = 0
+            content_score.publish_risk_flags = self._unique(
+                [f"{prefix}阻断发布：{item}" for item in findings[:5]]
+                + list(content_score.publish_risk_flags)
+            )[:8]
+        else:
+            # A non-blocking finding still means the article is not eligible
+            # for automatic publication. Do not rely on a configurable score
+            # threshold here, because it may also be set to 60.
+            content_score.publish_readiness_score = 0
+            content_score.publish_risk_flags = self._unique(
+                [f"{prefix}要求返工：{item}" for item in findings[:5]]
+                + list(content_score.publish_risk_flags)
+            )[:8]
+        content_score.publish_recommendation = "revise_before_publish"
+        content_score.revision_suggestions = self._unique(
+            list(content_score.revision_suggestions) + findings[:6]
+        )[:8]
+
     def _abort_if_low_quality(self, extraction: ExtractionResult, data_report) -> None:
+        # 实时热榜二创：标题型热点没有完整原文/证据链，是正常形态，
+        # 不以"缺证据/缺公司/质量分低"拦截（热点时效和观点密度才是价值）。
+        if bool(getattr(extraction, "is_hot_topic", False)) or bool(getattr(data_report, "is_hot_topic", False)):
+            self.logger.info(
+                "Hot-topic mode: skipping evidence-based quality gate for %s",
+                extraction.topic_title.strip() or data_report.topic_title.strip(),
+            )
+            return
         score = self._resolve_quality_score(extraction, data_report)
         reasons = self._collect_low_quality_reasons(extraction, data_report, score)
         if reasons:
@@ -313,37 +565,45 @@ class AgentWorkflowService:
 
     @staticmethod
     def _build_supplementary_paragraphs(data_report) -> list[str]:
-        paragraphs = []
-        if hasattr(data_report, "watch_metrics") and data_report.watch_metrics:
-            items = data_report.watch_metrics[:5]
-            if items:
-                text = "接下来该盯什么？" + "、".join(str(m) for m in items) + "——这几个指标的变化，基本决定了产业链各环节的盈利兑现节奏。"
-                paragraphs.append(text)
-        if hasattr(data_report, "risk_flags") and data_report.risk_flags:
-            items = data_report.risk_flags[:3]
-            if items:
-                text = "但风险也在积累：" + "；".join(str(r) for r in items) + "。任何一个环节的延迟，都可能拖慢整条链的兑现节奏。"
-                paragraphs.append(text)
-        if hasattr(data_report, "evidence_notes") and data_report.evidence_notes:
-            items = data_report.evidence_notes[:3]
-            if items:
-                text = "目前能确认的数据有限，" + "；".join(str(e) for e in items) + "。口径以公开材料为准，等最新财报出来再更新判断。"
-                paragraphs.append(text)
-        if hasattr(data_report, "growth_numbers") and data_report.growth_numbers and len(data_report.growth_numbers) >= 2:
-            text = f"两个核心数字：{data_report.growth_numbers[0]}和{data_report.growth_numbers[1]}。后续如果这两个指标出现明显变化，利润分配逻辑可能要重新算。"
-            paragraphs.append(text)
-        if len(paragraphs) < 3:
+        """Build only evidence-bearing supplements; never pad with generic claims."""
+        paragraphs: list[str] = []
+
+        def items(values: list[str], limit: int) -> list[str]:
+            cleaned: list[str] = []
+            for value in values[:limit]:
+                text = clean_article_text(str(value), min_word_count=0).strip()
+                if text and text not in cleaned:
+                    cleaned.append(text)
+            return cleaned
+
+        metrics = items(getattr(data_report, "watch_metrics", []) or [], 5)
+        if metrics:
             paragraphs.append(
-                "从产业链角度看，核心环节的利润兑现节奏取决于下游需求能否持续放量。"
-                "目前行业仍处于从订单验证到批量交付的过渡期，部分企业已率先在零部件环节实现收入确认，"
-                "但整体产能利用率仍有提升空间。后续需要关注头部企业的季度出货数据变化，"
-                "以及政策端对相关赛道的支持力度是否出现边际调整。"
+                "接下来该盯的是"
+                + "、".join(metrics)
+                + "。这些指标的变化，才是判断兑现节奏的依据。"
             )
-        if len(paragraphs) < 4:
+
+        risks = items(getattr(data_report, "risk_flags", []) or [], 3)
+        if risks:
             paragraphs.append(
-                "产业链利润分配并非静态格局。"
-                "随着技术路线迭代和客户结构变化，不同环节的议价能力会发生此消彼长的变化。"
-                "每一轮产业升级都会重塑利润分配曲线，关键在于识别哪些环节能率先完成从量到价的切换。"
+                "风险边界需要保留："
+                + "；".join(risks)
+                + "。如果其中一个环节延迟，前面的判断就需要重新核对。"
+            )
+
+        notes = items(getattr(data_report, "evidence_notes", []) or [], 3)
+        if notes:
+            paragraphs.append(
+                "目前能确认的公开信息主要到这里："
+                + "；".join(notes)
+                + "。其余判断应等待新的公告、财报或项目进展。"
+            )
+
+        numbers = items(getattr(data_report, "growth_numbers", []) or [], 2)
+        if len(numbers) >= 2:
+            paragraphs.append(
+                f"当前可以回指的数字是{numbers[0]}和{numbers[1]}，后续变化需要结合新的公开材料重新判断。"
             )
         return paragraphs
 
@@ -375,9 +635,13 @@ class AgentWorkflowService:
             reasons.append("insufficient_hard_evidence")
         return reasons
 
-    def _ensure_article_min_chars(self, article: str, data_report, min_chars: int = None) -> str:
+    def _legacy_ensure_article_min_chars(self, article: str, data_report, min_chars: int = None) -> str:
         min_chars = min_chars if min_chars is not None else self.ARTICLE_MIN_CHARS
-        if not self._has_grounded_evidence(data_report):
+        article = clean_article_text(article, min_word_count=0)
+        # Keep the explicit auto-publish target intact even when a hot-topic
+        # source has limited evidence.  Otherwise the fallback word-target
+        # clamp can silently push the public package below Toutiao's gate.
+        if min_chars <= self.ARTICLE_MIN_CHARS and not self._has_grounded_evidence(data_report):
             min_chars = min(min_chars, max(950, int((getattr(data_report, "word_target", 0) or 1200) * 0.7)))
         current = len(article.replace("\n", "").replace(" ", ""))
         if current >= min_chars:
@@ -387,14 +651,17 @@ class AgentWorkflowService:
             current,
             min_chars,
         )
-        paragraphs = article.split("\n\n")
-        supplements = self._build_supplementary_paragraphs(data_report)
+        paragraphs = [item.strip() for item in article.split("\n\n") if item.strip()]
+        supplements = self.writer_agent._build_supplementary_paragraphs(
+            data_report,
+            existing_paragraphs=paragraphs,
+        )
         for sup in supplements:
             paragraphs.insert(-1, sup)
             total = len("\n\n".join(paragraphs).replace("\n", "").replace(" ", ""))
             if total >= min_chars:
                 break
-        result = "\n\n".join(paragraphs)
+        result = clean_article_text("\n\n".join(paragraphs), min_word_count=0)
         result_chars = len(result.replace("\n", "").replace(" ", ""))
         if result_chars < min_chars and self.openai_service.available and self._has_grounded_evidence(data_report):
             self.logger.info(
@@ -403,9 +670,9 @@ class AgentWorkflowService:
                 min_chars,
             )
             result = self._expand_article_via_llm(result, data_report, min_chars)
-        return result
+        return clean_article_text(result, min_word_count=0)
 
-    def _expand_article_via_llm(self, article: str, data_report, min_chars: int) -> str:
+    def _legacy_expand_article_via_llm(self, article: str, data_report, min_chars: int) -> str:
         current_chars = len(article.replace("\n", "").replace(" ", ""))
         deficit = min_chars - current_chars
         if deficit <= 0 or not self._has_grounded_evidence(data_report):
@@ -446,14 +713,30 @@ class AgentWorkflowService:
         try:
             payload = self.openai_service.create_json_completion(system_prompt, user_prompt)
             if payload and isinstance(payload.get("paragraphs"), list):
-                new_paragraphs = [str(p).strip() for p in payload["paragraphs"] if str(p).strip()]
-                if new_paragraphs:
-                    existing = article.split("\n\n")
-                    for p in new_paragraphs:
-                        if any(char.isdigit() for char in p) and not getattr(data_report, "growth_numbers", []):
+                existing = [item.strip() for item in article.split("\n\n") if item.strip()]
+                new_paragraphs: list[str] = []
+                for raw in payload["paragraphs"]:
+                    if not isinstance(raw, str) or not raw.strip():
+                        continue
+                    sanitized = clean_article_text(raw, min_word_count=0)
+                    for paragraph in sanitized.split("\n\n"):
+                        paragraph = paragraph.strip()
+                        if not paragraph:
                             continue
-                        existing.insert(-1, p)
-                    result = "\n\n".join(existing)
+                        if self.writer_agent._is_duplicate_paragraph(
+                            paragraph,
+                            [*existing, *new_paragraphs],
+                        ):
+                            continue
+                        new_paragraphs.append(paragraph)
+                if new_paragraphs:
+                    existing.extend(new_paragraphs)
+                    result = clean_article_text("\n\n".join(existing), min_word_count=0)
+                    result = "\n\n".join(
+                        self.writer_agent._trim_low_confidence_paragraphs(
+                            result.split("\n\n"), data_report
+                        )
+                    )
                     self.logger.info("Grounded LLM expansion added %d paragraphs.", len(new_paragraphs))
                     return result
         except Exception as exc:
@@ -500,8 +783,21 @@ class AgentWorkflowService:
         content.polished_article = str(polish_pack.get("polished_article", "")).strip()
         if content.polished_article:
             content.article = content.polished_article
+        is_hot_topic = bool(getattr(data_report, "is_hot_topic", False))
+        publishing = getattr(self.settings, "publishing", None)
+        toutiao_auto_publish = bool(
+            getattr(publishing, "enabled", False)
+            and getattr(publishing, "auto_publish", False)
+            and not getattr(publishing, "draft_only", False)
+        )
+        if is_hot_topic and toutiao_auto_publish:
+            # A hot topic can stay concise in draft/manual mode, but an
+            # auto-published article must still pass the public 1500-char gate.
+            effective_min_chars = self.AUTO_PUBLISH_ARTICLE_MIN_CHARS
+        else:
+            effective_min_chars = 850 if is_hot_topic else self.ARTICLE_MIN_CHARS
         content.article = self._ensure_article_min_chars(
-            content.article, data_report, min_chars=self.ARTICLE_MIN_CHARS
+            content.article, data_report, min_chars=effective_min_chars
         )
         content.polished_article = content.article
         if update_validation:

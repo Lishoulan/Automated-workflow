@@ -50,12 +50,16 @@ def get_account_switch_interval() -> int:
 
 
 def count_today_published(history_path: Path, platform: str = "toutiao") -> int:
-    """统计今日已发布的文章数。
+    """统计今日已发布的文章数（按 platform 精确过滤）。
 
     时区修复：publish_history.json 使用本地时间（如 2026-05-31T00:27:13）记录，
     原实现使用 UTC 时间判断"今日"，导致凌晨0-8点期间都算"前一天"，
     实际放行了超过 max_daily_posts 限制的发布。
     现统一使用本地时间（datetime.now() 不带时区）与历史记录对齐。
+
+    平台过滤修复（2026-08-27）：原实现忽略 platform 参数，导致微头条
+    （platform=toutiao_weitoutiao）记录被计入图文（platform=toutiao）的
+    每日发布上限——早间先发独立微头条会把当天的图文发布额度占掉。
     """
     if not history_path.exists():
         return 0
@@ -68,12 +72,25 @@ def count_today_published(history_path: Path, platform: str = "toutiao") -> int:
         today_str = datetime.now().strftime("%Y-%m-%d")
         count = 0
         for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            if str(rec.get("platform", "")).strip() != platform:
+                continue
             ts = rec.get("published_at", rec.get("timestamp", rec.get("created_at", "")))
             if isinstance(ts, str) and ts.startswith(today_str):
                 count += 1
         return count
     except Exception:
         return 0
+
+
+def count_today_published_by_platform(history_path: Path, platform: str = "toutiao") -> int:
+    """统计今日指定平台已发布的条数（platform 精确匹配）。
+
+    用于微头条高频化：区分图文（platform=toutiao）与微头条（platform=toutiao_weitoutiao），
+    独立微头条按每日目标补齐时不把图文发布数算进微头条额度。
+    """
+    return count_today_published(history_path, platform=platform)
 
 
 def check_daily_post_limit(history_path: Path, platform: str = "toutiao") -> bool:

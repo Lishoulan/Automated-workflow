@@ -1,6 +1,8 @@
 """ArticleQualityChecker 互动吸引力维度测试"""
 from __future__ import annotations
 
+import pytest
+
 from toutiao_content_factory.services.article_quality_checker import (
     ArticleQualityChecker,
     QualityCheckResult,
@@ -215,3 +217,33 @@ class TestCheckArticleIntegration:
             depth_score=15,
         )
         assert result.engagement_attractiveness_score == 0
+
+
+class TestRiskyWordOrdinalHandling:
+    def setup_method(self) -> None:
+        self.checker = ArticleQualityChecker()
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "\u7b2c\u4e00\u6761\u5efa\u8bae\u662f\u5148\u786e\u8ba4\u6570\u636e\u6765\u6e90\u3002",
+            "\u7b2c\u4e00\u6b65\u662f\u62c6\u89e3\u6210\u672c\u3002",
+            "\u7b2c\u4e00\u9636\u6bb5\u5148\u505a\u6837\u672c\u9a8c\u8bc1\u3002",
+            "\u7b2c\u4e00\u65f6\u95f4\u540c\u6b65\u6570\u636e\u3002",
+        ],
+    )
+    def test_ordinal_first_is_not_flagged_as_absolute_claim(self, text: str) -> None:
+        assert self.checker._check_risky_words(text.lower()) == []
+
+    def test_unqualified_first_is_still_flagged(self) -> None:
+        text = "\u8fd9\u662f\u7b2c\u4e00\u3002"
+
+        issues = self.checker._check_risky_words(text.lower())
+
+        assert len(issues) == 1
+        assert "\u7b2c\u4e00" in issues[0]
+
+    def test_ordinal_followed_by_unqualified_first_is_flagged(self) -> None:
+        text = "\u7b2c\u4e00\u6761\u5efa\u8bae\u5df2\u5b8c\u6210\uff0c\u4f46\u8fd9\u662f\u7b2c\u4e00\u3002"
+
+        assert self.checker._contains_unqualified_first(text.lower()) is True

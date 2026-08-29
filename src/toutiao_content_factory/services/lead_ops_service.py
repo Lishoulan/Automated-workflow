@@ -214,6 +214,9 @@ class LeadOpsService:
         status: str = "new",
         estimated_value: float = 0.0,
         next_follow_up_at: str = "",
+        source_content_id: str = "",
+        cta_source_code: str = "",
+        platform: str = "",
     ) -> dict[str, Any]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         payload = self._load_config()
@@ -222,14 +225,29 @@ class LeadOpsService:
 
         ledger = self._load_ledger()
         now = datetime.now().isoformat(timespec="seconds")
+        lead_id = self._generate_lead_id()
+        attribution = self._resolve_lead_attribution(
+            source_content_id=source_content_id,
+            cta_source_code=cta_source_code,
+            source=source,
+            platform=platform,
+        )
+        contact_value = str(contact).strip()
         entry = {
-            "id": self._generate_lead_id(),
+            "id": lead_id,
             "created_at": now,
             "account_key": self.settings.account_key,
             "name": str(name).strip(),
-            "contact": str(contact).strip(),
+            "contact": contact_value,
+            "contact_verified": not contact_value.lower().startswith("auto://"),
+            "lead_kind": "real_lead" if not contact_value.lower().startswith("auto://") else "auto_opportunity",
+            "opportunity_kind": "real_lead" if not contact_value.lower().startswith("auto://") else "auto_opportunity",
             "intent": str(intent).strip(),
             "source": str(source).strip(),
+            "source_content_id": attribution["content_id"],
+            "cta_source_code": attribution["cta_source_code"],
+            "attribution_status": attribution["status"],
+            "attribution_platform": str(platform).strip().lower(),
             "status": final_status,
             "notes": str(notes).strip(),
             "estimated_value": float(estimated_value or 0.0),
@@ -246,6 +264,7 @@ class LeadOpsService:
         self._apply_status_side_effects(entry, final_status)
         ledger.insert(0, entry)
         self._save_ledger(ledger)
+        self._sync_lead_revenue(entry)
         self.ensure_assets()
         return entry
 
@@ -284,6 +303,7 @@ class LeadOpsService:
         target["last_action_at"] = datetime.now().isoformat(timespec="seconds")
 
         self._save_ledger(ledger)
+        self._sync_lead_revenue(target)
         self.ensure_assets()
         return target
 
@@ -452,6 +472,10 @@ class LeadOpsService:
         if current_status not in self.TERMINAL_STATUSES:
             target["status"] = "proposal_sent"
             target["proposal_sent_at"] = now
+        elif is_expansion_motion:
+            # An expansion proposal is a new commercial touch even when the
+            # original service lead is already won.
+            target["proposal_sent_at"] = now
         if current_status == "won" and is_expansion_motion:
             target["expansion_proposal_sent_at"] = now
         target["last_action_at"] = now
@@ -562,6 +586,7 @@ class LeadOpsService:
         self._apply_status_side_effects(target, "won")
 
         self._save_ledger(ledger)
+        self._sync_lead_revenue(target)
         self._append_outreach_execution_event(
             {
                 "event_type": "payment_received",
@@ -734,6 +759,9 @@ class LeadOpsService:
             "account_key": self.settings.account_key,
             "name": str(referral_name).strip(),
             "contact": str(referral_contact).strip(),
+            "contact_verified": not str(referral_contact).strip().lower().startswith("auto://"),
+            "lead_kind": "real_lead",
+            "opportunity_kind": "real_lead",
             "intent": str(referral_intent).strip() or "咨询",
             "source": "customer_referral",
             "status": "new",
@@ -887,6 +915,9 @@ class LeadOpsService:
                     continue
                 existing["name"] = title
                 existing["contact"] = contact
+                existing["contact_verified"] = False
+                existing["lead_kind"] = "auto_opportunity"
+                existing["opportunity_kind"] = "auto_opportunity"
                 existing["intent"] = intent
                 existing["source"] = source
                 existing["notes"] = notes
@@ -896,7 +927,9 @@ class LeadOpsService:
                 existing["asset_hint"] = str(item.get("asset_hint", "")).strip()
                 existing["suggested_offer_key"] = str(item.get("recommended_offer_key", "")).strip()
                 existing["suggested_offer_name"] = str(item.get("recommended_offer_name", "")).strip()
-                existing["suggested_offer_price"] = str(item.get("recommended_offer_price", "")).strip()
+                existing["suggested_offer_price"] = self._normalize_offer_price_display(
+                    str(item.get("recommended_offer_price", "")).strip()
+                )
                 existing["suggested_offer_delivery"] = str(item.get("recommended_offer_delivery", "")).strip()
                 existing["customer_segment_key"] = str(item.get("segment_key", "")).strip()
                 existing["customer_segment_name"] = str(item.get("segment_name", "")).strip()
@@ -917,6 +950,9 @@ class LeadOpsService:
                 "account_key": self.settings.account_key,
                 "name": title,
                 "contact": contact,
+                "contact_verified": False,
+                "lead_kind": "auto_opportunity",
+                "opportunity_kind": "auto_opportunity",
                 "intent": intent,
                 "source": source,
                 "status": recommended_status,
@@ -937,7 +973,9 @@ class LeadOpsService:
                 "asset_hint": str(item.get("asset_hint", "")).strip(),
                 "suggested_offer_key": str(item.get("recommended_offer_key", "")).strip(),
                 "suggested_offer_name": str(item.get("recommended_offer_name", "")).strip(),
-                "suggested_offer_price": str(item.get("recommended_offer_price", "")).strip(),
+                "suggested_offer_price": self._normalize_offer_price_display(
+                    str(item.get("recommended_offer_price", "")).strip()
+                ),
                 "suggested_offer_delivery": str(item.get("recommended_offer_delivery", "")).strip(),
                 "customer_segment_key": str(item.get("segment_key", "")).strip(),
                 "customer_segment_name": str(item.get("segment_name", "")).strip(),
@@ -950,7 +988,7 @@ class LeadOpsService:
             inserted += 1
 
         self._save_ledger(ledger)
-        self.ensure_assets()
+        self.enrich_generated_leads_with_recommendations()
         return {
             "generated_at": now,
             "inserted": inserted,
@@ -1216,6 +1254,16 @@ class LeadOpsService:
         status_counts: dict[str, int] = {}
         estimated_revenue = 0.0
         actual_revenue = 0.0
+        estimated_pipeline_revenue = 0.0
+        weighted_pipeline_revenue = 0.0
+        verified_estimated_pipeline_revenue = 0.0
+        verified_weighted_pipeline_revenue = 0.0
+        auto_estimated_pipeline_revenue = 0.0
+        auto_weighted_pipeline_revenue = 0.0
+        verified_leads = 0
+        verified_won_leads = 0
+        verified_qualified_leads = 0
+        verified_proposal_sent_leads = 0
         auto_generated_leads = 0
         auto_generated_qualified_leads = 0
         auto_proposal_ready_leads = 0
@@ -1229,11 +1277,40 @@ class LeadOpsService:
         delivery_completed_leads = 0
         testimonial_requested_leads = 0
         expansion_ready_leads = 0
+        pipeline_weights = {
+            "new": 0.10,
+            "contacted": 0.20,
+            "qualified": 0.35,
+            "proposal_sent": 0.60,
+        }
         for item in ledger:
             key = str(item.get("status", "new")).strip() or "new"
             status_counts[key] = status_counts.get(key, 0) + 1
-            estimated_revenue += float(item.get("estimated_value", 0.0) or 0.0)
+            estimated_value = float(item.get("estimated_value", 0.0) or 0.0)
+            estimated_revenue += estimated_value
             actual_revenue += float(item.get("actual_value", 0.0) or 0.0)
+            is_auto_opportunity = bool(item.get("auto_generated")) or str(
+                item.get("contact", "")
+            ).strip().lower().startswith("auto://")
+            is_verified = bool(item.get("contact_verified")) and not is_auto_opportunity
+            if is_verified:
+                verified_leads += 1
+                if key == "won":
+                    verified_won_leads += 1
+                if key == "qualified":
+                    verified_qualified_leads += 1
+                if key == "proposal_sent":
+                    verified_proposal_sent_leads += 1
+            if key in pipeline_weights and float(item.get("actual_value", 0.0) or 0.0) <= 0:
+                weighted_value = estimated_value * pipeline_weights[key]
+                estimated_pipeline_revenue += estimated_value
+                weighted_pipeline_revenue += weighted_value
+                if is_auto_opportunity:
+                    auto_estimated_pipeline_revenue += estimated_value
+                    auto_weighted_pipeline_revenue += weighted_value
+                elif is_verified:
+                    verified_estimated_pipeline_revenue += estimated_value
+                    verified_weighted_pipeline_revenue += weighted_value
             if bool(item.get("auto_generated")):
                 auto_generated_leads += 1
                 if key == "qualified":
@@ -1264,11 +1341,21 @@ class LeadOpsService:
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "account_key": self.settings.account_key,
             "total_leads": len(ledger),
-            "won_leads": status_counts.get("won", 0),
-            "qualified_leads": status_counts.get("qualified", 0),
-            "proposal_sent_leads": status_counts.get("proposal_sent", 0),
+            "real_leads": verified_leads,
+            "won_leads": verified_won_leads,
+            "qualified_leads": verified_qualified_leads,
+            "proposal_sent_leads": verified_proposal_sent_leads,
             "estimated_revenue": round(estimated_revenue, 2),
             "actual_revenue": round(actual_revenue, 2),
+            "estimated_pipeline_revenue": round(estimated_pipeline_revenue, 2),
+            "weighted_pipeline_revenue": round(weighted_pipeline_revenue, 2),
+            "verified_estimated_pipeline_revenue": round(verified_estimated_pipeline_revenue, 2),
+            "verified_weighted_pipeline_revenue": round(verified_weighted_pipeline_revenue, 2),
+            "auto_estimated_pipeline_revenue": round(auto_estimated_pipeline_revenue, 2),
+            "auto_weighted_pipeline_revenue": round(auto_weighted_pipeline_revenue, 2),
+            "verified_leads": verified_leads,
+            "verified_won_leads": verified_won_leads,
+            "verified_qualified_leads": verified_qualified_leads,
             "auto_generated_leads": auto_generated_leads,
             "auto_generated_qualified_leads": auto_generated_qualified_leads,
             "auto_proposal_ready_leads": auto_proposal_ready_leads,
@@ -1523,6 +1610,19 @@ class LeadOpsService:
         normalized.setdefault("proposal_sent_at", "")
         normalized.setdefault("actual_value", 0.0)
         normalized.setdefault("estimated_value", 0.0)
+        normalized.setdefault("source_content_id", "")
+        normalized.setdefault("cta_source_code", "")
+        normalized.setdefault("attribution_status", "unattributed")
+        normalized.setdefault("attribution_platform", "")
+        contact = str(normalized.get("contact", "")).strip()
+        is_auto_opportunity = bool(normalized.get("auto_generated")) or contact.lower().startswith("auto://")
+        normalized.setdefault("contact_verified", bool(contact) and not is_auto_opportunity)
+        normalized.setdefault("lead_kind", "auto_opportunity" if is_auto_opportunity else "real_lead")
+        normalized.setdefault("opportunity_kind", normalized.get("lead_kind", "real_lead"))
+        if is_auto_opportunity:
+            normalized["contact_verified"] = False
+            normalized["lead_kind"] = "auto_opportunity"
+            normalized["opportunity_kind"] = "auto_opportunity"
         normalized.setdefault("opportunity_id", "")
         normalized.setdefault("opportunity_type", "")
         normalized.setdefault("asset_hint", "")
@@ -1561,6 +1661,103 @@ class LeadOpsService:
             normalized["status"] = status
         self._apply_status_side_effects(normalized, status)
         return normalized
+
+    def _resolve_lead_attribution(
+        self,
+        *,
+        source_content_id: str = "",
+        cta_source_code: str = "",
+        source: str = "",
+        platform: str = "",
+    ) -> dict[str, str]:
+        """Resolve explicit attribution and report ambiguity instead of guessing."""
+        from toutiao_content_factory.services.revenue_attribution_service import (
+            RevenueAttributionService,
+        )
+
+        attribution = RevenueAttributionService(self.settings.output_dir, self.logger)
+        explicit_id = str(source_content_id or "").strip()
+        source_code = str(cta_source_code or "").strip()
+        if not explicit_id and str(source or "").strip().startswith("ci_"):
+            explicit_id = str(source).strip()
+        if explicit_id:
+            resolved = attribution.resolve_content_id(
+                source_content_id=explicit_id,
+                account_key=self.settings.account_key,
+                platform=platform,
+            )
+            return {
+                "content_id": resolved or "",
+                "cta_source_code": source_code,
+                "status": "explicit" if resolved else "unattributed",
+            }
+        if not source_code:
+            return {"content_id": "", "cta_source_code": "", "status": "unattributed"}
+
+        resolved = attribution.resolve_content_id(
+            cta_source_code=source_code,
+            account_key=self.settings.account_key,
+            platform=platform,
+        )
+        index = attribution._load_json(attribution.content_index_path, default={})
+        candidates = []
+        if isinstance(index, dict):
+            for content_id, record in index.items():
+                if not isinstance(record, dict):
+                    continue
+                if str(record.get("cta_source_code", "")).strip().casefold() != source_code.casefold():
+                    continue
+                if str(record.get("account_key", "")).strip() != self.settings.account_key:
+                    continue
+                if platform and str(record.get("platform", "")).strip().lower() != platform.strip().lower():
+                    continue
+                candidates.append(str(content_id))
+        status = "resolved_cta" if resolved else ("ambiguous" if len(candidates) > 1 else "unattributed")
+        return {"content_id": resolved or "", "cta_source_code": source_code, "status": status}
+
+    def _sync_lead_revenue(self, lead: dict[str, Any]) -> None:
+        """Mirror verified lead/deal transitions into the content revenue ledger."""
+        if not bool(lead.get("contact_verified")):
+            return
+        content_id = str(lead.get("source_content_id", "")).strip()
+        lead_id = str(lead.get("id", "")).strip()
+        if not content_id or not lead_id:
+            return
+        try:
+            from toutiao_content_factory.services.revenue_attribution_service import (
+                RevenueAttributionService,
+                RevenueEvent,
+            )
+
+            attribution = RevenueAttributionService(self.settings.output_dir, self.logger)
+            attribution.record_revenue_event(
+                content_id,
+                RevenueEvent(
+                    event_type="lead",
+                    amount=0.0,
+                    source_article_id=content_id,
+                    lead_id=lead_id,
+                    channel=str(lead.get("source", "")).strip(),
+                    event_id=f"lead:{lead_id}",
+                ),
+            )
+            actual_value = float(lead.get("actual_value", 0.0) or 0.0)
+            if str(lead.get("status", "")).strip() == "won" and actual_value > 0:
+                attribution.record_revenue_event(
+                    content_id,
+                    RevenueEvent(
+                        event_type="deal",
+                        amount=actual_value,
+                        source_article_id=content_id,
+                        lead_id=lead_id,
+                        channel=str(lead.get("source", "")).strip(),
+                        occurred_at=str(lead.get("payment_received_at", "") or lead.get("won_at", "")),
+                        event_id=f"deal:{lead_id}",
+                    ),
+                    replace_existing=True,
+                )
+        except Exception as exc:  # pragma: no cover - revenue side effect is best effort
+            self.logger.warning("Lead revenue attribution failed (non-fatal): %s", exc)
 
     def _apply_status_side_effects(self, lead: dict[str, Any], status: str) -> None:
         normalized_status = str(status).strip()
@@ -1602,6 +1799,10 @@ class LeadOpsService:
         except ValueError:
             return 0.0
 
+    def _normalize_offer_price_display(self, price_text: str) -> str:
+        """Keep price ranges compact and consistent in generated sales assets."""
+        return str(price_text or "").strip().replace(" /", "/")
+
     def _generate_lead_id(self) -> str:
         return f"lead_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}"
 
@@ -1618,6 +1819,8 @@ class LeadOpsService:
         mark_as_sent: bool = True,
         auto_generated: bool = False,
     ) -> dict[str, Path | str]:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.proposals_dir.mkdir(parents=True, exist_ok=True)
         revenue_payload = self._load_revenue_config()
         offers = revenue_payload.get("core_offers", []) if isinstance(revenue_payload, dict) else []
         templates = revenue_payload.get("proposal_templates", []) if isinstance(revenue_payload, dict) else []
@@ -1688,7 +1891,9 @@ class LeadOpsService:
         segment = self._find_segment_config_for_lead(lead)
         if segment:
             return str(segment.get("recommended_offer_key", "")).strip()
-        return ""
+        # A low-friction diagnosis is the safest default when an automated
+        # opportunity has no segment metadata yet.
+        return "content_diagnosis"
 
     def _recommend_outreach_channel_for_lead(self, lead: dict[str, Any]) -> str:
         explicit = str(lead.get("preferred_outreach_channel", "")).strip()
@@ -2546,7 +2751,9 @@ class LeadOpsService:
                 lead["suggested_offer_name"] = str(offer.get("name", "")).strip()
                 changed = True
             if not str(lead.get("suggested_offer_price", "")).strip():
-                lead["suggested_offer_price"] = str(offer.get("price", "")).strip()
+                lead["suggested_offer_price"] = self._normalize_offer_price_display(
+                    str(offer.get("price", "")).strip()
+                )
                 changed = True
             if not str(lead.get("suggested_offer_delivery", "")).strip():
                 lead["suggested_offer_delivery"] = str(offer.get("delivery", "")).strip()

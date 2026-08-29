@@ -22,6 +22,12 @@ GitHub 的定时任务可能因平台负载延迟几分钟，不能保证精确�
 - `CLOUD_DEFAULT_ACCOUNT`，例如 `robot_notes`
 - `CLOUD_TOUTIAO_AUTOPUBLISH=true`
 
+如果希望登录过期、发布鉴权失败等紧急情况通过微信提醒，再设置：
+
+- `SERVERCHAN_SENDKEY`：方糖（Server酱）SendKey
+
+配置后，GitHub Actions 会在云端检测到登录态失效时通过方糖推送提醒。SendKey 只放在 GitHub Secrets 中，不要提交到代码仓库。
+
 只有需要同步 135 编辑器到微信公众号时，才设置：
 
 - `CLOUD_WECHAT_VIA_135_AUTOPUBLISH=true`

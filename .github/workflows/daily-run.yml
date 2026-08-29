@@ -216,6 +216,7 @@ jobs:
 
       # ---- 发布结果通知 ----
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
 
     steps:
       - name: Checkout repository
@@ -913,6 +914,10 @@ jobs:
       PROMPT_OPTIMIZER_ENABLED: "0"
       PROMPT_OPTIMIZER_BASE_URL: "http://localhost:8501"
       RUFLO_ENABLED: "0"
+
+      # ---- 发布结果通知 ----
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
 
     steps:
       - name: Checkout repository

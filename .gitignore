@@ -79,6 +79,7 @@ cookies_dl.json
 cookies_*.json
 *_cookies.json
 cookie_dump*.json
+browser_profiles_seed.tar.gz
 
 # 运行日志（根目录散落的调试日志）
 *.log

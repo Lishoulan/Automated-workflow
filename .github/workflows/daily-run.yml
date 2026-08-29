@@ -39,7 +39,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   daily-run:
@@ -324,6 +324,46 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      - name: Resolve account runtime paths
+        id: resolve-account-paths
+        shell: bash
+        run: |
+          ACCOUNT_PATHS_FILE="$(mktemp)"
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python - "$RUN_ACCOUNT" <<'PY' > "$ACCOUNT_PATHS_FILE"
+          import sys
+          from pathlib import Path
+
+          from toutiao_content_factory.config import load_settings
+
+          root = Path.cwd().resolve()
+          settings = load_settings(root, account_key=sys.argv[1])
+
+          def workspace_relative(path: Path) -> str:
+              resolved = path if path.is_absolute() else root / path
+              resolved = resolved.resolve()
+              try:
+                  return resolved.relative_to(root).as_posix()
+              except ValueError:
+                  return str(resolved)
+
+          print(f"ACCOUNT_SLUG={settings.account_slug}")
+          print(f"ACCOUNT_RUNTIME_DIR={workspace_relative(settings.account_runtime_dir)}")
+          print(f"ACCOUNT_OUTPUT_DIR={workspace_relative(settings.output_dir)}")
+          print(f"TOUTIAO_PROFILE_DIR={workspace_relative(Path(settings.publishing.user_data_dir))}")
+          PY
+          cat "$ACCOUNT_PATHS_FILE" >> "$GITHUB_ENV"
+          cat "$ACCOUNT_PATHS_FILE" >> "$GITHUB_OUTPUT"
+          set -a
+          . "$ACCOUNT_PATHS_FILE"
+          set +a
+          rm -f "$ACCOUNT_PATHS_FILE"
+
+          echo "Resolved account runtime paths:"
+          echo "  slug=$ACCOUNT_SLUG"
+          echo "  runtime=$ACCOUNT_RUNTIME_DIR"
+          echo "  output=$ACCOUNT_OUTPUT_DIR"
+          echo "  toutiao_profile=$TOUTIAO_PROFILE_DIR"
+
       - name: Install Playwright chromium
         run: |
           playwright install chromium
@@ -392,33 +432,33 @@ jobs:
             output/accounts/*/wechat_publish_history.json
             output/accounts/*/automation/last_daily_run_result.json
             output/automation/last_daily_run_result.json
-          key: daily-publish-history-${{ github.run_id }}
+          key: daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-${{ github.run_id }}
           restore-keys: |
-            daily-publish-history-
+            daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-
 
       - name: Restore browser profile cache
         uses: actions/cache@v4
         with:
           path: .runtime/
-          key: browser-profile-${{ github.ref_name }}-${{ github.run_number }}
+          key: browser-profile-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-${{ github.run_number }}
           restore-keys: |
-            browser-profile-${{ github.ref_name }}-
+            browser-profile-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-
 
       - name: Seed browser profiles from release
         run: |
           NEED_SEED=false
           # 根据账号动态确定 toutiao profile 路径
-          if [ "$RUN_ACCOUNT" = "default" ]; then
-            TOUTIAO_PROFILE_DIR=".runtime/toutiao_profile"
-          else
-            TOUTIAO_PROFILE_DIR=".runtime/accounts/$RUN_ACCOUNT/toutiao_profile"
-          fi
+          # This path comes from config.yaml. Account keys may use underscores
+          # while their on-disk slugs use hyphens.
           REQUIRED_PROFILES="$TOUTIAO_PROFILE_DIR"
+          WECHAT_PROFILE_DIR=".runtime/wechat_profile"
           if [ "${WECHAT_EDITOR_135_ENABLED}" = "1" ]; then
-            REQUIRED_PROFILES="$REQUIRED_PROFILES .runtime/editor_135_profile"
+            WECHAT_PROFILE_DIR="$WECHAT_EDITOR_135_PROFILE_DIR"
           else
-            REQUIRED_PROFILES="$REQUIRED_PROFILES .runtime/wechat_profile"
+            WECHAT_PROFILE_DIR="$WECHAT_BROWSER_PROFILE_DIR"
           fi
+          REQUIRED_PROFILES="$REQUIRED_PROFILES $WECHAT_PROFILE_DIR"
+          echo "WECHAT_PROFILE_DIR=$WECHAT_PROFILE_DIR" >> "$GITHUB_ENV"
           for profile in $REQUIRED_PROFILES; do
             if [ ! -d "$profile" ] || [ -z "$(ls -A $profile 2>/dev/null)" ]; then
               echo "Profile $profile is missing or empty, need seed."
@@ -440,8 +480,9 @@ jobs:
             echo "Downloading seed from release..."
             echo "Toutiao profile dir for account '$RUN_ACCOUNT': $TOUTIAO_PROFILE_DIR"
             # 清理可能存在的旧 profile(default 路径 + 账号子目录)
-            rm -rf .runtime/toutiao_profile .runtime/wechat_profile .runtime/editor_135_profile
-            rm -rf .runtime/accounts/*/toutiao_profile 2>/dev/null || true
+            # Only clear the exact profiles used by this run. The account slug
+            # may differ from the account key (robot_notes -> robot-notes).
+            rm -rf "$TOUTIAO_PROFILE_DIR" "$WECHAT_PROFILE_DIR"
             gh release download browser-profiles-v1 --repo Lishoulan/Automated-workflow --pattern "browser_profiles_seed.tar.gz" --dir /tmp/
             mkdir -p .runtime
             tar xzf /tmp/browser_profiles_seed.tar.gz -C .runtime/
@@ -465,7 +506,7 @@ jobs:
           echo "Checking for exported cookies..."
           COOKIES_FILE=""
           # 用 gh api 下载(避免 gh release download 的 CDN 缓存问题)
-          ASSET_URL=$(gh api repos/Lishoulan/Automated-workflow/releases/tags/browser-profilees-v1 \
+          ASSET_URL=$(gh api repos/Lishoulan/Automated-workflow/releases/tags/browser-profiles-v1 \
               --jq '.assets[] | select(.name=="exported_cookies.json") | .url' 2>/dev/null)
           if [ -n "$ASSET_URL" ]; then
             gh api "$ASSET_URL" -H "Accept: application/octet-stream" > /tmp/exported_cookies.json 2>/dev/null
@@ -488,11 +529,9 @@ jobs:
             mkdir -p .runtime/automation
             cp "$COOKIES_FILE" .runtime/automation/exported_cookies.json 2>/dev/null || true
             # 同时复制到账号对应的目录，供 cloud_daily_run 降级流程的 _resolve_cookies_file 查找
-            if [ "$RUN_ACCOUNT" != "default" ]; then
-              mkdir -p ".runtime/accounts/$RUN_ACCOUNT/automation"
-              cp "$COOKIES_FILE" ".runtime/accounts/$RUN_ACCOUNT/automation/exported_cookies.json" 2>/dev/null || true
-              echo "Also copied cookies to .runtime/accounts/$RUN_ACCOUNT/automation/exported_cookies.json"
-            fi
+            mkdir -p "$ACCOUNT_RUNTIME_DIR/automation"
+            cp "$COOKIES_FILE" "$ACCOUNT_RUNTIME_DIR/automation/exported_cookies.json" 2>/dev/null || true
+            echo "Also copied cookies to $ACCOUNT_RUNTIME_DIR/automation/exported_cookies.json"
             echo "Verifying cookie file copy..."
             ls -la .runtime/automation/exported_cookies.json 2>/dev/null || echo "WARNING: cookie file not found at .runtime/automation/"
             if python scripts/inject_cookies.py --input "$COOKIES_FILE" --headless \
@@ -517,7 +556,7 @@ jobs:
       - name: Debug cookie file status
         run: |
           echo "=== Cookie file check ==="
-          for dir in .runtime/toutiao_profile .runtime/accounts/robot-notes/toutiao_profile; do
+          for dir in "$TOUTIAO_PROFILE_DIR" "$WECHAT_PROFILE_DIR"; do
             echo "--- $dir ---"
             if [ -d "$dir" ]; then
               find "$dir" -name "Cookies*" -type f -exec stat -c "%n size=%s mtime=%y" {} \; 2>/dev/null || echo "No Cookies files"
@@ -616,8 +655,8 @@ jobs:
         run: |
           # 尝试 account-aware 路径，再回退到默认路径
           RESULT_FILE=""
-          if [ -f "output/accounts/${RUN_ACCOUNT}/automation/last_daily_run_result.json" ]; then
-            RESULT_FILE="output/accounts/${RUN_ACCOUNT}/automation/last_daily_run_result.json"
+          if [ -f "$ACCOUNT_OUTPUT_DIR/automation/last_daily_run_result.json" ]; then
+            RESULT_FILE="$ACCOUNT_OUTPUT_DIR/automation/last_daily_run_result.json"
           elif [ -f "output/automation/last_daily_run_result.json" ]; then
             RESULT_FILE="output/automation/last_daily_run_result.json"
           fi
@@ -627,11 +666,26 @@ jobs:
             PUBLISH_STATUS=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('publish_status', ''))" 2>/dev/null || echo "")
             PUBLISH_PGC_ID=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('publish_pgc_id', ''))" 2>/dev/null || echo "")
             SELECTED_TITLE=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('selected_title', ''))" 2>/dev/null || echo "")
+            WORKFLOW_STATUS=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('workflow_status', ''))" 2>/dev/null || echo "")
+            WORKFLOW_ERROR_COUNT=$(python -c "import json; value=json.load(open('$RESULT_FILE')).get('workflow_errors', []); print(len(value) if isinstance(value, list) else 0)" 2>/dev/null || echo "0")
+
+            # Older application versions wrote status=success even when a
+            # platform publish failed. Treat the structured workflow report as
+            # authoritative so the cloud job cannot silently claim success.
+            if [ "$WORKFLOW_STATUS" = "platform_publish_failed" ] || [ "$WORKFLOW_ERROR_COUNT" -gt 0 ] && [ "$STATUS" = "success" ]; then
+              STATUS="failed"
+            elif [ "$WORKFLOW_STATUS" = "platform_partial_success" ] && [ "$STATUS" = "success" ]; then
+              STATUS="partial_success"
+            fi
+
             echo "run-status=$STATUS" >> $GITHUB_OUTPUT
             echo "run-account=$ACCOUNT" >> $GITHUB_OUTPUT
             echo "publish-status=$PUBLISH_STATUS" >> $GITHUB_OUTPUT
             echo "publish-pgc-id=$PUBLISH_PGC_ID" >> $GITHUB_OUTPUT
             echo "selected-title=$SELECTED_TITLE" >> $GITHUB_OUTPUT
+            echo "workflow-status=$WORKFLOW_STATUS" >> $GITHUB_OUTPUT
+            echo "RUN_STATUS=$STATUS" >> "$GITHUB_ENV"
+            echo "RUN_WORKFLOW_STATUS=$WORKFLOW_STATUS" >> "$GITHUB_ENV"
             if [ "$STATUS" = "degraded_to_draft" ]; then
               echo "::warning::定时任务降级为草稿模式（publish_status=draft_saved），文章未发布到头条公域。请检查 precheck_report.json 确认降级原因。"
             fi
@@ -648,7 +702,27 @@ jobs:
             # 主 job 在 pipeline 运行前失败（如 cookie 注入阶段），使用实际运行账号而非硬编码 default
             echo "run-status=unknown" >> $GITHUB_OUTPUT
             echo "run-account=${RUN_ACCOUNT:-default}" >> $GITHUB_OUTPUT
+            echo "RUN_STATUS=unknown" >> "$GITHUB_ENV"
           fi
+
+      - name: Enforce publish result
+        if: always()
+        shell: bash
+        run: |
+          if [ "$RUN_PUBLISH_TOUTIAO" != "true" ] && [ "$RUN_PUBLISH_WECHAT_VIA_135" != "true" ]; then
+            echo "No automatic platform publish was requested; content-only run is allowed."
+            exit 0
+          fi
+
+          case "${RUN_STATUS:-unknown}" in
+            failed|partial_success|publish_login_required|publish_uncertain|degraded_to_draft)
+              echo "::error::Automatic publish did not complete: status=${RUN_STATUS}, workflow_status=${RUN_WORKFLOW_STATUS:-unknown}"
+              exit 1
+              ;;
+            *)
+              echo "Automatic publish result accepted: status=${RUN_STATUS:-unknown}"
+              ;;
+          esac
 
       - name: Upload output artifacts
         if: always()
@@ -665,7 +739,9 @@ jobs:
           retention-days: 7
 
       - name: Update browser profile seed
-        if: success()
+        # A cloud runner is not a trusted source for a fresh login profile.
+        # Seed assets are refreshed locally and uploaded only after re-login.
+        if: ${{ false }}
         run: |
           echo "Updating browser profile seed with fresh cookies..."
           PYTHONUTF8=1 python scripts/pack_browser_profiles.py --account "$RUN_ACCOUNT" || true
@@ -686,7 +762,11 @@ jobs:
   # 备用 job：主 job 失败或被 blocked 时以草稿模式重跑，保证至少产出草稿内容
   daily-run-fallback:
     needs: daily-run
-    if: failure() || needs.daily-run.outputs.run-status == 'blocked'
+    if: >-
+      needs.daily-run.result == 'failure' &&
+      (needs.daily-run.outputs.run-status == '' ||
+       needs.daily-run.outputs.run-status == 'unknown' ||
+       needs.daily-run.outputs.run-status == 'blocked')
     runs-on: ubuntu-latest
     timeout-minutes: 45
 

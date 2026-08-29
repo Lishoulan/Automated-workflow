@@ -24,6 +24,11 @@ function Write-Warn($Message) {
 }
 
 function Resolve-PythonCommand {
+    $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+    if (Test-Path -LiteralPath $venvPython) {
+        return $venvPython
+    }
+
     foreach ($name in @("py", "python")) {
         $cmd = Get-Command $name -ErrorAction SilentlyContinue
         if ($cmd) {

@@ -758,11 +758,13 @@ def main() -> int:
     # 2. 加载 .env
     _load_dotenv()
 
-    # 3. 配置云端环境变量
-    _configure_cloud_env(account_key)
-
-    # 4. 配置 PYTHONPATH
+    # 3. 配置 PYTHONPATH before cloud environment checks. The account-aware
+    # profile resolver imports the src package, so doing this later makes
+    # non-default accounts look like they have no browser profile.
     _configure_pythonpath()
+
+    # 4. 配置云端环境变量
+    _configure_cloud_env(account_key)
 
     # 4.5 健康检查阻塞降级（在调用 main.py 之前预先检测 toutiao blocked）
     # 降级优先级: 重新注入 cookie → 草稿模式 → 告警

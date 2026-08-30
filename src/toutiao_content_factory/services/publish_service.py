@@ -192,6 +192,7 @@ class PublishService:
         self.precheck_service = PublishPrecheckService(
             account=settings.account_key, logger=logger,
         )
+        self._last_inline_image_assets: list[Path] = []
 
     def _launch_persistent_browser(self, playwright, *, profile_dir: Path):
         proxy_server = get_proxy_server()
@@ -1015,6 +1016,16 @@ class PublishService:
                         lambda: self._set_title_content(page, title_locator, title, notes),
                         description="set_title_content",
                     )
+                    inline_image_paths = self._resolve_toutiao_inline_image_assets(run_dir, notes)
+                    inline_image_inserted = 0
+                    if inline_image_paths:
+                        inline_image_inserted = self._try_apply_article_images(
+                            page,
+                            editor_selector,
+                            article,
+                            inline_image_paths,
+                            notes,
+                        )
                     self._nudge_editor_to_trigger_autosave(page, editor_selector, notes)
                     self._apply_default_work_declarations(page, notes)
                     self._apply_safe_publish_options(page, notes, declare_first_release=declare_first_release)
@@ -1036,6 +1047,19 @@ class PublishService:
                         self._apply_cover_image(page, cover_path, notes)
                     else:
                         self._ensure_no_cover_mode(page, notes)
+                    self._verify_publish_media_state(
+                        page,
+                        editor_selector,
+                        cover_mode=cover_mode,
+                        expected_inline_images=inline_image_inserted,
+                    )
+                    inline_image_summary = {
+                        "enabled": bool(getattr(self.settings.publishing, "inline_images_enabled", True)),
+                        "expected_count": len(inline_image_paths),
+                        "inserted_count": inline_image_inserted,
+                        "available_assets": [path.name for path in inline_image_paths],
+                        "inserted_assets": [path.name for path in self._last_inline_image_assets],
+                    }
                     self._stabilize_publish_form(page, notes)
 
                     diagnostics = self._build_publish_diagnostics(diagnostic_events)
@@ -1064,6 +1088,7 @@ class PublishService:
                             "external_url": page.url,
                             "notes": self._finalize_notes(notes),
                             "cover_mode": cover_mode,
+                            "inline_images": inline_image_summary,
                             "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
                             "backend_response_summary": {},
                             "publish_request_summary": {
@@ -1091,6 +1116,7 @@ class PublishService:
                                 "external_url": page.url,
                                 "notes": self._finalize_notes(notes),
                                 "cover_mode": cover_mode,
+                                "inline_images": inline_image_summary,
                                 "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
                                 "backend_response_summary": self._compact_backend_response(response_json),
                                 "publish_request_summary": {
@@ -1172,6 +1198,7 @@ class PublishService:
                         "external_url": page.url,
                         "notes": self._finalize_notes(notes),
                         "cover_mode": cover_mode,
+                        "inline_images": inline_image_summary,
                         "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
                         "backend_response_summary": self._compact_backend_response(response_payload),
                         "publish_request_summary": {
@@ -1452,6 +1479,39 @@ class PublishService:
         if not path.is_absolute():
             path = self.settings.project_root / path
         return path
+
+    def _resolve_toutiao_inline_image_assets(
+        self,
+        run_dir: Path | None,
+        notes: list[str],
+    ) -> list[Path]:
+        """Resolve generated infographic files that can be inserted in the body."""
+        self._last_inline_image_assets = []
+        if not bool(getattr(self.settings.publishing, "inline_images_enabled", True)):
+            notes.append("Toutiao inline article images disabled by configuration.")
+            return []
+        if run_dir is None:
+            notes.append("Skipped inline article images because no run directory was provided.")
+            return []
+
+        publish_images_dir = run_dir / self.settings.review.publish_dirname / "images"
+        run_images_dir = run_dir / "images"
+        assets: list[Path] = []
+        for filename in ("infographic_1.png", "infographic_2.png"):
+            for root in (publish_images_dir, run_images_dir):
+                candidate = root / filename
+                if candidate.is_file() and candidate.stat().st_size > 0:
+                    assets.append(candidate)
+                    break
+
+        if assets:
+            notes.append(
+                f"Resolved {len(assets)} Toutiao inline article image asset(s): "
+                + ", ".join(path.name for path in assets)
+            )
+        else:
+            notes.append("No generated infographic assets found; publishing without inline article images.")
+        return assets
 
     def _resolve_toutiao_cover_asset(self, run_dir: Path | None, notes: list[str]) -> Path | None:
         if run_dir is None:
@@ -2032,6 +2092,7 @@ class PublishService:
         *,
         first_image_as_cover: bool = False,
     ) -> int:
+        self._last_inline_image_assets = []
         available_images = self._dedupe_article_image_paths(image_paths, notes)
         if not available_images:
             notes.append("Article images not found. Skipping inline image upload.")
@@ -2046,6 +2107,7 @@ class PublishService:
         for image_path, target_paragraph in zip(available_images, target_paragraphs):
             if self._try_apply_article_image(page, editor_selector, image_path, notes, target_paragraph=target_paragraph):
                 inserted += 1
+                self._last_inline_image_assets.append(image_path)
         return inserted
 
     def _dedupe_article_image_paths(self, image_paths: list[Path], notes: list[str]) -> list[Path]:

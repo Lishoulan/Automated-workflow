@@ -6,6 +6,7 @@ import logging
 import os
 import platform
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -267,29 +268,52 @@ class ImageGenerationService:
         if cr.exists():
             Image.open(cr).save(cp, format="PNG")
         ips = []
+        publish_infographic_paths = []
+        infographic_specs = []
         if include_infographics:
-            prompts = self._load_infographic_prompts(publish_dir)
-            for idx, pt in enumerate(prompts[:3], start=1):
+            infographic_specs = self._build_infographic_specs(
+                run_dir=run_dir,
+                publish_dir=publish_dir,
+                publish_meta=pm,
+                title=title,
+            )
+            max_assets = max(0, min(3, int(getattr(self.settings.image_generation, "max_generated_assets", 2) or 2)))
+            for idx, spec in enumerate(infographic_specs[:max_assets], start=1):
+                pt = str(spec.get("prompt", "")).strip() or title
                 rp = ri / ("infographic_" + str(idx) + ".png")
                 pp = pi / ("infographic_" + str(idx) + ".png")
                 # Try frontend renderer for infographic
                 infographic_frontend = False
                 if renderer is not None:
                     try:
-                        result_path = renderer.render_infographic(pt, str(rp))
+                        result_path = renderer.render_infographic(
+                            str(spec.get("title", title)),
+                            str(rp),
+                            eyebrow=str(spec.get("eyebrow", "关键数据")),
+                            metrics=list(spec.get("metrics", [])),
+                            section_title=str(spec.get("section_title", "核心要点")),
+                            items=list(spec.get("items", [])),
+                        )
                         if result_path and rp.exists():
                             infographic_frontend = True
                     except Exception as e:
                         self.logger.debug("Frontend infographic %d failed: %s", idx, e)
                 if not infographic_frontend:
                     try:
-                        gen_infographic(pt, str(rp))
+                        fallback_text = "\n".join(
+                            [
+                                str(spec.get("title", title)),
+                                *[str(item) for item in spec.get("items", [])[:6]],
+                            ]
+                        )
+                        gen_infographic(fallback_text or pt, str(rp))
                     except Exception as e:
                         self.logger.warning("Infographic %d skipped: %s", idx, e)
                         continue
                 if rp.exists():
                     Image.open(rp).save(pp, format="PNG")
-                ips.append(rp)
+                    ips.append(rp)
+                    publish_infographic_paths.append(pp)
         else:
             for d in (pi, ri):
                 for f in sorted(d.glob("infographic_*.png")):
@@ -302,6 +326,12 @@ class ImageGenerationService:
             "cover_prompt": title,
             "infographic_prompts": [str(p) for p in ips],
             "artifacts": {"cover": str(cr), "infographics": [str(p) for p in ips]},
+            "publish_artifacts": {
+                "cover": str(cp),
+                "infographics": [str(p) for p in publish_infographic_paths],
+            },
+            "inline_ready": bool(publish_infographic_paths),
+            "infographic_specs": infographic_specs[:len(ips)],
         }
         rp = publish_dir / "image_generation_result.json"
         rp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -330,6 +360,173 @@ class ImageGenerationService:
         if isinstance(pts, list):
             return [str(p).strip() for p in pts if str(p).strip()]
         return []
+
+    def _build_infographic_specs(
+        self,
+        *,
+        run_dir: Path,
+        publish_dir: Path,
+        publish_meta: dict[str, Any],
+        title: str,
+    ) -> list[dict[str, Any]]:
+        """Build small, evidence-backed visual briefs for article inserts.
+
+        The visual layer must not invent metrics. It first reuses explicit
+        prompts when a caller supplied them, then derives labels and points
+        from the persisted workflow data and the final publish article.
+        """
+        workflow = self._load_json(run_dir / "workflow_result.json")
+        raw_data_report = workflow.get("data_report", {}) if isinstance(workflow, dict) else {}
+        data_report = raw_data_report if isinstance(raw_data_report, dict) else {}
+        article = self._read_text(publish_dir / "article.md")
+        topic = str((publish_meta.get("selected_topic") or {}).get("title", "")).strip()
+
+        fact_items = self._unique_visual_items(
+            [
+                *self._text_list(data_report.get("core_data")),
+                *self._text_list(data_report.get("evidence_notes")),
+                *self._text_list(data_report.get("key_points")),
+                *self._article_paragraphs(article),
+                str(publish_meta.get("summary", "")),
+            ],
+            limit=5,
+        )
+        tracking_items = self._unique_visual_items(
+            [
+                *self._text_list(data_report.get("watch_metrics")),
+                *self._text_list(data_report.get("risk_flags")),
+                *self._text_list(data_report.get("key_points")),
+                *self._article_paragraphs(article)[-3:],
+            ],
+            limit=5,
+        ) or fact_items
+        metrics = self._extract_visual_metrics(
+            [
+                *self._text_list(data_report.get("growth_numbers")),
+                *self._text_list(data_report.get("core_data")),
+                article,
+            ]
+        )
+        evidence_strength = data_report.get("evidence_strength")
+        if not metrics and str(evidence_strength).strip().isdigit() and int(evidence_strength) > 0:
+            metrics = [{"label": "证据强度", "value": str(int(evidence_strength)), "unit": "/100"}]
+
+        explicit_prompts = self._load_infographic_prompts(publish_dir)
+        if explicit_prompts:
+            specs: list[dict[str, Any]] = []
+            for index, prompt in enumerate(explicit_prompts[:3], start=1):
+                specs.append(
+                    {
+                        "title": self._clip_visual_text(title, 42),
+                        "eyebrow": "关键数据" if index == 1 else "跟踪框架",
+                        "section_title": "文章中的事实锚点" if index == 1 else "后续观察重点",
+                        "metrics": metrics,
+                        "items": fact_items if index == 1 else tracking_items,
+                        "prompt": prompt,
+                    }
+                )
+            return specs
+
+        topic_label = topic or title
+        return [
+            {
+                "title": self._clip_visual_text(topic_label, 42),
+                "eyebrow": "关键数据",
+                "section_title": "文章中的事实锚点",
+                "metrics": metrics,
+                "items": fact_items,
+                "prompt": f"Evidence-backed facts for: {topic_label}",
+            },
+            {
+                "title": self._clip_visual_text(topic_label, 42),
+                "eyebrow": "跟踪框架",
+                "section_title": "后续观察重点",
+                "metrics": [],
+                "items": tracking_items,
+                "prompt": f"Evidence-backed follow-up checklist for: {topic_label}",
+            },
+        ]
+
+    @staticmethod
+    def _text_list(value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if value is None:
+            return []
+        text = str(value).strip()
+        return [text] if text else []
+
+    @staticmethod
+    def _article_paragraphs(article: str) -> list[str]:
+        raw_blocks = re.split(r"\n\s*\n", str(article or ""))
+        paragraphs = []
+        for block in raw_blocks:
+            cleaned = re.sub(r"^\s*#+\s*", "", block.strip())
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if cleaned:
+                paragraphs.append(cleaned)
+        return paragraphs
+
+    @classmethod
+    def _unique_visual_items(cls, values: list[str], limit: int) -> list[str]:
+        items: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            cleaned = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", str(value or ""))
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if len(cleaned) < 8:
+                continue
+            cleaned = cls._clip_visual_text(cleaned, 96)
+            key = re.sub(r"\W+", "", cleaned).lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            items.append(cleaned)
+            if len(items) >= limit:
+                break
+        return items
+
+    @staticmethod
+    def _clip_visual_text(text: str, limit: int) -> str:
+        value = re.sub(r"\s+", " ", str(text or "")).strip()
+        if len(value) <= limit:
+            return value
+        return value[: max(1, limit - 3)].rstrip() + "..."
+
+    @staticmethod
+    def _extract_visual_metrics(values: list[str]) -> list[dict[str, str]]:
+        metric_pattern = re.compile(
+            r"(?P<value>\d+(?:\.\d+)?(?:\s*[-~至—]\s*\d+(?:\.\d+)?)?)\s*"
+            r"(?P<unit>万亿元|亿元|万元|万辆|万台|GWh|MWh|kWh|GW|MW|km/h|个月|小时|分钟|天|%|％)",
+            re.IGNORECASE,
+        )
+        metrics: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for source in values:
+            text = str(source or "")
+            for match in metric_pattern.finditer(text):
+                value = re.sub(r"\s+", "", match.group("value"))
+                unit = match.group("unit")
+                key = (value, unit.lower())
+                if key in seen:
+                    continue
+                prefix = re.sub(r"\s+", "", text[max(0, match.start() - 14):match.start()])
+                prefix = prefix.strip("，,：:；;、")
+                label = prefix[-10:] if prefix else "数据锚点"
+                metrics.append({"label": label, "value": value, "unit": unit})
+                seen.add(key)
+                if len(metrics) >= 3:
+                    return metrics
+        return metrics
+
+    @staticmethod
+    def _read_text(path: Path) -> str:
+        if not path.exists():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
 
     @staticmethod
     def _now():

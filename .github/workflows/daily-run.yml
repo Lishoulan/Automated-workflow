@@ -119,6 +119,7 @@ jobs:
       TOUTIAO_ALLOW_DUPLICATE_TOPICS: "0"
       TOUTIAO_TITLE_MAX_LENGTH: "30"
       TOUTIAO_PUBLISH_COVER_MODE: ${{ secrets.TOUTIAO_PUBLISH_COVER_MODE || 'single' }}
+      TOUTIAO_INLINE_IMAGES_ENABLED: ${{ secrets.TOUTIAO_INLINE_IMAGES_ENABLED || '1' }}
 
       # 微信发布（云端只生成内容，不发布，发布留给本地）
       WECHAT_ENABLED: "0"
@@ -839,6 +840,7 @@ jobs:
       TOUTIAO_ALLOW_DUPLICATE_TOPICS: "0"
       TOUTIAO_TITLE_MAX_LENGTH: "30"
       TOUTIAO_PUBLISH_COVER_MODE: ${{ secrets.TOUTIAO_PUBLISH_COVER_MODE || 'single' }}
+      TOUTIAO_INLINE_IMAGES_ENABLED: ${{ secrets.TOUTIAO_INLINE_IMAGES_ENABLED || '1' }}
 
       # 微信发布（备用 job 不发布）
       WECHAT_ENABLED: "0"

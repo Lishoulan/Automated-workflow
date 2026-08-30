@@ -396,6 +396,8 @@ class PublishSettings:
     title_max_length: int
     cover_mode: str
     selectors: dict[str, list[str]]
+    # Add evidence-backed images inside the Toutiao article body.
+    inline_images_enabled: bool = True
     weitoutiao_enabled: bool = False
     weitoutiao_publish_url: str = ""
     weitoutiao_selectors: dict[str, list[str]] = field(default_factory=dict)
@@ -441,6 +443,7 @@ class PublishSettings:
             title_max_length=int(payload.get("title_max_length", 30)),
             cover_mode=str(payload.get("cover_mode", "auto")),
             selectors=selectors,
+            inline_images_enabled=bool(payload.get("inline_images_enabled", True)),
             weitoutiao_enabled=bool(payload.get("weitoutiao_enabled", False)),
             weitoutiao_publish_url=str(payload.get("weitoutiao_publish_url", "")),
             weitoutiao_selectors=weitoutiao_selectors,
@@ -1344,6 +1347,10 @@ def _load_publishing_config_final(
         ),
         cover_mode=os.getenv("TOUTIAO_PUBLISH_COVER_MODE", publishing_config.cover_mode),
         selectors=publishing_config.selectors,
+        inline_images_enabled=_env_flag(
+            "TOUTIAO_INLINE_IMAGES_ENABLED",
+            publishing_config.inline_images_enabled,
+        ),
         weitoutiao_enabled=_env_flag("TOUTIAO_WEITOUTIAO_ENABLED", publishing_config.weitoutiao_enabled),
         weitoutiao_publish_url=os.getenv("TOUTIAO_WEITOUTIAO_PUBLISH_URL", publishing_config.weitoutiao_publish_url),
         weitoutiao_selectors=publishing_config.weitoutiao_selectors,
@@ -1832,6 +1839,7 @@ def _default_config_payload() -> dict[str, Any]:
             "allow_duplicate_topics": False,
             "title_max_length": 30,
             "cover_mode": "none",
+            "inline_images_enabled": True,
             "weitoutiao_enabled": False,
             "weitoutiao_publish_url": "https://mp.toutiao.com/profile_v4/weitoutiao/publish",
             "weitoutiao_daily_target": 1,

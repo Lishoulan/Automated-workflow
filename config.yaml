@@ -310,6 +310,7 @@
     "allow_duplicate_topics": false,
     "title_max_length": 30,
     "cover_mode": "three",
+    "inline_images_enabled": true,
     "weitoutiao_enabled": true,
     "weitoutiao_publish_url": "https://mp.toutiao.com/profile_v4/weitoutiao/publish",
     "weitoutiao_daily_target": 3,

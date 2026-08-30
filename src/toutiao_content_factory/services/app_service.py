@@ -1462,7 +1462,12 @@ class ContentFactoryAppService:
 
     def generate_images_for_run(self, run_dir: str | None = None) -> dict[str, str]:
         resolved = self.review_service.resolve_run_dir(run_dir)
-        if (not self.settings.wechat.enabled) and str(self.settings.publishing.cover_mode or "auto").strip().lower() == "none":
+        inline_images_enabled = bool(getattr(self.settings.publishing, "inline_images_enabled", True))
+        if (
+            not self.settings.wechat.enabled
+            and str(self.settings.publishing.cover_mode or "auto").strip().lower() == "none"
+            and not inline_images_enabled
+        ):
             publish_dir = resolved / self.settings.review.publish_dirname
             skipped_path = publish_dir / "image_generation_skipped.json"
             skipped_payload = {
@@ -1476,9 +1481,9 @@ class ContentFactoryAppService:
                 "resolved_run_dir": str(resolved),
                 "image_generation_skipped": str(skipped_path),
             }
-        # 头条三图封面也需要 infographic 作为封面素材，故三图模式下即使无微信也生成
+        # Toutiao body images and three-image covers both consume infographics.
         cover_mode = str(self.settings.publishing.cover_mode or "auto").strip().lower()
-        include_infographics = bool(self.settings.wechat.enabled) or cover_mode == "three"
+        include_infographics = bool(self.settings.wechat.enabled) or cover_mode == "three" or inline_images_enabled
         result = self.image_generation_service.generate_for_run(resolved, include_infographics=include_infographics)
         exported = {name: str(path) for name, path in result.items()}
         exported["resolved_run_dir"] = str(resolved)
@@ -2524,6 +2529,7 @@ class ContentFactoryAppService:
         platform_results: dict[str, dict[str, object]] = {}
         platform_errors: list[str] = []
         weitoutiao_enabled = bool(self.settings.publishing.weitoutiao_enabled)
+        inline_images_enabled = bool(getattr(self.settings.publishing, "inline_images_enabled", True))
         companion: dict[str, Any] = {
             "status": "not_attempted" if weitoutiao_enabled else "disabled",
         }
@@ -2536,6 +2542,7 @@ class ContentFactoryAppService:
             not self.settings.skip_image_generation
             and (
                 daily_wechat_enabled
+                or inline_images_enabled
                 or str(self.settings.publishing.cover_mode or "auto").strip().lower() != "none"
             )
         )
@@ -2543,7 +2550,7 @@ class ContentFactoryAppService:
             try:
                 image_exports = self.image_generation_service.generate_for_run(
                     run_dir,
-                    include_infographics=daily_wechat_enabled,
+                    include_infographics=daily_wechat_enabled or inline_images_enabled,
                 )
                 exported_files.update({name: str(path) for name, path in image_exports.items()})
             except Exception as exc:

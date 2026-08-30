@@ -4,11 +4,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from toutiao_content_factory.agents.polish_agent import PolishAgent
 from toutiao_content_factory.models import (
     ContentScore,
     DataReport,
     ExtractionResult,
     GeneratedContent,
+    TrendReport,
 )
 from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
 
@@ -287,6 +289,70 @@ class TestSupplementaryParagraphs:
 
     def test_no_anchor(self, workflow_service: AgentWorkflowService) -> None:
         assert workflow_service._has_source_anchor("这是一段普通文本") is False
+
+
+def test_post_polish_rebuild_uses_local_grounded_expansion_when_model_is_unavailable(
+    app_settings,
+    mock_openai_service,
+    logger,
+    workflow_service: AgentWorkflowService,
+) -> None:
+    data_report = DataReport(
+        topic_title="南网在深圳充电站接入虚拟电厂，规模26万千瓦",
+        focus_industry="锂电",
+        focus_keywords=["锂电", "充电站", "虚拟电厂"],
+        supply_chain_keywords=["充电站", "虚拟电厂"],
+        core_data=["2022年深圳南方电网充电站接入虚拟电厂，规模达到26万千瓦"],
+        industry_trends=["充电站与虚拟电厂的协同仍需继续核对"],
+        key_points=["项目规模需要结合运行口径判断"],
+        growth_numbers=["2022年", "26万千瓦"],
+        evidence_notes=["公开材料：2022年深圳南方电网充电站接入虚拟电厂，规模达到26万千瓦"],
+        watch_metrics=["接入规模", "项目运行", "客户验收"],
+        risk_flags=["项目口径和后续运行数据尚未完整披露"],
+        content_format="project_breakdown",
+        word_target=1800,
+        evidence_strength=88,
+        topic_quality_score=87,
+    )
+    polish_agent = PolishAgent(
+        app_settings,
+        prompt_repository=MagicMock(),
+        openai_service=mock_openai_service,
+        logger=logger,
+    )
+    rebuilt = polish_agent._rebuild_cautious_article(data_report, TrendReport())
+
+    finalized = workflow_service._ensure_article_min_chars(
+        rebuilt,
+        data_report,
+        min_chars=1500,
+    )
+
+    char_count = len(finalized.replace("\n", "").replace(" ", ""))
+    assert len(rebuilt.replace("\n", "").replace(" ", "")) < 1500
+    assert char_count >= 1500
+    assert "锂电订单" not in finalized
+    assert "26万千瓦" in finalized
+    assert workflow_service.writer_agent._unsupported_numeric_tokens(finalized, data_report) == []
+    mock_openai_service.create_json_completion.assert_not_called()
+
+    quality_report = workflow_service.quality_review_council_agent._fallback(
+        GeneratedContent(
+            article=finalized,
+            polished_article=finalized,
+            summary=finalized[:120],
+            recommended_titles=["充电站26万千瓦：虚拟电厂如何实测"],
+        ),
+        data_report,
+    )
+    assert quality_report.needs_revision is False
+
+    buffered = workflow_service._ensure_article_min_chars(
+        rebuilt,
+        data_report,
+        min_chars=1750,
+    )
+    assert len(buffered.replace("\n", "").replace(" ", "")) >= 1750
 
 
 class TestApplyBadWordsGate:

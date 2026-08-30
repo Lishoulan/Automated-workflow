@@ -508,23 +508,23 @@ class AgentWorkflowService:
         if current >= min_chars:
             return article
         self.logger.warning(
-            "Article has only %d chars (minimum %d). Appending supplementary paragraphs.",
+            "Article has only %d chars (minimum %d). Reusing WriterAgent evidence-aware expansion.",
             current,
             min_chars,
         )
-        paragraphs = article.split("\n\n")
-        supplements = self._build_supplementary_paragraphs(data_report, existing_paragraphs=paragraphs)
-        for sup in supplements:
-            paragraphs.insert(-1, sup)
-            total = len("\n\n".join(paragraphs).replace("\n", "").replace(" ", ""))
-            if total >= min_chars:
-                break
-        result = "\n\n".join(paragraphs)
+        result = self.writer_agent.ensure_article_min_chars(
+            article,
+            data_report,
+            min_chars=min_chars,
+        )
         result_chars = len(result.replace("\n", "").replace(" ", ""))
-        if result_chars < min_chars and self.openai_service.available:
-            self.logger.info("Template supplements brought article to %d chars, still below %d. Attempting LLM expansion.", result_chars, min_chars)
-            result = self._expand_article_via_llm(result, data_report, min_chars)
-        return result
+        if result_chars < min_chars:
+            self.logger.warning(
+                "WriterAgent expansion still produced %d chars (minimum %d); quality gates will keep the article blocked.",
+                result_chars,
+                min_chars,
+            )
+        return result or article
 
     def _expand_article_via_llm(self, article: str, data_report, min_chars: int) -> str:
         current_chars = len(article.replace("\n", "").replace(" ", ""))

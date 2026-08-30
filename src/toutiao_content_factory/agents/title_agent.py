@@ -311,6 +311,10 @@ class TitleAgent(BaseAgent):
                 f"{keyword}背后，谁在改写竞争规则",
             ]
 
+        fact_titles = self._fallback_fact_titles(content, data_report)
+        if fact_titles:
+            templates = fact_titles + templates
+
         # A financial title must be anchored to the selected topic itself.
         # Playbook templates are useful for style, but cannot replace the
         # subject and figures from a real earnings headline.
@@ -319,6 +323,103 @@ class TitleAgent(BaseAgent):
             templates = evidence_titles + templates
 
         return self._dedupe_titles(templates, cache_context)
+
+    def _fallback_fact_titles(
+        self,
+        content: GeneratedContent,
+        data_report: DataReport,
+    ) -> list[str]:
+        """Build a factual title when the model returns no usable candidate.
+
+        The title must borrow its subject and numeric anchor from the selected
+        topic.  The final ``实测`` wording is an analysis question/action, not
+        a claim that an unsupported order, delivery, or revenue result exists.
+        """
+        topic_text = re.sub(r"\s+", "", self.clean_publish_text(data_report.topic_title))
+        factual_text = " ".join(
+            self.clean_publish_text(str(item))
+            for item in (
+                data_report.topic_title,
+                *(data_report.core_data or [])[:4],
+                *(data_report.evidence_notes or [])[:4],
+                *(data_report.key_points or [])[:4],
+            )
+            if str(item).strip()
+        )
+        if not factual_text:
+            return []
+
+        numbers: list[str] = []
+        for source in (
+            *(data_report.growth_numbers or [])[:6],
+            data_report.topic_title,
+            *(data_report.core_data or [])[:4],
+            *(data_report.evidence_notes or [])[:4],
+        ):
+            for token in self._extract_numeric_tokens(str(source)):
+                if token not in numbers:
+                    numbers.append(token)
+        number = next(
+            (token for token in numbers if not token.endswith(("年", "月"))),
+            numbers[0] if numbers else "",
+        )
+
+        scene = ""
+        for candidate in ("充电站", "储能电站", "换电站", "电厂", "电站", "机场", "工厂", "园区", "基地"):
+            if candidate in factual_text:
+                scene = candidate
+                break
+
+        keyword_values = self.clean_publish_list(
+            [*(data_report.focus_keywords or []), *(data_report.supply_chain_keywords or [])],
+            limit=16,
+        )
+
+        def usable_term(value: object) -> str:
+            text = re.sub(r"\s+", "", self.clean_publish_text(str(value or "")))
+            if len(text) < 2 or self.is_internal_label(text) or text in {"行业", "赛道", "产业链"}:
+                return ""
+            return text
+
+        topic_terms: list[str] = []
+        factual_terms: list[str] = []
+        for raw in keyword_values:
+            term = usable_term(raw)
+            if not term or term == scene:
+                continue
+            if term in topic_text:
+                topic_terms.append(term)
+            if term in factual_text:
+                factual_terms.append(term)
+        detail = max(topic_terms or factual_terms, key=len, default="项目")
+        anchor = scene or self._primary_company(data_report) or self._topic_subject_label(data_report, fallback="项目")
+        anchor = re.sub(r"\s+", "", anchor)[:8]
+        detail = re.sub(r"\s+", "", detail)[:8]
+        if not anchor:
+            return []
+
+        raw_titles: list[str] = []
+        if number:
+            raw_titles.extend(
+                [
+                    f"{anchor}{number}：{detail}如何实测",
+                    f"{anchor}{number}：{detail}项目实测",
+                ]
+            )
+        else:
+            raw_titles.extend(
+                [
+                    f"{anchor}项目实测：{detail}下一步看什么",
+                    f"{anchor}项目实测：{detail}如何验证",
+                ]
+            )
+
+        result: list[str] = []
+        for raw_title in raw_titles:
+            title = self._sanitize_title(raw_title)
+            if title and self.validate_title_compliance(title) and title not in result:
+                result.append(title)
+        return result
 
     def _fallback_evidence_titles(self, data_report: DataReport) -> list[str]:
         topic_title = re.sub(r"\s+", "", self.clean_publish_text(data_report.topic_title))
@@ -851,6 +952,9 @@ class TitleAgent(BaseAgent):
         return title[:max_length].rstrip("，。！？；：:、- ")
 
     def _primary_topic_label(self, data_report: DataReport) -> str:
+        topic_label = self._topic_subject_label(data_report, fallback="")
+        if topic_label:
+            return topic_label
         preferred = self.clean_publish_text(data_report.focus_industry)
         if preferred and not self.is_internal_label(preferred):
             return preferred

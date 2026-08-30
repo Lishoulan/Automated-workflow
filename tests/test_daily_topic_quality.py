@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from toutiao_content_factory.agents.data_agent import DataAgent
 from toutiao_content_factory.agents.title_agent import TitleAgent
-from toutiao_content_factory.models import DataReport, SourceDocument, TopicCandidate, TrendReport
+from toutiao_content_factory.models import DataReport, GeneratedContent, SourceDocument, TopicCandidate, TrendReport
 from toutiao_content_factory.services.benchmark_hotspot_service import BenchmarkHotspotService
+from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 from toutiao_content_factory.services.extractor import SignalExtractor
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.topic_collection import TopicCollectionService
@@ -267,3 +268,40 @@ def test_financial_title_fallback_uses_topic_subject_and_figures(
 
     assert titles == ["京沪高铁发布半年报：净利润67.71亿元，同比增长7.21%"]
     assert len(titles[0]) <= app_settings.publishing.title_max_length
+
+
+def test_project_title_fallback_uses_topic_facts_and_passes_hard_title_rules(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = TitleAgent(
+        app_settings,
+        PromptRepository(app_settings),
+        mock_openai_service,
+        logger,
+    )
+    report = DataReport(
+        topic_title="南网在深圳充电站接入虚拟电厂，规模26万千瓦",
+        focus_industry="锂电",
+        focus_keywords=["锂电", "充电站", "虚拟电厂"],
+        supply_chain_keywords=["充电站", "虚拟电厂"],
+        core_data=["2022年深圳南方电网充电站接入虚拟电厂，规模达到26万千瓦"],
+        evidence_notes=["公开材料：2022年深圳南方电网充电站接入虚拟电厂，规模达到26万千瓦"],
+        growth_numbers=["2022年", "26万千瓦"],
+    )
+    content = GeneratedContent(
+        article="公开材料显示，2022年深圳南方电网充电站接入虚拟电厂，规模达到26万千瓦。",
+        summary="2022年深圳南方电网充电站接入虚拟电厂，规模达到26万千瓦。",
+    )
+
+    titles = agent._fallback_fact_titles(content, report)
+
+    assert titles
+    title = titles[0]
+    assert "26万千瓦" in title
+    assert "充电站" in title
+    assert "实测" in title
+    assert len(title) <= app_settings.publishing.title_max_length
+    assert agent.validate_title_compliance(title, content.summary)
+    assert ArticleQualityChecker()._check_title(title, content.article)["issues"] == []

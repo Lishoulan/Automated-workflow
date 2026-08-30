@@ -127,6 +127,17 @@ class TestCompanyCandidates:
         assert not base_agent._is_valid_company_name(candidate)
 
 
+def test_topic_subject_label_does_not_reuse_stale_industry_label(base_agent: BaseAgent) -> None:
+    report = DataReport(
+        topic_title="某港口氢能调度项目进入测试阶段",
+        focus_industry="锂电",
+        focus_keywords=["锂电"],
+        core_data=["2026年某港口完成氢能调度设备测试"],
+    )
+
+    assert base_agent._topic_subject_label(report, fallback="相关主题") == "相关主题"
+
+
 class TestUnique:
     def test_deduplicates_strings(self, base_agent: BaseAgent) -> None:
         items = ["a", "b", "a", "c", "b"]

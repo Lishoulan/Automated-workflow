@@ -547,6 +547,71 @@ class BaseAgent:
             return "international"
         return "generic"
 
+    def _topic_subject_label(self, data_report, fallback: str = "相关赛道") -> str:
+        """Prefer a subject that is present in the selected topic over stale labels.
+
+        ``focus_industry`` is editorial metadata and can be broader, or even
+        stale, when a topic is assembled from several sources.  Generation
+        fallbacks should follow the topic title and factual fields first so a
+        charging-station story is not rewritten as an unrelated battery-order
+        story.
+        """
+        if data_report is None:
+            return fallback
+
+        topic_text = self.clean_publish_text(getattr(data_report, "topic_title", ""))
+        keyword_values = self.clean_publish_list(
+            [
+                *(getattr(data_report, "focus_keywords", []) or []),
+                *(getattr(data_report, "supply_chain_keywords", []) or []),
+            ],
+            limit=20,
+        )
+        generic_labels = {"行业", "赛道", "关键环节", "相关赛道", "科技制造", "产业链"}
+
+        def usable(value: object) -> str:
+            text = self.clean_publish_text(str(value or "")).strip()
+            if len(text) < 2 or text in generic_labels or self.is_internal_label(text):
+                return ""
+            return text
+
+        topic_matches: list[str] = []
+        for raw_item in keyword_values:
+            item = usable(raw_item)
+            if item and item in topic_text:
+                topic_matches.append(item)
+        if topic_matches:
+            return max(topic_matches, key=len)
+
+        # Keep common compound scenes intact when upstream keywords are sparse.
+        for scene in ("充电站", "储能电站", "换电站", "虚拟电厂", "电厂", "电站", "园区", "工厂"):
+            if scene in topic_text:
+                return scene
+
+        factual_text = " ".join(
+            self.clean_publish_text(str(item))
+            for item in (
+                topic_text,
+                *(getattr(data_report, "core_data", []) or [])[:4],
+                *(getattr(data_report, "evidence_notes", []) or [])[:4],
+                *(getattr(data_report, "key_points", []) or [])[:4],
+                *(getattr(data_report, "industry_trends", []) or [])[:4],
+            )
+            if str(item).strip()
+        )
+        factual_matches: list[str] = []
+        for raw_item in keyword_values:
+            item = usable(raw_item)
+            if item and item in factual_text:
+                factual_matches.append(item)
+        if factual_matches:
+            return max(factual_matches, key=len)
+
+        focus = usable(getattr(data_report, "focus_industry", ""))
+        if focus and (not topic_text or focus in factual_text):
+            return focus
+        return fallback
+
     def _company_candidates(self, data_report):
         raw_candidates = (data_report.focus_companies or []) + (data_report.companies or [])
         candidates: list[str] = []
@@ -589,9 +654,7 @@ class BaseAgent:
         metrics = self.clean_publish_list(getattr(data_report, "watch_metrics", [])[:4], limit=4)
         follow_up = [item for item in re.split(r"[、，,；;]", getattr(data_report, "follow_up_focus", "")) if str(item).strip()]
         follow_points = self.clean_publish_list(follow_up, limit=4)
-        primary = self.clean_publish_text(
-            data_report.focus_industry or ((data_report.focus_keywords or [])[0] if data_report.focus_keywords else "相关赛道")
-        )
+        primary = self._topic_subject_label(data_report, fallback="相关赛道")
         nodes = self.clean_publish_list((data_report.focus_keywords or [])[1:] + (data_report.supply_chain_keywords or [])[1:], limit=3)
 
         if companies:

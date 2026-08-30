@@ -696,9 +696,7 @@ class PolishAgent(BaseAgent):
             return self._rebuild_cautious_sports_article(data_report, trend_report)
         if content_mode == "international":
             return self._rebuild_cautious_international_article(data_report, trend_report)
-        primary = self.clean_publish_text(
-            data_report.focus_industry or (data_report.focus_keywords[0] if data_report.focus_keywords else "相关赛道")
-        )
+        primary = self._topic_subject_label(data_report, fallback="相关赛道")
         companies = self._company_candidates(data_report)[:2]
         source_anchor = self._build_source_anchor(data_report)
         numbers = "、".join(self.clean_publish_list(data_report.growth_numbers, limit=3))
@@ -756,9 +754,7 @@ class PolishAgent(BaseAgent):
 
     def _build_closing_question(self, data_report: DataReport) -> str:
         content_mode = self._content_mode(data_report)
-        primary = self.clean_publish_text(
-            data_report.focus_industry or (data_report.focus_keywords[0] if data_report.focus_keywords else "这个方向")
-        )
+        primary = self._topic_subject_label(data_report, fallback="这个方向")
         if content_mode == "sports":
             return "你觉得这条消息最可能改变产业格局、技术路线还是舆论预期？"
         if content_mode == "international":

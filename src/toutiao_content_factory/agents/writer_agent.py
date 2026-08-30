@@ -1296,6 +1296,9 @@ class WriterAgent(BaseAgent):
     def _primary_keyword(self, data_report: DataReport | None, fallback: str = "这个赛道") -> str:
         if data_report is None:
             return fallback
+        topic_label = self._topic_subject_label(data_report, fallback="")
+        if topic_label:
+            return topic_label
         for item in (
             data_report.focus_industry,
             *data_report.focus_keywords[:2],
@@ -1568,7 +1571,12 @@ class WriterAgent(BaseAgent):
         logger = logging.getLogger(__name__)
         current_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in paragraphs)
         if current_chars >= min_chars:
-            return self._trim_low_confidence_paragraphs(paragraphs, data_report)
+            trimmed = self._trim_low_confidence_paragraphs(paragraphs, data_report)
+            trimmed_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in trimmed)
+            if trimmed_chars >= min_chars:
+                return trimmed
+            paragraphs = trimmed
+            current_chars = trimmed_chars
 
         if not WriterAgent._short_article_warned:
             logger.warning(
@@ -1584,9 +1592,19 @@ class WriterAgent(BaseAgent):
             result.insert(-1, sup)
             total = sum(len(p.replace("\n", "").replace(" ", "")) for p in result)
             if total >= min_chars:
-                break
+                trimmed_candidate = self._trim_low_confidence_paragraphs(result, data_report)
+                trimmed_total = sum(
+                    len(p.replace("\n", "").replace(" ", ""))
+                    for p in trimmed_candidate
+                )
+                if trimmed_total >= min_chars:
+                    return trimmed_candidate
 
-        final_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in result)
+        trimmed_result = self._trim_low_confidence_paragraphs(result, data_report)
+        final_chars = sum(
+            len(p.replace("\n", "").replace(" ", ""))
+            for p in trimmed_result
+        )
         if final_chars < min_chars and grounded:
             logger.info(
                 "Supplementary paragraphs brought article to %d chars, still below %d. Attempting grounded LLM expansion.",
@@ -1594,7 +1612,11 @@ class WriterAgent(BaseAgent):
                 min_chars,
             )
             result = self._expand_article_via_llm(result, data_report, min_chars)
-            final_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in result)
+            trimmed_result = self._trim_low_confidence_paragraphs(result, data_report)
+            final_chars = sum(
+                len(p.replace("\n", "").replace(" ", ""))
+                for p in trimmed_result
+            )
         elif final_chars < min_chars:
             logger.info(
                 "Skipping LLM expansion because the topic lacks grounded evidence. current=%d target=%d",
@@ -1608,7 +1630,30 @@ class WriterAgent(BaseAgent):
                 final_chars,
                 min_chars,
             )
-        return self._trim_low_confidence_paragraphs(result, data_report)
+        return trimmed_result
+
+    def ensure_article_min_chars(
+        self,
+        article: str,
+        data_report: "DataReport",
+        min_chars: int | None = None,
+    ) -> str:
+        """Apply the evidence-aware length gate to an already generated article.
+
+        PolishAgent may rebuild a draft after finding an unsupported claim.  A
+        separate workflow-level padder used to miss that path because the
+        rebuilt article already contained every raw evidence field.  Keeping
+        this entry point on WriterAgent makes the same local expansion rules
+        available after every writing or polishing pass.
+        """
+        cleaned = clean_article_text(str(article or ""), min_word_count=0)
+        paragraphs = [item.strip() for item in cleaned.split("\n\n") if item.strip()]
+        ensured = self._ensure_min_char_count(
+            paragraphs,
+            data_report,
+            min_chars=0 if min_chars is None else int(min_chars),
+        )
+        return "\n\n".join(item.strip() for item in ensured if item.strip()).strip()
 
     def _build_supplementary_paragraphs(self, data_report: "DataReport", existing_paragraphs: list[str] | None = None) -> list[str]:
         existing_text = "\n".join(existing_paragraphs) if existing_paragraphs else ""
@@ -1662,7 +1707,126 @@ class WriterAgent(BaseAgent):
         if len(numbers) >= 2:
             append_if_new(
                 f"可作为参照的数字是{numbers[0]}和{numbers[1]}。"
-                "它们只能说明已经出现的变化，不能单独证明后续利润或规模一定兑现。"
+                "它们只能说明已经出现的变化，不能单独证明后续利润或规模已经兑现。"
+            )
+
+        # When the model is unavailable, raw-field summaries alone are too
+        # short.  These paragraphs add distinct analytical lenses while
+        # reusing only values already present in DataReport.
+        material_text = " ".join(
+            self.clean_publish_text(str(item))
+            for item in (
+                getattr(data_report, "topic_title", ""),
+                *(getattr(data_report, "core_data", []) or [])[:3],
+                *(getattr(data_report, "industry_trends", []) or [])[:3],
+                *(getattr(data_report, "key_points", []) or [])[:3],
+                *(getattr(data_report, "evidence_notes", []) or [])[:3],
+            )
+            if str(item).strip()
+        )
+        if material_text:
+            topic = self.clean_publish_text(getattr(data_report, "topic_title", "")).rstrip("。")
+            primary = self._primary_keyword(data_report, fallback="相关主题")
+            fact_items = clean_items(getattr(data_report, "core_data", []) or [], 2)
+            if not fact_items:
+                fact_items = clean_items(getattr(data_report, "evidence_notes", []) or [], 2)
+            fact_text = "；".join(fact_items) or topic or primary
+            append_if_new(
+                f"先把事实层单独放稳：{topic or primary}，材料当前直接写到{fact_text}。"
+                "这些内容只能支撑已记录的项目或变化，不能顺手补成新的订单、收入、规模或利润结果。"
+            )
+
+            detail_items = clean_items(
+                (getattr(data_report, "key_points", []) or [])
+                + (getattr(data_report, "industry_trends", []) or [])
+                + (getattr(data_report, "focus_keywords", []) or [])
+                + (getattr(data_report, "supply_chain_keywords", []) or []),
+                2,
+            )
+            detail_text = "；".join(detail_items)
+            append_if_new(
+                f"项目拆解要把{detail_text or '项目主体、设备接入和服务环节'}与{primary}分开看。"
+                "前者是材料里的事项或判断，后者只是分析所用的主题标签；没有对应凭据的环节，仍应保留为待核对问题。"
+            )
+
+            numeric_text = "、".join(clean_items(getattr(data_report, "growth_numbers", []) or [], 3))
+            append_if_new(
+                f"数字层面，现有口径包括{numeric_text or '当前没有新增量化口径'}。"
+                "先确认每个数字对应的时间、规模或变化类型，再讨论商业含义；单个数字不能推出订单、收入或利润已经落地。"
+            )
+
+            metric_text = "、".join(metrics) or "项目进度、客户验收和回款"
+            append_if_new(
+                f"执行层的复核顺序可以从{metric_text}开始。"
+                "这些内容是观察变量，不是已经发生的结果；只有后续材料补充同一口径的连续记录，才有条件把阶段性进展写成稳定兑现。"
+            )
+
+            companies = self._company_candidates(data_report)[:3]
+            if companies:
+                append_if_new(
+                    f"主体层面，材料提到{'、'.join(companies)}，本文只把它们作为现有材料中的主体锚点。"
+                    "是否承担项目、形成收入或完成交付，仍要回到对应证据，不能从名称或讨论热度推断。"
+                )
+            else:
+                append_if_new(
+                    f"主体层面，当前材料没有提供可直接点名的公司，因此{primary}只能先按项目和业务环节拆解。"
+                    "后续若出现明确主体、客户或验收记录，再把判断推进到商业归属。"
+                )
+
+            trend_text = "；".join(clean_items(getattr(data_report, "industry_trends", []) or [], 2))
+            append_if_new(
+                f"趋势层面能引用的是{trend_text or '材料中已经出现的业务变化'}。"
+                "它提供的是方向判断，不能单独替代项目进度、客户反馈或利润口径；分析需要把趋势和执行记录放在同一条证据链上。"
+            )
+
+            risk_text = "；".join(risks) or "信息口径不完整和项目兑现节奏变化"
+            append_if_new(
+                f"风险边界落在{risk_text}。"
+                "这些风险用于说明结论何时需要回撤，不是对结果的预言；一旦新材料改变口径，文章也应同步收窄判断。"
+            )
+
+            follow_text = "、".join(self._follow_up_points(data_report))
+            angle = self.clean_publish_text(getattr(data_report, "suggested_angle", "")).rstrip("。")
+            append_if_new(
+                f"下一轮复盘可以把{follow_text or metric_text}列为观察清单。"
+                f"当前较稳妥的收束是{angle or '先把已确认事实与待验证结果分开'}，不把单点信息外推成整个行业的确定结论。"
+            )
+
+            append_if_new(
+                f"证据链的完整程度决定结论强度。当前可以回指到{fact_text}，但从项目消息走到客户验收、回款和利润，仍需要分别找到对应记录。"
+                "在这些连接没有补齐前，文章只讨论信息所处的阶段，不替项目补写商业结果。"
+            )
+            append_if_new(
+                f"从责任边界看，{primary}涉及的主体、项目和业务环节不能混为一谈。"
+                "参与讨论、出现在一条信息里，和承担交付、获得收入是不同命题，后续材料需要把这些关系逐项连起来。"
+            )
+            append_if_new(
+                f"信息更新时，优先比较{metric_text}的口径和时间。"
+                "同一个数字在不同统计范围下可能承担不同含义，不能只因为数字变大，就直接推断项目已经完成商业转化。"
+            )
+            append_if_new(
+                f"这篇稿件的判断范围暂时限定在{topic or primary}及其已记录的变化。"
+                "没有出现在事实字段里的公司、订单金额、收入和利润，不作为补充结论；有新公告时再更新判断会更稳妥。"
+            )
+            append_if_new(
+                "阅读路径可以分三层：先确认事实，再确认项目处于哪个环节，最后确认客户验收、回款和利润是否有对应记录。"
+                "这样处理能避免把同一条消息重复解释成多个已经发生的结果。"
+            )
+            append_if_new(
+                f"如果后续只增加讨论热度，却没有补充{metric_text}，{primary}的结论不应随之上调。"
+                "信息数量增加和证据强度增加不是一回事，复盘时要分别记录。"
+            )
+            append_if_new(
+                f"同一主题出现新口径时，应把旧数字{numeric_text or '已有数字'}与新数字放在来源和时间下比较。"
+                "若口径不一致，宁可保留差异，也不要用简单相减推导增长或收益。"
+            )
+            append_if_new(
+                f"对{primary}的下一步判断，最有价值的不是增加形容词，而是看是否出现新的可核对记录。"
+                "记录一旦出现，才需要重新评估项目范围、主体关系和商业含义。"
+            )
+            append_if_new(
+                f"如果后续要把{primary}的阶段性进展升级为商业判断，至少要同时看到事实来源、项目主体和结果口径。"
+                "缺少其中任一项时，结论仍保持为待验证，不用猜测补全。"
             )
         return paragraphs
 
@@ -1682,7 +1846,14 @@ class WriterAgent(BaseAgent):
 
     def _has_unknown_company_mention(self, text: str, data_report: "DataReport") -> bool:
         known = [item.lower() for item in self._company_candidates(data_report)]
-        mentions = self._extract_company_mentions(text)
+        mentions = [
+            mention
+            for mention in self._extract_company_mentions(text)
+            if not (
+                mention.lower() not in known
+                and mention.endswith(("材料", "资料"))
+            )
+        ]
         if not mentions:
             return False
         if not known:

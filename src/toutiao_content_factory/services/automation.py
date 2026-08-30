@@ -44,6 +44,8 @@ class TopicSelectionResult:
 
 class TopicAutomationService:
     NORMALIZE_PATTERN = re.compile(r"[\s\W_]+", re.UNICODE)
+    PROMPT_SUMMARY_LENGTH = 180
+    PROMPT_EVIDENCE_CONTEXT_LENGTH = 1600
     ROBOT_TOKENS = (
         "机器人",
         "人形",
@@ -392,8 +394,7 @@ class TopicAutomationService:
         industries = "、".join(humanized_industries) if humanized_industries else "相关赛道待补充"
         keywords = "、".join(topic.matched_keywords) if topic.matched_keywords else "关键词待补充"
         numbers = "、".join(topic.extracted_numbers) if topic.extracted_numbers else "暂无明确数字"
-        summary = self._preferred_topic_summary(topic)
-        snippet = self._preferred_topic_snippet(topic, summary)
+        summary, snippet = self._build_prompt_evidence(topic)
         published_at = topic.published_at or "时间未标注"
         primary_industry = humanized_industries[0] if humanized_industries else "相关赛道"
         primary_keywords = "、".join(topic.matched_keywords[:4]) if topic.matched_keywords else keywords
@@ -414,6 +415,9 @@ class TopicAutomationService:
             topic_mode=topic_mode,
             primary_industry=primary_industry,
         )
+        evidence_block = f"- 摘要：{summary}\n"
+        if snippet:
+            evidence_block += f"- 补充片段：{snippet}\n"
 
         return (
             f"标题：{topic.title}\n"
@@ -438,8 +442,7 @@ class TopicAutomationService:
             f"质量标记：{quality_flags}\n"
             f"建议字数：{word_target}\n\n"
             "素材摘要：\n"
-            f"- 摘要：{summary}\n"
-            f"- 补充片段：{snippet}\n"
+            f"{evidence_block}"
             f"- 热度判断：阅读分 {topic.read_score} / 收藏分 {topic.save_score} / 讨论分 {topic.discussion_score} / 标题潜力 {topic.title_potential_score}\n\n"
             f"入选理由：{selection_reason}\n"
             f"推荐主结论：{suggested_angle}\n"
@@ -460,13 +463,42 @@ class TopicAutomationService:
             if snippet and not self._looks_like_mojibake(snippet):
                 return snippet
             return topic.title
-        return summary[:180]
+        if self._is_evidence_rich_topic_text(summary):
+            return summary[: self.PROMPT_EVIDENCE_CONTEXT_LENGTH]
+        return summary[: self.PROMPT_SUMMARY_LENGTH]
 
     def _preferred_topic_snippet(self, topic: TopicCandidate, fallback: str) -> str:
         snippet = self._clean_topic_snippet_for_prompt(topic.snippet or "", fallback)
         if self._looks_like_mojibake(snippet):
             return fallback
+        if self._is_evidence_rich_topic_text(snippet):
+            return snippet[: self.PROMPT_EVIDENCE_CONTEXT_LENGTH]
         return snippet
+
+    def _build_prompt_evidence(self, topic: TopicCandidate) -> tuple[str, str]:
+        """Keep useful source context while avoiding duplicated summary blocks."""
+        summary = self._preferred_topic_summary(topic).strip()
+        snippet = self._preferred_topic_snippet(topic, summary).strip()
+        if not snippet:
+            return summary, ""
+
+        normalized_summary = self._normalize_prompt_evidence(summary)
+        normalized_snippet = self._normalize_prompt_evidence(snippet)
+        if normalized_summary and normalized_summary in normalized_snippet:
+            return snippet[: self.PROMPT_EVIDENCE_CONTEXT_LENGTH], ""
+        if normalized_snippet and normalized_snippet in normalized_summary:
+            return summary[: self.PROMPT_EVIDENCE_CONTEXT_LENGTH], ""
+
+        if not summary:
+            return snippet[: self.PROMPT_EVIDENCE_CONTEXT_LENGTH], ""
+        remaining = self.PROMPT_EVIDENCE_CONTEXT_LENGTH - len(summary) - 1
+        if remaining <= 0:
+            return summary[: self.PROMPT_EVIDENCE_CONTEXT_LENGTH], ""
+        return summary, snippet[:remaining]
+
+    @staticmethod
+    def _normalize_prompt_evidence(text: str) -> str:
+        return re.sub(r"[\s\W_]+", "", str(text or "")).lower()
 
     def _looks_like_mojibake(self, text: str) -> bool:
         candidate = str(text or "").strip()
@@ -557,7 +589,7 @@ class TopicAutomationService:
         if "»" in candidate or "当前位置" in candidate or candidate.endswith("正文"):
             return fallback
         if self._is_evidence_rich_topic_text(candidate):
-            return candidate[:220]
+            return candidate[: self.PROMPT_EVIDENCE_CONTEXT_LENGTH]
         if len(re.findall(r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d+\s*(?:分钟前|小时前|天前))", candidate)) >= 2:
             return fallback
         if len(candidate) > 120 and candidate.count(" ") >= 6:

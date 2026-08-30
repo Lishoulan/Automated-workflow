@@ -160,6 +160,33 @@ def test_selected_topic_input_does_not_discard_rich_snippet(app_settings, logger
     assert "218.42亿元" in input_text
 
 
+def test_selected_topic_input_keeps_long_evidence_once(app_settings, logger) -> None:
+    long_evidence = (
+        "2026年7月新能源车企销量数据出炉，乘联会预计全国乘用车市场零售量同比下降16.8%。"
+        "比亚迪新能源乘用车销量411,072辆，同比增长20.54%，海外销售179,841辆，同比增长124.3%。"
+        "吉利新能源销量160,165辆，同比增长23.1%，新能源出口销量62,604辆，同比增长616%。"
+        "奇瑞集团新能源销量129,067辆，同比增长103.7%，零跑汽车交付101,267台，同比增长102.0%。"
+        "海外销量占比和连续月份的交付变化，是判断增长质量与需求持续性的关键证据。"
+    )
+    service = TopicAutomationService(app_settings, logger)
+    topic = TopicCandidate(
+        title="7月新能源车企销量盘点",
+        url="https://example.test/new-energy",
+        source="ofweek",
+        source_type="html",
+        snippet=long_evidence,
+        summary=long_evidence,
+        matched_industries=["new_energy"],
+        matched_keywords=["新能源", "电池"],
+    )
+
+    input_text = service._build_input_text(topic)
+
+    assert "海外销量占比和连续月份的交付变化" in input_text
+    assert input_text.count("2026年7月新能源车企销量数据出炉") == 1
+    assert input_text.count("补充片段：") == 0
+
+
 def test_generated_input_keeps_facts_and_drops_editorial_controls(
     app_settings,
     mock_openai_service,

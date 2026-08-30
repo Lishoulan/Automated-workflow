@@ -33,6 +33,10 @@ on:
         description: 'Publish to WeChat via 135 Editor when a cached profile exists (true/false)'
         required: false
         default: 'false'
+      topic_title:
+        description: 'Optional topic title or keyword for this manual run'
+        required: false
+        default: ''
 
 concurrency:
   group: daily-run-${{ github.ref }}
@@ -232,6 +236,8 @@ jobs:
 
       - name: Resolve cloud runtime flags
         shell: bash
+        env:
+          WORKFLOW_TOPIC_TITLE: ${{ github.event.inputs.topic_title }}
         run: |
           normalize_bool() {
             case "${1,,}" in
@@ -269,12 +275,14 @@ jobs:
             RUN_FAST_MODE="$(normalize_bool "$(first_non_empty "$INPUT_FAST_MODE" "$SECRET_DEFAULT_FAST_MODE" "true")")"
             RUN_PUBLISH_TOUTIAO="$(normalize_bool "$(first_non_empty "$INPUT_PUBLISH_TOUTIAO" "$SECRET_DEFAULT_PUBLISH_TOUTIAO" "true")")"
             RUN_PUBLISH_WECHAT_VIA_135="$(normalize_bool "$(first_non_empty "$INPUT_PUBLISH_WECHAT" "$SECRET_DEFAULT_PUBLISH_WECHAT" "false")")"
+            RUN_TOPIC_TITLE="${WORKFLOW_TOPIC_TITLE:-}"
           else
             RUN_ACCOUNT="$(first_non_empty "$SECRET_DEFAULT_ACCOUNT" "default")"
             RUN_DRY_RUN="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_DRY_RUN" "false")")"
             RUN_FAST_MODE="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_FAST_MODE" "true")")"
             RUN_PUBLISH_TOUTIAO="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_PUBLISH_TOUTIAO" "true")")"
             RUN_PUBLISH_WECHAT_VIA_135="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_PUBLISH_WECHAT" "false")")"
+            RUN_TOPIC_TITLE=""
           fi
 
           TOUTIAO_AUTO_PUBLISH_VALUE="0"
@@ -308,6 +316,9 @@ jobs:
             echo "TOUTIAO_DRAFT_ONLY=$TOUTIAO_DRAFT_ONLY_VALUE"
             echo "WECHAT_ENABLED=$WECHAT_ENABLED_VALUE"
             echo "WECHAT_AUTO_PUBLISH=$WECHAT_AUTO_PUBLISH_VALUE"
+            echo "RUN_TOPIC_TITLE<<__TOPIC_TITLE__"
+            echo "$RUN_TOPIC_TITLE"
+            echo "__TOPIC_TITLE__"
           } >> "$GITHUB_ENV"
 
           echo "Resolved cloud runtime flags:"
@@ -316,6 +327,9 @@ jobs:
           echo "  fast_mode=$RUN_FAST_MODE"
           echo "  publish_toutiao=$RUN_PUBLISH_TOUTIAO"
           echo "  publish_wechat_via_135=$RUN_PUBLISH_WECHAT_VIA_135"
+          if [ -n "$RUN_TOPIC_TITLE" ]; then
+            echo "  topic_title=$RUN_TOPIC_TITLE"
+          fi
 
       - name: Cache pip packages
         uses: actions/cache@v4
@@ -587,14 +601,17 @@ jobs:
 
       - name: Run daily pipeline
         run: |
-          ARGS="--account $RUN_ACCOUNT --skip-browser-check"
+          ARGS=(--account "$RUN_ACCOUNT" --skip-browser-check)
           if [ "$RUN_DRY_RUN" = "true" ]; then
-            ARGS="$ARGS --dry-run"
+            ARGS+=(--dry-run)
           fi
           if [ "$RUN_FAST_MODE" = "true" ]; then
-            ARGS="$ARGS --fast-mode"
+            ARGS+=(--fast-mode)
           fi
-          python scripts/cloud_daily_run.py $ARGS
+          if [ -n "${RUN_TOPIC_TITLE:-}" ]; then
+            ARGS+=(--topic-title "$RUN_TOPIC_TITLE")
+          fi
+          python scripts/cloud_daily_run.py "${ARGS[@]}"
 
       - name: Run engagement agent
         if: env.ENGAGEMENT_ENABLED == '1'
@@ -935,6 +952,8 @@ jobs:
 
       - name: Resolve fallback account
         shell: bash
+        env:
+          WORKFLOW_TOPIC_TITLE: ${{ github.event.inputs.topic_title }}
         run: |
           # 从主 job 输出获取账号，若缺失则回退到 CLOUD_DEFAULT_ACCOUNT secret，再回退到 default
           ACCOUNT="${{ needs.daily-run.outputs.run-account }}"
@@ -943,6 +962,11 @@ jobs:
           fi
           echo "RUN_ACCOUNT=$ACCOUNT" >> $GITHUB_ENV
           echo "TOUTIAO_ACCOUNT=$ACCOUNT" >> $GITHUB_ENV
+          {
+            echo "RUN_TOPIC_TITLE<<__TOPIC_TITLE__"
+            echo "${WORKFLOW_TOPIC_TITLE:-}"
+            echo "__TOPIC_TITLE__"
+          } >> "$GITHUB_ENV"
           echo "Fallback account resolved: $ACCOUNT"
 
       - name: Cache pip packages
@@ -964,8 +988,11 @@ jobs:
       - name: Run daily pipeline (draft-only fallback)
         run: |
           # 备用 job 强制草稿模式：不发布，仅生成内容到草稿箱
-          ARGS="--account $RUN_ACCOUNT --skip-browser-check --fast-mode"
-          python scripts/cloud_daily_run.py $ARGS
+          ARGS=(--account "$RUN_ACCOUNT" --skip-browser-check --fast-mode)
+          if [ -n "${RUN_TOPIC_TITLE:-}" ]; then
+            ARGS+=(--topic-title "$RUN_TOPIC_TITLE")
+          fi
+          python scripts/cloud_daily_run.py "${ARGS[@]}"
 
       - name: Publish precheck report
         if: always()

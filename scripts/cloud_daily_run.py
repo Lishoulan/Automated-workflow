@@ -631,6 +631,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="快速模式，跳过部分非必要步骤",
     )
+    parser.add_argument(
+        "--topic-title",
+        type=str,
+        default=None,
+        help="Optional topic title or keyword to pass to the daily workflow.",
+    )
     return parser
 
 
@@ -808,6 +814,8 @@ def main() -> int:
         cmd.append("--dry-run")
     if args.fast_mode:
         cmd.append("--fast-mode")
+    if args.topic_title:
+        cmd.extend(["--topic-title", args.topic_title])
 
     _logger.info("执行命令: %s", " ".join(cmd))
 

@@ -1,6 +1,34 @@
 version: 1
-updated_at: '2026-08-29'
+updated_at: '2026-08-31'
 articles:
+- key: 人形机器人进工厂后_3个指标决定谁能先拿到订单
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-31'
+  title: 人形机器人进工厂后，3个指标决定谁能先拿到订单
+  run_dir: ''
+  observed_metrics:
+    impression_count: 138
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
+- key: 充电站26万千瓦_充电如何实测
+  enabled: true
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-08-31'
+  title: 充电站26万千瓦：充电如何实测
+  run_dir: ''
+  observed_metrics:
+    impression_count: 106
+    read_count: 0
+  keywords: []
+  notes: []
+  inferred_patterns: []
 - key: 机器人热度之外_谁在拿走真正订单
   enabled: true
   track: auto_generated

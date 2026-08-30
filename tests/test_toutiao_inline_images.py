@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import logging
+import importlib
 from pathlib import Path
 from unittest.mock import MagicMock
+from urllib.parse import urlencode
 
 from PIL import Image
 
 from toutiao_content_factory.config import PublishSettings
 from toutiao_content_factory.services.app_service import ContentFactoryAppService
 from toutiao_content_factory.services.publish_service import PublishService
+
+
+publish_service_module = importlib.import_module(
+    "toutiao_content_factory.services.publish_service"
+)
 
 
 def _write_png(path: Path, color: tuple[int, int, int]) -> None:
@@ -103,3 +110,83 @@ def test_inline_image_upload_deduplicates_assets_and_tracks_inserted_files(
     assert [path for path, _target in calls] == [first, second]
     assert service._last_inline_image_assets == [first, second]
     assert any("duplicate" in note.lower() for note in notes)
+
+
+def test_persistent_image_reference_parser_rejects_transient_editor_nodes(
+    app_settings,
+) -> None:
+    service = PublishService(app_settings, logging.getLogger("inline-image-ref-test"))
+    markup = """
+    <div data-node-key="temporary-1"><img src="blob:https://mp.toutiao.com/temp"></div>
+    <div data-node-key="temporary-2"><img src="data:image/png;base64,AAAA"></div>
+    <div><img web_uri="tos-cn-i-persisted" src="blob:https://mp.toutiao.com/uploading"></div>
+    <div><img src="https://p3-sign.douyinpic.com/persisted.png"></div>
+    """
+
+    assert service._extract_persistent_image_refs_from_html(markup) == [
+        "tos-cn-i-persisted",
+        "https://p3-sign.douyinpic.com/persisted.png",
+    ]
+
+
+def test_publish_media_payload_requires_persistent_refs_and_expected_count(
+    app_settings,
+) -> None:
+    service = PublishService(app_settings, logging.getLogger("inline-image-payload-test"))
+    content = (
+        '<p>正文</p><img web_uri="tos-cn-i-persisted" src="blob:uploading">'
+        '<img src="https://p3-sign.douyinpic.com/persisted.png">'
+    )
+    post_data = urlencode({"content": content, "save": "1"})
+
+    verified = service._summarize_publish_media_payload(
+        post_data,
+        expected_inline_images=2,
+        expected_refs=["tos-cn-i-persisted", "https://p3-sign.douyinpic.com/persisted.png"],
+    )
+    missing = service._summarize_publish_media_payload(
+        urlencode({"content": '<p>正文</p><img src="blob:uploading">'}),
+        expected_inline_images=2,
+        expected_refs=["tos-cn-i-persisted", "https://p3-sign.douyinpic.com/persisted.png"],
+    )
+
+    assert verified["verified"] is True
+    assert verified["payload_count"] == 2
+    assert missing["verified"] is False
+    assert missing["payload_count"] == 0
+
+
+def test_draft_autosave_without_confirmation_returns_false_for_publish_mode(
+    app_settings, monkeypatch
+) -> None:
+    service = PublishService(app_settings, logging.getLogger("draft-save-gate-test"))
+
+    class _Instant:
+        def __init__(self, value: float) -> None:
+            self.value = value
+
+        def timestamp(self) -> float:
+            return self.value
+
+    class _Clock:
+        calls = 0
+
+        @classmethod
+        def now(cls):
+            cls.calls += 1
+            return _Instant(0.0 if cls.calls == 1 else 100.0)
+
+    monkeypatch.setattr(publish_service_module, "datetime", _Clock)
+    monkeypatch.setattr(service, "_latest_save_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "_read_draft_status_text", lambda _page: "")
+    monkeypatch.setattr(service, "_capture_debug_artifacts", lambda *_args, **_kwargs: "debug")
+
+    confirmed = service._wait_for_draft_save(
+        MagicMock(),
+        [],
+        [],
+        start_index=0,
+        expect_save_mode_1=True,
+    )
+
+    assert confirmed is False

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from html import unescape as html_unescape
+from html.parser import HTMLParser
 import json
 import logging
 import os
@@ -12,7 +14,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote_plus
 
 from toutiao_content_factory.config import AppSettings, RPAResilienceSettings
 from toutiao_content_factory.constants.selectors import TOUTIAO_EDITOR_PAGE, TOUTIAO_WEITOUTIAO_PAGE
@@ -59,6 +61,50 @@ try:
     import msvcrt
 except ModuleNotFoundError:  # pragma: no cover - fallback for non-Windows environments
     msvcrt = None
+
+
+def _persistent_image_reference(value: Any, *, is_web_uri: bool = False) -> str:
+    """Return a reference that can survive an editor save, or an empty string."""
+    if value is None:
+        return ""
+    normalized = html_unescape(str(value)).strip()
+    if not normalized:
+        return ""
+    if normalized.lower().startswith(("blob:", "data:", "javascript:", "about:")):
+        return ""
+    if is_web_uri:
+        return normalized
+    if re.match(r"^(?:https?:)?//", normalized, flags=re.IGNORECASE):
+        return normalized
+    return ""
+
+
+class _PersistentImageReferenceParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.refs: list[str] = []
+        self._seen: set[str] = set()
+
+    def _register_image(self, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {str(key).lower(): value for key, value in attrs}
+        ref = ""
+        for key in ("web_uri", "web-uri", "data-web-uri"):
+            ref = _persistent_image_reference(attr_map.get(key), is_web_uri=True)
+            if ref:
+                break
+        if not ref:
+            ref = _persistent_image_reference(attr_map.get("src"))
+        if ref and ref not in self._seen:
+            self._seen.add(ref)
+            self.refs.append(ref)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "img":
+            self._register_image(attrs)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "img":
+            self._register_image(attrs)
 
 
 class PlatformUIUpdateException(RuntimeError):
@@ -1047,7 +1093,7 @@ class PublishService:
                         self._apply_cover_image(page, cover_path, notes)
                     else:
                         self._ensure_no_cover_mode(page, notes)
-                    self._verify_publish_media_state(
+                    media_state = self._verify_publish_media_state(
                         page,
                         editor_selector,
                         cover_mode=cover_mode,
@@ -1059,6 +1105,7 @@ class PublishService:
                         "inserted_count": inline_image_inserted,
                         "available_assets": [path.name for path in inline_image_paths],
                         "inserted_assets": [path.name for path in self._last_inline_image_assets],
+                        "editor_persistence": media_state,
                     }
                     self._stabilize_publish_form(page, notes)
 
@@ -1071,14 +1118,59 @@ class PublishService:
                         # 覆盖路由已在上方（首次 autosave 前）安装，这里只触发一次 autosave
                         self._nudge_editor_to_trigger_autosave(page, editor_selector, notes)
 
-                    if not self._wait_for_draft_save(
+                    draft_save_confirmed = self._wait_for_draft_save(
                         page,
                         publish_events,
                         notes,
                         start_index=draft_watch_start,
                         expect_save_mode_1=not draft_only,
+                    )
+                    draft_save_event = self._latest_save_event(
+                        publish_events,
+                        start_index=draft_watch_start,
+                        success_only=True,
+                    )
+                    draft_media_payload = self._summarize_publish_media_payload(
+                        str((draft_save_event or {}).get("post_data", "")),
+                        expected_inline_images=inline_image_inserted,
+                        expected_refs=list(media_state.get("refs", [])),
+                    )
+                    draft_media_payload["event_captured"] = draft_save_event is not None
+                    inline_image_summary["draft_save_payload"] = draft_media_payload
+                    draft_response_json = (draft_save_event or {}).get("response_json") or {}
+                    draft_response_data = (
+                        draft_response_json.get("data")
+                        if isinstance(draft_response_json, dict)
+                        else {}
+                    )
+                    if not isinstance(draft_response_data, dict):
+                        draft_response_data = {}
+                    draft_pgc_id = str(draft_response_data.get("pgc_id", "0") or "0")
+
+                    if not draft_save_confirmed and draft_pgc_id == "0":
+                        raise RuntimeError(
+                            "Draft autosave was not confirmed. Publish was blocked before submission."
+                        )
+
+                    if (
+                        inline_image_inserted > 0
+                        and draft_pgc_id == "0"
+                        and (draft_save_event is None or not draft_media_payload.get("verified"))
                     ):
-                        notes.append("Draft autosave was not confirmed. Continuing with a direct publish attempt.")
+                        debug_dir = self._capture_debug_artifacts(
+                            page,
+                            extra_payload={
+                                "publish_events": publish_events,
+                                "editor_media_state": media_state,
+                                "draft_media_payload": draft_media_payload,
+                            },
+                        )
+                        raise RuntimeError(
+                            "Publish blocked because the draft-save payload did not prove that all "
+                            "inline images were persisted. "
+                            f"{draft_media_payload.get('failure_reason') or 'save event missing'}. "
+                            f"Debug files saved to: {debug_dir}"
+                        )
 
                     if draft_only:
                         notes.append("Draft-only mode enabled. Stopped after draft autosave confirmation.")
@@ -1094,6 +1186,7 @@ class PublishService:
                             "publish_request_summary": {
                                 "url": page.url,
                                 "save_mode": "draft_only",
+                                "media_payload": draft_media_payload,
                             },
                         }
 
@@ -1105,13 +1198,37 @@ class PublishService:
                     )
                     if submitted_event:
                         response_json = submitted_event.get("response_json") or {}
-                        pgc_id = str((response_json.get("data") or {}).get("pgc_id", "0") or "0")
+                        response_data = (
+                            response_json.get("data")
+                            if isinstance(response_json, dict)
+                            else {}
+                        )
+                        if not isinstance(response_data, dict):
+                            response_data = {}
+                        pgc_id = str(response_data.get("pgc_id", "0") or "0")
                         if pgc_id != "0":
                             self._disable_save_mode_override(page, notes)
-                            notes.append("Draft save auto-submitted article for review on Toutiao. Skipping manual publish click.")
-                            publish_verified = self._verify_toutiao_publish_success(page, title, notes)
+                            submission_uncertain = (
+                                not draft_save_confirmed
+                                or (
+                                    inline_image_inserted > 0
+                                    and not draft_media_payload.get("verified")
+                                )
+                            )
+                            if submission_uncertain:
+                                notes.append(
+                                    "Toutiao returned a pgc_id before media/save evidence was complete. "
+                                    "No further publish attempt was made; result marked publish_uncertain."
+                                )
+                                publish_verified = False
+                            else:
+                                notes.append(
+                                    "Draft save auto-submitted article for review on Toutiao. "
+                                    "Skipping manual publish click."
+                                )
+                                publish_verified = self._verify_toutiao_publish_success(page, title, notes)
                             return {
-                                "status": "submitted_for_review",
+                                "status": "publish_uncertain" if submission_uncertain else "submitted_for_review",
                                 "published_at": datetime.now().isoformat(timespec="seconds"),
                                 "external_url": page.url,
                                 "notes": self._finalize_notes(notes),
@@ -1123,6 +1240,7 @@ class PublishService:
                                     "url": str(submitted_event.get("url", page.url)),
                                     "save_mode": "draft_auto_submitted",
                                     "pgc_id": pgc_id,
+                                    "media_payload": draft_media_payload,
                                 },
                                 "publish_verified": publish_verified,
                             }
@@ -1184,6 +1302,20 @@ class PublishService:
                             f"Debug files saved to: {debug_dir}"
                         )
 
+                    final_media_payload = self._summarize_publish_media_payload(
+                        str(publish_event.get("post_data", "")),
+                        expected_inline_images=inline_image_inserted,
+                        expected_refs=list(media_state.get("refs", [])),
+                    )
+                    final_media_payload["event_captured"] = True
+                    inline_image_summary["final_publish_payload"] = final_media_payload
+                    media_payload_verified = bool(final_media_payload.get("verified"))
+                    if inline_image_inserted > 0 and not media_payload_verified:
+                        notes.append(
+                            "Toutiao accepted the final request, but its payload did not prove that "
+                            "all inline images were persisted. Marking the result publish_uncertain."
+                        )
+
                     success_selector = self._wait_for_any(page, selectors.get("success_indicator", []))
                     if success_selector:
                         notes.append(f"Detected success indicator: {success_selector}")
@@ -1193,7 +1325,7 @@ class PublishService:
                     publish_verified = self._verify_toutiao_publish_success(page, title, notes)
 
                     return {
-                        "status": "submitted_for_review",
+                        "status": "submitted_for_review" if media_payload_verified else "publish_uncertain",
                         "published_at": datetime.now().isoformat(timespec="seconds"),
                         "external_url": page.url,
                         "notes": self._finalize_notes(notes),
@@ -1204,8 +1336,9 @@ class PublishService:
                         "publish_request_summary": {
                             "url": str(publish_event.get("url", "")),
                             "save_mode": publish_event.get("save_mode"),
+                            "media_payload": final_media_payload,
                         },
-                        "publish_verified": publish_verified,
+                        "publish_verified": publish_verified and media_payload_verified,
                     }
                 except PlatformUIUpdateException as pue:
                     self.logger.error(
@@ -2110,6 +2243,155 @@ class PublishService:
                 self._last_inline_image_assets.append(image_path)
         return inserted
 
+    def _extract_persistent_image_refs_from_html(self, markup: str) -> list[str]:
+        parser = _PersistentImageReferenceParser()
+        try:
+            parser.feed(markup or "")
+            parser.close()
+        except Exception:
+            return []
+        return list(parser.refs)
+
+    def _is_article_content_payload_key(self, key: str) -> bool:
+        normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        return normalized in {
+            "content",
+            "articlecontent",
+            "contenthtml",
+            "htmlcontent",
+            "articlebody",
+            "bodyhtml",
+            "richtext",
+        }
+
+    def _collect_article_content_values(self, value: Any, *, key: str = "") -> list[str]:
+        values: list[str] = []
+        if isinstance(value, str):
+            if not key or self._is_article_content_payload_key(key):
+                values.append(value)
+            return values
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                if self._is_article_content_payload_key(str(child_key)):
+                    values.extend(
+                        self._collect_article_content_values(child_value, key=str(child_key))
+                    )
+                elif isinstance(child_value, (dict, list)):
+                    values.extend(self._collect_article_content_values(child_value))
+            return values
+        if isinstance(value, list):
+            for child_value in value:
+                values.extend(self._collect_article_content_values(child_value, key=key))
+        return values
+
+    def _extract_article_content_payload_values(self, post_data: str) -> list[str]:
+        if not post_data:
+            return []
+
+        values: list[str] = []
+        stripped = post_data.strip()
+        if stripped.startswith(("{", "[")):
+            try:
+                values.extend(self._collect_article_content_values(json.loads(stripped)))
+            except Exception:
+                pass
+
+        try:
+            form_payload = parse_qs(post_data, keep_blank_values=True)
+        except Exception:
+            form_payload = {}
+        for key, raw_values in form_payload.items():
+            for raw_value in raw_values:
+                decoded_value = str(raw_value)
+                if self._is_article_content_payload_key(str(key)):
+                    values.append(decoded_value)
+                elif "<img" in decoded_value.lower():
+                    values.append(decoded_value)
+
+        decoded_post_data = unquote_plus(post_data)
+        if "<img" in decoded_post_data.lower():
+            values.append(decoded_post_data)
+
+        unique_values: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized = html_unescape(str(value))
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                unique_values.append(normalized)
+        return unique_values
+
+    def _extract_persistent_image_refs_from_post_data(self, post_data: str) -> list[str]:
+        refs: list[str] = []
+        seen: set[str] = set()
+        for content in self._extract_article_content_payload_values(post_data):
+            for ref in self._extract_persistent_image_refs_from_html(content):
+                if ref not in seen:
+                    seen.add(ref)
+                    refs.append(ref)
+        return refs
+
+    def _image_reference_matches(self, expected: str, actual: str) -> bool:
+        expected_value = html_unescape(str(expected)).strip()
+        actual_value = html_unescape(str(actual)).strip()
+        if not expected_value or not actual_value:
+            return False
+        return (
+            expected_value == actual_value
+            or expected_value in actual_value
+            or actual_value in expected_value
+        )
+
+    def _summarize_publish_media_payload(
+        self,
+        post_data: str,
+        *,
+        expected_inline_images: int,
+        expected_refs: list[str] | tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        payload_refs = self._extract_persistent_image_refs_from_post_data(post_data)
+        content_values = self._extract_article_content_payload_values(post_data)
+        expected_count = max(int(expected_inline_images), 0)
+        normalized_expected_refs = []
+        seen_expected: set[str] = set()
+        for ref in expected_refs:
+            normalized = html_unescape(str(ref)).strip()
+            if normalized and normalized not in seen_expected:
+                seen_expected.add(normalized)
+                normalized_expected_refs.append(normalized)
+
+        missing_refs = [
+            expected
+            for expected in normalized_expected_refs
+            if not any(self._image_reference_matches(expected, actual) for actual in payload_refs)
+            and not any(expected in content for content in content_values)
+        ]
+        verified = expected_count <= 0 or (
+            len(payload_refs) >= expected_count
+            and not missing_refs
+        )
+        failure_reason = ""
+        if not verified:
+            if len(payload_refs) < expected_count:
+                failure_reason = (
+                    f"payload contains {len(payload_refs)} persistent image reference(s); "
+                    f"expected {expected_count}"
+                )
+            elif missing_refs:
+                failure_reason = "payload omitted one or more editor image references"
+            else:
+                failure_reason = "payload image persistence could not be verified"
+
+        return {
+            "expected_count": expected_count,
+            "payload_count": len(payload_refs),
+            "payload_refs": payload_refs[:20],
+            "expected_refs": normalized_expected_refs[:20],
+            "missing_refs": missing_refs[:20],
+            "verified": verified,
+            "failure_reason": failure_reason,
+        }
+
     def _dedupe_article_image_paths(self, image_paths: list[Path], notes: list[str]) -> list[Path]:
         unique_paths: list[Path] = []
         seen_keys: set[str] = set()
@@ -2802,130 +3084,114 @@ class PublishService:
         if panel_closed and confirm_clicked:
             return
 
-    def _count_editor_images(self, page, *, editor_selector: str | None = None, editor_locator=None) -> int:
+    def _read_editor_image_refs(
+        self,
+        page,
+        *,
+        editor_selector: str | None = None,
+        editor_locator=None,
+    ) -> list[str]:
         script = """(root) => {
+            const refs = [];
             const seen = new Set();
+            const normalize = (value) => String(value || "").trim();
             const register = (value) => {
-                if (!value) {
+                const normalized = normalize(value);
+                if (!normalized || /^(?:blob:|data:|javascript:|about:)/i.test(normalized)) {
                     return;
                 }
-                const normalized = String(value).trim();
-                if (!normalized) {
-                    return;
+                if (!seen.has(normalized)) {
+                    seen.add(normalized);
+                    refs.push(normalized);
                 }
-                seen.add(normalized);
             };
-            const imageSelector = [
-                "img[web_uri]",
-                "img[mime_type^='image/']",
-                "img[src*='image_upload']",
-                "img[src*='tplv-obj.image']",
-                "img[src*='image-tt-private']",
-            ].join(",");
-            const blockSelector = [
-                "div[__syl_tag='true'][contenteditable='false']",
-                "div[__syl_tag='true']",
-                ".pgc-image",
-                ".pgc-img",
-                ".editor-image",
-            ].join(",");
-
-            for (const block of root.querySelectorAll(blockSelector)) {
-                const img = block.querySelector(imageSelector);
-                register(
-                    (img && (img.getAttribute("web_uri") || img.getAttribute("src"))) ||
-                    block.getAttribute("data-node-key") ||
-                    block.outerHTML.slice(0, 200)
-                );
+            const isRemoteSrc = (value) => /^(?:https?:)?\\/\\//i.test(normalize(value));
+            const images = root.matches && root.matches("img")
+                ? [root]
+                : Array.from(root.querySelectorAll("img"));
+            for (const img of images) {
+                const webUri = img.getAttribute("web_uri") ||
+                    img.getAttribute("web-uri") ||
+                    img.getAttribute("data-web-uri");
+                if (normalize(webUri)) {
+                    register(webUri);
+                    continue;
+                }
+                const src = img.getAttribute("src");
+                if (isRemoteSrc(src)) {
+                    register(src);
+                }
             }
-
-            if (seen.size > 0) {
-                return seen.size;
-            }
-
-            for (const img of root.querySelectorAll(imageSelector)) {
-                register(
-                    img.getAttribute("web_uri") ||
-                    img.getAttribute("src") ||
-                    img.outerHTML.slice(0, 200)
-                );
-            }
-
-            return seen.size;
+            return refs;
         }"""
 
         if editor_locator is not None:
             try:
-                count = int(editor_locator.evaluate(script))
-                if count > 0:
-                    return count
+                result = editor_locator.evaluate(script)
+                if isinstance(result, list):
+                    refs = [str(item).strip() for item in result if str(item).strip()]
+                    if refs:
+                        return refs
             except Exception:
                 pass
 
         try:
-            return int(
-                page.evaluate(
-                    """(payload) => {
-                        const selector = payload.selector;
-                        const roots = selector
-                            ? Array.from(document.querySelectorAll(selector))
-                            : Array.from(document.querySelectorAll(".ProseMirror"));
-                        if (!roots.length) {
-                            return 0;
+            result = page.evaluate(
+                """(payload) => {
+                    const selector = payload.selector;
+                    const selectedRoots = selector
+                        ? Array.from(document.querySelectorAll(selector))
+                        : Array.from(document.querySelectorAll(".ProseMirror"));
+                    const roots = selectedRoots.length
+                        ? selectedRoots
+                        : Array.from(document.querySelectorAll(".ProseMirror"));
+                    const refs = [];
+                    const seen = new Set();
+                    const normalize = (value) => String(value || "").trim();
+                    const register = (value) => {
+                        const normalized = normalize(value);
+                        if (!normalized || /^(?:blob:|data:|javascript:|about:)/i.test(normalized)) {
+                            return;
                         }
-
-                        const seen = new Set();
-                        const register = (value) => {
-                            if (!value) {
-                                return;
-                            }
-                            const normalized = String(value).trim();
-                            if (!normalized) {
-                                return;
-                            }
+                        if (!seen.has(normalized)) {
                             seen.add(normalized);
-                        };
-                        const imageSelector = [
-                            "img[web_uri]",
-                            "img[mime_type^='image/']",
-                            "img[src*='image_upload']",
-                            "img[src*='tplv-obj.image']",
-                            "img[src*='image-tt-private']",
-                        ].join(",");
-                        const blockSelector = [
-                            "div[__syl_tag='true'][contenteditable='false']",
-                            "div[__syl_tag='true']",
-                            ".pgc-image",
-                            ".pgc-img",
-                            ".editor-image",
-                        ].join(",");
-
-                        for (const root of roots) {
-                            for (const block of root.querySelectorAll(blockSelector)) {
-                                const img = block.querySelector(imageSelector);
-                                register(
-                                    (img && (img.getAttribute("web_uri") || img.getAttribute("src"))) ||
-                                    block.getAttribute("data-node-key") ||
-                                    block.outerHTML.slice(0, 200)
-                                );
+                            refs.push(normalized);
+                        }
+                    };
+                    const isRemoteSrc = (value) => /^(?:https?:)?\\/\\//i.test(normalize(value));
+                    for (const root of roots) {
+                        for (const img of root.querySelectorAll("img")) {
+                            const webUri = img.getAttribute("web_uri") ||
+                                img.getAttribute("web-uri") ||
+                                img.getAttribute("data-web-uri");
+                            if (normalize(webUri)) {
+                                register(webUri);
+                                continue;
                             }
-
-                            for (const img of root.querySelectorAll(imageSelector)) {
-                                register(
-                                    img.getAttribute("web_uri") ||
-                                    img.getAttribute("src") ||
-                                    img.outerHTML.slice(0, 200)
-                                );
+                            const src = img.getAttribute("src");
+                            if (isRemoteSrc(src)) {
+                                register(src);
                             }
                         }
-
-                        return seen.size;
-                    }""",
-                    {"selector": editor_selector},
-                )
+                    }
+                    return refs;
+                }""",
+                {"selector": editor_selector},
             )
+            if isinstance(result, list):
+                return [str(item).strip() for item in result if str(item).strip()]
         except Exception:
-            return 0
+            pass
+        return []
+
+    def _count_editor_images(self, page, *, editor_selector: str | None = None, editor_locator=None) -> int:
+        return len(
+            self._read_editor_image_refs(
+                page,
+                editor_selector=editor_selector,
+                editor_locator=editor_locator,
+            )
+        )
 
     def _verify_publish_media_state(
         self,
@@ -2934,7 +3200,16 @@ class PublishService:
         *,
         cover_mode: str,
         expected_inline_images: int,
-    ) -> None:
+    ) -> dict[str, Any]:
+        expected_count = max(int(expected_inline_images), 0)
+        state: dict[str, Any] = {
+            "cover_mode": cover_mode,
+            "expected_count": expected_count,
+            "persistent_count": 0,
+            "refs": [],
+            "verified": True,
+            "failure_reason": "",
+        }
         if cover_mode == "single":
             try:
                 page.locator(".article-cover img").first.wait_for(
@@ -2944,22 +3219,54 @@ class PublishService:
             except Exception as exc:
                 raise RuntimeError("Cover verification failed before publish.") from exc
 
-        if expected_inline_images <= 0:
-            return
+        if expected_count <= 0:
+            return state
 
         editor_locator = page.locator(editor_selector).first
         timeout_ms = max(self.settings.publishing.wait_timeout_ms, 20000)
         deadline = datetime.now().timestamp() + (timeout_ms / 1000)
+        last_signature: tuple[str, ...] = ()
+        stable_rounds = 0
         while datetime.now().timestamp() < deadline:
-            if self._count_editor_images(
+            refs = self._read_editor_image_refs(
                 page,
                 editor_selector=editor_selector,
                 editor_locator=editor_locator,
-            ) >= expected_inline_images:
-                return
+            )
+            signature = tuple(refs)
+            if len(refs) >= expected_count:
+                stable_rounds = stable_rounds + 1 if signature == last_signature else 1
+                if stable_rounds >= 2:
+                    state.update(
+                        {
+                            "persistent_count": len(refs),
+                            "refs": refs[:20],
+                        }
+                    )
+                    return state
+            else:
+                stable_rounds = 0
+            last_signature = signature
             page.wait_for_timeout(250)
+
+        state.update(
+            {
+                "persistent_count": len(last_signature),
+                "refs": list(last_signature[:20]),
+                "verified": False,
+                "failure_reason": (
+                    f"editor exposed {len(last_signature)} persistent image reference(s); "
+                    f"expected {expected_count}"
+                ),
+            }
+        )
         self.logger.warning(
-            "Inline article image verification did not observe the expected count before publish. Continuing without blocking publish."
+            "Inline article image persistence verification failed before publish: %s",
+            state["failure_reason"],
+        )
+        raise RuntimeError(
+            "Inline article image persistence could not be verified before publish. "
+            f"{state['failure_reason']}"
         )
 
     def _nudge_editor_to_trigger_autosave(self, page, editor_selector: str, notes: list[str]) -> None:
@@ -4400,6 +4707,10 @@ class PublishService:
                 "status": response.status,
                 "post_data": post_data,
                 "save_mode": save_mode,
+                "media_payload": self._summarize_publish_media_payload(
+                    post_data,
+                    expected_inline_images=0,
+                ),
             }
             try:
                 text = response.text()
@@ -4424,6 +4735,10 @@ class PublishService:
                     "status": "requestfailed",
                     "post_data": request.post_data or "",
                     "save_mode": self._extract_save_mode(request.post_data or ""),
+                    "media_payload": self._summarize_publish_media_payload(
+                        request.post_data or "",
+                        expected_inline_images=0,
+                    ),
                     "response_text": str(failure),
                     "response_json": None,
                 }
@@ -5731,7 +6046,13 @@ class PublishService:
                 self._nudge_draft_autosave(page, notes)
                 last_nudge_at = now_ts
 
-            if not saw_saving_state and not saw_footer_text and latest_autosave is None and idle_streak >= 6:
+            if (
+                not expect_save_mode_1
+                and not saw_saving_state
+                and not saw_footer_text
+                and latest_autosave is None
+                and idle_streak >= 6
+            ):
                 notes.append("Draft footer never exposed a saving indicator, but the publish form stayed idle long enough.")
                 return True
 
@@ -5761,7 +6082,7 @@ class PublishService:
             },
         )
         notes.append(
-            "Draft autosave did not complete before publish. "
+            "Draft autosave did not complete; publish must be blocked. "
             f"Last footer state: {last_footer_text or 'unavailable'}. "
             f"Debug files saved to: {debug_dir}"
         )
@@ -5839,4 +6160,3 @@ class PublishService:
                 "draft save failed",
             ]
         )
-

@@ -93,7 +93,7 @@ jobs:
       IMAGE_FALLBACK_TO_RENDERER: "1"
 
       # 内容生成
-      ARTICLE_WORD_TARGET: ${{ secrets.ARTICLE_WORD_TARGET || '1200' }}
+      ARTICLE_WORD_TARGET: ${{ secrets.ARTICLE_WORD_TARGET || '1800' }}
       MAX_INPUT_CHARS: ${{ secrets.MAX_INPUT_CHARS || '16000' }}
       BRAND_NAME: ${{ secrets.BRAND_NAME || '' }}
       INDUSTRY_FOCUS: ${{ secrets.INDUSTRY_FOCUS || '' }}
@@ -828,7 +828,7 @@ jobs:
       IMAGE_FALLBACK_TO_RENDERER: "1"
 
       # 内容生成
-      ARTICLE_WORD_TARGET: ${{ secrets.ARTICLE_WORD_TARGET || '1200' }}
+      ARTICLE_WORD_TARGET: ${{ secrets.ARTICLE_WORD_TARGET || '1800' }}
       MAX_INPUT_CHARS: ${{ secrets.MAX_INPUT_CHARS || '16000' }}
       BRAND_NAME: ${{ secrets.BRAND_NAME || '' }}
       INDUSTRY_FOCUS: ${{ secrets.INDUSTRY_FOCUS || '' }}

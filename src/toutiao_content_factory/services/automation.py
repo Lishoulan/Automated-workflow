@@ -1027,8 +1027,8 @@ class TopicAutomationService:
         if topic.recommended_format == "data_recap":
             return max(900, 800)
         if topic.recommended_format == "project_breakdown":
-            return max(1100, 800)
-        return max(1200, 800)
+            return max(1800, 800)
+        return max(1800, 800)
 
     def _build_archive_root(self, selected_topic: TopicCandidate | None) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")

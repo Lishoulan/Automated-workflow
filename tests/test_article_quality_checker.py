@@ -137,6 +137,20 @@ class TestCheckEngagementAttractiveness:
         assert len(result["details"]["engagement_templates"]) >= 1
         assert result["details"]["engagement_score"] == 25
 
+    @pytest.mark.parametrize(
+        "article",
+        [
+            "你觉得机器人芯片里哪个环节最有机会？",
+            "在你看来，机器人芯片的利润会如何分配？",
+            "下一步最先要验证的是什么？",
+        ],
+    )
+    def test_natural_open_questions_are_detected(self, article: str) -> None:
+        """WriterAgent 的自然结尾问句应计入互动话术。"""
+        result = self.checker._check_engagement_attractiveness(article)
+        assert len(result["details"]["engagement_templates"]) >= 1
+        assert result["details"]["engagement_score"] == 25
+
     def test_engagement_template_not_detected(self) -> None:
         """无互动话术时得 0 分"""
         article = "产业发展趋势值得关注，整体格局正在重塑。"

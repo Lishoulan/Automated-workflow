@@ -87,6 +87,64 @@ def test_supplementary_paragraphs_use_evidence_fields_without_old_template_opene
     assert "关键数字锚点" not in joined
 
 
+def test_medium_grounded_draft_reaches_public_gate_without_llm_expansion(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    data_report = DataReport(
+        topic_title="英伟达发布78 TOPS机器人芯片",
+        focus_industry="人形机器人",
+        focus_keywords=["人形机器人", "机器人芯片"],
+        companies=["英伟达"],
+        core_data=["英伟达发布78 TOPS机器人芯片，功耗下降40%"],
+        industry_trends=["机器人芯片正在从算力参数走向客户验证"],
+        key_points=["芯片能否进入量产要看功耗和交付"],
+        watch_metrics=["芯片出货", "客户验证", "量产节奏"],
+        evidence_notes=["公开材料：英伟达发布78 TOPS机器人芯片，功耗下降40%"],
+        growth_numbers=["78 TOPS", "40%"],
+        risk_flags=["量产和客户采购节奏尚未披露"],
+        content_format="project_breakdown",
+        word_target=1100,
+        evidence_strength=88,
+    )
+    existing = [
+        "这次信息把算力参数带到了真实执行环节。英伟达是材料中明确出现的主体，判断重点不应停在宣传口径，还要观察参数如何进入实际方案。",
+        "第二个观察点是芯片参数如何进入产品方案。78 TOPS给出的是算力指标，功耗下降40%则对应部署约束，两者需要结合使用场景核对，不能直接写成订单结果。",
+        "从开发者角度看，芯片价值不只由峰值算力决定，还要看软件适配、设备空间和持续运行条件是否能够配合。",
+        "对整机厂商而言，参数优势只有进入稳定的产品方案，才有可能影响采购选择。这个过程需要实际验证，不能用行业热度替代。",
+        "如果客户验证停留在展示阶段，芯片发布带来的影响就主要是预期变化，而不是已经确认的收入变化。",
+        "功耗指标与设备续航、散热设计和运行成本有关，但这些关系还需要结合具体产品和测试口径判断。",
+        "明确主体可以作为分析起点，但不应替它补写未披露的客户名单或采购规模。",
+        "机器人芯片的竞争还会落到交付和支持能力上，单一参数很难解释最终的商业结果。",
+        "后续判断需要把芯片出货、客户验证和量产节奏放在同一时间线里观察，避免把一次发布直接外推成行业拐点。",
+        "现阶段最稳妥的结论是信息已经提供了可追踪的技术信号，商业化强度仍要等待更多公开记录。",
+        "软件适配的成熟度会影响芯片进入产品的速度，公开材料目前没有给出完整的适配范围，因此只能把它列为观察项。",
+        "设备端的空间和散热约束同样重要，参数优势要在真实产品中保持稳定，才可能转换成可持续的使用价值。",
+        "采购方最终关注的不只是峰值指标，还包括供货稳定、技术支持和后续升级，这些内容需要更多公告来确认。",
+        "如果部署成本没有同步下降，功耗变化对商业结果的意义就会受到限制，不能简单把这项改进等同于利润增加。",
+        "英伟达的技术位置可以作为分析起点，但产业链中的其他主体和受益环节仍需依据具体材料逐一核对。",
+        "从行业角度看，芯片标准变化可能推动整机方案调整，不过这种影响需要经过客户采用和产品交付才能被验证。",
+        "公开披露的参数解决了部分信息问题，尚未披露的采购方式、交付周期和价格口径仍然决定判断能走多远。",
+        "文章把这项变化、产品约束和商业结果分开处理，才能避免把一次发布写成已经完成的产业升级。",
+        "后续若出现持续出货或客户验收记录，当前的阶段性判断可以更新；在此之前，保守表述更符合材料边界。",
+        "这条线索的价值在于提供了新的核对方向，而不是立即给出确定的市场份额或收入结论。",
+        "只要后续记录能够补齐主体、时间和结果，读者就能更准确地判断这次芯片发布究竟改变了什么。",
+        "读者还需要关注信息的统计范围和使用条件，只有口径一致，前后的变化才具有可比性，判断才不会被单项参数带偏。",
+    ]
+    current_chars = len("".join(existing))
+    assert 1000 <= current_chars < 1500
+
+    ensured = agent.ensure_article_min_chars("\n\n".join(existing), data_report)
+    ensured_chars = len(ensured.replace("\n", "").replace(" ", ""))
+
+    assert ensured_chars >= 1500
+    assert agent._unsupported_numeric_tokens(ensured, data_report) == []
+    assert "主体关系也不能省略" in ensured
+    mock_openai_service.create_json_completion.assert_not_called()
+
+
 def test_supplementary_paragraphs_skip_evidence_already_covered_by_article(
     app_settings,
     mock_openai_service,

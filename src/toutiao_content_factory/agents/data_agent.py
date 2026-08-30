@@ -576,8 +576,10 @@ class DataAgent(BaseAgent):
         if content_format == "data_recap":
             return 900
         if content_format == "project_breakdown":
-            return 1100
-        return self.settings.article_word_target
+            return 1800
+        # Keep ordinary long-form routes above the public first-publish gate
+        # even when the cloud environment supplies the old 1200-char default.
+        return max(int(self.settings.article_word_target or 0), 1800)
 
     def _paragraph_instruction_for_format(self, content_format: str, content_mode: str = "generic") -> str:
         if content_mode == "sports":

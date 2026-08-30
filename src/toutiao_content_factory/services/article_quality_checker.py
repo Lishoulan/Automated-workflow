@@ -142,6 +142,8 @@ class ArticleQualityChecker:
         re.compile(r"在你的行业里"),
         re.compile(r"在你的领域里"),
         re.compile(r"你所在行业"),
+        re.compile(r"(?:你觉得|你怎么看|你认为|在你看来|你会选择).{0,80}[？?]"),
+        re.compile(r"(?:后面|接下来|下一步|后续).{0,30}(?:最先|首先|哪个|什么|如何|是否|会不会|值得).{0,40}[？?]"),
     ]
 
     def __init__(self):

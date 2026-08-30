@@ -2,13 +2,22 @@ from __future__ import annotations
 
 from toutiao_content_factory.agents.data_agent import DataAgent
 from toutiao_content_factory.agents.title_agent import TitleAgent
-from toutiao_content_factory.models import DataReport, GeneratedContent, SourceDocument, TopicCandidate, TrendReport
+from toutiao_content_factory.models import (
+    DailyTopicsReport,
+    DataReport,
+    GeneratedContent,
+    SourceDocument,
+    TopicCandidate,
+    TrendReport,
+)
 from toutiao_content_factory.services.benchmark_hotspot_service import BenchmarkHotspotService
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 from toutiao_content_factory.services.extractor import SignalExtractor
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.topic_collection import TopicCollectionService
 from toutiao_content_factory.services.automation import TopicAutomationService
+from toutiao_content_factory.services.app_service import ContentFactoryAppService
+from unittest.mock import MagicMock
 
 
 RAILWAY_SNIPPET = (
@@ -305,3 +314,92 @@ def test_project_title_fallback_uses_topic_facts_and_passes_hard_title_rules(
     assert len(title) <= app_settings.publishing.title_max_length
     assert agent.validate_title_compliance(title, content.summary)
     assert ArticleQualityChecker()._check_title(title, content.article)["issues"] == []
+
+
+def test_daily_candidates_prioritize_grounded_material_before_hot_title_only_topics(
+    app_settings,
+    logger,
+) -> None:
+    topics = [
+        TopicCandidate(
+            title="热点标题型话题",
+            url="https://example.test/hot",
+            source="hot",
+            source_type="hot_board",
+            evidence_strength=100,
+            quality_score=100,
+            quality_flags=["title_only"],
+            total_score=100,
+        ),
+        TopicCandidate(
+            title="有素材但标题型标记话题",
+            url="https://example.test/title-only",
+            source="rss",
+            source_type="rss",
+            evidence_strength=60,
+            quality_score=90,
+            quality_flags=["title_only"],
+            total_score=90,
+        ),
+        TopicCandidate(
+            title="充电站接入虚拟电厂项目",
+            url="https://example.test/grounded-high",
+            source="rss",
+            source_type="rss",
+            evidence_strength=75,
+            quality_score=88,
+            quality_flags=[],
+            total_score=88,
+        ),
+        TopicCandidate(
+            title="储能项目进展",
+            url="https://example.test/grounded-next",
+            source="rss",
+            source_type="rss",
+            evidence_strength=65,
+            quality_score=92,
+            quality_flags=[],
+            total_score=92,
+        ),
+    ]
+    report = DailyTopicsReport(
+        generated_at="2026-08-30T08:00:00",
+        lookback_days=2,
+        max_topic_age_hours=24,
+        focus_industries=[],
+        total_raw_items=len(topics),
+        total_selected_items=len(topics),
+        topics=topics,
+    )
+    app = ContentFactoryAppService(app_settings, logger)
+    app.topic_automation._load_daily_topics = MagicMock(return_value=report)
+    app.topic_automation._available_topics = MagicMock(return_value=topics)
+
+    specs = app._build_daily_candidate_specs(
+        topic_rank=None,
+        topic_title=None,
+        refresh_cache=False,
+        dry_run=False,
+    )
+
+    assert [item["title"] for item in specs] == [
+        "充电站接入虚拟电厂项目",
+        "储能项目进展",
+        "有素材但标题型标记话题",
+    ]
+
+
+def test_title_primary_company_uses_shared_company_validation(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = TitleAgent(
+        app_settings,
+        PromptRepository(app_settings),
+        mock_openai_service,
+        logger,
+    )
+    report = DataReport(focus_companies=["重点看电池", "比亚迪"])
+
+    assert agent._primary_company(report) == "比亚迪"

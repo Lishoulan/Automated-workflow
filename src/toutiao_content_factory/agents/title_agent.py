@@ -969,10 +969,8 @@ class TitleAgent(BaseAgent):
         return candidates[0] if candidates else "科技制造"
 
     def _primary_company(self, data_report: DataReport) -> str:
-        for item in self.clean_publish_list(data_report.focus_companies + data_report.companies, limit=4):
-            if item and item not in {"某公司", "该公司", "头部公司"}:
-                return item
-        return ""
+        companies = self._company_candidates(data_report)
+        return companies[0] if companies else ""
 
     def _primary_scene(self, content: GeneratedContent, data_report: DataReport) -> str:
         candidates = [

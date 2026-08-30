@@ -2322,27 +2322,62 @@ class ContentFactoryAppService:
             ]
 
         max_attempts = max(1, int(self.settings.automation.max_daily_topic_attempts))
-        # 混合候选策略：
-        # 1) 热榜话题时效性最强，但标题型热点无原文素材，评分常不达标；
-        #    因此只保留 1 个最热的热榜话题作为第一候选（兼顾时效与发布成功率）。
-        # 2) 其余名额优先给有完整素材的高潜力话题（evidence_strength >= 55），
-        #    保证每天至少有一个"能写出达标文章"的候选可尝试，提高自动发布成功率。
-        hot_topics = [t for t in available_topics if t.source_type in {"hot_board", "baidu_hot"}]
-        material_topics = [
-            t for t in available_topics
-            if t.source_type not in {"hot_board", "baidu_hot"}
-            and int(getattr(t, "evidence_strength", 0) or 0) >= 55
+        # Prefer candidates that can support a grounded article.  Hot-board
+        # items are often title-only and should remain a fallback, otherwise
+        # they can consume all retry slots before a usable source is tried.
+        hot_source_types = {"hot_board", "baidu_hot"}
+
+        def topic_sort_key(topic: TopicCandidate) -> tuple[int, int, int, int]:
+            return (
+                -int(getattr(topic, "evidence_strength", 0) or 0),
+                -int(getattr(topic, "quality_score", 0) or 0),
+                -int(getattr(topic, "total_score", 0) or 0),
+                -int(getattr(topic, "title_potential_score", 0) or 0),
+            )
+
+        grounded_material_topics = sorted(
+            [
+                topic
+                for topic in available_topics
+                if topic.source_type not in hot_source_types
+                and int(getattr(topic, "evidence_strength", 0) or 0) >= 55
+                and "title_only" not in {
+                    str(flag).strip().lower()
+                    for flag in (getattr(topic, "quality_flags", []) or [])
+                }
+            ],
+            key=topic_sort_key,
+        )
+        other_material_topics = sorted(
+            [
+                topic
+                for topic in available_topics
+                if topic.source_type not in hot_source_types
+                and topic not in grounded_material_topics
+                and int(getattr(topic, "evidence_strength", 0) or 0) >= 55
+            ],
+            key=topic_sort_key,
+        )
+        remaining_topics = sorted(
+            [
+                topic
+                for topic in available_topics
+                if topic.source_type not in hot_source_types
+                and topic not in grounded_material_topics
+                and topic not in other_material_topics
+            ],
+            key=topic_sort_key,
+        )
+        hot_topics = sorted(
+            [topic for topic in available_topics if topic.source_type in hot_source_types],
+            key=topic_sort_key,
+        )
+        ordered = [
+            *grounded_material_topics,
+            *other_material_topics,
+            *remaining_topics,
+            *hot_topics,
         ]
-        ordered: list = []
-        if hot_topics:
-            ordered.append(hot_topics[0])
-        ordered.extend(material_topics)
-        # 若仍有空缺，补剩余话题（优先其他非热榜素材，其次剩余热榜）
-        for topic in available_topics:
-            if len(ordered) >= max_attempts:
-                break
-            if topic not in ordered:
-                ordered.append(topic)
         return [
             {
                 "rank": available_rank,

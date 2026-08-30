@@ -122,7 +122,7 @@ class TestCompanyCandidates:
 
         assert base_agent._company_candidates(report) == ["特斯拉", "比亚迪", "国瓷材料"]
 
-    @pytest.mark.parametrize("candidate", ["柏林工厂", "公开材料", "人形机器人", "据德国汽车", "涉及哪些公司"])
+    @pytest.mark.parametrize("candidate", ["柏林工厂", "公开材料", "人形机器人", "据德国汽车", "涉及哪些公司", "重点看电池"])
     def test_rejects_non_company_context(self, base_agent: BaseAgent, candidate: str) -> None:
         assert not base_agent._is_valid_company_name(candidate)
 

@@ -239,6 +239,13 @@ COMPANY_PREFIX_NOISE = (
     "能否",
     "哪些",
     "什么",
+    # Editorial instructions can end with a token that looks like a company
+    # suffix, for example "重点看电池".  They are not company entities.
+    "重点看",
+    "重点关注",
+    "优先看",
+    "先看",
+    "关注",
 )
 
 COMPANY_CONTEXT_NOISE = (

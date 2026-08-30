@@ -5,6 +5,7 @@ from toutiao_content_factory.agents.title_agent import TitleAgent
 from toutiao_content_factory.models import (
     DailyTopicsReport,
     DataReport,
+    ExtractionResult,
     GeneratedContent,
     SourceDocument,
     TopicCandidate,
@@ -303,6 +304,69 @@ def test_data_payload_cannot_replace_facts_with_editorial_metadata(
     assert all("体裁要求" not in item and "manual_paste" not in item for item in report.core_data + report.industry_trends + report.key_points + report.evidence_notes)
     assert all("人形机器人" not in item and "新能源" not in item for item in report.watch_metrics + report.risk_flags)
     assert "订单落地" in report.watch_metrics
+
+
+def test_data_payload_promotes_only_source_supported_title_facts(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    extraction = ExtractionResult(
+        merged_text="公开材料显示，优必选2026年上半年总销量为16,123台，同比增长12.4%。",
+        core_data=[],
+        industry_trends=[],
+        growth_numbers=["12.4%"],
+        companies=["优必选"],
+        supply_chain_keywords=["人形机器人"],
+        key_points=[],
+        focus_industry="人形机器人",
+        topic_title="优必选2026年上半年销量16123台，同比增长12.4%",
+        source_summaries=[{"title": "公开材料"}],
+    )
+    agent = DataAgent(
+        app_settings,
+        PromptRepository(app_settings),
+        mock_openai_service,
+        logger,
+    )
+
+    report = agent._build_from_payload(
+        {"core_data": [], "evidence_notes": []},
+        extraction,
+        TrendReport(),
+    )
+
+    assert any("16,123台" in item for item in report.core_data)
+    assert any("16,123台" in item for item in report.evidence_notes)
+
+
+def test_data_payload_does_not_trust_unsupported_title_numbers(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    extraction = ExtractionResult(
+        merged_text="公开材料显示，优必选2026年上半年总销量为16,123台。",
+        core_data=[],
+        industry_trends=[],
+        growth_numbers=[],
+        companies=["优必选"],
+        supply_chain_keywords=["人形机器人"],
+        key_points=[],
+        focus_industry="人形机器人",
+        topic_title="优必选2026年上半年销量99999台，同比增长88%",
+        source_summaries=[{"title": "公开材料"}],
+    )
+    agent = DataAgent(
+        app_settings,
+        PromptRepository(app_settings),
+        mock_openai_service,
+        logger,
+    )
+
+    report = agent._build_from_payload({}, extraction, TrendReport())
+
+    assert not any("99999" in item or "88%" in item for item in report.core_data + report.evidence_notes)
 
 
 def test_financial_title_fallback_uses_topic_subject_and_figures(

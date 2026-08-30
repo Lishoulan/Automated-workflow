@@ -47,6 +47,20 @@ def test_clean_article_text_removes_leaked_source_labels() -> None:
     assert "全尺寸人形机器人收入增长" in cleaned
 
 
+def test_clean_article_text_removes_internal_review_paragraphs() -> None:
+    article = (
+        "公开材料显示，项目已经进入验证阶段。\n\n"
+        "主体关系也不能省略，当前记录涉及某公司。主体出现在材料中，只能说明它与事件有关。\n\n"
+        "后续需要看客户验收和交付节奏。"
+    )
+
+    cleaned = clean_article_text(article, min_word_count=0)
+
+    assert "主体关系也不能省略" not in cleaned
+    assert "公开材料显示" in cleaned
+    assert "后续需要看客户验收" in cleaned
+
+
 def test_clean_article_text_joins_non_terminal_fragmented_blocks() -> None:
     article = "接下来判断可以看订单转化率、实际交付量、制造、\n\n物流和商业服务场景的客户复购率。"
 

@@ -10,6 +10,11 @@ from toutiao_content_factory.services.company_entities import extract_known_comp
 
 class DataAgent(BaseAgent):
     agent_name = "DataAgent"
+    TITLE_FACT_NUMBER_RE = re.compile(
+        r"\d[\d,]*(?:\.\d+)?\s*(?:万亿元|亿元|亿美元|万元|万台|万辆|万套|万吨|万千瓦时|万千瓦|"
+        r"GWh|MWh|kWh|Wh|Ah|GW|MW|kW|W|V|A|个月|季度|年|月|倍|台|辆|套|家|个|万|%)?",
+        re.IGNORECASE,
+    )
     PROMPT_INJECTION_PATTERNS = (
         re.compile(r"请忽略以上.{0,10}指令", re.IGNORECASE),
         re.compile(r"忽略之前的.{0,10}(指令|要求|规则)", re.IGNORECASE),
@@ -179,9 +184,10 @@ class DataAgent(BaseAgent):
             limit=4,
         )
         secondary = focus_keywords[1] if len(focus_keywords) > 1 else "关键环节"
+        title_evidence = self._build_title_fact_evidence(extraction)
         core_data = self._merge_evidence_lists(
-            self._list_values(merged.get("core_data"), []),
-            extraction.core_data,
+            [*title_evidence, *self._list_values(merged.get("core_data"), [])],
+            [*title_evidence, *extraction.core_data],
             limit=6,
             factual_text=factual_context,
         )
@@ -213,8 +219,14 @@ class DataAgent(BaseAgent):
             limit=5,
         )
         evidence_notes = self._merge_evidence_lists(
-            self._list_values(merged.get("evidence_notes"), []),
-            self._build_evidence_notes(extraction),
+            [
+                *self._format_title_evidence_notes(extraction, title_evidence),
+                *self._list_values(merged.get("evidence_notes"), []),
+            ],
+            [
+                *self._format_title_evidence_notes(extraction, title_evidence),
+                *self._build_evidence_notes(extraction),
+            ],
             limit=5,
             factual_text=factual_context,
         )
@@ -296,6 +308,64 @@ class DataAgent(BaseAgent):
             word_target=int(route["word_target"]),
             is_hot_topic=bool(getattr(extraction, "is_hot_topic", False)),
         )
+
+    def _build_title_fact_evidence(self, extraction: ExtractionResult) -> list[str]:
+        """Promote a selected title into evidence only when the source supports it."""
+
+        title = self.clean_publish_text(extraction.topic_title).strip()
+        source_text = str(extraction.merged_text or "").strip()
+        if not title or not source_text:
+            return []
+
+        source_sentences = re.split(r"[。！？；;\n]+", source_text)
+        source_sentences = [
+            re.sub(r"^\s*原文标题\s*[:：]\s*", "", item).strip()
+            for item in source_sentences
+            if item.strip()
+        ]
+        title_numbers = [
+            self._compact_fact_text(item)
+            for item in self.TITLE_FACT_NUMBER_RE.findall(title)
+        ]
+        title_numbers = self.unique([item for item in title_numbers if item])
+
+        if title_numbers:
+            source_compact = self._compact_fact_text(source_text)
+            if not all(item in source_compact for item in title_numbers):
+                return []
+            matched: list[str] = []
+            for number in title_numbers:
+                for sentence in source_sentences:
+                    if number in self._compact_fact_text(sentence):
+                        matched.append(sentence)
+                        break
+            return self._clean_evidence_list(matched, limit=4, factual_text=source_text)
+
+        title_compact = self._compact_fact_text(title)
+        if len(title_compact) < 8:
+            return []
+        for sentence in source_sentences:
+            if title_compact in self._compact_fact_text(sentence):
+                return self._clean_evidence_list([sentence], limit=1, factual_text=source_text)
+        return []
+
+    @staticmethod
+    def _compact_fact_text(value: object) -> str:
+        return re.sub(r"[\s,，]", "", str(value or "")).casefold()
+
+    def _format_title_evidence_notes(
+        self,
+        extraction: ExtractionResult,
+        evidence: list[str],
+    ) -> list[str]:
+        if not evidence:
+            return []
+        source_name = ""
+        if extraction.source_summaries:
+            source_name = str(extraction.source_summaries[0].get("title", "")).strip()
+        if not source_name or source_name.lower() in {"manual_paste", "source_document", "source_material", "untitled"}:
+            source_name = "公开材料"
+        return [f"{source_name}：{item}" for item in evidence]
 
     def _fallback(self, extraction: ExtractionResult, trend_report: TrendReport) -> DataReport:
         keywords = self.clean_publish_list(

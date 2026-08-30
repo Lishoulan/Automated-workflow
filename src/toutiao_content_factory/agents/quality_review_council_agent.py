@@ -34,7 +34,10 @@ class QualityReviewCouncilAgent(BaseAgent):
     )
     _INTERNAL_LEAK_RE = re.compile(
         r"manual_paste|evergreen_pool|benchmark_hotspot|source_document|source_material|"
-        r"editorial_council|quality_review|内部标签|素材标签",
+        r"editorial_council|quality_review|内部标签|素材标签|已跳过缓存|强制重新生成|"
+        r"主体关系也不能省略|主体关系也要单独核对|能够直接回指|当前记录的核心内容是|"
+        r"当前记录涉及|材料目前能支持的事实是|后续复盘可以先核对|"
+        r"这些项目是后续复盘时可以核对的信号|质量审核专家团|发布就绪|DataReport",
         re.IGNORECASE,
     )
     _ABSOLUTE_CLAIMS = (

@@ -141,7 +141,8 @@ def test_medium_grounded_draft_reaches_public_gate_without_llm_expansion(
 
     assert ensured_chars >= 1500
     assert agent._unsupported_numeric_tokens(ensured, data_report) == []
-    assert "主体关系也不能省略" in ensured
+    assert "主体关系也不能省略" not in ensured
+    assert "当前记录的核心内容是" not in ensured
     mock_openai_service.create_json_completion.assert_not_called()
 
 

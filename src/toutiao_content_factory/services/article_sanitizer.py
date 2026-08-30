@@ -74,6 +74,37 @@ SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?；;])")
 COMMA_SPLIT_RE = re.compile(r"(?<=[，、；：:])")
 INLINE_HEADING_RE = re.compile(r"(?<!\n)\s+(?=#{1,6}\s*)")
 
+# Source names occasionally leak from an evidence note into the model output.
+# Only source-like labels are removed so ordinary prose such as "限制条件："
+# remains publishable.
+_SOURCE_LABEL_HINTS = (
+    "前瞻",
+    "观察",
+    "研究",
+    "资讯",
+    "财经",
+    "证券",
+    "日报",
+    "时报",
+    "媒体",
+    "公众号",
+    "头条号",
+)
+_SOURCE_LABEL_SUFFIXES = ("报", "社", "讯", "媒体")
+_SOURCE_LABEL_NAME = (
+    r"(?:[\u4e00-\u9fffA-Za-z0-9·&]{1,20}(?:前瞻|观察|研究|资讯|财经|证券|日报|时报|媒体|公众号|头条号)"
+    r"|[\u4e00-\u9fffA-Za-z0-9·&]{1,20}(?:报|社|讯|媒体)|36氪)"
+)
+_SOURCE_LABEL_RE = re.compile(
+    r"(?P<boundary>[\n：:；;。！？!?，,])\s*"
+    rf"(?P<label>{_SOURCE_LABEL_NAME})"
+    r"(?:（[^）\n]{0,80}）|\([^\)\n]{0,80}\))?\s*[：:]\s*"
+)
+_LEADING_SOURCE_LABEL_RE = re.compile(
+    rf"^\s*(?P<label>{_SOURCE_LABEL_NAME})"
+    r"(?:（[^）\n]{0,80}）|\([^\)\n]{0,80}\))?\s*[：:]\s*"
+)
+
 
 def clean_article_text(
     article: str,
@@ -91,10 +122,12 @@ def clean_article_text(
         return ""
 
     text = _strip_inline_noise(text)
+    text = strip_internal_source_labels(text)
     text = _normalize_markdown_structure(text)
     text = _strip_markdown_blocks(text)
     blocks = [_clean_block(block) for block in re.split(r"\n\s*\n+", text) if block.strip()]
     blocks = [block for block in blocks if block]
+    blocks = _merge_fragmented_blocks(blocks)
     blocks = _strip_leading_title(blocks, title_candidates or [])
 
     result: list[str] = []
@@ -128,8 +161,36 @@ def _strip_inline_noise(text: str) -> str:
         text = pattern.sub("", text)
     # Clean up leftover artifacts like "是" before removed noise
     text = re.sub(r"[，,]?\s*是\s*[，,。；;]", "，", text)
-    text = re.sub(r"\s{2,}", " ", text)
+    # Keep blank lines intact so a later stage can distinguish paragraphs
+    # from a line break inside one sentence.
+    text = re.sub(r"[^\S\r\n]+", " ", text)
     return text.strip()
+
+
+def strip_internal_source_labels(text: str) -> str:
+    """Remove source attribution labels that are not part of public copy."""
+
+    def is_source_like(label: str) -> bool:
+        normalized = re.sub(r"\s+", "", label)
+        return any(hint in normalized for hint in _SOURCE_LABEL_HINTS) or normalized.endswith(
+            _SOURCE_LABEL_SUFFIXES
+        )
+
+    def replace(match: re.Match[str]) -> str:
+        if not is_source_like(match.group("label")):
+            return match.group(0)
+        return match.group("boundary")
+
+    cleaned = str(text or "")
+    for _ in range(3):
+        leading = _LEADING_SOURCE_LABEL_RE.match(cleaned)
+        if leading and is_source_like(leading.group("label")):
+            cleaned = cleaned[leading.end() :]
+        updated = _SOURCE_LABEL_RE.sub(replace, cleaned)
+        if updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned
 
 
 def _normalize_markdown_structure(text: str) -> str:
@@ -313,7 +374,7 @@ def _split_long_sentence(text: str) -> list[str]:
     current = ""
     for part in parts:
         candidate = f"{current}{part}" if current else part
-        if current and len(candidate) > 70:
+        if current and len(candidate) > 70 and not current.endswith(("，", ",", "、", "：", ":")):
             result.append(current.strip())
             current = part
         else:
@@ -321,6 +382,22 @@ def _split_long_sentence(text: str) -> list[str]:
     if current.strip():
         result.append(current.strip())
     return result
+
+
+def _merge_fragmented_blocks(blocks: list[str]) -> list[str]:
+    """Join blocks split after a non-terminal Chinese punctuation mark."""
+
+    merged: list[str] = []
+    for block in blocks:
+        current = block.strip()
+        if not current:
+            continue
+        if merged and merged[-1].endswith(("，", ",", "、", "：", ":")):
+            separator = "" if _starts_with_cjk(current) else " "
+            merged[-1] = f"{merged[-1].rstrip()}{separator}{current.lstrip()}".strip()
+        else:
+            merged.append(current)
+    return merged
 
 
 def _merge_tiny_blocks(blocks: list[str]) -> list[str]:
@@ -367,6 +444,9 @@ def _normalize_punctuation(text: str) -> str:
     normalized = re.sub(r"[；;]\s*[。！？!?]", "。", normalized)
     normalized = re.sub(r"[，,]\s*[。！？!?]", "。", normalized)
     normalized = re.sub(r"([。！？!?；;])\s*\1+", r"\1", normalized)
+    normalized = re.sub(r"(验证)\s+(?=[“\"「『])", r"\1。", normalized)
+    normalized = re.sub(r"([”」』])(?=(?:目前|这一|这项|该数字|这个数字|尤其|但|而))", r"\1。", normalized)
+    normalized = re.sub(r"([。！？!?])\s+(?=[“「『])", r"\1", normalized)
     return normalized.strip(" ，,；;：:")
 
 

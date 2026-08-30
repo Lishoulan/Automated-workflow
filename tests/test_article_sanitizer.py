@@ -35,3 +35,22 @@ def test_clean_article_text_is_idempotent_and_deduplicates_blocks() -> None:
 
     assert once == twice
     assert once.count("客户验收仍是判断订单能否转化为收入的关键环节") == 1
+
+
+def test_clean_article_text_removes_leaked_source_labels() -> None:
+    article = "材料目前能支持的事实是：机器人前瞻：优必选公布半年报；机器人前瞻：全尺寸人形机器人收入增长。"
+
+    cleaned = clean_article_text(article, min_word_count=0)
+
+    assert "机器人前瞻" not in cleaned
+    assert "优必选公布半年报" in cleaned
+    assert "全尺寸人形机器人收入增长" in cleaned
+
+
+def test_clean_article_text_joins_non_terminal_fragmented_blocks() -> None:
+    article = "接下来判断可以看订单转化率、实际交付量、制造、\n\n物流和商业服务场景的客户复购率。"
+
+    cleaned = clean_article_text(article, min_word_count=0)
+
+    assert "制造、物流和商业服务" in cleaned
+    assert "制造、\n\n物流" not in cleaned

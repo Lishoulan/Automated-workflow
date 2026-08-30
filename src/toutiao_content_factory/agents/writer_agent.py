@@ -1660,15 +1660,52 @@ class WriterAgent(BaseAgent):
         existing = list(existing_paragraphs or [])
         paragraphs: list[str] = []
 
+        stop_ngrams = {
+            "后续", "可以", "当前", "需要", "这些", "判断", "不能", "单独", "已经", "材料",
+            "相关", "项目", "数据", "收入", "订单", "利润", "规模", "变化", "以及", "如果",
+            "可能", "是否", "重点", "内容", "信息", "出现", "说明", "直接", "继续", "能够",
+            "同时", "一个", "没有", "仍然", "因此", "通过", "对于", "影响", "阶段", "条件",
+            "问题", "观察", "核对", "口径", "先看", "信号", "新增", "已经", "不能",
+        }
+
+        def normalized_chars(value: str) -> str:
+            return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9%]+", "", str(value or "")).lower()
+
+        def item_is_covered(item: str, text: str) -> bool:
+            item_normalized = normalized_chars(item)
+            text_normalized = normalized_chars(text)
+            if not item_normalized or not text_normalized:
+                return False
+            if len(item_normalized) >= 8 and item_normalized in text_normalized:
+                return True
+            ngrams = {
+                item_normalized[index : index + 2]
+                for index in range(len(item_normalized) - 1)
+                if item_normalized[index : index + 2] not in stop_ngrams
+            }
+            if len(ngrams) < 5:
+                return False
+            overlap = sum(1 for ngram in ngrams if ngram in text_normalized)
+            return overlap >= 5 and overlap / len(ngrams) >= 0.35
+
+        def source_items_are_covered(items: list[str]) -> bool:
+            if not items or not existing_text:
+                return False
+            covered_text = "\n".join([*existing, *paragraphs])
+            covered_count = sum(1 for item in items if item_is_covered(item, covered_text))
+            return covered_count >= max(1, (len(items) + 1) // 2)
+
         def clean_items(items: list[str], limit: int) -> list[str]:
             return self.clean_publish_list(
                 [str(item).strip() for item in items[:limit] if str(item).strip()],
                 limit=limit,
             )
 
-        def append_if_new(text: str) -> None:
+        def append_if_new(text: str, source_items: list[str] | None = None) -> None:
             candidate = clean_article_text(text, min_word_count=0).strip()
             if not candidate:
+                return
+            if source_items and source_items_are_covered(source_items):
                 return
             if not self._is_duplicate_paragraph(candidate, [*existing, *paragraphs]):
                 paragraphs.append(candidate)
@@ -1685,149 +1722,99 @@ class WriterAgent(BaseAgent):
         metrics = clean_items(data_report.watch_metrics, 4)
         if metrics:
             append_if_new(
-                "后续复盘可以先核对" + "、".join(metrics) + "。"
-                "这些项目是后续复盘时可以核对的信号，和新增事实放在一起看，才能判断进展是否继续。"
+                (
+                    "后续复盘可以先核对" + "、".join(metrics) + "。"
+                    "这些项目是后续复盘时可以核对的信号，和新增事实放在一起看，才能判断进展是否继续。"
+                ),
+                source_items=metrics,
             )
 
         risks = clean_items(data_report.risk_flags, 3)
         if risks:
             append_if_new(
-                "限制条件包括：" + "；".join(risks) + "。"
-                "其中任何一项持续恶化，都会把商业化判断拉回到更早的验证阶段。"
+                (
+                    "限制条件包括：" + "；".join(risks) + "。"
+                    "其中任何一项持续恶化，都会把商业化判断拉回到更早的验证阶段。"
+                ),
+                source_items=risks,
             )
 
         notes = clean_items(data_report.evidence_notes, 3)
         if notes:
             append_if_new(
-                "材料目前能支持的事实是：" + "；".join(notes) + "。"
-                "除此之外的订单、收入或规模判断，都应该等新的公告或项目进展补足。"
+                (
+                    "材料目前能支持的事实是：" + "；".join(notes) + "。"
+                    "除此之外的订单、收入或规模判断，都应该等新的公告或项目进展补足。"
+                ),
+                source_items=notes,
             )
 
         numbers = clean_items(data_report.growth_numbers, 2)
         if len(numbers) >= 2:
             append_if_new(
-                f"可作为参照的数字是{numbers[0]}和{numbers[1]}。"
-                "它们只能说明已经出现的变化，不能单独证明后续利润或规模已经兑现。"
+                (
+                    f"可作为参照的数字是{numbers[0]}和{numbers[1]}。"
+                    "它们只能说明已经出现的变化，不能单独证明后续利润或规模已经兑现。"
+                ),
+                source_items=numbers,
             )
 
-        # When the model is unavailable, raw-field summaries alone are too
-        # short.  These paragraphs add distinct analytical lenses while
-        # reusing only values already present in DataReport.
-        material_text = " ".join(
-            self.clean_publish_text(str(item))
-            for item in (
-                getattr(data_report, "topic_title", ""),
-                *(getattr(data_report, "core_data", []) or [])[:3],
-                *(getattr(data_report, "industry_trends", []) or [])[:3],
-                *(getattr(data_report, "key_points", []) or [])[:3],
-                *(getattr(data_report, "evidence_notes", []) or [])[:3],
-            )
-            if str(item).strip()
-        )
-        if material_text:
+        # A very short local fallback still needs enough readable context for
+        # the review package.  Keep this path limited to short drafts and
+        # derive every sentence from fields already present in DataReport.
+        initial_chars = sum(len(item.replace("\n", "").replace(" ", "")) for item in existing)
+        if initial_chars < 1000:
             topic = self.clean_publish_text(getattr(data_report, "topic_title", "")).rstrip("。")
             primary = self._primary_keyword(data_report, fallback="相关主题")
-            fact_items = clean_items(getattr(data_report, "core_data", []) or [], 2)
-            if not fact_items:
-                fact_items = clean_items(getattr(data_report, "evidence_notes", []) or [], 2)
-            fact_text = "；".join(fact_items) or topic or primary
-            append_if_new(
-                f"先把事实层单独放稳：{topic or primary}，材料当前直接写到{fact_text}。"
-                "这些内容只能支撑已记录的项目或变化，不能顺手补成新的订单、收入、规模或利润结果。"
-            )
-
-            detail_items = clean_items(
-                (getattr(data_report, "key_points", []) or [])
-                + (getattr(data_report, "industry_trends", []) or [])
-                + (getattr(data_report, "focus_keywords", []) or [])
-                + (getattr(data_report, "supply_chain_keywords", []) or []),
-                2,
-            )
-            detail_text = "；".join(detail_items)
-            append_if_new(
-                f"项目拆解要把{detail_text or '项目主体、设备接入和服务环节'}与{primary}分开看。"
-                "前者是材料里的事项或判断，后者只是分析所用的主题标签；没有对应凭据的环节，仍应保留为待核对问题。"
-            )
-
-            numeric_text = "、".join(clean_items(getattr(data_report, "growth_numbers", []) or [], 3))
-            append_if_new(
-                f"数字层面，现有口径包括{numeric_text or '当前没有新增量化口径'}。"
-                "先确认每个数字对应的时间、规模或变化类型，再讨论商业含义；单个数字不能推出订单、收入或利润已经落地。"
-            )
-
-            metric_text = "、".join(metrics) or "项目进度、客户验收和回款"
-            append_if_new(
-                f"执行层的复核顺序可以从{metric_text}开始。"
-                "这些内容是观察变量，不是已经发生的结果；只有后续材料补充同一口径的连续记录，才有条件把阶段性进展写成稳定兑现。"
-            )
-
-            companies = self._company_candidates(data_report)[:3]
-            if companies:
-                append_if_new(
-                    f"主体层面，材料提到{'、'.join(companies)}，本文只把它们作为现有材料中的主体锚点。"
-                    "是否承担项目、形成收入或完成交付，仍要回到对应证据，不能从名称或讨论热度推断。"
-                )
-            else:
-                append_if_new(
-                    f"主体层面，当前材料没有提供可直接点名的公司，因此{primary}只能先按项目和业务环节拆解。"
-                    "后续若出现明确主体、客户或验收记录，再把判断推进到商业归属。"
-                )
-
+            core_text = "；".join(clean_items(getattr(data_report, "core_data", []) or [], 3))
             trend_text = "；".join(clean_items(getattr(data_report, "industry_trends", []) or [], 2))
-            append_if_new(
-                f"趋势层面能引用的是{trend_text or '材料中已经出现的业务变化'}。"
-                "它提供的是方向判断，不能单独替代项目进度、客户反馈或利润口径；分析需要把趋势和执行记录放在同一条证据链上。"
-            )
-
+            key_text = "；".join(clean_items(getattr(data_report, "key_points", []) or [], 2))
+            number_text = "、".join(clean_items(getattr(data_report, "growth_numbers", []) or [], 3))
+            company_text = "、".join(self._company_candidates(data_report)[:3])
+            metric_text = "、".join(metrics) or "项目进度、客户验收和回款"
             risk_text = "；".join(risks) or "信息口径不完整和项目兑现节奏变化"
-            append_if_new(
+
+            short_fallback_paragraphs = (
+                f"把{topic or primary}放回业务时间线，先区分消息发生的时间、项目规模和结果口径。"
+                f"当前记录的核心内容是{core_text or '现有材料中的阶段性变化'}。"
+                "这一步是为了避免把阶段性进展直接写成已经完成的商业转化。",
+                f"规模数字要和单位、统计范围一起读取，现有记录包含{number_text or '当前没有新增量化口径'}。"
+                "这些数字可以描述已经发生的变化，但不能单独推出新增订单、稳定收入或长期利润。",
+                f"主体关系也要单独核对：{company_text or '现有材料尚未形成清晰的主体清单'}。"
+                "主体出现在一条信息里，和主体已经完成交付、确认收入，是不同层次的问题。",
+                f"从执行链条看，{metric_text}应按先后观察。"
+                "先确认项目是否进入对应环节，再看结果有没有连续记录，最后才讨论这项进展能否复制。",
+                f"现有趋势描述为{trend_text or '项目仍处在从信息到执行的过渡阶段'}。"
+                "它能说明讨论方向，却不能替代客户反馈、交付记录或收入口径，趋势和结果需要分开记录。",
+                f"这组信息的判断重点是{key_text or '把事实、机制和待验证结果分开'}。"
+                "能够直接回指的内容保留为事实，基于事实作出的解释则明确为分析，不把解释写成新的披露。",
                 f"风险边界落在{risk_text}。"
-                "这些风险用于说明结论何时需要回撤，不是对结果的预言；一旦新材料改变口径，文章也应同步收窄判断。"
+                "如果后续披露没有补齐这些条件，结论就应停在阶段性判断，而不是继续向规模化结果外推。",
+                f"下一次更新不需要增加形容词，只需沿着{metric_text}补充同一时间和同一口径的记录。"
+                "有连续记录，才能判断项目是在推进、停留，还是已经改变了经营结果。",
+                f"阅读这条信息时，可以先看{core_text or topic or primary}，再看它对应的执行环节。"
+                "事实、主体、时间和结果都能对应起来，文章的判断强度才有依据。",
+                f"因此，{topic or primary}当前更适合被理解为一个需要继续核对的进展。"
+                "后续若出现新的公告、验收、交付或收入记录，再据此调整结论会更稳妥。",
+                f"数字的时间和统计范围决定能否进行比较，现有记录包含{number_text or '阶段性变化'}。"
+                "在没有统一口径之前，数字只能说明各自对应的事实，不能通过简单相加或相减推出新的结果。",
+                f"如果{metric_text}只出现单次，仍不足以说明项目已经形成稳定模式。"
+                "更有价值的是同一主体、同一场景和同一指标出现连续记录，这样才能区分偶发进展与可复制结果。",
+                f"业务事实与行业趋势需要分开处理，当前趋势描述为{trend_text or '从信息走向执行的阶段性变化'}。"
+                "趋势可以帮助确定观察方向，但最终判断仍要回到项目动作和结果记录。",
+                f"项目拆解还应把主体、环节和结果分别摆出来，当前材料涉及{company_text or '项目主体和业务环节'}。"
+                "只有这些关系能够互相对应，才能进一步讨论谁承担交付、谁确认收入以及利润如何形成。",
+                f"当新资料出现时，优先回看{metric_text}是否和原有数字使用同一口径。"
+                "如果时间范围、产品范围或确认方式发生变化，旧结论就只能作为背景，不能直接延伸到新结果。",
+                f"从实际阅读顺序看，先读{core_text or topic or primary}，再读风险和跟踪变量，会比先看结论更容易发现信息缺口。"
+                "这也是把事实、解释和待验证问题分开的必要步骤。",
+                f"结论强度不由字数决定，而由{risk_text}是否得到后续记录支撑决定。"
+                "篇幅增加只能提供更多解释，不能替代公告、交付、验收或收入确认。",
+                f"现阶段对{topic or primary}最稳妥的表述，是已经出现了可以追踪的变化，但兑现程度仍未完成确认。"
+                "后续材料若补齐主体、时间和结果口径，判断才需要随之更新。",
             )
-
-            follow_text = "、".join(self._follow_up_points(data_report))
-            angle = self.clean_publish_text(getattr(data_report, "suggested_angle", "")).rstrip("。")
-            append_if_new(
-                f"下一轮复盘可以把{follow_text or metric_text}列为观察清单。"
-                f"当前较稳妥的收束是{angle or '先把已确认事实与待验证结果分开'}，不把单点信息外推成整个行业的确定结论。"
-            )
-
-            append_if_new(
-                f"证据链的完整程度决定结论强度。当前可以回指到{fact_text}，但从项目消息走到客户验收、回款和利润，仍需要分别找到对应记录。"
-                "在这些连接没有补齐前，文章只讨论信息所处的阶段，不替项目补写商业结果。"
-            )
-            append_if_new(
-                f"从责任边界看，{primary}涉及的主体、项目和业务环节不能混为一谈。"
-                "参与讨论、出现在一条信息里，和承担交付、获得收入是不同命题，后续材料需要把这些关系逐项连起来。"
-            )
-            append_if_new(
-                f"信息更新时，优先比较{metric_text}的口径和时间。"
-                "同一个数字在不同统计范围下可能承担不同含义，不能只因为数字变大，就直接推断项目已经完成商业转化。"
-            )
-            append_if_new(
-                f"这篇稿件的判断范围暂时限定在{topic or primary}及其已记录的变化。"
-                "没有出现在事实字段里的公司、订单金额、收入和利润，不作为补充结论；有新公告时再更新判断会更稳妥。"
-            )
-            append_if_new(
-                "阅读路径可以分三层：先确认事实，再确认项目处于哪个环节，最后确认客户验收、回款和利润是否有对应记录。"
-                "这样处理能避免把同一条消息重复解释成多个已经发生的结果。"
-            )
-            append_if_new(
-                f"如果后续只增加讨论热度，却没有补充{metric_text}，{primary}的结论不应随之上调。"
-                "信息数量增加和证据强度增加不是一回事，复盘时要分别记录。"
-            )
-            append_if_new(
-                f"同一主题出现新口径时，应把旧数字{numeric_text or '已有数字'}与新数字放在来源和时间下比较。"
-                "若口径不一致，宁可保留差异，也不要用简单相减推导增长或收益。"
-            )
-            append_if_new(
-                f"对{primary}的下一步判断，最有价值的不是增加形容词，而是看是否出现新的可核对记录。"
-                "记录一旦出现，才需要重新评估项目范围、主体关系和商业含义。"
-            )
-            append_if_new(
-                f"如果后续要把{primary}的阶段性进展升级为商业判断，至少要同时看到事实来源、项目主体和结果口径。"
-                "缺少其中任一项时，结论仍保持为待验证，不用猜测补全。"
-            )
+            for paragraph in short_fallback_paragraphs:
+                append_if_new(paragraph)
         return paragraphs
 
     def _grounded_numeric_tokens(self, data_report: "DataReport") -> set[str]:

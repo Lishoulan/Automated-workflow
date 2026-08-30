@@ -87,6 +87,38 @@ def test_supplementary_paragraphs_use_evidence_fields_without_old_template_opene
     assert "关键数字锚点" not in joined
 
 
+def test_supplementary_paragraphs_skip_evidence_already_covered_by_article(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    data_report = DataReport(
+        watch_metrics=[
+            "全尺寸人形机器人实际交付量、产品构成和交付周期",
+            "意向订单、框架协议与实际收入之间的转化率",
+            "制造、物流和商业服务场景中的客户复购率",
+            "单机物料成本、核心零部件自研比例及单机毛利",
+        ],
+        risk_flags=[
+            "销量口径需要核对产品构成和销售确认方式",
+            "项目型收入未必能够持续转化为可复制利润",
+        ],
+        evidence_notes=["半年报披露营收增长和人形机器人收入占比提升"],
+        growth_numbers=["12.7亿元", "104.2%"],
+    )
+    existing = [
+        "文章已经写到全尺寸人形机器人实际交付量、产品构成和交付周期。",
+        "文章已经写到意向订单、框架协议与实际收入之间的转化率。",
+        "文章已经写到制造、物流和商业服务场景中的客户复购率。",
+        "文章已经写到单机物料成本、核心零部件自研比例及单机毛利。",
+    ]
+
+    supplements = agent._build_supplementary_paragraphs(data_report, existing_paragraphs=existing)
+
+    assert not any("后续复盘可以先核对" in item for item in supplements)
+
+
 def test_cautious_polish_fallback_keeps_unknown_order_claim_conditional(
     app_settings,
     mock_openai_service,

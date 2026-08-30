@@ -23,6 +23,12 @@ SOURCE_DISPLAY_NAMES = {
     "benchmark_hotspot": "公开报道",
     "manual_paste": "公开材料",
     "topic_pool": "选题库",
+    "36kr": "36氪",
+    "ithome": "IT之家",
+    "ofweek": "OFweek",
+    "newenergy_ofweek": "OFweek新能源",
+    "chuneng_ofweek": "OFweek储能",
+    "zhidx": "智财社",
 }
 
 

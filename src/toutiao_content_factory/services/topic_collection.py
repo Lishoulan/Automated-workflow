@@ -373,6 +373,8 @@ class TopicCollectionService:
     LOW_SIGNAL_TEXT_LENGTH = 12
     MAX_SNIPPET_LENGTH_FOR_UNUSABLE_CHECK_1 = 140
     MAX_SNIPPET_LENGTH_FOR_UNUSABLE_CHECK_2 = 120
+    ARTICLE_CONTEXT_MAX_LENGTH = 1800
+    ARTICLE_CONTEXT_MIN_LENGTH = 220
     MIN_KEYWORD_HITS_FOR_RELAXED = 2
     MIN_TITLE_HITS_FOR_RELAXED = 1
     MAX_EXPORT_TOPICS_FALLBACK = 6
@@ -1775,6 +1777,8 @@ class TopicCollectionService:
         if self._is_unusable_topic_snippet(snippet):
             return True
         if topic.source in {"newenergy_ofweek", "chuneng_ofweek"} and len(snippet) > 100:
+            return not self._is_evidence_rich_topic_text(snippet)
+        if topic.source in {"zhidx", "ofweek"} and len(snippet) <= 120:
             return True
         return False
 
@@ -1785,12 +1789,57 @@ class TopicCollectionService:
             self.logger.debug("Failed to refresh topic preview for %s: %s", topic.url, exc)
             return
 
+        current_snippet = self._clean_text(topic.snippet)
+        context = self._extract_article_context(html_text, topic.title)
+        if context and len(context) > len(current_snippet) + 80:
+            topic.snippet = context
+            if not topic.published_at:
+                date_match = re.search(
+                    r"(?:20\d{2}年(?:0?[1-9]|1[0-2])月(?:0?[1-9]|[12]\d|3[01])日|"
+                    r"(?:0?[1-9]|1[0-2])月(?:0?[1-9]|[12]\d|3[01])日)",
+                    context,
+                )
+                if date_match:
+                    topic.published_at = date_match.group(0)
+            self._enrich_topic(topic)
+            return
+
         preview = self._extract_article_preview(html_text, topic.title)
         if not preview:
             return
 
         topic.snippet = preview[:260]
         self._enrich_topic(topic)
+
+    def _extract_article_context(self, html_text: str, title: str) -> str:
+        fragments: list[str] = []
+        seen: set[str] = set()
+        for raw in self.ARTICLE_PARAGRAPH_PATTERN.findall(html_text):
+            paragraph = self._clean_text(raw)
+            if not paragraph or len(paragraph) < 24:
+                continue
+            if title and paragraph == title:
+                continue
+            if re.match(r"^(?:作者|编辑|来源|责任编辑|发布时间)\s*[|｜:：]", paragraph):
+                continue
+            if any(marker in paragraph for marker in ("原文标题", "原标题", "相关阅读", "推荐阅读", "免责声明")):
+                break
+            if "#" in paragraph or "关注「" in paragraph or "关注“" in paragraph:
+                break
+
+            normalized = re.sub(r"[\s\W_]+", "", paragraph).lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            fragments.append(paragraph)
+            context = "\n\n".join(fragments)
+            if len(context) >= self.ARTICLE_CONTEXT_MAX_LENGTH:
+                return context[: self.ARTICLE_CONTEXT_MAX_LENGTH]
+
+        context = "\n\n".join(fragments).strip()
+        if len(context) < self.ARTICLE_CONTEXT_MIN_LENGTH:
+            return ""
+        return context[: self.ARTICLE_CONTEXT_MAX_LENGTH]
 
     def _extract_article_preview(self, html_text: str, title: str) -> str:
         for pattern in self.META_DESCRIPTION_PATTERNS:

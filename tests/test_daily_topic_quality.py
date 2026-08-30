@@ -141,6 +141,27 @@ def test_rich_financial_snippet_is_kept_and_summarized(app_settings, logger) -> 
     assert "218.42亿元" in summary or "67.71亿元" in summary
 
 
+def test_html_article_context_hydrates_short_topic_preview(app_settings, logger) -> None:
+    service = TopicCollectionService(app_settings, logger)
+    html_text = (
+        '<h1>优必选半年报</h1>'
+        '<p>作者 | 公开材料</p>'
+        '<p>优必选2026年上半年营收12.7亿元，同比增长104.2%，整体毛利5.7亿元。</p>'
+        '<p>公司披露全尺寸具身智能人形机器人产品及解决方案收入约5.9亿元，增长率达到1445.0%。</p>'
+        '<p>人形机器人总销量达到16123台，其中全尺寸产品销量为921台。</p>'
+        '<p>研发人员数量达到1103人，公司还持续增加研发投入并推进物流、教育和工业场景的产品落地。</p>'
+        '<p>从收入结构看，全尺寸具身智能产品和解决方案已经成为主要增长来源，但销售数量、交付状态、客户结构和收入确认之间仍需按照半年报口径逐项核对，不能把销售数字直接等同于持续订单或盈利能力。</p>'
+        '<p>#人形机器人 #优必选</p>'
+        '<p>相关阅读：其他文章</p>'
+    )
+
+    context = service._extract_article_context(html_text, "优必选半年报")
+
+    assert "营收12.7亿元" in context
+    assert "16123台" in context
+    assert "相关阅读" not in context
+
+
 def test_selected_topic_input_does_not_discard_rich_snippet(app_settings, logger) -> None:
     service = TopicAutomationService(app_settings, logger)
     topic = TopicCandidate(

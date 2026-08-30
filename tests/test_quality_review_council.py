@@ -183,6 +183,125 @@ def test_workflow_runs_one_automatic_quality_revision_then_rechecks(
     assert service.polish_agent.run.call_args.kwargs["revision_focus"]
 
 
+def test_quality_council_receives_title_before_audit_and_after_revision(
+    app_settings,
+    mock_openai_service,
+    logger,
+    monkeypatch,
+) -> None:
+    service = AgentWorkflowService(app_settings, MagicMock(), mock_openai_service, logger)
+    service.openai_service.available = True
+    app_settings.expert_council_enabled = False
+    app_settings.enhanced_insights_enabled = False
+
+    extraction = ExtractionResult(
+        merged_text="source material",
+        core_data=["metric"],
+        industry_trends=["trend"],
+        growth_numbers=["67%"],
+        companies=["Company A"],
+        supply_chain_keywords=["storage"],
+        key_points=["key point"],
+        focus_industry="energy",
+        topic_title="topic",
+        topic_quality_score=80,
+    )
+    data_report = _data_report()
+    generated = GeneratedContent(article="initial article")
+    service.evolution_agent.run = MagicMock()
+    service.trend_agent.run = MagicMock(return_value=TrendReport())
+    service.data_agent.run = MagicMock(return_value=data_report)
+    service.writer_agent.run = MagicMock(return_value=generated)
+    service.polish_agent.run = MagicMock(
+        side_effect=[
+            {"polished_article": "first audited article", "validation_score": 90},
+            {"polished_article": "revised audited article", "validation_score": 90},
+        ]
+    )
+    service.title_agent.run = MagicMock(
+        side_effect=[
+            {"titles": ["title before revision"], "recommended_titles": ["title before revision"]},
+            {"titles": ["title after revision"], "recommended_titles": ["title after revision"]},
+        ]
+    )
+    observed_titles: list[list[str]] = []
+    quality_reports = [
+        QualityReviewReport(
+            overall_score=58,
+            verdict="needs_revision",
+            required_revisions=["revise the article"],
+        ),
+        QualityReviewReport(
+            overall_score=90,
+            fact_score=90,
+            logic_score=90,
+            structure_score=90,
+            originality_score=90,
+            compliance_score=90,
+            verdict="approved",
+        ),
+        QualityReviewReport(
+            overall_score=91,
+            fact_score=91,
+            logic_score=91,
+            structure_score=91,
+            originality_score=91,
+            compliance_score=91,
+            verdict="approved",
+        ),
+    ]
+
+    def quality_side_effect(content, *_args, **_kwargs):
+        observed_titles.append(list(content.recommended_titles))
+        return quality_reports[len(observed_titles) - 1]
+
+    service.quality_review_council_agent.run = MagicMock(side_effect=quality_side_effect)
+    service.review_agent.run = MagicMock(
+        return_value={
+            "content_score": ContentScore(
+                pass_status="approved",
+                ai_generated_risk=0,
+                completion_rate_potential=90,
+            )
+        }
+    )
+    service.publish_review_agent.run = MagicMock(
+        return_value={
+            "publish_readiness_score": 90,
+            "publish_risk_flags": [],
+            "publish_recommendation": "auto_publish",
+            "publish_notes": [],
+        }
+    )
+
+    def apply_polish(content, polish_pack, _data_report, **_kwargs):
+        content.article = polish_pack["polished_article"]
+        content.polished_article = content.article
+        content.validation_score = int(polish_pack.get("validation_score", 0))
+
+    monkeypatch.setattr(service, "_apply_polish_pack", apply_polish)
+    monkeypatch.setattr(service, "_filter_titles_by_quality", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "_should_run_second_polish", lambda *args, **kwargs: False)
+    monkeypatch.setattr(service, "_abort_if_low_quality", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "_apply_bad_words_gate", lambda *args, **kwargs: None)
+
+    result = service.run(
+        extraction,
+        style_key="deep_industry_analysis",
+        cache_context=CacheContext(),
+        fast_mode=False,
+    )
+
+    assert result.content.recommended_titles == ["title after revision"]
+    assert observed_titles == [
+        ["title before revision"],
+        ["title before revision"],
+        ["title after revision"],
+    ]
+    assert service.title_agent.run.call_count == 2
+    assert service.quality_review_council_agent.run.call_count == 3
+
+
 def test_post_review_article_change_triggers_final_quality_audit(
     app_settings,
     mock_openai_service,

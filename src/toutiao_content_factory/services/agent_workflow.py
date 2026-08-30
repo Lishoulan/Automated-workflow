@@ -186,6 +186,11 @@ class AgentWorkflowService:
             polish_pack = self.polish_agent.run(content, trend_report, data_report, style, cache_context)
             self._apply_polish_pack(content, polish_pack, data_report)
 
+            # The quality council audits the public title as well as the body.
+            # Generate the title before the first audit so it never evaluates an
+            # otherwise valid article with an empty title.
+            self._refresh_titles(content, trend_report, data_report, style, cache_context)
+            quality_reviewed_state = self._quality_review_state(content)
             quality_review_council_report = self._run_quality_review_council(
                 content=content,
                 trend_report=trend_report,
@@ -195,11 +200,11 @@ class AgentWorkflowService:
                 editorial_council=editorial_council_report,
                 fast_mode=fast_mode,
             )
-            quality_reviewed_article = self._quality_review_article(content)
-
-            title_pack = self.title_agent.run(content, trend_report, data_report, style, cache_context)
-            self._apply_title_pack(content, title_pack)
-            self._filter_titles_by_quality(content)
+            if self._quality_review_article(content) != quality_reviewed_state[0]:
+                self.logger.info(
+                    "Quality review revision changed the article; regenerating the title before final audit."
+                )
+                self._refresh_titles(content, trend_report, data_report, style, cache_context)
 
             content.cover_prompt = ""
             content.infographic_prompts = []
@@ -228,23 +233,20 @@ class AgentWorkflowService:
                     content.validation_notes = list(revised_pack.get("validation_notes", [])) or content.validation_notes
                     content.validation_score = max(int(revised_pack.get("validation_score", 0)), content.validation_score)
 
-                    title_pack = self.title_agent.run(content, trend_report, data_report, style, cache_context)
-                    self._apply_title_pack(content, title_pack)
-                    self._filter_titles_by_quality(content)
+                    self._refresh_titles(content, trend_report, data_report, style, cache_context)
 
                     review_pack = self.review_agent.run(content, data_report, style, cache_context)
                     self._apply_review_pack(content, review_pack, cache_context)
                     content_score = review_pack["content_score"]
 
-            # Review-triggered polishing happens after the first council pass.
-            # Re-audit only when the public article actually changed so the
-            # persisted quality report always describes the publishable text.
+            # Any later body or title change invalidates the first audit. The
+            # final pass is audit-only so it cannot start another revision loop.
             if (
                 quality_review_council_report is not None
-                and self._quality_review_article(content) != quality_reviewed_article
+                and self._quality_review_state(content) != quality_reviewed_state
             ):
                 self.logger.info(
-                    "Article changed after the initial quality audit; running final quality audit before publish review."
+                    "Article or title changed after the initial quality audit; running final quality audit before publish review."
                 )
                 quality_review_council_report = self._run_quality_review_council(
                     content=content,
@@ -403,6 +405,12 @@ class AgentWorkflowService:
     @staticmethod
     def _quality_review_article(content) -> str:
         return str(getattr(content, "polished_article", "") or getattr(content, "article", "") or "").strip()
+
+    @classmethod
+    def _quality_review_state(cls, content) -> tuple[str, str]:
+        titles = list(getattr(content, "recommended_titles", []) or [])
+        title = str(titles[0]).strip() if titles else ""
+        return cls._quality_review_article(content), title
 
     def _build_quality_review_revision_focus(self, report: QualityReviewReport) -> list[str]:
         focus = [
@@ -836,6 +844,11 @@ class AgentWorkflowService:
         if update_validation:
             content.validation_notes = list(polish_pack.get("validation_notes", []))
             content.validation_score = int(polish_pack.get("validation_score", 0))
+
+    def _refresh_titles(self, content, trend_report, data_report, style, cache_context) -> None:
+        title_pack = self.title_agent.run(content, trend_report, data_report, style, cache_context)
+        self._apply_title_pack(content, title_pack)
+        self._filter_titles_by_quality(content)
 
     def _apply_title_pack(self, content, title_pack) -> None:
         content.titles = title_pack["titles"]

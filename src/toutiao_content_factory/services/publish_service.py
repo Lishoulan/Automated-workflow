@@ -1053,8 +1053,10 @@ class PublishService:
                     # 关键修复：在第一次触发 autosave 之前就安装 save=1 + coverType=1 覆盖路由，
                     # 否则首个 autosave 会以 save=0(发布模式)+coverType=2+空封面发出，
                     # 被头条后端以 7050 保存失败 拒绝，导致草稿永远无法保存、后续发布点击无草稿可提交。
-                    if not draft_only:
-                        self._install_save_mode_override(page, notes)
+                    # Toutiao currently rejects the editor's initial save=0 request (7050).
+                    # The route must be armed for both draft-only and publish flows so the
+                    # first persisted payload uses the accepted save mode.
+                    self._install_save_mode_override(page, notes)
                     self._retry_playwright_action(
                         lambda: self._set_editor_content(page, editor_selector, article, notes),
                         description="set_editor_content",

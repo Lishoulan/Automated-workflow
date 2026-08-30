@@ -235,6 +235,49 @@ def test_save_override_waits_for_persistent_inline_images_before_consuming_once(
     assert service._save_override_state["consumed"] is True
 
 
+def test_save_override_is_usable_for_draft_only_flow(app_settings) -> None:
+    service = PublishService(app_settings, logging.getLogger("draft-only-save-override-test"))
+
+    class _Request:
+        def __init__(self, post_data: str) -> None:
+            self.post_data = post_data
+
+    class _Route:
+        def __init__(self, post_data: str) -> None:
+            self.request = _Request(post_data)
+            self.aborted: list[str | None] = []
+            self.continued: list[str | None] = []
+
+        def abort(self, *, error_code: str | None = None) -> None:
+            self.aborted.append(error_code)
+
+        def continue_(self, *, post_data: str | None = None) -> None:
+            self.continued.append(post_data)
+
+    class _Page:
+        def __init__(self) -> None:
+            self.handler = None
+
+        def route(self, _pattern: str, handler) -> None:
+            self.handler = handler
+
+    page = _Page()
+    notes: list[str] = []
+    service._install_save_mode_override(page, notes)
+    service._update_save_mode_override_gate(
+        expected_inline_images=0,
+        expected_refs=(),
+        ready=True,
+    )
+
+    request = _Route(urlencode({"content": "<p>草稿正文</p>", "save": "0"}))
+    page.handler(request)
+
+    assert request.aborted == []
+    assert request.continued and "save=1" in request.continued[0]
+    assert service._save_override_state["consumed"] is True
+
+
 def test_draft_autosave_without_confirmation_returns_false_for_publish_mode(
     app_settings, monkeypatch
 ) -> None:

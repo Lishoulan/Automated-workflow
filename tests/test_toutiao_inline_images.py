@@ -156,6 +156,85 @@ def test_publish_media_payload_requires_persistent_refs_and_expected_count(
     assert missing["payload_count"] == 0
 
 
+def test_save_override_waits_for_persistent_inline_images_before_consuming_once(
+    app_settings,
+) -> None:
+    service = PublishService(app_settings, logging.getLogger("save-override-image-gate-test"))
+
+    class _Request:
+        def __init__(self, post_data: str) -> None:
+            self.post_data = post_data
+
+    class _Route:
+        def __init__(self, post_data: str) -> None:
+            self.request = _Request(post_data)
+            self.aborted: list[str | None] = []
+            self.continued: list[str | None] = []
+
+        def abort(self, *, error_code: str | None = None) -> None:
+            self.aborted.append(error_code)
+
+        def continue_(self, *, post_data: str | None = None) -> None:
+            self.continued.append(post_data)
+
+    class _Page:
+        def __init__(self) -> None:
+            self.handler = None
+
+        def route(self, _pattern: str, handler) -> None:
+            self.handler = handler
+
+        def unroute(self, _pattern: str) -> None:
+            self.handler = None
+
+    page = _Page()
+    notes: list[str] = []
+    service._install_save_mode_override(page, notes)
+    assert page.handler is not None
+
+    early = _Route(urlencode({"content": "<p>正文尚未插图</p>", "save": "0"}))
+    page.handler(early)
+    assert early.aborted == ["blockedbyclient"]
+    assert early.continued == []
+    assert service._save_override_state["consumed"] is False
+
+    expected_refs = ["tos-cn-i-persisted", "https://p3-sign.douyinpic.com/persisted.png"]
+    service._update_save_mode_override_gate(
+        expected_inline_images=2,
+        expected_refs=expected_refs,
+        ready=True,
+    )
+
+    incomplete = _Route(
+        urlencode(
+            {
+                "content": '<p>正文</p><img web_uri="tos-cn-i-persisted">',
+                "save": "0",
+            }
+        )
+    )
+    page.handler(incomplete)
+    assert incomplete.aborted == ["blockedbyclient"]
+    assert service._save_override_state["consumed"] is False
+
+    complete = _Route(
+        urlencode(
+            {
+                "content": (
+                    '<p>正文</p><img web_uri="tos-cn-i-persisted">'
+                    '<img src="https://p3-sign.douyinpic.com/persisted.png">'
+                ),
+                "save": "0",
+            }
+        )
+    )
+    page.handler(complete)
+    assert complete.aborted == []
+    assert len(complete.continued) == 1
+    assert "save=1" in complete.continued[0]
+    assert service._save_override_state["consumed"] is True
+
+
 def test_draft_autosave_without_confirmation_returns_false_for_publish_mode(
     app_settings, monkeypatch
 ) -> None:

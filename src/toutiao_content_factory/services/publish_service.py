@@ -239,6 +239,7 @@ class PublishService:
             account=settings.account_key, logger=logger,
         )
         self._last_inline_image_assets: list[Path] = []
+        self._save_override_state: dict[str, Any] | None = None
 
     def _launch_persistent_browser(self, playwright, *, profile_dir: Path):
         proxy_server = get_proxy_server()
@@ -1072,6 +1073,11 @@ class PublishService:
                             inline_image_paths,
                             notes,
                         )
+                    self._update_save_mode_override_gate(
+                        expected_inline_images=inline_image_inserted,
+                        expected_refs=(),
+                        ready=inline_image_inserted <= 0,
+                    )
                     self._nudge_editor_to_trigger_autosave(page, editor_selector, notes)
                     self._apply_default_work_declarations(page, notes)
                     self._apply_safe_publish_options(page, notes, declare_first_release=declare_first_release)
@@ -1098,6 +1104,11 @@ class PublishService:
                         editor_selector,
                         cover_mode=cover_mode,
                         expected_inline_images=inline_image_inserted,
+                    )
+                    self._update_save_mode_override_gate(
+                        expected_inline_images=inline_image_inserted,
+                        expected_refs=list(media_state.get("refs", [])),
+                        ready=bool(media_state.get("verified", False)),
                     )
                     inline_image_summary = {
                         "enabled": bool(getattr(self.settings.publishing, "inline_images_enabled", True)),
@@ -4390,7 +4401,15 @@ class PublishService:
 
     def _install_save_mode_override(self, page, notes: list[str]) -> None:
         try:
-            save_override_consumed = [False]
+            state: dict[str, Any] = {
+                "consumed": False,
+                "ready": False,
+                "expected_inline_images": 0,
+                "expected_refs": [],
+                "blocked_request_count": 0,
+                "blocked_note_written": False,
+            }
+            self._save_override_state = state
             self._save_override_applied_at = [None]
 
             def handle_route(route):
@@ -4399,12 +4418,33 @@ class PublishService:
                     if post_data:
                         modified = False
                         has_pgc_id = "pgc_id=" in post_data and "pgc_id=0" not in post_data
-                        if "save=0" in post_data and not save_override_consumed[0] and not has_pgc_id:
+                        save_zero_request = "save=0" in post_data
+                        if save_zero_request and not state["consumed"] and not has_pgc_id:
+                            media_payload = self._summarize_publish_media_payload(
+                                post_data,
+                                expected_inline_images=int(state["expected_inline_images"]),
+                                expected_refs=list(state["expected_refs"]),
+                            )
+                            ready_for_override = bool(state["ready"]) and bool(media_payload["verified"])
+                            if not ready_for_override:
+                                state["blocked_request_count"] += 1
+                                if not state["blocked_note_written"]:
+                                    notes.append(
+                                        "Blocked a pre-media save=0 request; save=1 override remains armed "
+                                        "until persistent inline image references are present."
+                                    )
+                                    state["blocked_note_written"] = True
+                                route.abort(error_code="blockedbyclient")
+                                return
                             post_data = post_data.replace("save=0", "save=1")
-                            save_override_consumed[0] = True
+                            state["consumed"] = True
                             self._save_override_applied_at[0] = datetime.now().isoformat(timespec="milliseconds")
                             modified = True
-                        if "coverType%22%3A2" in post_data or '"coverType":2' in post_data:
+                        if (
+                            not save_zero_request
+                            or state["consumed"]
+                            or modified
+                        ) and ("coverType%22%3A2" in post_data or '"coverType":2' in post_data):
                             post_data = post_data.replace("coverType%22%3A2", "coverType%22%3A1")
                             post_data = post_data.replace('"coverType":2', '"coverType":1')
                             modified = True
@@ -4420,9 +4460,28 @@ class PublishService:
         except Exception as exc:
             notes.append(f"Failed to install save mode override: {exc}")
 
+    def _update_save_mode_override_gate(
+        self,
+        *,
+        expected_inline_images: int,
+        expected_refs: list[str] | tuple[str, ...],
+        ready: bool,
+    ) -> None:
+        state = self._save_override_state
+        if not isinstance(state, dict):
+            return
+        state["expected_inline_images"] = max(int(expected_inline_images), 0)
+        state["expected_refs"] = [
+            str(ref).strip()
+            for ref in expected_refs
+            if str(ref).strip()
+        ]
+        state["ready"] = bool(ready)
+
     def _disable_save_mode_override(self, page, notes: list[str]) -> None:
         try:
             page.unroute("**/mp/agw/article/publish**")
+            self._save_override_state = None
             notes.append("Removed save=1 override route handler to prevent duplicate publishes.")
         except Exception as exc:
             notes.append(f"Failed to remove save mode override route (non-fatal): {exc}")

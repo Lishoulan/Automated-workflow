@@ -358,21 +358,20 @@ class WriterAgent(BaseAgent):
         )
 
     def _hot_topic_opening(self, data_report: DataReport, trend_report: TrendReport) -> str:
-        title = self.clean_publish_text(data_report.topic_title).rstrip("。")
+        title = self.clean_publish_text(data_report.topic_title).rstrip("。") or "这条热点"
         angle = self.clean_publish_text(trend_report.recommended_angle or data_report.suggested_angle).rstrip("。")
         if angle:
-            return f"{title}这件事，{angle}。"
-        return f"{title}上了热榜，真正值得拆的不是热度本身，而是它背后反映出的趋势变化。"
-
+            return f"{title}带来的信息，暂时可以落到一个判断：{angle}。"
+        return f"{title}目前只能支持阶段性判断，后面还要看相关方动作、数据更新和讨论热度是否延续。"
     def _hot_topic_body(self, data_report: DataReport, trend_report: TrendReport) -> str:
         points = self.clean_publish_list(data_report.key_points[:2] or trend_report.platform_topics[:2])
         body_parts: list[str] = []
         if points:
-            body_parts.append("这条热点里，最值得关注的信号是" + "、".join(points) + "。")
+            body_parts.append("现有材料给出的线索是：" + "；".join(points) + "。")
         else:
-            body_parts.append("这类热点通常有三层信息：表面发生了什么、大家为什么讨论它、以及它接下来会怎么演化。")
+            body_parts.append("现有材料还没有给出足够硬的事实，暂时只能围绕事件本身和后续变化做有限判断。")
         body_parts.append(
-            "对普通读者来说，比追热度更重要的是抓住变化的主线：谁受影响、谁会受益、哪些变量会决定下一步走向。"
+            "这些信息能帮助判断讨论焦点，但不能替代后续公告、数据或实际动作。"
         )
         return "".join(body_parts)
 
@@ -380,10 +379,10 @@ class WriterAgent(BaseAgent):
         question = self.clean_publish_text(comment_prompt or "").rstrip("。！？!?")
         if not question:
             primary = self._primary_keyword(data_report)
-            question = f"你觉得{primary}这件事，接下来最值得关注的变化是什么"
+            question = f"你认为{primary}后续最先出现的变化会是什么"
         if question[-1] not in "？?":
             question += "？"
-        return f"当然，这只是基于公开信息的初步判断，实际情况还要看后续进展。{question}"
+        return f"在更多信息出现前，结论先停在这里：后续事实仍可能改变判断。{question}"
 
     def _build_opening_lines(
         self,
@@ -407,28 +406,26 @@ class WriterAgent(BaseAgent):
             data_report.supply_chain_keywords,
             angle,
         )
-        content_mode = self._content_mode(data_report)
-
         if content_format == "quick_commentary":
             lines = [
                 self._varied_opening_first_line(scene_anchor, number, "这条新进展"),
-                f"{primary}现在更该看谁先把执行层信号做实。",
+                f"{primary}的判断先落在执行层，不能只看消息热度。",
                 self._short_angle_line(angle),
             ]
             return self._normalize_opening_lines(lines)
 
         if content_format == "data_recap":
             lines = [
-                f"{number or '这组数据'}不是结果，而是{primary}重新定价的起点。",
-                f"{primary}接下来需要重点关注的是哪些环节先把数字变成订单和利润。",
+                f"{number or '这组数据'}先说明{primary}出现了变化，但还不是最终结果。",
+                "下一步要核对的是哪些环节先把数字变成订单和利润。",
                 self._short_angle_line(angle),
             ]
             return self._normalize_opening_lines(lines)
 
         if content_format == "project_breakdown":
             lines = [
-                f"{scene_anchor or company or primary}这次变化，关键在于兑现链条。",
-                f"{primary}值得深入拆解的是主体位置、交付节奏和利润归属。",
+                f"{scene_anchor or company or primary}这次变化，先要看兑现链条有没有接上。",
+                f"{primary}的主体位置、交付节奏和利润归属，需要分开核对。",
                 self._short_angle_line(angle),
             ]
             return self._normalize_opening_lines(lines)
@@ -486,28 +483,39 @@ class WriterAgent(BaseAgent):
         return self._normalize_opening_lines(lines)
 
     def _varied_opening_first_line(self, scene_anchor: str, number: str, default: str) -> str:
-        """提供多样化的开头第一句，避免模板化"""
-        options = [
-            f"{scene_anchor or number or default}值得我们深入分析。",
-            f"{scene_anchor or number or default}背后有值得关注的变化。",
-            f"{scene_anchor or number or default}正在引发新的思考。",
-            f"{scene_anchor or number or default}带来了新的观察角度。",
-            f"{scene_anchor or number or default}背后的逻辑值得我们探究。",
-            f"{scene_anchor or number or default}正在改变行业的走向。",
-            f"{scene_anchor or number or default}为我们提供了新的视角。",
-            f"{scene_anchor or number or default}的利润会如何变化？",
-        ]
+        """根据已有场景或数字生成不同的事实型开头。"""
+        if scene_anchor:
+            options = [
+                f"{scene_anchor}把问题带到了执行端。",
+                f"先看{scene_anchor}落到了哪一个具体环节。",
+                f"这次信息的落点，是{scene_anchor}。",
+                f"把{scene_anchor}放回业务现场，问题会更具体。",
+            ]
+        elif number:
+            options = [
+                f"先看{number}对应的事实是什么。",
+                f"{number}给出的只是一个信号，还不是终局答案。",
+                f"这组数字把判断带回了{number}本身。",
+                f"如果只看{number}，还不足以说明兑现已经完成。",
+            ]
+        else:
+            options = [
+                f"{default}先要回答一个执行问题。",
+                f"先不急着下结论，{default}至少带来了一个新线索。",
+                "这次变化的落点，不在口号，而在后面的执行。",
+                f"把{default}放回实际业务，判断会更清楚。",
+            ]
         return random.choice(options)
-
     def _build_data_paragraph(self, primary: str, core_data: list[str], evidence: str) -> str:
-        data_text = "；".join(core_data) if core_data else "公开信息还不足以支撑过度乐观的结论"
+        data_text = "；".join(core_data)
         if evidence:
-            return (
-                f"先落到数据层面。{data_text}。"
-                f"{evidence}"
-                f"这至少说明，{primary}已经不只是概念热度，而是在往真实项目、客户需求和回款节奏上走。"
-            )
-        return f"先落到数据层面。{data_text}。这至少说明，{primary}已经开始从预期叙事转向执行验证。"
+            evidence_text = evidence.rstrip("。！？!? ")
+            if data_text:
+                return f"{evidence_text}。材料中能确认的内容包括：{data_text}。这些事实把{primary}的讨论落到了可核对的进展上。"
+            return f"{evidence_text}。除此之外，素材没有提供足够硬数据，{primary}当前只能写成待验证的方向。"
+        if data_text:
+            return f"目前能核对的内容是：{data_text}。它说明{primary}出现了进展，但还不能单独推出订单、收入或量产结论。"
+        return f"现有材料还没有给出可核对的硬数据，{primary}暂时只能保留为待验证的方向。"
 
     def _build_trend_paragraph(
         self,
@@ -520,12 +528,8 @@ class WriterAgent(BaseAgent):
         point_text = "；".join(key_points[:2]) if key_points else ""
         body = "；".join(part for part in (trend_text, point_text) if part)
         if body:
-            return (
-                f"但真正值得拆开的，不只是事件热度，而是{primary}内部的兑现节奏。"
-                f"{body}。"
-                f"{self._long_angle_line(angle)}"
-            )
-        return f"{self._long_angle_line(angle)}市场更看重执行层兑现，而不是停留在题材热度。"
+            return f"{primary}的变化不能只按热度判断。{body}。{self._long_angle_line(angle)}"
+        return f"{primary}还处在从预期走向执行的阶段。{self._long_angle_line(angle)}"
 
     def _build_conflict_or_scene_paragraph(
         self,
@@ -550,42 +554,30 @@ class WriterAgent(BaseAgent):
         resolved_track = benchmark_track or self.clean_publish_text(data_report.focus_industry).strip()
         if scene_anchor:
             if "场景先行开头" in patterns:
-                return (
-                    f"{scene_anchor}之所以值得写，不是因为它本身有多大，而是它把{primary}执行层的筛选信号提前暴露了出来。"
-                    f"{benefit_shift}"
-                )
+                return f"{scene_anchor}把{primary}的执行考题提前摆了出来。{benefit_shift}"
             return (
-                f"{scene_anchor}之所以值得写，不是因为它本身有多大，而是它把{primary}的真实执行层信号提前暴露了出来。"
-                f"{benefit_shift}"
+                f"{scene_anchor}让{primary}的执行层信号变得具体。{benefit_shift}"
             )
         if any(token in article_text for token in self.CROSS_BORDER_TOKENS):
             if "跨国对比冲突" in patterns or "机器人" in resolved_track:
-                return (
-                    f"这条线真正有意思的地方，不只是新闻热度，而是跨区域主体正在用交付效率和成本控制重写{primary}的分工。"
-                    f"{benefit_shift}"
-                )
+                return f"跨区域主体的差距，最后要落到{primary}的交付效率和成本控制上。{benefit_shift}"
             return (
-                f"这条线真正有意思的地方，不是新闻热度，而是跨区域、跨主体的竞争关系已经开始改写{primary}的分工。"
-                f"{benefit_shift}"
+                f"跨区域、跨主体的竞争，正在把{primary}的分工问题摆到台面上。{benefit_shift}"
             )
         return (
-            f"真正需要拆开的，不只是项目本身，而是{primary}这条链上的权重正在重新分配。"
-            f"{benefit_shift}"
+            f"这个项目的判断重点，不只是进展本身，还包括{primary}这条链上的利益如何重新分配。{benefit_shift}"
         )
 
     def _build_metrics_paragraph(self, metrics: list[str]) -> str:
         metric_text = "、".join(metrics[:4]) if metrics else "订单兑现、客户验证、项目交付和毛利变化"
-        return (
-            f"接下来最值得持续跟踪的，不是新闻条数，而是{metric_text}。"
-            "这些指标会直接回答一件事：行业还停留在预期里，还是已经开始把收入和利润落到报表里。"
-        )
+        return f"后面的判断先看{metric_text}。它们能把讨论从热度拉回订单、交付和利润是否落地。"
 
     def _build_risk_paragraph(self, risks: list[str], comment_prompt: str) -> str:
         risk_text = "；".join(risks[:3]) if risks else "如果订单兑现慢于扩产节奏，短期景气很容易先热后冷"
         question = comment_prompt.strip() or self._default_comment_prompt(None)
         if question and question[-1] not in "？?":
             question += "？"
-        return f"风险边界也要讲清楚。{risk_text}。{question}"
+        return f"限制条件也很具体：{risk_text}。{question}"
 
 
     def _finalize_article(
@@ -856,15 +848,15 @@ class WriterAgent(BaseAgent):
         if first_sentence:
             return f"{first_sentence}{self._summary_tail(primary, angle)}"
         if content_mode == "sports":
-            return "这条消息真正值得看的，不是表面信息本身，而是它会不会改变后续产业预期、技术路线和市场走势。"
+            return "这条消息的影响，要看后续比赛信息、技术路线和市场反馈如何变化。"
         if content_mode == "international":
-            return "这条国际热点真正值得看的，不是表态本身，而是谁在施压、谁在让步，以及下一步局势会如何变化。"
-        return f"{primary}正在从题材热度转向执行验证，真正决定下一阶段强弱的，是订单、交付和毛利谁先兑现。"
+            return "这条国际热点的走向，要看各方表态之后有没有实际动作，以及市场如何回应。"
+        return f"{primary}正在从题材热度转向执行验证，后面的判断集中在订单、交付和毛利信号。"
 
     def _summary_tail(self, primary: str, angle: str) -> str:
         tail = self.clean_publish_text(angle).strip()
         if not tail:
-            return f"{primary}接下来更该盯的是订单、交付和利润兑现。"
+            return f"{primary}后面要核对订单、交付和利润是否兑现。"
         if tail[-1] not in "。！？!?":
             tail += "。"
         return tail
@@ -916,14 +908,14 @@ class WriterAgent(BaseAgent):
         options = [
             f"想持续跟踪{primary}的产业链变化，回复“周报”，我把每周关键信号整理给你。",
             f"如果你不想错过{primary}的下一轮兑现节点，回复“周报”，领取行业情报样刊。",
-            f"这类内容我会持续更新，回复“周报”，把高价值判断直接送到你手上。",
+            "这类内容我会持续更新，回复“周报”，把高价值判断直接送到你手上。",
         ]
         return random.choice(options)
 
     def _varied_discussion_cta(self, primary: str) -> str:
         options = [
             f"你觉得{primary}里哪个环节最有机会？",
-            f"{primary}接下来最值得盯的变量是什么？",
+            f"{primary}后面最先要验证的是什么？",
             f"在你看来，{primary}会不会改变当前格局？",
         ]
         return random.choice(options)
@@ -970,7 +962,7 @@ class WriterAgent(BaseAgent):
 
     def _varied_quick_comment_prompt(self, primary: str) -> str:
         options = [
-            f"这条新进展里，你最看重什么？",
+            "这条新进展里，你最看重什么？",
             f"{primary}的客户验证会顺利吗？",
             f"在你看来，{primary}的交付节奏如何？",
             f"你觉得{primary}的毛利会有改善吗？",
@@ -1127,7 +1119,7 @@ class WriterAgent(BaseAgent):
             if text:
                 return text.rstrip("。")
         primary = self._primary_keyword(data_report)
-        return f"{primary}真正要看的，是订单、交付与毛利谁先兑现"
+        return f"{primary}后面要核对的，是订单、交付与毛利谁先出现硬信号"
 
 
 
@@ -1156,7 +1148,7 @@ class WriterAgent(BaseAgent):
     def _contrast_line(self, data_report: DataReport, trend_report: TrendReport) -> str:
         scene = self._scene_anchor(data_report, trend_report)
         if scene:
-            return f"{scene}不是热闹场面，而是{self._primary_keyword(data_report)}重新分配利润的前哨。"
+            return f"{scene}把{self._primary_keyword(data_report)}的利润分配问题带到了现实环节。"
         article_text = " ".join(
             [
                 data_report.topic_title,
@@ -1165,7 +1157,7 @@ class WriterAgent(BaseAgent):
             ]
         )
         if any(token in article_text for token in self.CROSS_BORDER_TOKENS):
-            return f"{self._primary_keyword(data_report)}这轮变化，不只是升温，而是在改写谁能先拿订单、谁能先收利润。"
+            return f"{self._primary_keyword(data_report)}这轮变化，最终要落到谁先拿到订单、谁先收到回款。"
         return ""
 
     def _benefit_shift_line(self, data_report: DataReport, trend_report: TrendReport) -> str:
@@ -1178,12 +1170,12 @@ class WriterAgent(BaseAgent):
             ]
         )
         if any(token in text for token in ("系统集成", "集成商")):
-            return "利润最先变化的，往往不是最上游材料端，而是更贴近交付与验收的一侧。"
+            return "若项目继续推进，利润更可能先在贴近交付与验收的一侧体现。"
         if any(token in text for token in ("零部件", "减速器", "电机", "逆变器", "芯片")):
-            return "真正先被市场重估的，通常不是最显眼的终端，而是卡住关键效率和交付节奏的零部件环节。"
+            return "零部件能否获得稳定回报，要看它是否同时解决效率、良率和交付问题，不能只看终端热度。"
         if any(token in text for token in ("运维", "服务", "本地化")):
-            return "随着项目从展示走向落地，利润中枢往往会向服务响应更快、交付更稳的环节迁移。"
-        return "接下来真正会被重估的，不是所有主体，而是谁先把执行层能力变成订单和回款。"
+            return "项目走向落地后，服务响应、维修效率和交付稳定性会影响利润落在哪一环。"
+        return "后面的分化不会平均发生，关键看谁能把执行能力转成订单和回款。"
 
     def _self_benchmark_patterns(self, context: dict[str, object] | None) -> list[str]:
         if not context:
@@ -1200,11 +1192,11 @@ class WriterAgent(BaseAgent):
         patterns: list[str],
     ) -> str:
         if "场景先行开头" in patterns and scene_anchor:
-            return f"{scene_anchor}不是热闹场面，而是{primary}执行层分水岭提前出现的地方。"
+            return f"{scene_anchor}把{primary}的执行分水岭提前摆了出来。"
         if "跨国对比冲突" in patterns and contrast_line:
             return contrast_line
         if "利润迁移框架" in patterns:
-            return f"{number or primary}不是终点，而是{primary}利润开始重新分配的起点。"
+            return f"{number or primary}还不是终点，{primary}的利润分配要等交付和回款验证。"
         return ""
 
     def _self_benchmark_second_line(
@@ -1215,9 +1207,9 @@ class WriterAgent(BaseAgent):
         patterns: list[str],
     ) -> str:
         if "利润迁移框架" in patterns:
-            return f"{primary}现在真正该看的，不是新闻热度有多高，而是利润会先向哪一环迁移、谁能先把交付做实。"
+            return f"{primary}的分化会先出现在利润归属上：哪一环能把交付做实，哪一环才有机会获得更稳定的回报。"
         if "跨国对比冲突" in patterns:
-            return f"{primary}这轮变化拉开差距的关键，不是讲故事能力，而是谁先把场景、订单和交付跑通。"
+            return f"{primary}这轮变化的差距，最后要由场景、订单和交付结果来确认。"
         return self._benefit_shift_line(data_report, trend_report)
 
     def _apply_self_benchmark_structure(
@@ -1266,8 +1258,8 @@ class WriterAgent(BaseAgent):
         if "结尾保留跟踪变量" in patterns and not self._article_has_tracking_variable_close(article):
             metrics = "、".join(self._pick_items(data_report.watch_metrics, 4)) or "订单转化、交付节奏、回款和毛利变化"
             closing_line = (
-                f"接下来最值得持续跟踪的，不是新闻条数，而是{metrics}。"
-                "这些变量会直接决定这条线是停留在预期里，还是已经开始兑现到收入和利润。"
+                f"后续可按{metrics}核对进度。"
+                "只有这些信号连续出现，才适合把行业变化写成收入和利润的兑现。"
             )
             updated[-1] = f"{updated[-1]} {closing_line}".strip()
 
@@ -1314,29 +1306,9 @@ class WriterAgent(BaseAgent):
                 return text
         return fallback
 
-    def _company_candidates(self, data_report: DataReport) -> list[str]:
-        candidates = self.clean_publish_list(data_report.focus_companies + data_report.companies)
-        return [item for item in candidates if self._is_valid_company_name(item)]
-
     def _primary_company(self, data_report: DataReport) -> str:
         companies = self._company_candidates(data_report)
         return companies[0] if companies else ""
-
-    def _is_valid_company_name(self, text: str) -> bool:
-        candidate = self.clean_publish_text(text)
-        if not candidate or len(candidate) < 2 or len(candidate) > 12:
-            return False
-        if candidate in self.INVALID_COMPANY_MARKERS:
-            return False
-        if any(marker in candidate for marker in ("：", "，", "。", "？", "！", "、", "数据", "趋势", "摘要")):
-            return False
-        if any(marker in candidate for marker in self.INVALID_COMPANY_FRAGMENTS):
-            return False
-        if candidate.startswith(("这家", "该", "某", "相关", "头部", "龙头", "重点", "当前", "后续", "行业", "赛道")):
-            return False
-        has_suffix = bool(self.COMPANY_SUFFIX_RE.fullmatch(candidate))
-        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", candidate))
-        return has_suffix or (has_cjk and len(candidate) <= 8 and candidate not in {"公司", "企业", "客户"})
 
     def _build_company_or_order_anchor(self, data_report: DataReport) -> str:
         primary = self._primary_keyword(data_report)
@@ -1350,15 +1322,15 @@ class WriterAgent(BaseAgent):
             follow_text = "、".join(follow_up or metrics or ["客户验证", "订单节奏", "毛利兑现"])
             node_text = nodes or primary
             return (
-                f"真正该盯住的，不是泛泛的景气度，而是{company_text}这类主体能不能把{node_text}上的订单和交付兑现出来。"
-                f"如果后续还能持续给出{follow_text}的明确信号，这类公司才有机会从题材受益者走向业绩兑现者。"
+                f"主体层面可以先看{company_text}，但现有材料还不足以据此判断订单或收入已经兑现。"
+                f"更硬的验证要落在{node_text}对应的{follow_text}上，只有后续出现连续信号，相关公司的商业化进度才会更清楚。"
             )
 
         follow_text = "、".join(follow_up or metrics or ["客户验证", "项目交付", "毛利变化"])
         node_text = nodes or primary
         return (
-            f"即便标题里没有直接点名公司，执行层主体其实已经很清楚：上游看{node_text}，下游看客户验证、量产节奏和海外交付。"
-            f"谁能先把{follow_text}做实，谁才更可能在这一轮里先拿到利润和估值的双兑现。"
+            f"当前材料没有足够依据点名具体公司，因此不把{node_text}直接等同于某个受益主体。"
+            f"后续可用{follow_text}检验谁真正完成了从概念到交付的转换。"
         )
 
     def _focus_nodes(self, data_report: DataReport) -> str:
@@ -1406,7 +1378,6 @@ class WriterAgent(BaseAgent):
             "行业周报",
             "领取",
         )
-        generic_guess_markers = ("未来三年", "例如", "比如", "以", "某头部")
         cleaned: list[str] = []
 
         for paragraph in paragraphs:
@@ -1417,7 +1388,7 @@ class WriterAgent(BaseAgent):
                 continue
             if self._unsupported_numeric_tokens(text, data_report):
                 continue
-            if not grounded and any(marker in text for marker in generic_guess_markers):
+            if not grounded and self._contains_generic_guess(text):
                 continue
             if not known_companies:
                 discovered = [match.group(0).lower() for match in self.COMPANY_SUFFIX_RE.finditer(text)]
@@ -1641,39 +1612,58 @@ class WriterAgent(BaseAgent):
 
     def _build_supplementary_paragraphs(self, data_report: "DataReport", existing_paragraphs: list[str] | None = None) -> list[str]:
         existing_text = "\n".join(existing_paragraphs) if existing_paragraphs else ""
-        paragraphs = []
-        # 实时热榜二创：不要用产业链模板段落填充，保持短评形态
+        existing = list(existing_paragraphs or [])
+        paragraphs: list[str] = []
+
+        def clean_items(items: list[str], limit: int) -> list[str]:
+            return self.clean_publish_list(
+                [str(item).strip() for item in items[:limit] if str(item).strip()],
+                limit=limit,
+            )
+
+        def append_if_new(text: str) -> None:
+            candidate = clean_article_text(text, min_word_count=0).strip()
+            if not candidate:
+                return
+            if not self._is_duplicate_paragraph(candidate, [*existing, *paragraphs]):
+                paragraphs.append(candidate)
+
         if self._content_mode(data_report) == "hot_topic":
             if len(existing_text.replace("\n", "").replace(" ", "")) < 500:
-                title = self.clean_publish_text(data_report.topic_title).rstrip("。")
-                paragraphs.append(
-                    f"围绕{title}，还可以再看一层：这条热点后续的走向，取决于关键变量是否兑现，"
-                    "比如相关方是否会给出进一步说明、数据是否会更新、市场情绪是否会延续。"
+                title = self.clean_publish_text(data_report.topic_title).rstrip("。") or "这条热点"
+                append_if_new(
+                    f"{title}目前能确认的范围有限。后续判断要等相关方说明、数据更新或实际动作出现，"
+                    "在这些信息到来之前，不宜把讨论热度写成确定结论。"
                 )
             return paragraphs
-        if data_report.watch_metrics:
-            items = data_report.watch_metrics[:5]
-            if items:
-                text = "后续需要持续跟踪的变量包括：" + "、".join(str(m) for m in items) + "。这些指标的变化将直接影响产业链各环节的盈利节奏和估值切换时机。"
-                # 跳过与已有段落高度重复的内容
-                if text[:30] not in existing_text:
-                    paragraphs.append(text)
-        if data_report.risk_flags:
-            items = data_report.risk_flags[:3]
-            if items:
-                text = "风险方面，" + "；".join(str(r) for r in items) + "。这些因素都可能影响量产兑现节奏，需要持续观察。"
-                if text[:30] not in existing_text:
-                    paragraphs.append(text)
-        if data_report.evidence_notes:
-            items = data_report.evidence_notes[:3]
-            if items:
-                text = "从已有证据看，" + "；".join(str(e) for e in items) + "。数据口径以公开材料为准，后续需关注最新财报更新。"
-                if text[:30] not in existing_text:
-                    paragraphs.append(text)
-        if data_report.growth_numbers and len(data_report.growth_numbers) >= 2:
-            text = f"关键数字锚点：{data_report.growth_numbers[0]}和{data_report.growth_numbers[1]}是判断赛道兑现进度的核心参照。后续如果这两个指标出现明显变化，产业链利润分配逻辑可能需要重新评估。"
-            if text[:30] not in existing_text:
-                paragraphs.append(text)
+
+        metrics = clean_items(data_report.watch_metrics, 4)
+        if metrics:
+            append_if_new(
+                "后续复盘可以先核对" + "、".join(metrics) + "。"
+                "这些项目是后续复盘时可以核对的信号，和新增事实放在一起看，才能判断进展是否继续。"
+            )
+
+        risks = clean_items(data_report.risk_flags, 3)
+        if risks:
+            append_if_new(
+                "限制条件包括：" + "；".join(risks) + "。"
+                "其中任何一项持续恶化，都会把商业化判断拉回到更早的验证阶段。"
+            )
+
+        notes = clean_items(data_report.evidence_notes, 3)
+        if notes:
+            append_if_new(
+                "材料目前能支持的事实是：" + "；".join(notes) + "。"
+                "除此之外的订单、收入或规模判断，都应该等新的公告或项目进展补足。"
+            )
+
+        numbers = clean_items(data_report.growth_numbers, 2)
+        if len(numbers) >= 2:
+            append_if_new(
+                f"可作为参照的数字是{numbers[0]}和{numbers[1]}。"
+                "它们只能说明已经出现的变化，不能单独证明后续利润或规模一定兑现。"
+            )
         return paragraphs
 
     def _grounded_numeric_tokens(self, data_report: "DataReport") -> set[str]:
@@ -1689,20 +1679,6 @@ class WriterAgent(BaseAgent):
                 if text:
                     grounded.add(text)
         return grounded
-
-    def _extract_company_mentions(self, text: str) -> list[str]:
-        mentions: list[str] = []
-        seen: set[str] = set()
-        for match in self.COMPANY_SUFFIX_RE.finditer(str(text or "")):
-            candidate = str(match.group(0)).strip()
-            if not candidate:
-                continue
-            lowered = candidate.lower()
-            if lowered in seen:
-                continue
-            seen.add(lowered)
-            mentions.append(candidate)
-        return mentions
 
     def _has_unknown_company_mention(self, text: str, data_report: "DataReport") -> bool:
         known = [item.lower() for item in self._company_candidates(data_report)]
@@ -1759,7 +1735,6 @@ class WriterAgent(BaseAgent):
             "行业周报",
             "领取",
         )
-        generic_guess_markers = ("未来三年", "例如", "比如", "以", "某头部", "投资者应")
         cleaned: list[str] = []
         seen_openings: set[str] = set()
 
@@ -1780,7 +1755,7 @@ class WriterAgent(BaseAgent):
                     continue
                 if self._looks_like_template_paragraph(text, data_report):
                     continue
-                if not grounded and any(marker in text for marker in generic_guess_markers):
+                if not grounded and self._contains_generic_guess(text):
                     continue
 
                 opening = re.sub(r"\s+", "", text[:16].lower())
@@ -1793,68 +1768,15 @@ class WriterAgent(BaseAgent):
 
         return cleaned
 
+    @staticmethod
+    def _contains_generic_guess(text: str) -> bool:
+        if any(marker in text for marker in ("未来三年", "例如", "比如", "某头部", "投资者应")):
+            return True
+        return bool(re.search(r"以[^。！？!?\n]{0,24}为例", text))
+
     def _legacy_build_supplementary_paragraphs(self, data_report: "DataReport", existing_paragraphs: list[str] | None = None) -> list[str]:
-        paragraphs: list[str] = []
-
-        existing = list(existing_paragraphs or [])
-
-        def clean_items(items: list[str], limit: int) -> list[str]:
-            result: list[str] = []
-            for item in items[:limit]:
-                value = self.clean_publish_text(str(item)).strip()
-                value = clean_article_text(value, min_word_count=0).strip()
-                if not value or any(marker in value.lower() for marker in self.INTERNAL_ARTICLE_MARKERS):
-                    continue
-                if value not in result:
-                    result.append(value)
-            return result
-
-        def append_if_new(candidate: str) -> None:
-            value = clean_article_text(candidate, min_word_count=0).strip()
-            if not value:
-                return
-            for item in value.split("\n\n"):
-                item = item.strip()
-                if not item or any(marker in item.lower() for marker in self.INTERNAL_ARTICLE_MARKERS):
-                    continue
-                if self._unsupported_numeric_tokens(item, data_report):
-                    continue
-                if self._is_duplicate_paragraph(item, [*existing, *paragraphs]):
-                    continue
-                paragraphs.append(item)
-
-        # 实时热榜二创：不要用产业链模板段落填充，保持短评形态
-        if self._content_mode(data_report) == "hot_topic":
-            existing_chars = sum(len(item.replace("\n", "").replace(" ", "")) for item in existing)
-            if existing_chars < 500:
-                title = self.clean_publish_text(data_report.topic_title).rstrip("。")
-                append_if_new(
-                    f"围绕{title}，还可以再看一层：这条热点后续的走向，取决于关键变量是否兑现，"
-                    "比如相关方是否会给出进一步说明、数据是否会更新、市场情绪是否会延续。"
-                )
-            return paragraphs
-
-        metrics = clean_items(data_report.watch_metrics, 4)
-        if metrics:
-            append_if_new(
-                "后续更值得盯的是"
-                + "、".join(metrics)
-                + "。这些指标如果同步改善，说明这条线开始从预期走向兑现；如果只有订单没有回款，热度很可能先走一步。"
-            )
-
-        risks = clean_items(data_report.risk_flags, 3)
-        if risks:
-            append_if_new("风险不在情绪，而在节奏：" + "；".join(risks) + "。只要其中一环明显延后，利润兑现时间表就要整体后移。")
-
-        notes = clean_items(data_report.evidence_notes, 3)
-        if notes:
-            append_if_new("目前能确认的公开信息主要到这里：" + "；".join(notes) + "。再往下的判断，最好等公告、财报或项目进展把口径补齐。")
-
-        numbers = clean_items(data_report.growth_numbers, 2)
-        if len(numbers) >= 2:
-            append_if_new(f"如果一定要抓两个数字锚点，先看{numbers[0]}和{numbers[1]}。这两个数字一旦继续改善，市场会更快把它从题材重估成业绩。")
-
-        return paragraphs
+        # 保留旧调用方的入口，但让新旧路径共享同一套证据约束。
+        return self._build_supplementary_paragraphs(data_report, existing_paragraphs)
 
     @staticmethod
     def _is_duplicate_paragraph(candidate: str, existing: list[str]) -> bool:
@@ -1943,25 +1865,21 @@ class WriterAgent(BaseAgent):
         return f"{text}。"
 
     def _varied_angle_line(self) -> str:
-        """提供多样化的角度结尾，避免模板化"""
+        """Return a short fallback that does not pretend to add new evidence."""
         options = [
-            "这背后的变化，值得我们持续跟踪。",
-            "这些信号值得我们重点关注。",
-            "后续的发展趋势值得期待。",
-            "我们可以从多个维度来观察。",
-            "这为我们提供了新的思考角度。",
-            "背后的逻辑值得深入分析。",
-            "这正是市场正在关注的焦点。",
-            "关键在于如何把握其中的机遇。",
+            "后面的判断留给新数据。",
+            "目前能下的结论先到这里。",
+            "更多信息出现后，再更新判断。",
+            "先把事实和推测分开。",
+            "判断暂时停在已确认的范围内。",
         ]
-        import random
         return random.choice(options)
 
     def _long_angle_line(self, angle: str) -> str:
         text = self.clean_publish_text(angle).strip().rstrip("。")
         if not text:
-            return "真正决定下一阶段强弱的，是订单、交付和毛利兑现。"
-        return f"真正决定下一阶段强弱的，是{text}。"
+            return "下一阶段的强弱，要等订单、交付和毛利出现更硬的信号。"
+        return f"这个判断能否成立，要等{text}。"
 
     def _sanitize_tags(self, payload: object, data_report: DataReport) -> list[str]:
         if isinstance(payload, list):

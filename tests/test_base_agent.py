@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from toutiao_content_factory.agents.base import BaseAgent
-from toutiao_content_factory.config import AppSettings, StyleProfile
-from toutiao_content_factory.services.openai_service import OpenAIContentService
+from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.models import DataReport
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 
 
@@ -111,6 +111,20 @@ class TestCleanPublishList:
         assert "有效内容" in result
         # "测试品牌报告" -> after brand stripping becomes "报告"
         assert "测试品牌" not in "".join(result)
+
+
+class TestCompanyCandidates:
+    def test_normalizes_and_filters_company_candidates(self, base_agent: BaseAgent) -> None:
+        report = DataReport(
+            focus_companies=["特斯拉Optimus机器人", "柏林工厂", "公开材料"],
+            companies=["比亚迪", "国瓷材料", "AI机器人", "涉及哪些公司"],
+        )
+
+        assert base_agent._company_candidates(report) == ["特斯拉", "比亚迪", "国瓷材料"]
+
+    @pytest.mark.parametrize("candidate", ["柏林工厂", "公开材料", "人形机器人", "据德国汽车", "涉及哪些公司"])
+    def test_rejects_non_company_context(self, base_agent: BaseAgent, candidate: str) -> None:
+        assert not base_agent._is_valid_company_name(candidate)
 
 
 class TestUnique:

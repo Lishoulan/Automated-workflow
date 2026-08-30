@@ -248,6 +248,34 @@ class TestHasSourceAnchor:
     def test_has_anchor_caibao(self, workflow_service: AgentWorkflowService) -> None:
         assert workflow_service._has_source_anchor("财报披露") is True
 
+
+class TestSupplementaryParagraphs:
+    def test_supplements_are_grounded_and_skip_items_already_in_article(
+        self,
+        workflow_service: AgentWorkflowService,
+    ) -> None:
+        data_report = DataReport(
+            watch_metrics=["部署数量", "重复订单"],
+            risk_flags=["单机成本未披露"],
+            evidence_notes=["特斯拉Optimus进入工厂"],
+            growth_numbers=["12%", "18%"],
+        )
+
+        paragraphs = workflow_service._build_supplementary_paragraphs(
+            data_report,
+            existing_paragraphs=["部署数量已经写入正文。"],
+        )
+        joined = "\n".join(paragraphs)
+
+        assert "部署数量" not in joined
+        assert "重复订单" in joined
+        assert "单机成本未披露" in joined
+        assert "特斯拉Optimus进入工厂" in joined
+        assert "12%" in joined and "18%" in joined
+        assert "接下来该盯的是" not in joined
+        assert "风险边界需要保留" not in joined
+        assert "目前能确认的公开信息主要到这里" not in joined
+
     def test_has_anchor_gonggao(self, workflow_service: AgentWorkflowService) -> None:
         assert workflow_service._has_source_anchor("公告称") is True
 

@@ -8,6 +8,13 @@ from typing import Any
 
 from toutiao_content_factory.config import AppSettings, StyleProfile
 from toutiao_content_factory.models import CacheContext
+from toutiao_content_factory.services.company_entities import (
+    COMPANY_SUFFIX_RE as SHARED_COMPANY_SUFFIX_RE,
+    KNOWN_COMPANY_NAMES as SHARED_KNOWN_COMPANY_NAMES,
+    extract_known_company_names,
+    is_valid_company_name as is_shared_company_name,
+    normalize_company_name as normalize_shared_company_name,
+)
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.services.prompt_repository import PromptRepository
@@ -66,11 +73,10 @@ class BaseAgent:
     _NUMERIC_TOKEN_RE = re.compile(
         r"\d+(?:\.\d+)?(?:%|倍|亿元|亿|万元|万亿元|万千瓦|万台|万套|GW|GWh|MWh|kWh|MW|W|年|月|季度|Q[1-4])?"
     )
-    
+
     # 共享的常量和正则表达式
-    COMPANY_SUFFIX_RE = re.compile(
-        r"[\u4e00-\u9fffA-Za-z0-9]{2,12}(?:科技|能源|汽车|股份|集团|电气|智能|机器人|半导体|电子|时代|精工|制造|材料|电池|重工|工业|光伏|储能|动力|机电|控股|装备|技术)"
-    )
+    COMPANY_SUFFIX_RE = SHARED_COMPANY_SUFFIX_RE
+    KNOWN_COMPANY_NAMES = SHARED_KNOWN_COMPANY_NAMES
     INVALID_COMPANY_MARKERS = {
         "这家公司",
         "某公司",
@@ -103,7 +109,7 @@ class BaseAgent:
     ORDER_ANCHOR_TOKENS = ("订单", "中标", "客户", "定点", "签约", "项目", "交付", "量产", "验收", "采购")
     SCENE_TOKENS = ("机场", "电厂", "电站", "港口", "车间", "仓库", "园区", "工厂", "基地", "物流中心", "示范项目")
     SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?])")
-    
+
     SPORTS_TOKENS = ("体育", "足球", "篮球", "网球", "世界杯", "奥运", "英超", "西甲", "法网", "world cup", "football", "tennis", "french open", "grand slam")
     INTERNATIONAL_TOKENS = ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "制裁", "外交", "局势", "油价", "黄金", "仲裁", "白宫")
     # 实时热点二创模式：命中即按"热点快评"处理，不强制 1500 字长文
@@ -514,7 +520,7 @@ class BaseAgent:
     def is_internal_label(self, text: str) -> bool:
         normalized = self.clean_publish_text(text)
         return normalized in self.INTERNAL_LABEL_MAP.keys() or normalized in self.INTERNAL_LABEL_MAP.values()
-    
+
     # 共享的辅助方法
     def _content_mode(self, data_report):
         if data_report is None:
@@ -540,27 +546,44 @@ class BaseAgent:
         if any(token in text for token in self.INTERNATIONAL_TOKENS):
             return "international"
         return "generic"
-    
+
     def _company_candidates(self, data_report):
-        candidates = self.clean_publish_list((data_report.focus_companies or []) + (data_report.companies or []))
-        return [item for item in candidates if self._is_valid_company_name(item)]
-    
+        raw_candidates = (data_report.focus_companies or []) + (data_report.companies or [])
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for item in self.clean_publish_list(raw_candidates):
+            candidate = self._normalize_company_name(item)
+            if candidate and candidate not in seen and self._is_valid_company_name(candidate):
+                seen.add(candidate)
+                candidates.append(candidate)
+        return candidates
+
+    def _normalize_company_name(self, text: str) -> str:
+        return normalize_shared_company_name(self.clean_publish_text(text))
+
     def _is_valid_company_name(self, text: str) -> bool:
-        candidate = self.clean_publish_text(text)
-        if not candidate or len(candidate) < 2 or len(candidate) > 12:
-            return False
-        if candidate in self.INVALID_COMPANY_MARKERS:
-            return False
-        if any(marker in candidate for marker in ("：", "，", "。", "？", "！", "、", "数据", "趋势", "摘要")):
-            return False
-        if any(marker in candidate for marker in self.INVALID_COMPANY_FRAGMENTS):
-            return False
-        if candidate.startswith(("这家", "该", "某", "相关", "头部", "龙头", "重点", "当前", "后续", "行业", "赛道")):
-            return False
-        has_suffix = bool(self.COMPANY_SUFFIX_RE.fullmatch(candidate))
-        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", candidate))
-        return has_suffix or (has_cjk and len(candidate) <= 8 and candidate not in {"公司", "企业", "客户"})
-    
+        candidate = self._normalize_company_name(text)
+        return is_shared_company_name(candidate)
+
+    def _extract_company_mentions(self, text: str) -> list[str]:
+        mentions: list[str] = []
+        seen: set[str] = set()
+        for candidate in extract_known_company_names(text):
+            lowered = candidate.casefold()
+            if lowered not in seen:
+                seen.add(lowered)
+                mentions.append(candidate)
+        for match in self.COMPANY_SUFFIX_RE.finditer(str(text or "")):
+            candidate = self._normalize_company_name(str(match.group(0)).strip())
+            if not candidate or not self._is_valid_company_name(candidate):
+                continue
+            lowered = candidate.casefold()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            mentions.append(candidate)
+        return mentions
+
     def _build_company_or_order_anchor(self, data_report):
         companies = self._company_candidates(data_report)[:2]
         metrics = self.clean_publish_list(getattr(data_report, "watch_metrics", [])[:4], limit=4)
@@ -570,7 +593,7 @@ class BaseAgent:
             data_report.focus_industry or ((data_report.focus_keywords or [])[0] if data_report.focus_keywords else "相关赛道")
         )
         nodes = self.clean_publish_list((data_report.focus_keywords or [])[1:] + (data_report.supply_chain_keywords or [])[1:], limit=3)
-        
+
         if companies:
             company_text = "、".join(companies)
             metric_text = "、".join(follow_points or metrics or ["客户验证", "订单节奏", "交付兑现"])
@@ -579,20 +602,20 @@ class BaseAgent:
                 f"真正需要盯住的，是{company_text}这类主体能不能把{node_text}上的订单和交付兑现出来。"
                 f"如果后续还能持续给出{metric_text}的明确信号，这类公司才可能从题材受益者走向业绩兑现者。"
             )
-        
+
         metric_text = "、".join(follow_points or metrics or ["客户验证", "项目交付", "毛利变化"])
         node_text = "、".join(nodes) if nodes else primary
         return (
             f"即便标题里没有直接点名公司，执行层主体其实已经很清楚：上游看{node_text}，下游看客户验证、量产节奏和海外交付。"
             f"谁能先把{metric_text}做实，谁才更可能先兑现利润。"
         )
-    
+
     def _has_concrete_anchor(self, article: str, data_report) -> bool:
         article_lower = article.lower()
         company_hits = sum(1 for item in self._company_candidates(data_report)[:4] if item.lower() in article_lower)
         order_hits = sum(1 for token in self.ORDER_ANCHOR_TOKENS if token in article)
         return company_hits >= 1 or order_hits >= 3
-    
+
     def _rebalance_paragraphs(self, paragraphs: list[str], min_paragraphs: int = 5, max_paragraphs: int = 7, max_block_length: int = 160) -> list[str]:
         blocks = [block.strip() for block in paragraphs if block.strip()]
         expanded: list[str] = []
@@ -601,21 +624,21 @@ class BaseAgent:
                 expanded.extend(self._split_long_paragraph(block))
             else:
                 expanded.append(block)
-        
+
         while len(expanded) < min_paragraphs:
             longest_index = max(range(len(expanded)), key=lambda idx: len(expanded[idx]))
             split_blocks = self._split_long_paragraph(expanded[longest_index], force=True)
             if len(split_blocks) <= 1:
                 break
             expanded = expanded[:longest_index] + split_blocks + expanded[longest_index + 1:]
-        
+
         while len(expanded) > max_paragraphs:
             shortest_index = min(range(1, len(expanded)), key=lambda idx: len(expanded[idx]))
             expanded[shortest_index - 1] = f"{expanded[shortest_index - 1]} {expanded[shortest_index]}".strip()
             del expanded[shortest_index]
-        
+
         return [block for block in expanded if block]
-    
+
     def _split_long_paragraph(self, paragraph: str, force: bool = False) -> list[str]:
         sentences = [item.strip() for item in self.SENTENCE_SPLIT_RE.split(paragraph) if item.strip()]
         if len(sentences) <= 1 and not force:
@@ -623,7 +646,7 @@ class BaseAgent:
         if len(sentences) <= 1 and force:
             parts = [item.strip() for item in re.split(r"(?<=[，；;])", paragraph) if item.strip()]
             return parts if len(parts) > 1 else [paragraph]
-        
+
         result: list[str] = []
         current = ""
         count = 0
@@ -639,7 +662,7 @@ class BaseAgent:
         if current.strip():
             result.append(current.strip())
         return result or [paragraph]
-    
+
     def _paragraph_bounds(self, content_format: str) -> tuple[int, int]:
         if content_format == "quick_commentary":
             return 5, 7

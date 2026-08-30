@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import re
-import logging
 
 from toutiao_content_factory.agents.base import BaseAgent
-from toutiao_content_factory.config import AppSettings, StyleProfile
+from toutiao_content_factory.config import StyleProfile
 from toutiao_content_factory.models import DataReport, ExtractionResult, TrendReport
-from toutiao_content_factory.services.prompt_repository import PromptRepository
-from toutiao_content_factory.services.openai_service import OpenAIContentService
+from toutiao_content_factory.services.company_entities import extract_known_company_names
 
 
 class DataAgent(BaseAgent):
@@ -83,6 +81,23 @@ class DataAgent(BaseAgent):
             text = pattern.sub("", text)
         return text.strip()
 
+    @staticmethod
+    def _list_values(value: object, fallback: list[str]) -> list[str]:
+        """Accept JSON arrays and model-produced delimited strings consistently."""
+
+        if isinstance(value, (list, tuple)):
+            values = [str(item) for item in value]
+            return values or list(fallback)
+        if isinstance(value, str) and value.strip():
+            return [item.strip() for item in re.split(r"[、，,；;|/\n]+", value) if item.strip()]
+        return list(fallback)
+
+    @staticmethod
+    def _company_values(value: object, fallback: list[str]) -> list[str]:
+        """Backward-compatible alias for callers that only normalize companies."""
+
+        return DataAgent._list_values(value, fallback)
+
     def _build_from_payload(
         self,
         payload: dict,
@@ -97,59 +112,74 @@ class DataAgent(BaseAgent):
         merged["writing_brief"] = str(merged.get("writing_brief") or extraction.writing_brief)
 
         focus_keywords = self.clean_publish_list(
-            list(merged.get("focus_keywords") or extraction.focus_keywords or extraction.supply_chain_keywords),
+            self._list_values(
+                merged.get("focus_keywords"),
+                extraction.focus_keywords or extraction.supply_chain_keywords,
+            ),
             limit=6,
         )
         focus_industry = self.clean_publish_text(str(merged.get("focus_industry") or extraction.focus_industry or ""))
         supply_chain_keywords = self.clean_publish_list(
-            list(merged.get("supply_chain_keywords") or extraction.supply_chain_keywords or focus_keywords),
+            self._list_values(
+                merged.get("supply_chain_keywords"),
+                extraction.supply_chain_keywords or focus_keywords,
+            ),
             limit=8,
         )
         companies = self._sanitize_companies(
-            list(merged.get("companies") or extraction.companies),
+            self._company_values(merged.get("companies"), extraction.companies),
             extraction,
             limit=8,
         )
         focus_companies = self._sanitize_companies(
-            list(merged.get("focus_companies") or extraction.focus_companies or companies),
+            self._company_values(merged.get("focus_companies"), extraction.focus_companies or companies),
             extraction,
             limit=4,
         )
         secondary = focus_keywords[1] if len(focus_keywords) > 1 else "关键环节"
-        core_data = self.clean_publish_list(list(merged.get("core_data") or extraction.core_data), limit=6)
+        core_data = self.clean_publish_list(
+            self._list_values(merged.get("core_data"), extraction.core_data),
+            limit=6,
+        )
         industry_trends = self.clean_publish_list(
-            list(merged.get("industry_trends") or extraction.industry_trends),
+            self._list_values(merged.get("industry_trends"), extraction.industry_trends),
             limit=6,
         )
         growth_numbers = self.clean_publish_list(
-            list(merged.get("growth_numbers") or extraction.growth_numbers),
+            self._list_values(merged.get("growth_numbers"), extraction.growth_numbers),
             limit=8,
         )
-        key_points = self.clean_publish_list(list(merged.get("key_points") or extraction.key_points), limit=6)
+        key_points = self.clean_publish_list(
+            self._list_values(merged.get("key_points"), extraction.key_points),
+            limit=6,
+        )
         watch_metrics = self.clean_publish_list(
-            list(
-                merged.get("watch_metrics")
-                or self._build_watch_metrics(
+            self._list_values(
+                merged.get("watch_metrics"),
+                self._build_watch_metrics(
                     focus_industry or extraction.focus_industry or "相关赛道",
                     secondary,
                     merged["follow_up_focus"],
-                )
+                ),
             ),
             limit=5,
         )
         evidence_notes = self.clean_publish_list(
-            list(merged.get("evidence_notes") or self._build_evidence_notes(extraction)),
+            self._list_values(
+                merged.get("evidence_notes"),
+                self._build_evidence_notes(extraction),
+            ),
             limit=5,
         )
         risk_flags = self.clean_publish_list(
-            list(
-                merged.get("risk_flags")
-                or self._build_risk_flags(
+            self._list_values(
+                merged.get("risk_flags"),
+                self._build_risk_flags(
                     focus_industry or extraction.focus_industry or "相关赛道",
                     secondary,
                     trend_report,
                     supply_chain_keywords,
-                )
+                ),
             ),
             limit=4,
         )
@@ -227,7 +257,6 @@ class DataAgent(BaseAgent):
         )
         primary = self.clean_publish_text(extraction.focus_industry.strip() or (keywords[0] if keywords else "相关赛道"))
         secondary = keywords[1] if len(keywords) > 1 else "关键环节"
-        content_mode = self._content_mode(extraction)
         companies = self._sanitize_companies(extraction.focus_companies + extraction.companies, extraction, limit=8)
         evidence_notes = self._build_evidence_notes(extraction)
         supply_chain_keywords = self.clean_publish_list(extraction.supply_chain_keywords[:8] or keywords, limit=8)
@@ -519,7 +548,11 @@ class DataAgent(BaseAgent):
         limit: int,
     ) -> list[str]:
         cleaned = self.clean_publish_list(raw_items)
-        candidates = [item for item in cleaned if self._is_valid_company_name(item)]
+        candidates: list[str] = []
+        for item in cleaned:
+            candidate = self._normalize_company_name(item)
+            if candidate and self._is_valid_company_name(candidate) and candidate not in candidates:
+                candidates.append(candidate)
         for item in self._extract_company_like_names(extraction):
             if item not in candidates:
                 candidates.append(item)
@@ -533,8 +566,11 @@ class DataAgent(BaseAgent):
         combined = "\n".join(part for part in text_parts if part)
 
         results: list[str] = []
+        for candidate in extract_known_company_names(combined):
+            if self._is_valid_company_name(candidate):
+                results.append(candidate)
         for match in self.COMPANY_SUFFIX_RE.findall(combined):
-            candidate = self.clean_publish_text(match)
+            candidate = self._normalize_company_name(match)
             if self._is_valid_company_name(candidate):
                 results.append(candidate)
         return self.unique(results)[:8]

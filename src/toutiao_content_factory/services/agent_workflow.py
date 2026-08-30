@@ -173,7 +173,7 @@ class AgentWorkflowService:
                     )
                     self.logger.info(f"Insight generated: {insight_report.main_insight[:80]}...")
                 except Exception as exc:
-                    self.logger.warning(f"InsightAgent failed, falling back: %s", exc)
+                    self.logger.warning("InsightAgent failed, falling back: %s", exc)
                     insight_report = None
 
             if insight_report:
@@ -286,7 +286,7 @@ class AgentWorkflowService:
         model_used = self.settings.openai_model if self.openai_service.available else "local-draft"
 
         self._save_memory_observation(
-            f"Run completed: topic selected, article generated and published"
+            "Run completed: topic selected, article generated and published"
         )
 
         return WorkflowResult(
@@ -513,7 +513,7 @@ class AgentWorkflowService:
             min_chars,
         )
         paragraphs = article.split("\n\n")
-        supplements = self._build_supplementary_paragraphs(data_report)
+        supplements = self._build_supplementary_paragraphs(data_report, existing_paragraphs=paragraphs)
         for sup in supplements:
             paragraphs.insert(-1, sup)
             total = len("\n\n".join(paragraphs).replace("\n", "").replace(" ", ""))
@@ -564,9 +564,10 @@ class AgentWorkflowService:
         return article
 
     @staticmethod
-    def _build_supplementary_paragraphs(data_report) -> list[str]:
+    def _build_supplementary_paragraphs(data_report, existing_paragraphs: list[str] | None = None) -> list[str]:
         """Build only evidence-bearing supplements; never pad with generic claims."""
         paragraphs: list[str] = []
+        existing_text = "\n".join(existing_paragraphs or [])
 
         def items(values: list[str], limit: int) -> list[str]:
             cleaned: list[str] = []
@@ -576,34 +577,41 @@ class AgentWorkflowService:
                     cleaned.append(text)
             return cleaned
 
-        metrics = items(getattr(data_report, "watch_metrics", []) or [], 5)
+        def append_if_new(source_items: list[str], prefix: str, suffix: str) -> None:
+            fresh_items = [item for item in source_items if item not in existing_text]
+            if fresh_items:
+                paragraphs.append(prefix + "、".join(fresh_items) + suffix)
+
+        metrics = items(getattr(data_report, "watch_metrics", []) or [], 4)
         if metrics:
-            paragraphs.append(
-                "接下来该盯的是"
-                + "、".join(metrics)
-                + "。这些指标的变化，才是判断兑现节奏的依据。"
+            append_if_new(
+                metrics,
+                "后续核验先看",
+                "。这些项目是后续复盘时可以核对的信号，不能单独证明订单或收入已经兑现。",
             )
 
-        risks = items(getattr(data_report, "risk_flags", []) or [], 3)
+        risks = items(getattr(data_report, "risk_flags", []) or [], 2)
         if risks:
-            paragraphs.append(
-                "风险边界需要保留："
-                + "；".join(risks)
-                + "。如果其中一个环节延迟，前面的判断就需要重新核对。"
+            append_if_new(
+                risks,
+                "限制条件包括：",
+                "。如果关键环节持续延迟，前面的判断就需要重新核对。",
             )
 
-        notes = items(getattr(data_report, "evidence_notes", []) or [], 3)
+        notes = items(getattr(data_report, "evidence_notes", []) or [], 2)
         if notes:
-            paragraphs.append(
-                "目前能确认的公开信息主要到这里："
-                + "；".join(notes)
-                + "。其余判断应等待新的公告、财报或项目进展。"
+            append_if_new(
+                notes,
+                "目前材料明确到：",
+                "。其余订单、收入或规模判断，应等待新的公告或项目进展。",
             )
 
         numbers = items(getattr(data_report, "growth_numbers", []) or [], 2)
         if len(numbers) >= 2:
-            paragraphs.append(
-                f"当前可以回指的数字是{numbers[0]}和{numbers[1]}，后续变化需要结合新的公开材料重新判断。"
+            append_if_new(
+                numbers,
+                "可以回指的数字是",
+                "。它们说明已经发生的变化，不能单独证明后续利润或规模一定兑现。",
             )
         return paragraphs
 

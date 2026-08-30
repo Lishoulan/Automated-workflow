@@ -79,6 +79,50 @@ class TestExtractCompanies:
         result = extractor._extract_companies("", "")
         assert result == []
 
+    def test_title_extraction_ignores_scene_source_and_question_phrases(
+        self,
+        extractor: SignalExtractor,
+    ) -> None:
+        title = "特斯拉Optimus机器人正式进柏林工厂：从实验室数据采集到真实产线干活"
+
+        result = extractor._extract_title_company_candidates(title)
+
+        assert result == ["特斯拉"]
+        assert "柏林工厂" not in result
+        assert "公开材料" not in result
+        assert "涉及哪些公司" not in result
+
+    def test_company_extraction_normalizes_product_name_to_known_brand(
+        self,
+        extractor: SignalExtractor,
+    ) -> None:
+        text = "据德国汽车媒体报道，特斯拉Optimus机器人进入柏林工厂，涉及哪些公司？"
+
+        result = extractor._extract_companies(text, "特斯拉Optimus机器人进柏林工厂")
+
+        assert result == ["特斯拉"]
+
+    def test_company_validation_keeps_known_brands_and_suffix_names(
+        self,
+        extractor: SignalExtractor,
+    ) -> None:
+        assert extractor._is_valid_company_name("特斯拉")
+        assert extractor._is_valid_company_name("比亚迪")
+        assert extractor._is_valid_company_name("华为")
+        assert extractor._is_valid_company_name("国瓷材料")
+        assert not extractor._is_valid_company_name("柏林工厂")
+        assert not extractor._is_valid_company_name("公开材料")
+        assert not extractor._is_valid_company_name("AI机器人")
+        assert not extractor._is_valid_company_name("据德国汽车")
+
+    def test_ambiguous_brand_aliases_need_business_context(self, extractor: SignalExtractor) -> None:
+        assert extractor._extract_companies("理想状态下，大众市场会关注订单成本。", "") == []
+
+        result = extractor._extract_companies("理想汽车与大众汽车宣布合作。", "")
+
+        assert "理想" in result
+        assert "大众" in result
+
 
 class TestExtractGrowthNumbers:
     def test_extracts_percentages(self, extractor: SignalExtractor) -> None:

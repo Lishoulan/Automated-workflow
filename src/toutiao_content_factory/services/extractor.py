@@ -4,21 +4,19 @@ import re
 from collections import Counter
 
 from toutiao_content_factory.models import ExtractionResult, SourceDocument
+from toutiao_content_factory.services.company_entities import (
+    COMPANY_PREFIX_NOISE as SHARED_COMPANY_PREFIX_NOISE,
+    COMPANY_STOP_WORDS as SHARED_COMPANY_STOP_WORDS,
+    COMPANY_SUFFIX_RE as SHARED_COMPANY_SUFFIX_RE,
+    GENERIC_COMPANY_EXCLUSIONS as SHARED_GENERIC_COMPANY_EXCLUSIONS,
+    extract_known_company_names,
+    is_valid_company_name as is_shared_company_name,
+    normalize_company_name,
+)
 
 
 class SignalExtractor:
-    GENERIC_COMPANY_EXCLUSIONS = {
-        "人形机器人",
-        "机器人",
-        "储能",
-        "新能源",
-        "智能装备",
-        "产业链",
-        "系统集成",
-        "热管理",
-        "机器视觉",
-        "国内人形机器人",
-    }
+    GENERIC_COMPANY_EXCLUSIONS = SHARED_GENERIC_COMPANY_EXCLUSIONS
     MAX_KEYWORDS_COUNT = 6
     MAX_COMPANIES_COUNT = 4
     MAX_SENTENCES_COUNT = 20
@@ -78,33 +76,9 @@ class SignalExtractor:
         "写作要求：",
         "推荐标题",
     )
-    COMPANY_STOP_WORDS = {
-        "这家公司",
-        "这类公司",
-        "相关公司",
-        "头部企业",
-        "主流新能源",
-        "一众主流新能源",
-        "国内新能源",
-        "海外新能源",
-        "整车企业",
-        "车企",
-        "企业",
-        "公司",
-        "客户",
-        "项目方",
-        "供应商",
-        "品牌",
-        "产业链",
-        "行业",
-        "市场",
-        "赛道",
-        "新能源车",
-    }
-    COMPANY_PREFIX_NOISE = ("这家", "这类", "相关", "头部", "一众", "主流", "国内", "海外", "而", "某", "该", "再", "曾经")
-    COMPANY_PATTERN = re.compile(
-        r"[A-Za-z0-9\u4e00-\u9fff]{2,24}(?:公司|集团|科技|能源|机器人|股份|电气|动力|智能|电源|汽车|材料|电池|储能|装备)"
-    )
+    COMPANY_STOP_WORDS = SHARED_COMPANY_STOP_WORDS
+    COMPANY_PREFIX_NOISE = SHARED_COMPANY_PREFIX_NOISE
+    COMPANY_PATTERN = SHARED_COMPANY_SUFFIX_RE
     NUMBER_PATTERN = re.compile(
         r"(?:同比|环比|增长|提升|下降|下滑|减少|扩大|超|近|约|达)?\s*"
         r"\d+(?:\.\d+)?(?:%|亿|亿元|亿美元|万元|万台|万辆|万套|万吨|万千瓦|万千瓦时|"
@@ -411,41 +385,29 @@ class SignalExtractor:
         return self._deduplicate(self.NUMBER_PATTERN.findall(analysis_text))[:self.MAX_GROWTH_NUMBERS_COUNT]
 
     def _extract_companies(self, analysis_text: str, topic_title: str) -> list[str]:
-        candidates = self._deduplicate(self.COMPANY_PATTERN.findall(analysis_text))
+        candidates = [
+            normalize_company_name(item)
+            for item in self.COMPANY_PATTERN.findall(analysis_text)
+        ]
         title_candidates = self._extract_title_company_candidates(topic_title)
-        merged = self._deduplicate(title_candidates + candidates)
+        known_candidates = extract_known_company_names(analysis_text)
+        merged = self._deduplicate(title_candidates + known_candidates + candidates)
         return [item for item in merged if self._is_valid_company_name(item)][:self.MAX_TITLE_COMPANY_CANDIDATES]
 
     def _extract_title_company_candidates(self, topic_title: str) -> list[str]:
         if not topic_title:
             return []
-        candidates: list[str] = []
-        for part in re.split(r"[，,：:、（）()\-\s]", topic_title):
-            current = part.strip()
-            if 2 <= len(current) <= 8 and re.search(r"[\u4e00-\u9fff]", current):
-                candidates.append(current)
-        return candidates
+        candidates = list(extract_known_company_names(topic_title))
+        candidates.extend(
+            normalize_company_name(match.group(0))
+            for match in self.COMPANY_PATTERN.finditer(topic_title)
+        )
+        return self._deduplicate(
+            item for item in candidates if self._is_valid_company_name(item)
+        )
 
     def _is_valid_company_name(self, value: str) -> bool:
-        candidate = value.strip()
-        if not candidate or len(candidate) < 2 or len(candidate) > 18:
-            return False
-        if candidate in self.GENERIC_COMPANY_EXCLUSIONS or candidate in self.COMPANY_STOP_WORDS:
-            return False
-        if any(candidate.startswith(prefix) for prefix in self.COMPANY_PREFIX_NOISE):
-            return False
-        if any(token in candidate for token in ("数据", "趋势", "摘要", "原因", "结论", "价格战", "订单", "交付", "风险")):
-            return False
-        if re.search(r"[。！？；：:#]", candidate):
-            return False
-        has_suffix = bool(
-            re.search(
-                r"(公司|集团|科技|能源|机器人|股份|电气|动力|智能|电源|汽车|材料|电池|储能|装备)$",
-                candidate,
-            )
-        )
-        short_cjk_name = bool(re.fullmatch(r"[\u4e00-\u9fff]{2,6}", candidate))
-        return has_suffix or short_cjk_name
+        return is_shared_company_name(value)
 
     def _deduplicate(self, items: list[str]) -> list[str]:
         seen: set[str] = set()

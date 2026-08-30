@@ -8,13 +8,41 @@ from toutiao_content_factory.agents.base import BaseAgent
 from toutiao_content_factory.config import AppSettings, IterationOverrides, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, TrendReport
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
-from toutiao_content_factory.services.compliance_service import is_aigc_declaration_enabled
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 
 class PolishAgent(BaseAgent):
     agent_name = "PolishAgent"
+    UNSUPPORTED_ORDER_CLAIM_RES = (
+        re.compile(
+            r"(?:获得|拿到|签下|形成|已有|已经有|已获|转化为|落实|落地|接到|收到|拿下|确认)"
+            r"[^。！？!?\n]{0,24}(?:样机订单|采购订单|重复订单|订单|定点)"
+        ),
+        re.compile(
+            r"(?:样机订单|采购订单|重复订单|订单|定点)"
+            r"[^。！？!?\n]{0,12}(?:已|已经|正式|明确|出现|落地|兑现|确认|签约|签署|落实|完成)"
+        ),
+    )
+    ORDER_NEGATION_MARKERS = (
+        "未",
+        "尚未",
+        "没有",
+        "不能",
+        "不等于",
+        "是否",
+        "若",
+        "如果",
+        "只要",
+        "一旦",
+        "可能",
+        "有望",
+        "预计",
+        "待",
+        "不足",
+        "无法",
+    )
+    ORDER_SPECIFIC_TOKENS = ("样机订单", "采购订单", "重复订单", "定点")
     AI_CLICHE_PHRASES = {
         "在当今快节奏的社会中": "",
         "不可否认的是": "",
@@ -249,7 +277,6 @@ class PolishAgent(BaseAgent):
     def _check_single_rule(self, article: str, rule: dict) -> tuple[bool, str]:
         """检查单条规则的执行情况，返回 (是否通过, 问题描述)。"""
         category = rule.get("category", "")
-        title = rule.get("title", "")
         paragraphs = [p.strip() for p in article.split("\n\n") if p.strip()]
 
         if category == "opening_hook":
@@ -257,8 +284,6 @@ class PolishAgent(BaseAgent):
             if not paragraphs:
                 return False, "文章为空，无法检查开头钩子。"
             first_para = paragraphs[0]
-            sentences = re.split(r"[。！？!?]", first_para)
-            first_two = "".join(sentences[:2])
             has_question = "？" in first_para or "?" in first_para
             has_number = bool(re.search(r"\d+(?:%|倍|亿|万|元)", first_para))
             has_contrast = any(k in first_para for k in ("但", "反而", "却", "不是", "而是", "然而"))
@@ -434,7 +459,10 @@ class PolishAgent(BaseAgent):
         paragraphs = self._rebalance_paragraphs(paragraphs)
         article_text = "\n\n".join(paragraphs[:12]).strip()
         unsupported_tokens = self._unsupported_numeric_tokens(article_text, data_report)
-        if self._should_rebuild_cautious(article_text, data_report, unsupported_tokens):
+        if self._should_rebuild_cautious(article_text, data_report, unsupported_tokens) or self._has_unsupported_order_claim(
+            article_text,
+            data_report,
+        ):
             return self._rebuild_cautious_article(data_report, trend_report)
         if original_char_count > 0:
             polished_chars = len(article_text.replace("\n", "").replace(" ", ""))
@@ -526,6 +554,10 @@ class PolishAgent(BaseAgent):
             score += 8
             notes.append("正文没有明显扩写出素材之外的新数字，证据边界控制较稳。")
 
+        if self._has_unsupported_order_claim(article, data_report):
+            score -= 24
+            notes.append("正文把素材未支持的订单或采购写成既成事实，已触发谨慎重建。")
+
         if max_paragraph_length <= 150:
             score += 10
             notes.append("段落长度适合移动端阅读。")
@@ -612,6 +644,50 @@ class PolishAgent(BaseAgent):
             return True
         return len(unsupported_tokens) >= 4 and not self._has_source_anchor(article)
 
+    def _has_unsupported_order_claim(self, article: str, data_report: DataReport) -> bool:
+        """Catch order claims that are absent from the report before final review."""
+
+        evidence_sentences = [
+            *(getattr(data_report, "core_data", []) or []),
+            *(getattr(data_report, "evidence_notes", []) or []),
+            *[
+                str(item.get("fact", ""))
+                for item in (getattr(data_report, "evidence_items", []) or [])
+                if isinstance(item, dict)
+            ],
+        ]
+        for sentence in re.split(r"[。！？!?\n]", str(article or "")):
+            candidate = sentence.strip()
+            if not candidate or not any(pattern.search(candidate) for pattern in self.UNSUPPORTED_ORDER_CLAIM_RES):
+                continue
+            if any(marker in candidate for marker in self.ORDER_NEGATION_MARKERS):
+                continue
+            if not self._order_claim_supported(candidate, evidence_sentences):
+                return True
+        return False
+
+    def _order_claim_supported(self, claim: str, evidence_sentences: list[str]) -> bool:
+        """Require the same company and order type when evidence is specific."""
+
+        claim_companies = [item.casefold() for item in self._extract_company_mentions(claim)]
+        claim_specific_terms = [item for item in self.ORDER_SPECIFIC_TOKENS if item in claim]
+        for evidence in evidence_sentences:
+            text = str(evidence or "").strip()
+            if not text or any(marker in text for marker in self.ORDER_NEGATION_MARKERS):
+                continue
+            if not any(pattern.search(text) for pattern in self.UNSUPPORTED_ORDER_CLAIM_RES):
+                continue
+            if claim_specific_terms and not any(term in text for term in claim_specific_terms):
+                continue
+            if not claim_specific_terms and "订单" not in text and "定点" not in text:
+                continue
+
+            evidence_lower = text.casefold()
+            if claim_companies and not any(company in evidence_lower for company in claim_companies):
+                continue
+            return True
+        return False
+
 
 
     def _rebuild_cautious_article(self, data_report: DataReport, trend_report: TrendReport) -> str:
@@ -624,57 +700,59 @@ class PolishAgent(BaseAgent):
             data_report.focus_industry or (data_report.focus_keywords[0] if data_report.focus_keywords else "相关赛道")
         )
         companies = self._company_candidates(data_report)[:2]
-        source_anchor = self._build_source_anchor(data_report) or "从公开材料看，当前已确认的信号仍然有限。"
+        source_anchor = self._build_source_anchor(data_report)
         numbers = "、".join(self.clean_publish_list(data_report.growth_numbers, limit=3))
-        core_data = "；".join(self.clean_publish_list(data_report.core_data, limit=3))
-        trends = "；".join(self.clean_publish_list(data_report.industry_trends, limit=3))
-        metrics = "、".join(self.clean_publish_list(data_report.watch_metrics, limit=4))
-        risks = "；".join(self.clean_publish_list(data_report.risk_flags, limit=3))
+        core_items = self.clean_publish_list(data_report.core_data, limit=3)
+        if source_anchor:
+            anchor_fact = source_anchor.removeprefix("已有材料显示，").rstrip("。")
+            core_items = [item for item in core_items if item not in anchor_fact and anchor_fact not in item]
+        core_data = "；".join(core_items)
+        trends = "；".join(self.clean_publish_list(data_report.industry_trends, limit=2))
+        metrics = "、".join(self.clean_publish_list(data_report.watch_metrics, limit=3))
+        risks = "；".join(self.clean_publish_list(data_report.risk_flags, limit=2))
         angle = self.clean_publish_text(trend_report.recommended_angle).strip()
         closing_question = self._build_closing_question(data_report)
 
-        first_paragraph = (
-            f"这更像{primary}的一条执行前信号，而不是已经兑现到利润表里的确定性结论。"
-            f"{source_anchor}真正该看的，是后续有没有订单、并网、交付或毛利数据继续跟上。"
-        )
-        second_paragraph = (
-            f"目前公开信息里相对明确的数字，主要集中在{numbers}。"
-            if numbers
-            else f"目前公开信息里更明确的，仍然是{primary}方向上的政策和项目推进信号。"
-        )
+        first_paragraph = f"{primary}这条信息目前只能算阶段性进展。"
+        first_paragraph += source_anchor or "现有材料没有提供足够的来源细节和量化结果。"
+        first_paragraph += "这还不足以推出订单、收入或量产已经兑现。"
+
+        second_paragraph = f"能直接核对的数字集中在{numbers}。" if numbers else f"素材没有给出{primary}当前进展的可量化结果。"
         if core_data:
-            second_paragraph += f"{core_data}。"
+            second_paragraph += f"材料同时提到：{core_data}。"
         else:
-            second_paragraph += "这意味着眼下更适合先判断节奏，不适合提前下过满的业绩结论。"
+            second_paragraph += "所以现阶段适合判断验证节奏，不适合提前下过满的业绩结论。"
 
         if companies:
             third_paragraph = (
-                f"从主体上看，{ '、'.join(companies) }这类公司更值得跟踪，但重点不是先猜份额，而是看它们是否持续给出可执行订单、交付节奏和客户验证。"
+                f"主体方面，{'、'.join(companies)}出现在现有材料中，但这不等于它们已经获得订单或形成收入。"
+                "后续要核对的是客户验证、交付节奏和能否复制到更多项目。"
             )
         else:
             third_paragraph = (
-                f"从产业链位置看，{primary}真正能否走强，还是要回到设备交付、并网验证、系统集成和后续运维这些执行环节。"
+                f"目前没有足够依据点名具体公司。{primary}能否走强，要回到设备交付、项目验证、系统集成和后续服务这些执行环节。"
             )
         if trends:
-            third_paragraph += f"{trends}。"
+            third_paragraph += f"现有趋势描述是：{trends}。"
 
-        fourth_paragraph = (
-            f"接下来更值得跟踪的，是{metrics}。"
-            if metrics
-            else f"接下来更值得跟踪的，是订单落地、交付节奏、项目并网和利润兑现。"
-        )
+        fourth_paragraph = f"后续核验可以先看{metrics}。" if metrics else "后续核验可以先看部署表现、订单复制、成本和服务。"
         if angle:
-            fourth_paragraph += f"{angle}"
+            fourth_paragraph += f"当前分析角度是：{angle}。"
         else:
-            fourth_paragraph += "只要这些指标还没有继续落地，就不适合把这类题提前写成全行业普涨。"
+            fourth_paragraph += "这些信号没有连续出现前，不宜把单点进展写成全行业普涨。"
 
-        fifth_paragraph = (
-            f"风险边界也要保留：{risks}。{closing_question}"
-            if risks
-            else f"风险边界也很明确：如果后续订单、交付和利润数据跟不上，当前信号就更接近预期修复而不是业绩兑现。{closing_question}"
-        )
+        fifth_paragraph = f"限制条件是：{risks}。" if risks else "限制条件是订单、交付和利润数据可能继续缺位。"
+        fifth_paragraph += closing_question
         paragraphs = [first_paragraph, second_paragraph, third_paragraph, fourth_paragraph, fifth_paragraph]
-        return "\n\n".join(self._rebalance_paragraphs(paragraphs)[:7]).strip()
+        max_paragraphs = 6 if data_report.content_format in ("quick_commentary", "short_comment", "news_flash") else 7
+        return "\n\n".join(
+            self._rebalance_paragraphs(
+                paragraphs,
+                min_paragraphs=5,
+                max_paragraphs=max_paragraphs,
+                max_block_length=150,
+            )[:max_paragraphs]
+        ).strip()
 
     def _build_closing_question(self, data_report: DataReport) -> str:
         content_mode = self._content_mode(data_report)
@@ -684,7 +762,7 @@ class PolishAgent(BaseAgent):
         if content_mode == "sports":
             return "你觉得这条消息最可能改变产业格局、技术路线还是舆论预期？"
         if content_mode == "international":
-            return "你觉得接下来最值得盯的是谁会先让步、谁会继续施压，还是市场会先给出反应？"
+            return "你认为下一步更可能先出现让步、加压，还是市场反应？"
         return f"您更看重{primary}后续先落地订单、交付，还是毛利率改善？"
 
 
@@ -694,11 +772,14 @@ class PolishAgent(BaseAgent):
         for note in data_report.evidence_notes:
             text = self.clean_publish_text(note).strip()
             if text:
+                for prefix in ("公开材料：", "公开材料:", "素材信息：", "素材信息:"):
+                    if text.startswith(prefix):
+                        text = text[len(prefix) :].strip()
                 if not text.endswith(("。", "！", "？")):
                     text += "。"
-                return f"从公开材料看，{text}"
+                return f"已有材料显示，{text}"
         if data_report.growth_numbers:
-            return f"目前至少已经明确的数字信号包括{'、'.join(data_report.growth_numbers[:2])}。"
+            return f"目前已明确的数字信号包括{'、'.join(data_report.growth_numbers[:2])}。"
         return ""
 
     def _should_emphasize_source(self, revision_focus: list[str]) -> bool:
@@ -720,30 +801,29 @@ class PolishAgent(BaseAgent):
 
     def _rebuild_cautious_sports_article(self, data_report: DataReport, trend_report: TrendReport) -> str:
         title = self.clean_publish_text(data_report.topic_title).strip() or "这条热点消息"
-        source_anchor = self._build_source_anchor(data_report) or "从公开材料看，目前能确认的信息仍然有限。"
+        source_anchor = self._build_source_anchor(data_report) or "目前能确认的来源和细节仍然有限。"
         metrics = "、".join(self.clean_publish_list(data_report.watch_metrics, limit=4)) or "技术路线变化、市场份额变化、关键企业动态和舆论争议"
         risks = "；".join(self.clean_publish_list(data_report.risk_flags, limit=3)) or "公开素材有限时，最需要防止的是把初步消息写成确定性结论"
         angle = self.clean_publish_text(trend_report.recommended_angle).strip()
         paragraphs = [
-            f"{title}不只是初步消息，它更像一个会改变后续判断的前置信号。{source_anchor}",
-            f"真正值得看的，不是把新闻复述一遍，而是它会不会改变产业格局、技术路线和市场预期。",
-            f"接下来更值得跟踪的，是{metrics}。这些变量会决定这条消息最终只是短期讨论，还是会真的影响后续走势。",
-            f"{angle or '真正有价值的写法，是把关键人物、关键节点和后续走势说清楚。'}",
-            f"风险边界也要保留：{risks}。{self._build_closing_question(data_report)}",
+            f"{title}目前支持的判断是阶段性变化，而不是已经确定的长期结果。{source_anchor}",
+            "事件影响要从后续比赛、技术路线和市场反馈中确认，单次讨论热度不能替代这些信息。",
+            f"后续核验可以先看{metrics}。这些指标分别对应事件能否延续，以及它是否会改变后续走势。",
+            f"{angle or '目前更适合把关键人物、节点和走势拆开核对。'}",
+            f"限制条件是：{risks}。{self._build_closing_question(data_report)}",
         ]
         return "\n\n".join(self._rebalance_paragraphs(paragraphs)[:7]).strip()
-
     def _rebuild_cautious_international_article(self, data_report: DataReport, trend_report: TrendReport) -> str:
         title = self.clean_publish_text(data_report.topic_title).strip() or "这条国际消息"
-        source_anchor = self._build_source_anchor(data_report) or "从公开材料看，目前能确认的信息仍然有限。"
+        source_anchor = self._build_source_anchor(data_report) or "目前能确认的来源和细节仍然有限。"
         metrics = "、".join(self.clean_publish_list(data_report.watch_metrics, limit=4)) or "政策表态、谈判进展、相关国家动作和市场反馈"
         risks = "；".join(self.clean_publish_list(data_report.risk_flags, limit=3)) or "公开素材有限时，最需要防止的是把短期消息写成长期定局"
         angle = self.clean_publish_text(trend_report.recommended_angle).strip()
         paragraphs = [
-            f"{title}不能只当单点新闻看，它更像一场更大博弈里的新动作。{source_anchor}",
-            "真正值得看的，不是表态本身，而是谁在施压、谁在让步，以及下一步动作会不会继续升级。",
-            f"接下来更值得跟踪的，是{metrics}。这些变量会决定局势是继续升级、短暂缓和，还是转向新的谈判阶段。",
-            f"{angle or '真正有价值的写法，是把事件、利益关系和后续变量连接起来。'}",
-            f"风险边界也要保留：{risks}。{self._build_closing_question(data_report)}",
+            f"{title}目前只是博弈中的一个新动作，不能直接写成局势已经定型。{source_anchor}",
+            "后续影响取决于各方有没有把表态转成实际动作，以及市场是否给出持续反馈。",
+            f"后续核验可以先看{metrics}。这些信息能帮助区分局势升级、暂时缓和和重新谈判。",
+            f"{angle or '目前更适合把事件、利益关系和后续变量连接起来。'}",
+            f"限制条件是：{risks}。{self._build_closing_question(data_report)}",
         ]
         return "\n\n".join(self._rebalance_paragraphs(paragraphs)[:7]).strip()

@@ -87,7 +87,7 @@ def test_supplementary_paragraphs_use_evidence_fields_without_old_template_opene
     assert "关键数字锚点" not in joined
 
 
-def test_medium_grounded_draft_reaches_public_gate_without_llm_expansion(
+def test_medium_grounded_draft_stays_blocked_without_llm_expansion(
     app_settings,
     mock_openai_service,
     logger,
@@ -139,11 +139,43 @@ def test_medium_grounded_draft_reaches_public_gate_without_llm_expansion(
     ensured = agent.ensure_article_min_chars("\n\n".join(existing), data_report)
     ensured_chars = len(ensured.replace("\n", "").replace(" ", ""))
 
-    assert ensured_chars >= 1500
+    # Evidence-aware fallback must not manufacture repetitive copy just to
+    # cross the public length threshold. The short result remains blocked.
+    assert 0 < ensured_chars < 1500
     assert agent._unsupported_numeric_tokens(ensured, data_report) == []
     assert "主体关系也不能省略" not in ensured
     assert "当前记录的核心内容是" not in ensured
+    assert not any(
+        fragment in ensured
+        for fragment in agent.INCOMPLETE_ARTICLE_FRAGMENTS
+    )
     mock_openai_service.create_json_completion.assert_not_called()
+
+
+def test_supplementary_paragraphs_are_bounded_and_reject_incomplete_fragments(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    data_report = DataReport(
+        companies=["测试主体"],
+        core_data=["公开材料披露测试主体完成一项阶段性技术进展"],
+        evidence_notes=["来源材料记录了这项进展"],
+        watch_metrics=["客户验证", "交付节奏", "巡检任务的成展开"],
+        risk_flags=["商业化结果尚未披露"],
+        growth_numbers=["12%", "18%"],
+        evidence_strength=80,
+    )
+
+    supplements = agent._build_supplementary_paragraphs(data_report)
+
+    assert 0 < len(supplements) <= agent.MAX_LOCAL_SUPPLEMENTARY_PARAGRAPHS
+    assert all(
+        not any(fragment in paragraph for fragment in agent.INCOMPLETE_ARTICLE_FRAGMENTS)
+        for paragraph in supplements
+    )
+    assert len({paragraph.strip() for paragraph in supplements}) == len(supplements)
 
 
 def test_supplementary_paragraphs_skip_evidence_already_covered_by_article(

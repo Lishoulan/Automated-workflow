@@ -291,7 +291,7 @@ class TestSupplementaryParagraphs:
         assert workflow_service._has_source_anchor("这是一段普通文本") is False
 
 
-def test_post_polish_rebuild_uses_local_grounded_expansion_when_model_is_unavailable(
+def test_post_polish_rebuild_stays_blocked_when_model_is_unavailable(
     app_settings,
     mock_openai_service,
     logger,
@@ -330,10 +330,16 @@ def test_post_polish_rebuild_uses_local_grounded_expansion_when_model_is_unavail
 
     char_count = len(finalized.replace("\n", "").replace(" ", ""))
     assert len(rebuilt.replace("\n", "").replace(" ", "")) < 1500
-    assert char_count >= 1500
+    # A rebuilt short article must remain below the public gate when no model
+    # is available; padding it with repeated analysis would hide the blocker.
+    assert 0 < char_count < 1500
     assert "锂电订单" not in finalized
     assert "26万千瓦" in finalized
     assert workflow_service.writer_agent._unsupported_numeric_tokens(finalized, data_report) == []
+    assert not any(
+        fragment in finalized
+        for fragment in workflow_service.writer_agent.INCOMPLETE_ARTICLE_FRAGMENTS
+    )
     mock_openai_service.create_json_completion.assert_not_called()
 
     quality_report = workflow_service.quality_review_council_agent._fallback(
@@ -345,14 +351,14 @@ def test_post_polish_rebuild_uses_local_grounded_expansion_when_model_is_unavail
         ),
         data_report,
     )
-    assert quality_report.needs_revision is False
+    assert quality_report.needs_revision is True
 
     buffered = workflow_service._ensure_article_min_chars(
         rebuilt,
         data_report,
         min_chars=1750,
     )
-    assert len(buffered.replace("\n", "").replace(" ", "")) >= 1750
+    assert len(buffered.replace("\n", "").replace(" ", "")) < 1750
 
 
 class TestApplyBadWordsGate:

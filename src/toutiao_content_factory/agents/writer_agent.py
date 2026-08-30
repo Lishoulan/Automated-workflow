@@ -56,6 +56,13 @@ class WriterAgent(BaseAgent):
     )
 
     MODE_NOISE_TOKENS = ("产业链", "订单", "交付", "毛利", "利润", "兑现", "融资", "客户验证", "科技制造", "项目落地")
+    INCOMPLETE_ARTICLE_FRAGMENTS = (
+        "任务的成展开",
+        "巡检任务的成",
+        "可重复采开",
+        "可重复采",
+    )
+    MAX_LOCAL_SUPPLEMENTARY_PARAGRAPHS = 4
 
     def __init__(
         self,
@@ -1615,7 +1622,7 @@ class WriterAgent(BaseAgent):
             len(p.replace("\n", "").replace(" ", ""))
             for p in trimmed_result
         )
-        if final_chars < min_chars and grounded:
+        if final_chars < min_chars and grounded and self.openai_service.available:
             logger.info(
                 "Supplementary paragraphs brought article to %d chars, still below %d. Attempting grounded LLM expansion.",
                 final_chars,
@@ -1712,10 +1719,14 @@ class WriterAgent(BaseAgent):
             )
 
         def append_if_new(text: str, source_items: list[str] | None = None) -> None:
+            if len(paragraphs) >= self.MAX_LOCAL_SUPPLEMENTARY_PARAGRAPHS:
+                return
             candidate = clean_article_text(text, min_word_count=0).strip()
             if not candidate:
                 return
             if source_items and source_items_are_covered(source_items):
+                return
+            if self._looks_like_incomplete_paragraph(candidate):
                 return
             if not self._is_duplicate_paragraph(candidate, [*existing, *paragraphs]):
                 paragraphs.append(candidate)
@@ -1769,103 +1780,36 @@ class WriterAgent(BaseAgent):
                 source_items=numbers,
             )
 
-        # A very short local fallback still needs enough readable context for
-        # the review package.  Keep this path limited to short drafts and
-        # derive every sentence from fields already present in DataReport.
+        # Keep deterministic supplementation bounded. A previous implementation
+        # appended two large template banks here, which made short drafts look
+        # repetitive and leaked editing language into public copy.
         initial_chars = sum(len(item.replace("\n", "").replace(" ", "")) for item in existing)
         content_format = str(getattr(data_report, "content_format", "") or "")
         if (
-            1000 <= initial_chars < 1500
+            initial_chars < 1500
             and self._has_grounded_evidence(data_report)
             and self._content_mode(data_report) != "hot_topic"
             and content_format not in ("quick_commentary", "short_comment", "news_flash")
+            and len(paragraphs) < self.MAX_LOCAL_SUPPLEMENTARY_PARAGRAPHS
         ):
-            # A model may return a plausible 1k-1.5k draft and bypass the
-            # longer fallback below. Add a few bounded analytical paragraphs
-            # so the public gate can be met without inventing new evidence.
             primary = self._primary_keyword(data_report, fallback="相关主题")
             trend_items = clean_items(getattr(data_report, "industry_trends", []) or [], 1)
-            company_items = self._company_candidates(data_report)[:3]
-            metric_items = clean_items(getattr(data_report, "watch_metrics", []) or [], 3)
+            key_items = clean_items(getattr(data_report, "key_points", []) or [], 1)
+            metric_items = clean_items(getattr(data_report, "watch_metrics", []) or [], 2)
             risk_items = clean_items(getattr(data_report, "risk_flags", []) or [], 1)
+            core_items = clean_items(getattr(data_report, "core_data", []) or [], 1)
+            trend_text = trend_items[0] if trend_items else "行业变化仍需要更多连续记录"
+            key_text = key_items[0] if key_items else "把已确认事实与待验证结果分开"
+            metric_text = "、".join(metric_items) or "项目进度与客户验证"
+            risk_text = risk_items[0] if risk_items else "统计口径和兑现节奏仍需核对"
+            core_text = core_items[0] if core_items else "已有材料中的阶段性变化"
 
-            trend_text = (trend_items[0] if trend_items else "行业仍处在从信息走向执行的阶段")[:68]
-            company_text = "、".join(company_items)[:42] or "已确认主体"
-            metric_text = "、".join(metric_items)[:42] or "项目进度、客户验证和回款"
-            risk_text = (risk_items[0] if risk_items else "项目兑现节奏和信息口径仍需核对")[:58]
-            grounded_analysis_paragraphs = (
-                f"这条信息的价值，要放回{primary}的执行链条里看。已披露的变化不等于交付、收入或利润已经同步兑现。",
-                f"公开材料点名了{company_text}。这说明相关主体与事件有关，商业结果仍要看它是否出现连续的交付、客户采用或收入记录。",
-                f"行业层面的解释是：{trend_text}。这提供了观察方向，但不能替代项目动作和统计口径。",
-                f"后续判断可以围绕{metric_text}展开。若这些指标只有一次变化，信号仍偏阶段性；连续改善才会提高结论的可信度。",
-                f"风险主要落在{risk_text}。它决定这条线索能否从消息层面进入经营结果，也决定分析结论需要保持多大边界。",
-                "数字需要和时间、单位、统计对象一起读取，单个参数很难覆盖完整的商业判断。",
-                f"商业结果最终还要回到{metric_text}，再看公开信息是否补上{risk_text}对应的事实。",
-                "同一主体、同一场景和同一指标出现连续记录，才足以支持更强的商业判断。",
-                "如果后续只有单次展示，没有出货、验收或回款记录，这条信息就仍然更接近线索，而不是确定结果。",
-                "把数字、动作和结果放在同一条时间线上比较，往往比增加形容词更能看清变化的含义。",
-                "当新资料出现时，时间范围、产品范围和确认方式需要保持一致，否则前后数字不能直接比较。",
-                "因此，这次变化适合继续观察；结论能走多远，取决于后续是否补齐主体、时间和结果口径。",
-                f"把{company_text}与{metric_text}放在一起看，才能区分一次性事件和稳定模式。前者会改变预期，后者才可能影响经营结果。",
-                f"如果{primary}的变化要进入商业结果，至少要在{metric_text}中留下可重复的记录。单次消息只能说明发生过，不能说明模式已经形成。",
-                "规模与质量不是同一个问题。规模回答发生了多少，质量回答这些变化是否能在不同时间和场景中持续出现。",
-                "公开信息的价值不只在于提供一个结论，也在于留下下一次可以比较的时间点、统计对象和结果指标。",
-                "只有把阶段性信号和后续经营数据接起来，读者才有可能判断这项变化是短期波动，还是竞争位置真的发生了变化。",
+            local_analysis = (
+                f"{primary}的已知事实是{core_text}。这给出了观察起点，但{key_text}，不能仅凭一次信息把阶段性变化写成稳定结果。",
+                f"后续可以沿着{metric_text}核对{primary}。如果这些记录没有连续出现，仍需保留这个边界：{risk_text}。",
+                f"从行业角度看，{trend_text}。它适合用来提出问题，最终结论仍要等待与主体、时间和结果对应的公开记录。",
             )
-            for paragraph in grounded_analysis_paragraphs:
-                append_if_new(paragraph)
-
-        if initial_chars < 1000:
-            topic = self.clean_publish_text(getattr(data_report, "topic_title", "")).rstrip("。")
-            primary = self._primary_keyword(data_report, fallback="相关主题")
-            core_text = "；".join(clean_items(getattr(data_report, "core_data", []) or [], 3))
-            trend_text = "；".join(clean_items(getattr(data_report, "industry_trends", []) or [], 2))
-            key_text = "；".join(clean_items(getattr(data_report, "key_points", []) or [], 2))
-            number_text = "、".join(clean_items(getattr(data_report, "growth_numbers", []) or [], 3))
-            company_text = "、".join(self._company_candidates(data_report)[:3])
-            metric_text = "、".join(metrics) or "项目进度、客户验收和回款"
-            risk_text = "；".join(risks) or "信息口径不完整和项目兑现节奏变化"
-
-            short_fallback_paragraphs = (
-                f"把{topic or primary}放回业务时间线，先区分消息发生的时间、项目规模和结果口径。"
-                f"公开材料提到{core_text or '一项阶段性变化'}。"
-                "这说明事件已经出现，但还不能直接等同于完成商业转化。",
-                f"规模数字要和单位、统计范围一起读取，现有记录包含{number_text or '当前没有新增量化口径'}。"
-                "这些数字可以描述已经发生的变化，但不能单独推出新增订单、稳定收入或长期利润。",
-                f"材料涉及的主体是{company_text or '相关项目方'}。"
-                "主体出现在一条信息里，和主体已经完成交付、确认收入，是不同层次的问题。",
-                f"从执行链条看，{metric_text}应按先后观察。"
-                "先看项目是否进入对应环节，再看结果有没有连续记录，最后才讨论这项进展能否复制。",
-                f"现有趋势描述为{trend_text or '项目仍处在从信息到执行的过渡阶段'}。"
-                "它能说明讨论方向，却不能替代客户反馈、交付记录或收入口径，趋势和结果需要分开记录。",
-                f"这组信息的判断重点是{key_text or '把事实、机制和待验证结果分开'}。"
-                "事实可以直接引用，机制和结果则应保留为分析或待验证问题。",
-                f"风险边界落在{risk_text}。"
-                "如果后续披露没有补齐这些条件，结论就应停在阶段性判断，而不是继续向规模化结果外推。",
-                f"下一次更新不需要增加形容词，只需沿着{metric_text}补充同一时间和同一口径的公开记录。"
-                "有连续记录，才能判断项目是在推进、停留，还是已经改变了经营结果。",
-                f"阅读这条信息时，可以先看{core_text or topic or primary}，再看它对应的执行环节。"
-                "事实、主体、时间和结果都能对应起来，文章的判断强度才有依据。",
-                f"因此，{topic or primary}当前更适合被理解为一个需要继续核对的进展。"
-                "后续若出现新的公告、验收、交付或收入记录，再据此调整结论会更稳妥。",
-                f"数字的时间和统计范围决定能否进行比较，现有记录包含{number_text or '阶段性变化'}。"
-                "在没有统一口径之前，数字只能说明各自对应的事实，不能通过简单相加或相减推出新的结果。",
-                f"如果{metric_text}只出现单次，仍不足以说明项目已经形成稳定模式。"
-                "更有价值的是同一主体、同一场景和同一指标出现连续记录，这样才能区分偶发进展与可复制结果。",
-                f"业务事实与行业趋势需要分开处理，当前趋势描述为{trend_text or '从信息走向执行的阶段性变化'}。"
-                "趋势可以帮助确定观察方向，但最终判断仍要回到项目动作和结果记录。",
-                f"项目拆解还应把主体、环节和结果分别摆出来，材料涉及{company_text or '项目主体和业务环节'}。"
-                "只有这些关系能够互相对应，才能进一步讨论谁承担交付、谁确认收入以及利润如何形成。",
-                f"当新资料出现时，优先回看{metric_text}是否和原有数字使用同一口径。"
-                "如果时间范围、产品范围或确认方式发生变化，旧结论就只能作为背景，不能直接延伸到新结果。",
-                f"从实际阅读顺序看，先读{core_text or topic or primary}，再读风险和跟踪变量，会比先看结论更容易发现信息缺口。"
-                "这也是把事实、解释和待验证问题分开的必要步骤。",
-                f"结论强度不由字数决定，而由{risk_text}是否得到后续记录支撑决定。"
-                "篇幅增加只能提供更多解释，不能替代公告、交付、验收或收入确认。",
-                f"现阶段对{topic or primary}最稳妥的表述，是已经出现了可以追踪的变化，但兑现程度仍未完成确认。"
-                "后续材料若补齐主体、时间和结果口径，判断才需要随之更新。",
-            )
-            for paragraph in short_fallback_paragraphs:
+            for paragraph in local_analysis:
                 append_if_new(paragraph)
         return paragraphs
 
@@ -1902,6 +1846,13 @@ class WriterAgent(BaseAgent):
             if not any(lowered in item or item in lowered for item in known):
                 return True
         return False
+
+    @classmethod
+    def _looks_like_incomplete_paragraph(cls, text: str) -> bool:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return True
+        return any(fragment in normalized for fragment in cls.INCOMPLETE_ARTICLE_FRAGMENTS)
 
     def _looks_like_template_paragraph(self, text: str, data_report: "DataReport") -> bool:
         normalized = str(text or "").strip()
@@ -1963,6 +1914,8 @@ class WriterAgent(BaseAgent):
                     continue
                 if self._has_unknown_company_mention(text, data_report):
                     continue
+                if self._looks_like_incomplete_paragraph(text):
+                    continue
                 if self._looks_like_template_paragraph(text, data_report):
                     continue
                 if not grounded and self._contains_generic_guess(text):
@@ -2001,6 +1954,12 @@ class WriterAgent(BaseAgent):
                 return True
             if len(normalized) >= 60 and len(previous) >= 60:
                 if SequenceMatcher(None, normalized, previous).ratio() >= 0.88:
+                    return True
+                if (
+                    min(len(normalized), len(previous)) >= 90
+                    and SequenceMatcher(None, normalized, previous).ratio() >= 0.78
+                    and min(len(normalized), len(previous)) / max(len(normalized), len(previous)) >= 0.72
+                ):
                     return True
         return False
 

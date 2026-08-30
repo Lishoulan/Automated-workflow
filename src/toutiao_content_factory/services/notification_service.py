@@ -246,6 +246,35 @@ class NotificationService:
         message += "\n请前往后台处理。"
         self._write_fallback_log(title, message, pushed=False)
 
+    def notify_review_required(
+        self,
+        *,
+        account: str,
+        selected_title: str,
+        run_dir: str,
+        reason: str,
+        run_time: str,
+    ) -> None:
+        """推送人工审核提醒，同一账号每天最多提醒一次。
+
+        定时任务通常由独立进程运行，仅依赖实例内计数无法避免多个时段重复
+        消耗方糖额度，因此用本地通知日志做跨进程去重。发送失败不会写成已
+        推送，后续时段仍可重试。
+        """
+        title = f"【{account}】定时任务需要人工审核"
+        message = (
+            f"{run_time} 定时内容未自动发布，需人工审核。\n"
+            f"标题: 《{selected_title or '未选择标题'}》\n"
+            f"运行目录: {run_dir or 'N/A'}\n"
+            f"原因: {reason or '未达到自动发布门槛'}\n"
+            "请修改并审核通过后再发布。"
+        )
+        if self._has_pushed_title_today(title):
+            logger.info("人工审核提醒今日已推送，跳过重复推送: %s", title)
+            self._write_fallback_log(title, message, pushed=False)
+            return
+        self._broadcast(title, message)
+
     def notify_urgent(self, title: str, message: str) -> None:
         """发送紧急通知（登录过期/健康检查失败等，始终推送，不受每日限频限制）"""
         self._broadcast(title, message, force=True)
@@ -266,6 +295,28 @@ class NotificationService:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.debug(f"通知日志写入失败: {e}")
+
+    def _has_pushed_title_today(self, title: str) -> bool:
+        """检查本地日志中今天是否已经成功推送过指定标题。"""
+        if not self.fallback_log_path or not self.fallback_log_path.exists():
+            return False
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            for raw_line in self.fallback_log_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    entry = json.loads(raw_line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("pushed") is True
+                    and str(entry.get("title", "")) == title
+                    and str(entry.get("timestamp", "")).startswith(today)
+                ):
+                    return True
+        except OSError:
+            return False
+        return False
 
     def _broadcast(self, title: str, message: str, force: bool = False) -> None:
         """向所有渠道广播。

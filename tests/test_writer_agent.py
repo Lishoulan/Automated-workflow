@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from toutiao_content_factory.agents.polish_agent import PolishAgent
 from toutiao_content_factory.agents.writer_agent import WriterAgent
 from toutiao_content_factory.models import DataReport
 
@@ -60,3 +61,42 @@ def test_build_supplementary_paragraphs_stays_grounded(
     assert "客户验收延后" in joined
     assert "财报披露新签项目增加" in joined
     assert "12%" in joined and "18%" in joined
+
+
+def test_writer_system_prompt_uses_evidence_boundary_without_rigid_ai_templates(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    prompt = agent._writer_system_prompt(app_settings.get_style("deep_industry_analysis"))
+
+    assert prompt.count("你是 WriterAgent") == 1
+    assert "事实边界" in prompt
+    assert "绝不虚构公司、人物、数字、时间、订单" in prompt
+    assert "每个段落只推进一个主要判断" in prompt
+    assert "素材没有三个数据点时" in prompt
+    assert "每段必须包含至少一个具体场景锚点" not in prompt
+    assert "第一人称现场观察" in prompt
+    assert "每个数字机械套同一个来源前缀" in prompt
+    assert "You are WriterAgent" not in prompt
+
+
+def test_polish_constraints_prioritize_grounding_and_natural_variation(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = PolishAgent(
+        app_settings,
+        prompt_repository=MagicMock(),
+        openai_service=mock_openai_service,
+        logger=logger,
+    )
+
+    assert "不得新增素材中没有的公司、人物、数字、时间、订单" in agent.ANTI_AI_FLAVOR_APPENDIX
+    assert "不要为了满足固定段数" in agent.ANTI_AI_FLAVOR_APPENDIX
+    assert "第一人称经历" in agent.ANTI_AI_FLAVOR_APPENDIX
+    assert "每个数字机械添加相同" in agent.ANTI_AI_FLAVOR_APPENDIX
+    assert "采用科技媒体记者的第一人称观察视角" not in agent.ANTI_AI_FLAVOR_APPENDIX
+    assert "你是 PolishAgent" in agent.POLISH_SYSTEM_PROMPT

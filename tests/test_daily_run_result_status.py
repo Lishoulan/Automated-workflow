@@ -132,6 +132,138 @@ def test_content_guard_blocks_high_score_auto_approval(app_settings) -> None:
     ) is True
 
 
+def test_duplicate_title_publish_failure_is_safe_to_fallback(app_settings) -> None:
+    service = ContentFactoryAppService(app_settings, logging.getLogger("test-title-fallback"))
+    error = (
+        "An article with the same or highly similar title was published in the last 7 days. "
+        "Duplicate publish blocked per RULE_009/RULE_007."
+    )
+
+    assert service._is_safe_title_duplicate_fallback(
+        {"toutiao": {"status": "failed", "error": error}},
+        [f"Toutiao publish failed: {error}"],
+    ) is True
+    assert service._is_safe_title_duplicate_fallback(
+        {"toutiao": {"status": "failed", "error": "browser unavailable"}},
+        ["Toutiao publish failed: browser unavailable"],
+    ) is False
+
+
+def test_duplicate_title_fallback_never_switches_after_accepted_or_uncertain_result(
+    app_settings,
+) -> None:
+    service = ContentFactoryAppService(app_settings, logging.getLogger("test-title-fallback-guard"))
+    error = "Duplicate publish detected on retry: an article with the same or similar title was already submitted."
+
+    for status in ("submitted_for_review", "published", "publish_uncertain"):
+        assert service._is_safe_title_duplicate_fallback(
+            {
+                "toutiao": {"status": "failed", "error": error},
+                "wechat": {"status": status},
+            },
+            [f"Toutiao publish failed: {error}"],
+        ) is False
+
+
+def test_daily_run_tries_next_candidate_after_duplicate_title_failure(app_settings, tmp_path: Path) -> None:
+    object.__setattr__(app_settings.publishing, "enabled", True)
+    object.__setattr__(app_settings.publishing, "auto_publish", True)
+
+    app = ContentFactoryAppService(app_settings, logging.getLogger("test-daily-title-fallback"))
+    run_dirs: list[Path] = []
+    for index, title in enumerate(("重复标题候选", "第二候选标题"), start=1):
+        run_dir = tmp_path / f"run-{index}"
+        run_dir.mkdir(parents=True)
+        (run_dir / "article.md").write_text("测试文章内容。" * 500, encoding="utf-8")
+        (run_dir / "content_score.json").write_text(
+            json.dumps(
+                {
+                    "scores": {
+                        "overall_score": 88,
+                        "ai_generated_risk": 20,
+                        "validation_score": 88,
+                        "publish_readiness_score": 88,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run_dir / "workflow_result.json").write_text("{}", encoding="utf-8")
+        (run_dir / "content_guard_report.json").write_text(
+            json.dumps({"blocked": False, "blocking_flags": []}),
+            encoding="utf-8",
+        )
+        (run_dir / "review_status.json").write_text(
+            json.dumps({"status": "approved", "selected_title": title}),
+            encoding="utf-8",
+        )
+        run_dirs.append(run_dir)
+
+    app.collect_topics = MagicMock(return_value={})
+    app.platform_health_service.quick_health_check = MagicMock(
+        return_value={"blocking_platforms": [], "blocking_flags": []}
+    )
+    app.platform_health_service.ensure_publish_ready = MagicMock(
+        return_value={"platform_health": "", "blocking_platforms": []}
+    )
+    app._build_daily_candidate_specs = MagicMock(
+        return_value=[
+            {"rank": 1, "title": "重复标题候选", "url": "https://example.test/1"},
+            {"rank": 2, "title": "第二候选标题", "url": "https://example.test/2"},
+        ]
+    )
+    app.auto_run = MagicMock(
+        side_effect=[
+            {"archive_root": str(run_dirs[0])},
+            {"archive_root": str(run_dirs[1])},
+        ]
+    )
+    app.approve_run = MagicMock(return_value={})
+    app.review_service.select_auto_title = MagicMock(
+        side_effect=[
+            {"selected_title": "重复标题候选", "selected_title_index": 1},
+            {"selected_title": "第二候选标题", "selected_title_index": 1},
+        ]
+    )
+    app.review_service.mark_skipped_review = MagicMock(return_value={})
+    duplicate_error = (
+        "An article with the same or highly similar title was published in the last 7 days. "
+        "Duplicate publish blocked per RULE_009/RULE_007."
+    )
+    app._run_daily_platform_automation = MagicMock(
+        side_effect=[
+            (
+                {},
+                {"toutiao": {"status": "failed", "error": duplicate_error}},
+                [f"Toutiao publish failed: {duplicate_error}"],
+            ),
+            (
+                {},
+                {"toutiao": {"status": "submitted_for_review", "external_url": "https://example.test/2"}},
+                [],
+            ),
+        ]
+    )
+
+    exported = app.daily_run(skip_wait=True)
+
+    assert app.auto_run.call_count == 2
+    assert app._run_daily_platform_automation.call_count == 2
+    app.review_service.mark_skipped_review.assert_called_once_with(
+        run_dirs[0],
+        reviewer_notes=next(
+            item["skip_reason"]
+            for item in json.loads(
+                Path(exported["workflow_report"]).read_text(encoding="utf-8")
+            )["attempts"]
+            if item.get("run_dir") == str(run_dirs[0])
+        ),
+    )
+    report = json.loads(Path(exported["workflow_report"]).read_text(encoding="utf-8"))
+    assert report["status"] == "success"
+    assert report["final_attempt"]["topic_title"] == "第二候选标题"
+
+
 def test_mark_daily_run_running_handles_existing_status(app_settings) -> None:
     app_settings.automation_dir.mkdir(parents=True, exist_ok=True)
     (app_settings.automation_dir / "scheduled_status.json").write_text(

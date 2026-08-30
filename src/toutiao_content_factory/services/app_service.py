@@ -860,6 +860,48 @@ class ContentFactoryAppService:
                 attempt_exports.update(platform_exports)
                 exported_files.update(platform_exports)
 
+                # A stale or concurrent history check can still reject a title
+                # after the title gate passed. Retry the next generated
+                # candidate only when the rejection is explicitly a duplicate
+                # title and no platform has an accepted or uncertain result.
+                if self._is_safe_title_duplicate_fallback(
+                    platform_results,
+                    platform_errors,
+                ):
+                    duplicate_reason = self._first_title_duplicate_reason(
+                        platform_results,
+                        platform_errors,
+                    )
+                    attempt_record.update(
+                        {
+                            "status": "title_duplicate_publish_blocked",
+                            "platform_results": platform_results,
+                            "platform_errors": platform_errors,
+                            "skip_reason": (
+                                "Title duplicate blocked before publication; "
+                                "trying the next daily candidate. "
+                                f"{duplicate_reason}"
+                            ),
+                        }
+                    )
+                    losing_attempts.append(attempt_record)
+                    if best_attempt is not None and best_attempt.get("run_dir") == str(run_dir):
+                        best_attempt.update(
+                            {
+                                "status": attempt_record["status"],
+                                "platform_results": platform_results,
+                                "platform_errors": platform_errors,
+                                "skip_reason": attempt_record["skip_reason"],
+                                "exported_files": dict(attempt_exports),
+                            }
+                        )
+                    self.logger.warning(
+                        "Daily candidate %s/%s was blocked by a duplicate title; trying the next candidate.",
+                        attempt_index,
+                        len(candidate_specs),
+                    )
+                    continue
+
                 if losing_attempts:
                     self._mark_attempts_skipped(losing_attempts)
 
@@ -920,6 +962,7 @@ class ContentFactoryAppService:
             supporting_exports=benchmark_refresh_exports,
         )
         exported_files.update(report_exports)
+        self._notify_daily_review_required(final_attempt)
         return exported_files
 
     def prepare_review(self, run_dir: str | None = None) -> dict[str, str]:
@@ -2996,6 +3039,76 @@ class ContentFactoryAppService:
         if self._count_successful_platform_results(platform_results) > 0:
             return "platform_partial_success"
         return "platform_publish_failed"
+
+    @staticmethod
+    def _title_duplicate_error_markers() -> tuple[str, ...]:
+        return (
+            "same or highly similar title was published",
+            "same or similar title was already submitted",
+            "title was already published in the last 7 days",
+            "duplicate publish blocked per rule_009/rule_007",
+            "duplicate publish detected on retry",
+        )
+
+    def _is_safe_title_duplicate_fallback(
+        self,
+        platform_results: dict[str, dict[str, object]],
+        platform_errors: list[str],
+    ) -> bool:
+        """Return whether a failed candidate can be replaced without retry risk."""
+        toutiao_result = platform_results.get("toutiao")
+        if not isinstance(toutiao_result, dict):
+            return False
+
+        toutiao_status = str(toutiao_result.get("status", "")).strip().lower()
+        if toutiao_status not in {"failed", "error", "blocked"}:
+            return False
+
+        # Never switch candidates after any platform may have accepted or
+        # possibly accepted the current run.
+        for payload in platform_results.values():
+            if not isinstance(payload, dict):
+                continue
+            status = str(payload.get("status", "")).strip().lower()
+            if self._is_accepted_publish_status(status) or status == "publish_uncertain":
+                return False
+
+        messages = [str(toutiao_result.get("error", ""))]
+        messages.extend(str(item) for item in platform_errors)
+        combined = " ".join(messages).lower()
+        return any(marker in combined for marker in self._title_duplicate_error_markers())
+
+    def _first_title_duplicate_reason(
+        self,
+        platform_results: dict[str, dict[str, object]],
+        platform_errors: list[str],
+    ) -> str:
+        toutiao_result = platform_results.get("toutiao", {})
+        candidates = []
+        if isinstance(toutiao_result, dict):
+            candidates.append(str(toutiao_result.get("error", "")).strip())
+        candidates.extend(str(item).strip() for item in platform_errors)
+        for message in candidates:
+            if message:
+                return message
+        return "Duplicate title guard rejected the candidate."
+
+    def _notify_daily_review_required(self, final_attempt: dict[str, object]) -> None:
+        run_dir = str(final_attempt.get("run_dir", "")).strip()
+        reason = str(final_attempt.get("skip_reason", "")).strip()
+        if not reason:
+            score_snapshot = dict(final_attempt.get("score_snapshot", {}))
+            reason = self._build_skip_reason(score_snapshot)
+        try:
+            self.notification_service.notify_review_required(
+                account=self.settings.account_label,
+                selected_title=str(final_attempt.get("selected_title", "")).strip(),
+                run_dir=run_dir,
+                reason=reason,
+                run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            )
+        except Exception as exc:
+            self.logger.warning("Failed to send daily review-required notification: %s", exc)
 
     def _count_successful_platform_results(self, platform_results: dict[str, dict[str, object]]) -> int:
         successful_statuses = {

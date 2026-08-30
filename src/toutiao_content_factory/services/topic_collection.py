@@ -901,9 +901,21 @@ class TopicCollectionService:
 
     # 泛关键词黑名单 - 这些词太宽泛，不应单独作为匹配依据
     GENERIC_KEYWORD_BLACKLIST = frozenset({
-        "AI", "公司", "企业", "技术", "发展", "市场", "产业", "行业",
-        "项目", "投资", "合作", "建设", "生产", "制造",
+        "AI", "公司", "企业", "科技", "技术", "模型", "发展", "市场",
+        "产业", "产业链", "供应链", "行业", "项目", "投资", "合作", "建设",
+        "生产", "制造", "热点", "热搜", "热议", "爆火", "刷屏", "官宣",
+        "突发", "通报", "回应", "反转",
     })
+    GENERIC_KEYWORD_BLACKLIST_LOWER = frozenset(
+        keyword.casefold() for keyword in GENERIC_KEYWORD_BLACKLIST
+    )
+
+    def _has_concrete_industry_keyword(self, topic: TopicCandidate) -> bool:
+        return any(
+            str(keyword).strip().casefold() not in self.GENERIC_KEYWORD_BLACKLIST_LOWER
+            for keyword in (topic.matched_keywords or [])
+            if str(keyword).strip()
+        )
 
     def _filter_to_focus_industries(
         self,
@@ -916,43 +928,30 @@ class TopicCollectionService:
             return []
 
         focus_set = set(self.topic_settings.focus_industries)
-        if not focus_set:
-            return matched_topics
-
         focused_topics = [
             item
             for item in matched_topics
             if any(industry in focus_set for industry in item.matched_industries)
         ]
 
-        # 过滤掉仅匹配泛关键词的话题（热榜话题标题即热点，无需具体关键词佐证）
+        # Non-hot sources need at least one concrete industry keyword.  A
+        # previous fallback returned focused_topics/matched_topics when every
+        # match was generic, which let "AI" and "公司" promote unrelated
+        # articles into all five technology industries.
+        candidates = focused_topics if focus_set else matched_topics
         specific_filtered = []
-        for item in (focused_topics if focused_topics else matched_topics):
+        for item in candidates:
             if item.source_type in self.HOT_SOURCE_TYPES:
                 specific_filtered.append(item)
                 continue
-            specific_keywords = [
-                k for k in (item.matched_keywords or [])
-                if k not in self.GENERIC_KEYWORD_BLACKLIST
-            ]
-            if specific_keywords:
+            if self._has_concrete_industry_keyword(item):
                 specific_filtered.append(item)
             else:
                 filtered_out["industry_mismatch"] += 1
 
-        if specific_filtered:
-            if focused_topics:
-                filtered_out["industry_mismatch"] += max(len(focused_topics) - len(specific_filtered), 0)
-            return specific_filtered
-
-        if focused_topics:
-            return focused_topics
-
-        self.logger.warning(
-            "No topics matched configured focus industries %s; falling back to broader matched topics.",
-            ", ".join(self.topic_settings.focus_industries),
-        )
-        return matched_topics
+        if focus_set:
+            filtered_out["industry_mismatch"] += max(len(matched_topics) - len(focused_topics), 0)
+        return specific_filtered
 
     def _score_heat(self, topic: TopicCandidate, freshness_score: int) -> int:
         pattern_score = self._high_performance_pattern_score(topic)
@@ -1245,6 +1244,11 @@ class TopicCollectionService:
             return True
         if self._looks_like_mojibake(cleaned):
             return True
+        # Long RSS/meta descriptions are often the only source containing the
+        # financial figures.  Keep them when they have a subject and several
+        # report/data markers; length alone is not a reliable quality signal.
+        if self._is_evidence_rich_topic_text(cleaned):
+            return False
         if len(cleaned) > self.MAX_SNIPPET_LENGTH_FOR_UNUSABLE_CHECK_1 and len(re.findall(r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d+\s*(?:分钟前|小时前|天前))", cleaned)) >= 2:
             return True
         if len(cleaned) > self.MAX_SNIPPET_LENGTH_FOR_UNUSABLE_CHECK_2 and cleaned.count(" ") >= 6:
@@ -1252,6 +1256,32 @@ class TopicCollectionService:
         if len(cleaned) > 140 and sum(cleaned.count(token) for token in ("，", "、", " | ", " / ")) >= 6:
             return True
         return False
+
+    def _is_evidence_rich_topic_text(self, text: str) -> bool:
+        candidate = self._clean_text(text)
+        if not candidate:
+            return False
+        number_count = len(self.NUMBER_PATTERN.findall(candidate))
+        evidence_tokens = (
+            "财报",
+            "半年报",
+            "年报",
+            "营业总收入",
+            "营收",
+            "归母净利润",
+            "净利润",
+            "经营现金流",
+            "现金流",
+            "每股收益",
+            "净资产收益率",
+            "订单",
+            "交付",
+            "中标",
+            "并网",
+            "量产",
+        )
+        evidence_count = sum(token in candidate for token in evidence_tokens)
+        return number_count >= 2 and evidence_count >= 1
 
     def _dedupe_topics(self, topics: list[TopicCandidate], filtered_out: dict[str, int] | None = None) -> list[TopicCandidate]:
         result: list[TopicCandidate] = []
@@ -1358,6 +1388,8 @@ class TopicCollectionService:
             if not topic.matched_industries:
                 continue
             if focus_set and not any(industry in focus_set for industry in topic.matched_industries):
+                continue
+            if topic.source_type not in self.HOT_SOURCE_TYPES and not self._has_concrete_industry_keyword(topic):
                 continue
             if self._has_blocking_quality_issue(topic):
                 continue

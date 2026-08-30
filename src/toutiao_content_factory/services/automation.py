@@ -556,6 +556,8 @@ class TopicAutomationService:
             return fallback
         if "»" in candidate or "当前位置" in candidate or candidate.endswith("正文"):
             return fallback
+        if self._is_evidence_rich_topic_text(candidate):
+            return candidate[:220]
         if len(re.findall(r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d+\s*(?:分钟前|小时前|天前))", candidate)) >= 2:
             return fallback
         if len(candidate) > 120 and candidate.count(" ") >= 6:
@@ -565,6 +567,38 @@ class TopicAutomationService:
         if sum(candidate.count(marker) for marker in ("鍥", "鏂", "鐢", "鑳", "缃", "鍌", "姹")) >= 6:
             return fallback
         return candidate[:160]
+
+    @staticmethod
+    def _is_evidence_rich_topic_text(text: str) -> bool:
+        candidate = str(text or "")
+        if not candidate:
+            return False
+        number_count = len(
+            re.findall(
+                r"\d+(?:\.\d+)?\s*(?:%|亿|亿元|万|万元|万台|万辆|万套|万吨|GWh|MWh|GW|MW|元)",
+                candidate,
+                flags=re.IGNORECASE,
+            )
+        )
+        evidence_tokens = (
+            "财报",
+            "半年报",
+            "年报",
+            "营业总收入",
+            "营收",
+            "归母净利润",
+            "净利润",
+            "经营现金流",
+            "现金流",
+            "每股收益",
+            "净资产收益率",
+            "订单",
+            "交付",
+            "中标",
+            "并网",
+            "量产",
+        )
+        return number_count >= 2 and sum(token in candidate for token in evidence_tokens) >= 1
 
     def _write_selection_snapshot(
         self,

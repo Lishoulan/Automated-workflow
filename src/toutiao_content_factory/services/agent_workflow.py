@@ -531,7 +531,19 @@ class AgentWorkflowService:
         deficit = min_chars - current_chars
         if deficit <= 0:
             return article
-        data_parts = []
+        data_parts = [
+            f"主题：{str(getattr(data_report, 'topic_title', '') or '').strip()}",
+        ]
+        if getattr(data_report, "core_data", None):
+            data_parts.append("核心数据：" + "；".join(str(item) for item in data_report.core_data[:6]))
+        if getattr(data_report, "industry_trends", None):
+            data_parts.append("行业变化：" + "；".join(str(item) for item in data_report.industry_trends[:4]))
+        if getattr(data_report, "key_points", None):
+            data_parts.append("关键判断：" + "；".join(str(item) for item in data_report.key_points[:4]))
+        if getattr(data_report, "growth_numbers", None):
+            data_parts.append("可引用数字：" + "、".join(str(item) for item in data_report.growth_numbers[:8]))
+        if getattr(data_report, "companies", None):
+            data_parts.append("已确认主体：" + "、".join(str(item) for item in data_report.companies[:6]))
         if hasattr(data_report, "watch_metrics") and data_report.watch_metrics:
             data_parts.append("跟踪变量：" + "、".join(str(m) for m in data_report.watch_metrics[:5]))
         if hasattr(data_report, "risk_flags") and data_report.risk_flags:
@@ -539,6 +551,7 @@ class AgentWorkflowService:
         data_summary = "\n".join(data_parts) if data_parts else "无额外数据"
         system_prompt = (
             "你是文章扩展助手。在现有文章基础上补充深度内容，禁止使用套话。"
+            "只能使用提供的主题、核心数据、关键判断和跟踪变量，不得补造公司、订单、收入、时间、比例或案例。"
             "禁止重复现有文章中已经出现过的数据、观点或措辞。"
             "输出JSON格式：{\"paragraphs\": [\"段落1\", \"段落2\", ...]}"
         )
@@ -551,12 +564,24 @@ class AgentWorkflowService:
         try:
             payload = self.openai_service.create_json_completion(system_prompt, user_prompt)
             if payload and isinstance(payload.get("paragraphs"), list):
-                new_paragraphs = [str(p).strip() for p in payload["paragraphs"] if str(p).strip()]
+                existing = [item.strip() for item in article.split("\n\n") if item.strip()]
+                new_paragraphs: list[str] = []
+                for raw in payload["paragraphs"]:
+                    cleaned = clean_article_text(str(raw or ""), min_word_count=0).strip()
+                    if not cleaned:
+                        continue
+                    for paragraph in cleaned.split("\n\n"):
+                        paragraph = paragraph.strip()
+                        if not paragraph or paragraph in existing or paragraph in new_paragraphs:
+                            continue
+                        if any(token in paragraph for token in ("manual_paste", "体裁要求", "固定写法", "推荐主结论")):
+                            continue
+                        new_paragraphs.append(paragraph)
                 if new_paragraphs:
-                    existing = article.split("\n\n")
                     for p in new_paragraphs:
                         existing.insert(-1, p)
                     result = "\n\n".join(existing)
+                    result = clean_article_text(result, min_word_count=0)
                     self.logger.info("LLM expansion added %d paragraphs, article now %d chars.", len(new_paragraphs), len(result.replace("\n", "").replace(" ", "")))
                     return result
         except Exception as exc:

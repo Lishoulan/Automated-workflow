@@ -27,6 +27,47 @@ class SignalExtractor:
     MAX_GROWTH_NUMBERS_COUNT = 12
     MAX_TITLE_COMPANY_CANDIDATES = 12
     SOURCE_PREVIEW_LENGTH = 180
+    GENERIC_KEYWORD_BLACKLIST = frozenset(
+        {
+            "AI",
+            "公司",
+            "企业",
+            "科技",
+            "技术",
+            "模型",
+            "行业",
+            "产业",
+            "产业链",
+            "供应链",
+            "市场",
+            "发展",
+            "项目",
+            "投资",
+            "合作",
+            "建设",
+            "生产",
+            "制造",
+        }
+    )
+    FACT_CONTENT_PREFIXES = ("标题：", "标题:", "摘要：", "摘要:", "补充片段：", "补充片段:")
+    FACT_CONTROL_PREFIXES = (
+        "来源：", "来源:", "发布日期：", "发布日期:", "原文链接：", "原文链接:",
+        "主赛道：", "主赛道:", "主关键词：", "主关键词:", "匹配赛道：", "匹配赛道:",
+        "匹配关键词：", "匹配关键词:", "可确认数字：", "可确认数字:", "平台热度值：", "平台热度值:",
+        "选题类型：", "选题类型:", "内容体裁：", "内容体裁:", "体裁要求：", "体裁要求:",
+        "段落要求：", "段落要求:", "证据强度：", "证据强度:", "选题质量分：", "选题质量分:",
+        "标题潜力分：", "标题潜力分:", "标题打法赛道：", "标题打法赛道:", "标题抓手：", "标题抓手:",
+        "质量标记：", "质量标记:", "建议字数：", "建议字数:", "素材摘要：", "素材摘要:",
+        "热度判断：", "热度判断:", "入选理由：", "入选理由:", "推荐主结论：", "推荐主结论:",
+        "跟踪变量：", "跟踪变量:", "固定写法：", "固定写法:", "请围绕这条产业线索",
+    )
+    EDITORIAL_DOMAIN_LABELS = (
+        "人形机器人",
+        "新能源",
+        "储能",
+        "AI硬件",
+        "工业自动化",
+    )
     INDUSTRY_KEYWORDS = [
         "储能",
         "新能源",
@@ -88,19 +129,41 @@ class SignalExtractor:
     def extract(self, documents: list[SourceDocument]) -> ExtractionResult:
         merged_text = "\n\n".join(document.content for document in documents)
         source_summaries = [self._build_source_summary(document) for document in documents]
-        focus_industry = self._resolve_focus_industry(documents, merged_text)
+        factual_text = "\n\n".join(
+            fact_text
+            for document in documents
+            for fact_text in [self._build_factual_text(document.content)]
+            if fact_text
+        )
+        analysis_basis = factual_text or merged_text
+        focus_industry = self._resolve_focus_industry(documents, analysis_basis)
         focus_documents = self._resolve_focus_documents(documents, focus_industry)
-        analysis_text = "\n\n".join(document.content for document in focus_documents) or merged_text
+        analysis_text = "\n\n".join(
+            fact_text
+            for document in focus_documents
+            for fact_text in [self._build_factual_text(document.content)]
+            if fact_text
+        ) or analysis_basis
+        merged_text = analysis_basis
         sentences = self._split_sentences(merged_text)
         analysis_sentences = self._split_sentences(analysis_text)
         topic_title = self._first_metadata_value(documents, "topic_title")
         selection_reason = self._first_metadata_value(documents, "selection_reason")
-        suggested_angle = self._first_metadata_value(documents, "suggested_angle")
+        suggested_angle = self._sanitize_editorial_value(
+            self._first_metadata_value(documents, "suggested_angle"),
+            analysis_basis,
+        )
         follow_up_focus = self._first_metadata_value(documents, "follow_up_focus")
-        writing_brief = self._first_metadata_value(documents, "writing_brief")
+        writing_brief = self._sanitize_editorial_value(
+            self._first_metadata_value(documents, "writing_brief"),
+            analysis_basis,
+        )
         topic_type = self._first_metadata_value(documents, "topic_type")
         content_format = self._first_metadata_value(documents, "content_format")
-        format_brief = self._first_metadata_value(documents, "format_brief")
+        format_brief = self._sanitize_editorial_value(
+            self._first_metadata_value(documents, "format_brief"),
+            analysis_basis,
+        )
         paragraph_instruction = self._first_metadata_value(documents, "paragraph_instruction")
         evidence_strength = self._parse_metadata_int(self._first_metadata_value(documents, "evidence_strength"))
         topic_quality_score = self._parse_metadata_int(self._first_metadata_value(documents, "topic_quality_score"))
@@ -176,13 +239,37 @@ class SignalExtractor:
         return filtered or list(documents)
 
     def _build_source_summary(self, document: SourceDocument) -> dict[str, str]:
-        preview = document.content[:self.SOURCE_PREVIEW_LENGTH].replace("\n", " ")
+        preview = self._build_factual_text(document.content)[:self.SOURCE_PREVIEW_LENGTH].replace("\n", " ")
+        title = str(document.title or "untitled").strip()
+        if title.lower() in {"manual_paste", "source_document", "source_material"}:
+            title = "公开材料"
         return {
-            "title": document.title or "untitled",
+            "title": title or "公开材料",
             "source_type": document.source_type,
-            "path": str(document.path) if document.path else "manual_paste",
+            "path": str(document.path) if document.path else "",
             "preview": preview,
         }
+
+    def _build_factual_text(self, text: str) -> str:
+        """Keep facts from generated input while dropping editorial controls."""
+        facts: list[str] = []
+        for raw_line in str(text or "").splitlines():
+            line = re.sub(r"^\s*[-*]\s*", "", raw_line).strip()
+            if not line:
+                continue
+            if line == "素材摘要：" or line == "素材摘要:":
+                continue
+            preserved = False
+            for prefix in self.FACT_CONTENT_PREFIXES:
+                if line.startswith(prefix):
+                    line = line[len(prefix):].strip()
+                    preserved = True
+                    break
+            if not preserved and any(line.startswith(prefix) for prefix in self.FACT_CONTROL_PREFIXES):
+                continue
+            if line and line not in facts:
+                facts.append(line)
+        return "\n".join(facts)
 
     def _first_metadata_value(self, documents: list[SourceDocument], key: str) -> str:
         for document in documents:
@@ -190,6 +277,17 @@ class SignalExtractor:
             if value:
                 return value
         return ""
+
+    def _sanitize_editorial_value(self, value: str, factual_text: str) -> str:
+        candidate = str(value or "").strip()
+        if not candidate:
+            return ""
+        unsupported = [
+            label
+            for label in self.EDITORIAL_DOMAIN_LABELS
+            if label in candidate and label not in factual_text
+        ]
+        return "" if unsupported else candidate
 
     def _parse_metadata_int(self, value: str) -> int:
         match = re.search(r"\d+", str(value or ""))
@@ -208,7 +306,12 @@ class SignalExtractor:
     def _resolve_focus_industry(self, documents: list[SourceDocument], merged_text: str) -> str:
         for document in documents:
             metadata_value = document.metadata.get("primary_industry", "").strip()
-            if metadata_value:
+            # Inline metadata is generated editorial context, not independent
+            # evidence.  Accept it only when the factual text also supports
+            # the label; otherwise a stale/misclassified topic can override
+            # the actual subject of the source.
+            factual_text = self._build_factual_text(document.content)
+            if metadata_value and metadata_value in factual_text:
                 return metadata_value
 
         counts = Counter(keyword for keyword in self.INDUSTRY_KEYWORDS if keyword in merged_text)
@@ -225,7 +328,11 @@ class SignalExtractor:
             raw = document.metadata.get("primary_keywords", "").strip()
             if not raw:
                 continue
-            metadata_keywords.extend([item.strip() for item in raw.split("、") if item.strip()])
+            metadata_keywords.extend(
+                item.strip()
+                for item in raw.split("、")
+                if item.strip() and item.strip() not in self.GENERIC_KEYWORD_BLACKLIST
+            )
 
         if metadata_keywords:
             return self._deduplicate(metadata_keywords)[:self.MAX_KEYWORDS_COUNT]
@@ -265,7 +372,7 @@ class SignalExtractor:
             if any(keyword in existing for existing in ranked):
                 continue
             ranked.append(keyword)
-        return ranked or ["科技制造", "产业链"]
+        return ranked
 
     def _resolve_focus_companies(
         self,
@@ -349,7 +456,8 @@ class SignalExtractor:
     ) -> list[dict[str, str]]:
         evidence: list[dict[str, str]] = []
         source_name = source_summaries[0]["title"] if source_summaries else "source"
-        for sentence in sentences:
+        for raw_sentence in sentences:
+            sentence = self._normalize_fact_sentence(raw_sentence)
             if self._is_noise_sentence(sentence):
                 continue
             if not self.NUMBER_PATTERN.search(sentence) and not any(
@@ -372,6 +480,17 @@ class SignalExtractor:
             if len(evidence) >= self.MAX_EVIDENCE_COUNT:
                 break
         return evidence
+
+    def _normalize_fact_sentence(self, sentence: str) -> str:
+        value = re.sub(r"^\s*[-*]\s*", "", str(sentence or "")).strip()
+        for prefix in self.FACT_CONTENT_PREFIXES:
+            if value.startswith(prefix):
+                return value[len(prefix):].strip()
+        if any(value.startswith(prefix) for prefix in self.FACT_CONTROL_PREFIXES):
+            return ""
+        if any(token in value for token in ("体裁要求：", "段落要求：", "固定写法：", "入选理由：", "推荐主结论：", "跟踪变量：", "manual_paste")):
+            return ""
+        return value
 
     def _is_noise_sentence(self, sentence: str) -> bool:
         stripped = sentence.strip("，。；：: ")

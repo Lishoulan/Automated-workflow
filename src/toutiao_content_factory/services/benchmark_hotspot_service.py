@@ -27,13 +27,52 @@ class BenchmarkHotspotService:
             "industrial_automation",
         ],
     }
-    TRACK_GENERIC_KEYWORDS = {
-        "AI机器人": ["机器人", "人形机器人", "具身智能", "AI", "大模型", "Agent", "模型", "自动化"],
-        "新能源储能": ["储能", "新能源", "光伏", "电池", "并网", "电站", "电力", "PCS", "EMS"],
-        "国际热点": ["国际", "中东", "美国", "欧洲", "俄乌", "关税", "外交", "局势", "制裁", "地缘"],
-        "体育赛事": ["体育", "足球", "篮球", "国足", "NBA", "英超", "欧冠", "比赛", "联赛", "世界杯"],
-        "科技商业": ["科技", "AI", "机器人", "芯片", "融资", "公司", "行业", "供应链"],
+    # Track keywords must be scoped to the industry they describe.  Adding an
+    # account name or a broad editorial pillar to every target industry makes
+    # an unrelated article such as a railway earnings report look like a
+    # robotics/energy topic merely because it contains "AI" or "公司".
+    TRACK_INDUSTRY_KEYWORDS = {
+        "AI机器人": {
+            "humanoid_robot": ("机器人", "人形机器人", "具身智能", "灵巧手", "减速器", "执行器", "无框力矩电机", "丝杠"),
+            "ai_hardware": ("AI硬件", "算力", "服务器", "GPU", "芯片", "边缘计算", "CPO"),
+            "industrial_automation": ("智能装备", "工业自动化", "工业机器人", "机器视觉", "PLC", "伺服", "传感器", "工业母机"),
+        },
+        "新能源储能": {
+            "new_energy": ("新能源", "光伏", "风电", "锂电", "电池", "充电", "新能源汽车", "动力电池", "固态电池", "钠电", "充换电", "光储"),
+            "energy_storage": ("储能", "工商业储能", "PCS", "EMS", "逆变器", "储能电站", "储能电池", "大储", "户储", "液流电池", "源网荷储", "构网型储能"),
+        },
+        "国际热点": {
+            "international": ("国际", "美国", "欧洲", "俄罗斯", "乌克兰", "中东", "关税", "外交", "局势", "制裁", "地缘"),
+        },
+        "体育赛事": {
+            "sports": ("体育", "足球", "篮球", "网球", "国足", "NBA", "英超", "欧冠", "比赛", "联赛", "世界杯"),
+        },
+        # The broad technology track intentionally contributes no keywords.
+        # Its configured industry map remains the source of topic matching.
+        "科技商业": {},
     }
+
+    GENERIC_KEYWORD_BLACKLIST = frozenset(
+        {
+            "AI",
+            "公司",
+            "企业",
+            "科技",
+            "技术",
+            "模型",
+            "行业",
+            "产业",
+            "供应链",
+            "发展",
+            "市场",
+            "项目",
+            "投资",
+            "合作",
+            "建设",
+            "生产",
+            "制造",
+        }
+    )
 
     def __init__(self, settings: AppSettings, logger: logging.Logger) -> None:
         self.settings = settings
@@ -284,14 +323,30 @@ class BenchmarkHotspotService:
         for account in accounts:
             track = str(account.get("track", "")).strip()
             target_industries = self.TRACK_INDUSTRY_MAP.get(track, [])
-            extra_tokens = [
-                *self.TRACK_GENERIC_KEYWORDS.get(track, []),
-                str(account.get("name", "")).strip(),
-                *[str(item).strip() for item in account.get("content_pillars", []) if str(item).strip()],
+            track_keywords = self.TRACK_INDUSTRY_KEYWORDS.get(track, {})
+            content_pillars = [
+                str(item).strip()
+                for item in account.get("content_pillars", [])
+                if str(item).strip()
+                and str(item).strip() not in self.GENERIC_KEYWORD_BLACKLIST
             ]
             for industry in target_industries:
                 additions.setdefault(industry, [])
-                additions[industry].extend(token for token in extra_tokens if token)
+                additions[industry].extend(track_keywords.get(industry, ()))
+                configured_keywords = keyword_map.get(industry, [])
+                # Preserve a custom pillar only when it is already an
+                # industry keyword (or a longer label containing one).  This
+                # keeps useful custom configuration while preventing broad
+                # pillars such as "公司战略" from matching every industry.
+                additions[industry].extend(
+                    token
+                    for token in content_pillars
+                    if any(
+                        token == configured or configured in token
+                        for configured in configured_keywords
+                        if configured and configured not in self.GENERIC_KEYWORD_BLACKLIST
+                    )
+                )
         for industry, tokens in additions.items():
             merged = keyword_map.setdefault(industry, [])
             for token in tokens:

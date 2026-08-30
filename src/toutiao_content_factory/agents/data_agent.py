@@ -21,6 +21,26 @@ class DataAgent(BaseAgent):
         re.compile(r"忽略以上所有", re.IGNORECASE),
     )
     MODE_NOISE_TOKENS = ("产业链", "订单", "交付", "毛利", "利润", "兑现", "融资", "客户验证", "科技制造", "项目落地")
+    EVIDENCE_META_TOKENS = (
+        "体裁要求：",
+        "体裁要求:",
+        "段落要求：",
+        "段落要求:",
+        "固定写法：",
+        "固定写法:",
+        "入选理由：",
+        "入选理由:",
+        "推荐主结论：",
+        "推荐主结论:",
+        "跟踪变量：",
+        "跟踪变量:",
+        "manual_paste",
+        "source_document",
+        "source_material",
+        "来源摘要：",
+        "来源摘要:",
+    )
+    GENERIC_KEYWORDS = frozenset({"AI", "公司", "企业", "科技", "技术", "模型", "行业", "产业", "市场", "供应链", "产业链"})
     TOPIC_TYPE_LABELS = {
         "data_recap": "数据复盘",
         "project_progress": "项目进展",
@@ -110,21 +130,43 @@ class DataAgent(BaseAgent):
         merged["suggested_angle"] = str(merged.get("suggested_angle") or extraction.suggested_angle)
         merged["follow_up_focus"] = str(merged.get("follow_up_focus") or extraction.follow_up_focus)
         merged["writing_brief"] = str(merged.get("writing_brief") or extraction.writing_brief)
+        factual_context = " ".join(
+            item
+            for item in (extraction.merged_text, extraction.focus_industry, extraction.topic_title)
+            if str(item).strip()
+        )
 
-        focus_keywords = self.clean_publish_list(
-            self._list_values(
-                merged.get("focus_keywords"),
-                extraction.focus_keywords or extraction.supply_chain_keywords,
-            ),
+        focus_keywords = self._clean_focus_keywords(
+            self._list_values(merged.get("focus_keywords"), []),
             limit=6,
+            factual_text=factual_context,
+        )
+        focus_keywords = self._merge_focus_keywords(
+            focus_keywords,
+            extraction.focus_keywords or extraction.supply_chain_keywords,
+            limit=6,
+            factual_text=factual_context,
         )
         focus_industry = self.clean_publish_text(str(merged.get("focus_industry") or extraction.focus_industry or ""))
-        supply_chain_keywords = self.clean_publish_list(
-            self._list_values(
-                merged.get("supply_chain_keywords"),
-                extraction.supply_chain_keywords or focus_keywords,
-            ),
+        if (
+            focus_industry
+            and self.is_internal_label(focus_industry)
+            and focus_industry not in factual_context
+        ):
+            focus_industry = self.clean_publish_text(extraction.focus_industry)
+        supply_chain_keywords = self._clean_focus_keywords(
+            self._list_values(merged.get("supply_chain_keywords"), []),
             limit=8,
+            factual_text=factual_context,
+        )
+        supply_fallback = extraction.supply_chain_keywords
+        if "supply_chain_keywords" not in merged and not supply_fallback:
+            supply_fallback = focus_keywords
+        supply_chain_keywords = self._merge_focus_keywords(
+            supply_chain_keywords,
+            supply_fallback,
+            limit=8,
+            factual_text=factual_context,
         )
         companies = self._sanitize_companies(
             self._company_values(merged.get("companies"), extraction.companies),
@@ -137,50 +179,55 @@ class DataAgent(BaseAgent):
             limit=4,
         )
         secondary = focus_keywords[1] if len(focus_keywords) > 1 else "关键环节"
-        core_data = self.clean_publish_list(
-            self._list_values(merged.get("core_data"), extraction.core_data),
+        core_data = self._merge_evidence_lists(
+            self._list_values(merged.get("core_data"), []),
+            extraction.core_data,
             limit=6,
+            factual_text=factual_context,
         )
-        industry_trends = self.clean_publish_list(
-            self._list_values(merged.get("industry_trends"), extraction.industry_trends),
+        industry_trends = self._merge_evidence_lists(
+            self._list_values(merged.get("industry_trends"), []),
+            extraction.industry_trends,
             limit=6,
+            factual_text=factual_context,
         )
         growth_numbers = self.clean_publish_list(
-            self._list_values(merged.get("growth_numbers"), extraction.growth_numbers),
+            self._list_values(merged.get("growth_numbers"), []) + list(extraction.growth_numbers),
             limit=8,
         )
-        key_points = self.clean_publish_list(
-            self._list_values(merged.get("key_points"), extraction.key_points),
+        key_points = self._merge_evidence_lists(
+            self._list_values(merged.get("key_points"), []),
+            extraction.key_points,
             limit=6,
+            factual_text=factual_context,
         )
-        watch_metrics = self.clean_publish_list(
-            self._list_values(
-                merged.get("watch_metrics"),
-                self._build_watch_metrics(
-                    focus_industry or extraction.focus_industry or "相关赛道",
-                    secondary,
-                    merged["follow_up_focus"],
-                ),
-            ),
+        watch_fallback = self._build_watch_metrics(
+            focus_industry or extraction.focus_industry or "相关赛道",
+            secondary,
+            merged["follow_up_focus"],
+        )
+        watch_metrics = self._clean_contextual_list(
+            self._list_values(merged.get("watch_metrics"), watch_fallback),
+            fallback=watch_fallback,
+            factual_text=factual_context,
             limit=5,
         )
-        evidence_notes = self.clean_publish_list(
-            self._list_values(
-                merged.get("evidence_notes"),
-                self._build_evidence_notes(extraction),
-            ),
+        evidence_notes = self._merge_evidence_lists(
+            self._list_values(merged.get("evidence_notes"), []),
+            self._build_evidence_notes(extraction),
             limit=5,
+            factual_text=factual_context,
         )
-        risk_flags = self.clean_publish_list(
-            self._list_values(
-                merged.get("risk_flags"),
-                self._build_risk_flags(
-                    focus_industry or extraction.focus_industry or "相关赛道",
-                    secondary,
-                    trend_report,
-                    supply_chain_keywords,
-                ),
-            ),
+        risk_fallback = self._build_risk_flags(
+            focus_industry or extraction.focus_industry or "相关赛道",
+            secondary,
+            trend_report,
+            supply_chain_keywords,
+        )
+        risk_flags = self._clean_contextual_list(
+            self._list_values(merged.get("risk_flags"), risk_fallback),
+            fallback=risk_fallback,
+            factual_text=factual_context,
             limit=4,
         )
         normalized_fields = self._normalize_mode_fields(
@@ -262,6 +309,23 @@ class DataAgent(BaseAgent):
         supply_chain_keywords = self.clean_publish_list(extraction.supply_chain_keywords[:8] or keywords, limit=8)
         watch_metrics = self._build_watch_metrics(primary, secondary, extraction.follow_up_focus)
         risk_flags = self._build_risk_flags(primary, secondary, trend_report, keywords)
+        factual_context = " ".join(
+            item
+            for item in (extraction.merged_text, extraction.focus_industry, extraction.topic_title)
+            if str(item).strip()
+        )
+        watch_metrics = self._clean_contextual_list(
+            watch_metrics,
+            fallback=self._build_watch_metrics(primary, secondary, extraction.follow_up_focus),
+            factual_text=factual_context,
+            limit=5,
+        )
+        risk_flags = self._clean_contextual_list(
+            risk_flags,
+            fallback=self._build_risk_flags(primary, secondary, trend_report, keywords),
+            factual_text=factual_context,
+            limit=4,
+        )
         core_data = self.clean_publish_list(extraction.core_data[:6], limit=6)
         industry_trends = self.clean_publish_list(extraction.industry_trends[:6], limit=6)
         key_points = self.clean_publish_list(extraction.key_points[:6], limit=6)
@@ -830,23 +894,111 @@ class DataAgent(BaseAgent):
     def _build_evidence_notes(self, extraction: ExtractionResult) -> list[str]:
         notes: list[str] = []
         for item in extraction.evidence_items[:4]:
-            fact = str(item.get("fact", "")).strip()
+            fact = self._clean_evidence_item(item.get("fact", ""))
             source = str(item.get("source", "")).strip()
             if not fact:
                 continue
-            if source:
+            if source and source.lower() not in {"manual_paste", "source_document", "source_material", "公开材料"}:
                 notes.append(f"{source}：{fact}")
             else:
-                notes.append(f"证据锚点：{fact}")
+                notes.append(fact)
 
         if extraction.growth_numbers and not notes:
             notes.append(f"关键数据：{'、'.join(extraction.growth_numbers[:3])}")
 
         for summary in extraction.source_summaries[:2]:
             title = str(summary.get("title", "")).strip()
-            if title:
+            if title and title not in {"manual_paste", "公开材料", "untitled"}:
                 notes.append(f"来源摘要：{title}")
         return self.clean_publish_list(notes, limit=5)
+
+    def _clean_evidence_item(self, value: object, factual_text: str = "") -> str:
+        text = self.clean_publish_text(str(value or "")).strip()
+        text = re.sub(r"^\s*(?:摘要|补充片段)[：:]\s*", "", text)
+        if not text or any(token.lower() in text.lower() for token in self.EVIDENCE_META_TOKENS):
+            return ""
+        if factual_text and any(
+            label in text and label not in factual_text
+            for label in self.INTERNAL_LABEL_MAP.values()
+        ):
+            return ""
+        return text
+
+    def _clean_evidence_list(
+        self,
+        values: list[str],
+        limit: int,
+        factual_text: str = "",
+    ) -> list[str]:
+        result: list[str] = []
+        for value in values:
+            cleaned = self._clean_evidence_item(value, factual_text=factual_text)
+            if cleaned and cleaned not in result:
+                result.append(cleaned)
+            if len(result) >= limit:
+                break
+        return result
+
+    def _clean_focus_keywords(
+        self,
+        values: list[str],
+        limit: int,
+        factual_text: str = "",
+    ) -> list[str]:
+        result: list[str] = []
+        for value in self.clean_publish_list(values, limit=limit * 3):
+            if value in self.GENERIC_KEYWORDS:
+                continue
+            if any(token.lower() in value.lower() for token in self.EVIDENCE_META_TOKENS):
+                continue
+            if factual_text and any(
+                label in value and label not in factual_text
+                for label in self.INTERNAL_LABEL_MAP.values()
+            ):
+                continue
+            if value not in result:
+                result.append(value)
+            if len(result) >= limit:
+                break
+        return result
+
+    def _merge_focus_keywords(
+        self,
+        primary: list[str],
+        fallback: list[str],
+        limit: int,
+        factual_text: str = "",
+    ) -> list[str]:
+        return self._clean_focus_keywords(
+            [*primary, *fallback],
+            limit=limit,
+            factual_text=factual_text,
+        )
+
+    def _merge_evidence_lists(
+        self,
+        primary: list[str],
+        fallback: list[str],
+        limit: int,
+        factual_text: str = "",
+    ) -> list[str]:
+        return self._clean_evidence_list(
+            [*primary, *fallback],
+            limit=limit,
+            factual_text=factual_text,
+        )
+
+    def _clean_contextual_list(
+        self,
+        values: list[str],
+        fallback: list[str],
+        factual_text: str,
+        limit: int,
+    ) -> list[str]:
+        result = self._clean_evidence_list(values, limit=limit, factual_text=factual_text)
+        if result:
+            return result
+        return self._clean_evidence_list(fallback, limit=limit, factual_text=factual_text)
 
     def _build_risk_flags(
         self,

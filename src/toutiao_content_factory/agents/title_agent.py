@@ -311,7 +311,52 @@ class TitleAgent(BaseAgent):
                 f"{keyword}背后，谁在改写竞争规则",
             ]
 
+        # A financial title must be anchored to the selected topic itself.
+        # Playbook templates are useful for style, but cannot replace the
+        # subject and figures from a real earnings headline.
+        evidence_titles = self._fallback_evidence_titles(data_report)
+        if evidence_titles:
+            templates = evidence_titles + templates
+
         return self._dedupe_titles(templates, cache_context)
+
+    def _fallback_evidence_titles(self, data_report: DataReport) -> list[str]:
+        topic_title = re.sub(r"\s+", "", self.clean_publish_text(data_report.topic_title))
+        if not topic_title:
+            return []
+        finance_tokens = ("财报", "业绩", "营收", "净利润", "归母", "半年报", "年报", "一季报")
+        if not any(token in topic_title for token in finance_tokens):
+            return []
+
+        subject = self._primary_company(data_report)
+        if not subject:
+            prefix = re.split(r"20\d{2}|年度|半年报|年报|一季报|季度|归母净利润|净利润|营收", topic_title, maxsplit=1)[0]
+            prefix = prefix.strip(" ：:，,")
+            if 2 <= len(prefix) <= 16 and not self.is_internal_label(prefix):
+                subject = prefix
+        if not subject:
+            return []
+
+        report_label = "半年报" if "半年" in topic_title else "年报" if "年报" in topic_title else "一季报" if "一季" in topic_title else "财报"
+        amount_match = re.search(
+            r"(?:归母)?净利润[^0-9]{0,8}(\d+(?:\.\d+)?)\s*(亿元|亿|万元)",
+            topic_title,
+        )
+        amount = f"{amount_match.group(1)}{amount_match.group(2)}" if amount_match else ""
+        growth_match = re.search(
+            r"(同比(?:增长|下降|减少|提升)?)[^0-9]{0,8}(\d+(?:\.\d+)?%)",
+            topic_title,
+        )
+        growth = f"{growth_match.group(1)}{growth_match.group(2)}" if growth_match else ""
+        if not amount and not growth:
+            return []
+
+        parts = [f"{subject}发布{report_label}"]
+        if amount:
+            parts.append(f"净利润{amount}")
+        if growth:
+            parts.append(growth)
+        return ["：".join([parts[0], "，".join(parts[1:])])]
 
     def _build_title_playbook_context(self, data_report: DataReport) -> dict[str, object]:
         track_label = self._infer_track_label(data_report)

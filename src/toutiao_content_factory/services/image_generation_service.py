@@ -217,6 +217,33 @@ class ImageGenerationAPIUnavailable(RuntimeError):
     """Raised when the configured image API cannot produce a usable asset."""
 
 
+def _format_api_error(exc: BaseException) -> str:
+    """Return a short, redacted error chain suitable for run artifacts."""
+    parts: list[str] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(parts) < 3:
+        seen.add(id(current))
+        detail = str(current).strip().replace("\n", " ")
+        detail = re.sub(
+            r"(?i)(api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+",
+            r"\1=<redacted>",
+            detail,
+        )
+        detail = re.sub(r"(?i)Bearer\s+[^\s,;]+", "Bearer <redacted>", detail)
+        detail = re.sub(
+            r"(?i)([?&](?:api[_-]?key|token)=)[^&\s]+",
+            r"\1<redacted>",
+            detail,
+        )
+        if detail:
+            parts.append(f"{current.__class__.__name__}: {detail[:400]}")
+        else:
+            parts.append(current.__class__.__name__)
+        current = current.__cause__
+    return " <- ".join(parts)[:1200]
+
+
 class ImageGenerationService:
     MAX_PUBLISH_IMAGE_BYTES = 1_500_000
     COMPRESS_TRIGGER_BYTES = 2_000_000
@@ -438,6 +465,7 @@ class ImageGenerationService:
         cover_backend = ""
         api_attempted = False
         api_error_type = ""
+        api_error_detail = ""
         api_cover_source = ri / "cover_ai.png"
         api_cover_source.unlink(missing_ok=True)
         renderer = None
@@ -456,10 +484,12 @@ class ImageGenerationService:
                 self.logger.info("Cover generated via image API (%s)", getattr(self.settings.image_generation, "model_name", "gpt-image-2"))
             except Exception as exc:
                 api_error_type = exc.__class__.__name__
+                api_error_detail = _format_api_error(exc)
                 api_cover_source.unlink(missing_ok=True)
                 self.logger.warning(
-                    "GPT image cover failed (%s); using local image fallback",
+                    "GPT image cover failed (%s): %s; using local image fallback",
                     api_error_type,
+                    api_error_detail,
                 )
                 if not bool(getattr(self.settings.image_generation, "fallback_to_renderer", True)):
                     raise
@@ -564,6 +594,7 @@ class ImageGenerationService:
             "api_attempted": api_attempted,
             "api_succeeded": cover_backend == "image2",
             "api_error_type": api_error_type,
+            "api_error_detail": api_error_detail,
             "cover_prompt": cover_prompt,
             "infographic_prompts": [
                 str(spec.get("prompt", ""))

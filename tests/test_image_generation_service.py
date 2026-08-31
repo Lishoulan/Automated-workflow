@@ -13,6 +13,7 @@ from PIL import Image
 from toutiao_content_factory.services.image_generation_service import (
     ImageGenerationAPIUnavailable,
     ImageGenerationService,
+    _format_api_error,
 )
 
 
@@ -215,6 +216,18 @@ def test_image2_backend_falls_back_when_api_fails(app_settings, tmp_path: Path, 
     assert payload["api_attempted"] is True
     assert payload["api_succeeded"] is False
     assert payload["api_error_type"] == "ImageGenerationAPIUnavailable"
+    assert "provider rejected the request" in payload["api_error_detail"]
+
+
+def test_api_error_detail_redacts_credentials() -> None:
+    error = ImageGenerationAPIUnavailable(
+        "image API request failed: api_key=secret-value"
+    )
+
+    detail = _format_api_error(error)
+
+    assert "secret-value" not in detail
+    assert "api_key=<redacted>" in detail
 
 
 def test_image_api_key_resolution_accepts_openai_key_fallback(app_settings, monkeypatch) -> None:

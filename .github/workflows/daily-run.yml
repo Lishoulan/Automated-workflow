@@ -37,6 +37,10 @@ on:
         description: 'Optional topic title or keyword for this manual run'
         required: false
         default: ''
+      image_diagnostic:
+        description: 'Run a standalone image API diagnostic after content generation (true/false)'
+        required: false
+        default: 'false'
 
 concurrency:
   group: daily-run-${{ github.ref }}
@@ -625,6 +629,76 @@ jobs:
             ARGS+=(--topic-title "$RUN_TOPIC_TITLE")
           fi
           python scripts/cloud_daily_run.py "${ARGS[@]}"
+
+      - name: Run image API diagnostic
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.image_diagnostic == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPORT_FILE="$ACCOUNT_OUTPUT_DIR/automation/last_daily_workflow_report.json"
+          if [ ! -f "$REPORT_FILE" ]; then
+            echo "::error::Daily workflow report not found: $REPORT_FILE"
+            exit 1
+          fi
+
+          RUN_DIR="$(python - "$REPORT_FILE" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          final_attempt = report.get("final_attempt") or {}
+          print(str(final_attempt.get("run_dir") or ""))
+          PY
+          )"
+          if [ -z "$RUN_DIR" ] || [ ! -d "$RUN_DIR" ]; then
+            echo "::error::Image diagnostic run directory is unavailable: $RUN_DIR"
+            exit 1
+          fi
+
+          RUN_DIR="$RUN_DIR" REPORT_FILE="$REPORT_FILE" python - <<'PY'
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+
+          run_dir = Path(os.environ["RUN_DIR"])
+          report = json.loads(Path(os.environ["REPORT_FILE"]).read_text(encoding="utf-8"))
+          final_attempt = report.get("final_attempt") or {}
+          publish_dir = run_dir / "publish"
+          publish_dir.mkdir(parents=True, exist_ok=True)
+
+          article_source = run_dir / "article.md"
+          article_target = publish_dir / "article.md"
+          if article_source.exists() and not article_target.exists():
+              shutil.copyfile(article_source, article_target)
+
+          meta_path = publish_dir / "publish_meta.json"
+          if not meta_path.exists():
+              title = str(
+                  final_attempt.get("selected_title")
+                  or final_attempt.get("topic_title")
+                  or "图片接口诊断"
+              ).strip()
+              meta_path.write_text(
+                  json.dumps(
+                      {
+                          "selected_title": title,
+                          "selected_topic": {"title": str(final_attempt.get("topic_title") or title)},
+                          "summary": "",
+                      },
+                      ensure_ascii=False,
+                      indent=2,
+                  ),
+                  encoding="utf-8",
+              )
+          print(f"Prepared image diagnostic run: {run_dir}")
+          PY
+
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python main.py \
+            --generate-images-run \
+            --account "$RUN_ACCOUNT" \
+            --run-dir "$RUN_DIR"
 
       - name: Run engagement agent
         if: env.ENGAGEMENT_ENABLED == '1'

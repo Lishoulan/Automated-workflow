@@ -263,16 +263,10 @@ def _strip_leading_title(blocks: list[str], title_candidates: Iterable[str]) -> 
     first = blocks[0]
     candidates = list(title_candidates)
     if candidates:
-        # The heuristic is intentionally opt-in.  Without an explicit title
-        # candidate, a normal lead such as "风险边界：客户验收延后。" must
-        # remain article content rather than being mistaken for a heading.
+        # Only remove a title when it matches an explicit candidate. A normal
+        # lead can contain a colon or other headline-like punctuation, so
+        # inferring a title from its first sentence can delete real content.
         first = _strip_known_title_candidate(first, candidates)
-        first = _strip_title_like_first_sentence(first)
-
-    if " " in first:
-        prefix, rest = first.split(" ", 1)
-        if 8 <= len(prefix) <= 52 and _looks_like_title(prefix) and len(rest.strip()) >= 24:
-            first = rest.strip()
 
     blocks[0] = first.strip()
     return [block for block in blocks if block]

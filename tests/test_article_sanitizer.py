@@ -68,3 +68,19 @@ def test_clean_article_text_joins_non_terminal_fragmented_blocks() -> None:
 
     assert "制造、物流和商业服务" in cleaned
     assert "制造、\n\n物流" not in cleaned
+
+
+def test_clean_article_text_keeps_lead_that_looks_like_a_title() -> None:
+    article = (
+        "这份中期业绩释放的信号很明确：收入结构发生变化，但利润模型尚未定型。"
+        "据官方公告，公司收入同比增长104.2%。"
+    )
+
+    cleaned = clean_article_text(
+        article,
+        title_candidates=["示例标题"],
+        min_word_count=0,
+    )
+
+    assert cleaned.startswith("这份中期业绩释放的信号很明确：")
+    assert "收入结构发生变化" in cleaned

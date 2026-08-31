@@ -1224,13 +1224,13 @@ class PublishService:
                         pgc_id = str(response_data.get("pgc_id", "0") or "0")
                         if pgc_id != "0":
                             self._disable_save_mode_override(page, notes)
-                            submission_uncertain = (
-                                not draft_save_confirmed
-                                or (
-                                    inline_image_inserted > 0
-                                    and not draft_media_payload.get("verified")
-                                )
+                            submission_evidence_complete = self._has_accepted_submission_evidence(
+                                response_json,
+                                pgc_id=pgc_id,
+                                expected_inline_images=inline_image_inserted,
+                                media_payload=draft_media_payload,
                             )
+                            submission_uncertain = not submission_evidence_complete
                             if submission_uncertain:
                                 notes.append(
                                     "Toutiao returned a pgc_id before media/save evidence was complete. "
@@ -1238,10 +1238,17 @@ class PublishService:
                                 )
                                 publish_verified = False
                             else:
-                                notes.append(
-                                    "Draft save auto-submitted article for review on Toutiao. "
-                                    "Skipping manual publish click."
-                                )
+                                if draft_save_confirmed:
+                                    notes.append(
+                                        "Draft save auto-submitted article for review on Toutiao. "
+                                        "Skipping manual publish click."
+                                    )
+                                else:
+                                    notes.append(
+                                        "Toutiao accepted the save=1 submission with a pgc_id and complete "
+                                        "media payload although the draft footer remained in a saving state. "
+                                        "Treating the article as submitted_for_review and skipping a duplicate click."
+                                    )
                                 publish_verified = self._verify_toutiao_publish_success(page, title, notes)
                             return {
                                 "status": "publish_uncertain" if submission_uncertain else "submitted_for_review",
@@ -5269,6 +5276,27 @@ class PublishService:
         except (TypeError, ValueError):
             return False
 
+        return True
+
+    def _has_accepted_submission_evidence(
+        self,
+        payload: Any,
+        *,
+        pgc_id: str,
+        expected_inline_images: int,
+        media_payload: dict[str, Any],
+    ) -> bool:
+        """判断一次 save=1 响应是否足以证明文章已被头条接收。
+
+        页面底部的草稿状态可能滞后于网络响应，因此不能把 UI 文案作为
+        已成功提交的唯一依据。后端成功码、非零 pgc_id 和正文图片持久化
+        载荷共同构成这里的最小证据集。
+        """
+        normalized_pgc_id = str(pgc_id or "").strip()
+        if not self._publish_response_is_success(payload) or normalized_pgc_id in {"", "0"}:
+            return False
+        if int(expected_inline_images or 0) > 0 and not bool(media_payload.get("verified")):
+            return False
         return True
 
     def _extract_publish_error(self, payload: Any) -> tuple[str, str]:

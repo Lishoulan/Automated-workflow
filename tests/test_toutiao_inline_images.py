@@ -406,3 +406,34 @@ def test_draft_autosave_without_confirmation_returns_false_for_publish_mode(
     )
 
     assert confirmed is False
+
+
+def test_accepted_submit_response_overrides_stale_draft_footer(
+    app_settings,
+) -> None:
+    service = PublishService(app_settings, logging.getLogger("accepted-submit-evidence-test"))
+    response = {
+        "code": 0,
+        "err_no": 0,
+        "message": "提交成功",
+        "data": {"pgc_id": "7680039734025994752"},
+    }
+
+    assert service._has_accepted_submission_evidence(
+        response,
+        pgc_id="7680039734025994752",
+        expected_inline_images=2,
+        media_payload={"verified": True},
+    ) is True
+    assert service._has_accepted_submission_evidence(
+        response,
+        pgc_id="7680039734025994752",
+        expected_inline_images=2,
+        media_payload={"verified": False},
+    ) is False
+    assert service._has_accepted_submission_evidence(
+        response,
+        pgc_id="0",
+        expected_inline_images=0,
+        media_payload={},
+    ) is False

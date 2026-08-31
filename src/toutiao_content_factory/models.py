@@ -134,6 +134,9 @@ class DataReport:
     topic_quality_flags: list[str] = field(default_factory=list)
     word_target: int = 0
     is_hot_topic: bool = False
+    # Clean, source-derived sentences retained for deterministic generation
+    # when the model provider is unavailable.
+    source_facts: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DataReport":
@@ -166,6 +169,7 @@ class DataReport:
             topic_quality_flags=list(payload.get("topic_quality_flags", [])),
             word_target=int(payload.get("word_target", 0)),
             is_hot_topic=bool(payload.get("is_hot_topic", False)),
+            source_facts=list(payload.get("source_facts", [])),
         )
 
 

@@ -791,6 +791,7 @@ class BaseAgent:
             *data_report.watch_metrics,
             *data_report.evidence_notes,
             *data_report.risk_flags,
+            *getattr(data_report, "source_facts", []),
         ]
         allowed: set[str] = set()
         for text in texts:

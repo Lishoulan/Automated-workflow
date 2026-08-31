@@ -7,10 +7,10 @@
     {
       "rule_id": "R001",
       "category": "title_attraction",
-      "title": "标题必须用‘热点表象＋利益冲突＋关键受益者’结构，避免只描述事件",
+      "title": "标题必须用“热点表象+隐藏利益冲突+明确追问”结构",
       "trigger_conditions": [
-        "选题涉及行业热点、技术突破或企业动态",
-        "标题需要同时吸引产业从业者和普通读者"
+        "主题涉及机器人、订单、收入、产业链或资本分配",
+        "原标题只有事件陈述或技术描述"
       ],
       "applicable_industries": [
         "机器人",
@@ -19,159 +19,157 @@
         "通用"
       ],
       "applicable_formats": [
-        "deep_analysis",
         "quick_commentary",
-        "通用"
+        "deep_analysis"
       ],
       "positive_example": "机器人热度之外，谁在拿走真正订单",
-      "negative_example": "机器人技术取得新突破，行业发展迎来新机遇",
+      "negative_example": "人形机器人进工厂后的技术与应用分析",
       "penalty_weight": 0.9,
       "priority": 1,
-      "evidence": "爆款标题把‘热度’与‘真正订单’对立起来，并追问受益者；弃子标题多为平铺式描述，点击率为0或0.66%。"
+      "evidence": "爆款标题集中追问订单、收入和产业链重排；弃子标题偏向泛化技术或指标陈述，点击率为0。"
     },
     {
       "rule_id": "R002",
-      "category": "conflict_design",
-      "title": "正文开篇必须提出一个可验证的反常识判断，并明确谁受益、谁承压",
+      "category": "opening_hook",
+      "title": "开头必须在两句话内抛出反常结论，并直接回答读者为何要继续看",
       "trigger_conditions": [
-        "行业普遍叙事过于乐观",
-        "文章要解释商业价值或产业链变化"
+        "文章主题是热门技术、企业动态或行业趋势",
+        "开头准备从背景、定义或新闻复述开始"
       ],
       "applicable_industries": [
         "机器人",
         "新能源",
         "储能",
         "通用"
+      ],
+      "applicable_formats": [
+        "quick_commentary",
+        "deep_analysis"
+      ],
+      "positive_example": "大家都在盯着机器人能不能走稳，但订单已经先流向了不卖整机的供应商。真正的变化，不在演示动作，而在交付能力。",
+      "negative_example": "近年来，人形机器人受到广泛关注。随着技术不断进步，行业迎来了新的发展机遇。",
+      "penalty_weight": 0.9,
+      "priority": 2,
+      "evidence": "爆款标题均把读者从表面热度引向订单、收入等结果；弃子缺少可验证的核心悬念，且曝光仅106至326。"
+    },
+    {
+      "rule_id": "R003",
+      "category": "conflict_design",
+      "title": "正文必须设置一个可验证的利益对立，并让至少两类参与者产生输赢关系",
+      "trigger_conditions": [
+        "文章只描述技术突破、比赛成绩或市场规模",
+        "结论中没有明确受益方和受损方"
+      ],
+      "applicable_industries": [
+        "机器人",
+        "新能源",
+        "储能"
       ],
       "applicable_formats": [
         "deep_analysis",
         "quick_commentary"
       ],
-      "positive_example": "机器人销量上涨不等于整机厂赚得最多，真正先受益的可能是交付和核心零部件环节。",
-      "negative_example": "随着机器人快速发展，产业链上下游都将获得更多机会。",
+      "positive_example": "整机厂拿走注意力，零部件和交付服务商拿走现金流；当客户按稳定运行而非演示效果采购，竞争规则就会改变。",
+      "negative_example": "机器人产业链包括上游零部件、中游整机和下游应用，各环节都有重要价值。",
       "penalty_weight": 0.85,
-      "priority": 2,
-      "evidence": "爆款持续追问‘收入来自什么’‘谁拿走订单’‘谁重排产业链’，弃子缺少明确的利益对立。"
-    },
-    {
-      "rule_id": "R003",
-      "category": "opening_hook",
-      "title": "开头两句内必须抛出读者关心的问题，并承诺给出一个具体答案",
-      "trigger_conditions": [
-        "标题包含‘谁、什么、如何、为何’等疑问导向",
-        "文章主题存在明确决策或判断需求"
-      ],
-      "applicable_industries": [
-        "通用",
-        "机器人",
-        "新能源"
-      ],
-      "applicable_formats": [
-        "deep_analysis",
-        "quick_commentary",
-        "通用"
-      ],
-      "positive_example": "机器人进厂后，决定订单归属的不是宣传视频，而是交付速度、稳定性和单位成本。",
-      "negative_example": "近年来，机器人行业受到越来越多关注，相关企业也在持续加大投入。",
-      "penalty_weight": 0.8,
       "priority": 3,
-      "evidence": "高表现标题先制造问题，再引导正文寻找答案；弃子标题和内容容易出现主题错位，无法形成首屏阅读理由。"
+      "evidence": "爆款反复使用“谁拿订单”“收入来自什么”“重排产业链”等分配冲突；弃子标题虽有数字，但未形成清晰对立。"
     },
     {
       "rule_id": "R004",
       "category": "data_anchor",
-      "title": "每个核心判断至少绑定一个带来源或口径说明的数字，并解释数字对应的商业后果",
+      "title": "每个核心判断必须绑定一个数字、时间点或可核验案例，并解释数字意味着什么",
       "trigger_conditions": [
-        "标题或正文使用金额、比例、排名、数量等数字",
-        "数字会影响读者对规模或盈利的判断"
+        "文章出现“领先、突破、重排、利润、订单”等强判断",
+        "标题包含百分比、金额或数量"
       ],
       "applicable_industries": [
         "机器人",
-        "储能",
         "新能源",
+        "储能",
         "通用"
       ],
       "applicable_formats": [
         "deep_analysis",
         "quick_commentary"
       ],
-      "positive_example": "90%的交付能力若集中在少数供应商，意味着产业链议价权可能从整机品牌转向交付环节；‘90%’需注明统计口径。",
-      "negative_example": "197.4亿背后，机器人的利润先流向谁？",
-      "penalty_weight": 0.75,
+      "positive_example": "90%的交付能力不是装机数量，而是部署、维护和持续运行能力；这会把利润从一次性销售推向长期服务。",
+      "negative_example": "行业规模很大，未来增长空间广阔，企业盈利也会持续改善。",
+      "penalty_weight": 0.8,
       "priority": 4,
-      "evidence": "爆款数字‘90%’直接服务于产业链判断；弃子使用‘197.4亿’但缺乏来源、范围和与利润流向的明确连接。"
-    },
-    {
-      "rule_id": "R006",
-      "category": "title_attraction",
-      "title": "标题数字必须服务于冲突或结果，禁止孤立堆数字；长度控制在18至28字",
-      "trigger_conditions": [
-        "标题包含金额、比例、数量或指标",
-        "数字本身不是公众熟知的强事件"
-      ],
-      "applicable_industries": [
-        "机器人",
-        "储能",
-        "新能源",
-        "通用"
-      ],
-      "applicable_formats": [
-        "quick_commentary",
-        "deep_analysis"
-      ],
-      "positive_example": "不只卖整机：90%交付能力将重排机器人产业链",
-      "negative_example": "充电站26万千瓦：充电如何实测",
-      "penalty_weight": 0.72,
-      "priority": 6,
-      "evidence": "爆款数字与‘交付能力、产业链重排’绑定；弃子数字‘26万千瓦’没有说明规模意义，标题读者收益不明。"
-    },
-    {
-      "rule_id": "R005",
-      "category": "paragraph_density",
-      "title": "每段只解决一个问题，采用‘判断—证据—影响’三句结构，连续两段不得重复同一结论",
-      "trigger_conditions": [
-        "文章超过800字",
-        "需要同时解释技术、订单和产业链影响"
-      ],
-      "applicable_industries": [
-        "通用",
-        "机器人",
-        "新能源",
-        "储能"
-      ],
-      "applicable_formats": [
-        "deep_analysis"
-      ],
-      "positive_example": "先判断订单门槛已从展示效果转向稳定交付；再列出交付周期和故障率；最后说明供应商排序将如何变化。",
-      "negative_example": "连续多段反复介绍机器人很重要、市场很大、企业正在加码，却没有新增证据或结论。",
-      "penalty_weight": 0.7,
-      "priority": 5,
-      "evidence": "爆款标题信息集中在订单、收入和产业链重排等结果变量；弃子标题信息堆叠但缺少清晰的阅读路径。"
+      "evidence": "爆款标题中的“90%”和“真正收入”能制造具体预期；弃子虽使用“197.4亿”“3个指标”，但缺少数据口径和判断解释。"
     },
     {
       "rule_id": "R007",
       "category": "anti_ai_flavor",
-      "title": "删掉‘随着、赋能、迎来新机遇、值得关注’等套话，每段至少加入一个具体对象、动作或结果",
+      "title": "删掉“近年来、随着、赋能、迎来新机遇”等套话，首段必须出现具体主体、动作和结果",
       "trigger_conditions": [
-        "初稿出现连续概念名词或宏观判断",
-        "段落无法回答谁做了什么、结果如何"
+        "首段出现行业概述、趋势判断或万能价值词",
+        "文章语气像新闻摘要而非作者判断"
       ],
       "applicable_industries": [
-        "通用",
         "机器人",
         "新能源",
-        "储能"
+        "储能",
+        "通用"
       ],
       "applicable_formats": [
         "deep_analysis",
-        "quick_commentary",
+        "quick_commentary"
+      ],
+      "positive_example": "特斯拉把Optimus推进柏林工厂后，判断标准已经从“能不能完成动作”变成“能不能连续交付”。",
+      "negative_example": "随着人工智能快速发展，机器人产业正在迎来前所未有的新机遇。",
+      "penalty_weight": 0.78,
+      "priority": 7,
+      "evidence": "爆款标题使用“谁在拿走”“真正来自什么”等具体追问；弃子主题偏技术新闻化，标题与发布内容还出现错配，降低可信度。"
+    },
+    {
+      "rule_id": "R005",
+      "category": "paragraph_density",
+      "title": "前段每段只承载一个判断，连续三段内完成“结论—证据—影响”，避免背景铺陈超过150字",
+      "trigger_conditions": [
+        "文章开头需要解释技术概念或行业背景",
+        "段落同时包含多个企业、数据和观点"
+      ],
+      "applicable_industries": [
+        "机器人",
+        "新能源",
+        "储能",
         "通用"
       ],
-      "positive_example": "工厂验收不再只看机器人能否完成动作，而是看连续运行时长、换线时间和单件成本。",
-      "negative_example": "在技术创新和产业升级的共同推动下，机器人行业将迎来广阔发展前景。",
+      "applicable_formats": [
+        "deep_analysis",
+        "quick_commentary"
+      ],
+      "positive_example": "先给结论：客户买的不是动作，而是产线稳定性。随后列出运行时长、故障率和维护成本，最后说明订单会转向谁。",
+      "negative_example": "从行业发展历程、技术定义、政策背景讲起，数段后才说明机器人为何影响订单。",
+      "penalty_weight": 0.75,
+      "priority": 5,
+      "evidence": "爆款表达集中在订单、交付、收入等高密度结果词；弃子标题信息点分散，且同一内容出现重复发布，未形成有效阅读。"
+    },
+    {
+      "rule_id": "R006",
+      "category": "title_attraction",
+      "title": "数字只能用于制造决策压力，标题最多保留一个数字并补足数字对应的结果",
+      "trigger_conditions": [
+        "标题准备使用金额、比例、数量或指标",
+        "数字无法直接说明读者将获得什么判断"
+      ],
+      "applicable_industries": [
+        "机器人",
+        "新能源",
+        "储能",
+        "通用"
+      ],
+      "applicable_formats": [
+        "quick_commentary",
+        "deep_analysis"
+      ],
+      "positive_example": "90%交付能力，将决定机器人产业链谁先拿到持续订单",
+      "negative_example": "197.4亿背后，机器人的利润先流向谁",
       "penalty_weight": 0.7,
-      "priority": 7,
-      "evidence": "爆款表达集中于订单、收入、交付等可验证结果；泛化的行业前景表达未形成点击动机，弃子表现尤其明显。"
+      "priority": 6,
+      "evidence": "“90%”标题仍有产业链结果指向；“197.4亿”虽醒目，但对应口径和利润流向不清，实际曝光326且阅读为0。"
     }
   ]
 }

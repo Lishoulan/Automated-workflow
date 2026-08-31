@@ -3,9 +3,10 @@ import json
 import logging
 import os
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 try:
     import httpx
@@ -14,6 +15,21 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+NOTIFICATION_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _notification_now() -> datetime:
+    return datetime.now(NOTIFICATION_TIMEZONE)
+
+
+def _notification_date(timestamp: object) -> date | None:
+    try:
+        parsed = datetime.fromisoformat(str(timestamp).strip())
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=NOTIFICATION_TIMEZONE)
+    return parsed.astimezone(NOTIFICATION_TIMEZONE).date()
 
 
 class NotificationChannel(ABC):
@@ -132,7 +148,7 @@ class ServerChanNotifier(NotificationChannel):
         try:
             payload = {
                 "title": title,
-                "desp": f"{message}\n\n> 发送时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                "desp": f"{message}\n\n> 发送时间：{_notification_now().strftime('%Y-%m-%d %H:%M:%S')}",
             }
             with httpx.Client() as client:
                 response = client.post(self.api_url, data=payload, timeout=10)
@@ -162,7 +178,7 @@ class PushPlusNotifier(NotificationChannel):
             payload = {
                 "token": self.token,
                 "title": title,
-                "content": f"{message}\n\n发送时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                "content": f"{message}\n\n发送时间：{_notification_now().strftime('%Y-%m-%d %H:%M:%S')}",
                 "template": "html",
             }
             with httpx.Client() as client:
@@ -286,7 +302,7 @@ class NotificationService:
         try:
             self.fallback_log_path.parent.mkdir(parents=True, exist_ok=True)
             entry = {
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": _notification_now().isoformat(),
                 "title": title,
                 "message": message,
                 "pushed": pushed,
@@ -300,7 +316,7 @@ class NotificationService:
         """检查本地日志中今天是否已经成功推送过指定标题。"""
         if not self.fallback_log_path or not self.fallback_log_path.exists():
             return False
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = _notification_now().date()
         try:
             for raw_line in self.fallback_log_path.read_text(encoding="utf-8").splitlines():
                 try:
@@ -311,7 +327,7 @@ class NotificationService:
                     isinstance(entry, dict)
                     and entry.get("pushed") is True
                     and str(entry.get("title", "")) == title
-                    and str(entry.get("timestamp", "")).startswith(today)
+                    and _notification_date(entry.get("timestamp")) == today
                 ):
                     return True
         except OSError:
@@ -326,7 +342,7 @@ class NotificationService:
         紧急通知（force=True，如登录过期）始终推送。
         """
         sent = False
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = _notification_now().date().isoformat()
         if self._send_date != today:
             self._send_date = today
             self._daily_sent = 0

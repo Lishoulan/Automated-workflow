@@ -14,6 +14,7 @@ from toutiao_content_factory.agents.base import BaseAgent
 from toutiao_content_factory.config import AppSettings, IterationOverrides, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, InsightReport, TrendReport
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.company_entities import COMPANY_SUFFIXES
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 
@@ -63,6 +64,18 @@ class WriterAgent(BaseAgent):
         "可重复采",
     )
     MAX_LOCAL_SUPPLEMENTARY_PARAGRAPHS = 4
+    LOCAL_SOURCE_FACT_MIN_COUNT = 6
+    LOCAL_SOURCE_FACT_MIN_CHARS = 400
+    LOCAL_SOURCE_FACT_LIMIT = 40
+    LOCAL_SOURCE_ARTICLE_TARGET = 1800
+    GENERIC_COMPANY_MENTION_MARKERS = (
+        "这家公司",
+        "这类公司",
+        "相关公司",
+        "某公司",
+        "公司主体",
+        "硬科技",
+    )
 
     def __init__(
         self,
@@ -270,14 +283,23 @@ class WriterAgent(BaseAgent):
             self_benchmark_context=self_benchmark_context,
         )
         comment_prompt = self._default_comment_prompt(data_report)
-        article = self._build_article(
-            opening_lines,
-            trend_report,
-            data_report,
-            comment_prompt,
-            benchmark_track=benchmark_track,
-            self_benchmark_context=self_benchmark_context,
-        )
+        if self._should_use_local_source_fallback(data_report):
+            article = self._build_local_source_article(
+                trend_report,
+                data_report,
+                comment_prompt,
+                benchmark_track=benchmark_track,
+                self_benchmark_context=self_benchmark_context,
+            )
+        else:
+            article = self._build_article(
+                opening_lines,
+                trend_report,
+                data_report,
+                comment_prompt,
+                benchmark_track=benchmark_track,
+                self_benchmark_context=self_benchmark_context,
+            )
         summary = self._build_summary(article, trend_report, data_report)
         tags = self._sanitize_tags(None, data_report)
         recommended_topics = self._finalize_topics(None, data_report, trend_report)
@@ -294,6 +316,171 @@ class WriterAgent(BaseAgent):
             content_format=data_report.content_format,
             content_format_label=data_report.content_format_label,
         )
+
+    def _should_use_local_source_fallback(self, data_report: DataReport) -> bool:
+        """Use a longer deterministic draft only when the source can support it."""
+        if self.openai_service.available:
+            return False
+        if self._content_mode(data_report) == "hot_topic":
+            return False
+        facts = self.clean_publish_list(
+            getattr(data_report, "source_facts", []) or [],
+            limit=self.LOCAL_SOURCE_FACT_LIMIT,
+        )
+        fact_chars = sum(len(item.replace(" ", "")) for item in facts)
+        return len(facts) >= self.LOCAL_SOURCE_FACT_MIN_COUNT and fact_chars >= self.LOCAL_SOURCE_FACT_MIN_CHARS
+
+    def _build_local_source_article(
+        self,
+        trend_report: TrendReport,
+        data_report: DataReport,
+        comment_prompt: str,
+        benchmark_track: str = "",
+        self_benchmark_context: dict[str, object] | None = None,
+    ) -> str:
+        """Build a source-led long draft without inventing facts during an outage."""
+        facts = self.clean_publish_list(
+            getattr(data_report, "source_facts", []) or [],
+            limit=self.LOCAL_SOURCE_FACT_LIMIT,
+        )
+        if not facts:
+            return self._build_article(
+                self._build_opening_lines(
+                    trend_report,
+                    data_report,
+                    self.settings.get_style(None),
+                    benchmark_track=benchmark_track,
+                    self_benchmark_context=self_benchmark_context,
+                ),
+                trend_report,
+                data_report,
+                comment_prompt,
+                benchmark_track=benchmark_track,
+                self_benchmark_context=self_benchmark_context,
+            )
+
+        used: set[int] = set()
+
+        def take(markers: tuple[str, ...], limit: int) -> list[str]:
+            selected: list[str] = []
+            for index, fact in enumerate(facts):
+                if index in used or not any(marker in fact for marker in markers):
+                    continue
+                used.add(index)
+                selected.append(fact)
+                if len(selected) >= limit:
+                    break
+            return selected
+
+        def fact_text(items: list[str], fallback: str) -> str:
+            if not items:
+                return fallback
+            return "；".join(item.rstrip("。！？!? ") for item in items) + "。"
+
+        def frame(item: str) -> str:
+            cleaned = item.rstrip("。！？!? ")
+            if any(token in cleaned for token in ("猜测", "传言", "流传", "不好说", "是真是假")):
+                return f"材料中还出现一种尚未获官方确认的说法：{cleaned}。这部分只能作为待核对背景，不能当成公司已经公开确认的解释。"
+            return f"材料提到，{cleaned}。"
+
+        timeline = take(("改名", "股改", "IPO", "实验室", "创始人", "申请", "有效期", "再次"), 5)
+        business = take(("机器人", "客户", "分拣", "搬运", "包装", "码垛", "工厂", "新能源", "3C", "汽车"), 6)
+        market = take(("出货量", "市场", "份额", "全球", "国内", "中国", "排名", "第一", "第四"), 5)
+        finance = take(("收入", "营收", "利润", "亏", "毛利率", "现金流", "应收", "存货", "补助"), 8)
+        investment = take(("研发", "开支", "工程师", "专利", "销售费用", "产能", "扩产"), 5)
+        remaining = [fact for index, fact in enumerate(facts) if index not in used]
+
+        primary = self._primary_keyword(data_report, fallback="这家公司")
+        title = self.clean_publish_text(data_report.topic_title).rstrip("。！？!? ") or primary
+        metrics = self.clean_publish_list(data_report.watch_metrics, limit=5)
+        risks = self.clean_publish_list(data_report.risk_flags, limit=4)
+        metric_text = "、".join(metrics) or "客户验证、交付节奏、回款和毛利率变化"
+        risk_text = "；".join(risks) or "收入质量、现金流和盈利稳定性仍需新的公开记录验证"
+
+        paragraphs = [
+            (
+                f"{title}这条线索，需要同时回答两个问题：公司做什么，和这些业务事实能不能支撑资本市场对未来的期待。"
+                "下面只按现有材料展开，材料里的推测会明确保留为推测，不把它改写成已经确认的事实。"
+            ),
+            (
+                "先把主体和时间线放回原位。"
+                + fact_text(timeline, f"现有材料没有给出{primary}完整的成立和申报时间线")
+                + "这组信息能解释事件为什么受到关注，但名称变化或申报动作本身，并不能直接证明经营质量已经改善。"
+            ),
+            (
+                f"再看业务落点，{primary}并不是只存在于概念讨论里。"
+                + fact_text(business, "材料对具体应用场景的披露仍然有限")
+                + "这些内容说明产品和客户场景之间存在连接，下一步仍要核对交付是否持续、客户是否复购，以及项目能否复制。"
+            ),
+            (
+                "市场位置需要和统计口径一起看。"
+                + fact_text(market, "现有材料没有提供足够完整的市场比较口径")
+                + "出货量、市场份额和全球排名可以说明阶段性竞争位置，却不能单独推出利润、现金流或长期定价权。尤其是排名对应的年份、产品范围和统计方式，发布前都应回到原始文件核对。"
+            ),
+            (
+                "财务表现把故事的另一面摆了出来。"
+                + fact_text(finance, "材料没有给出完整的收入、利润和现金流数据")
+                + "读者需要把收入规模、毛利率、净利润和经营现金流放在同一张表里看：收入增长可以代表业务扩大，毛利率改善可以代表产品结构变化，但两者都不等于利润已经稳定兑现。"
+            ),
+            (
+                f"这也是判断{primary}成色的关键。即使某个阶段出现收入增长或毛利率上行，若应收账款、存货、补助和现金流没有同步改善，增长的质量仍然需要打问号。"
+                "换句话说，资本市场愿意为未来付费，但未来必须通过连续的经营记录逐步兑现，不能只靠单个年份或单个指标完成叙事。"
+            ),
+            (
+                "投入端也不能被忽略。"
+                + fact_text(investment, "材料没有展开完整的研发、销售和产能投入结构")
+                + "研发、工程师、专利、销售和产能投入，都可能是硬科技企业建立能力的必要成本；但投入是否有效，最终要看它有没有转化成可持续的产品交付、客户收入和现金回收。"
+            ),
+            (
+                "把收入增长和现金流放在同一条时间线上，才能看清这家公司目前处在哪个阶段。"
+                + fact_text(finance[:3], "材料没有给出可以连续比较的收入和利润记录")
+                + fact_text(finance[3:5], "材料没有同时披露经营现金流与利润的对应变化")
+                + "前一组事实说明业务规模或产品结构出现变化，后一组事实则提醒读者：规模扩大与现金回收之间可能存在时间差，不能把前者直接当成后者。"
+            ),
+            (
+                "盈利质量还要拆开看利润来源和持续成本。"
+                + fact_text(finance[5:], "现有材料没有进一步展开利润构成")
+                + fact_text(investment[:3], "研发、销售和产能投入的结构仍需补充")
+                + "如果利润改善主要依赖一次性因素，而研发、销售和产能仍需持续投入，那么估值讨论就必须回到下一期经营记录，而不是停在单个年度的结果上。"
+            ),
+            (
+                f"因此，赴港IPO或更名只能解释{primary}为什么进入公众视野，不能替代商业化验证。真正有区分度的证据，是{metric_text}能否在后续记录中连续出现，并且与收入、利润和现金回收形成相互印证的关系。"
+            ),
+            (
+                "把这些事实连起来，判断就不应停留在更名、排名或单项财务指标上。"
+                + ("材料还提到：" + fact_text(remaining[:4], "仍有部分信息需要补充核对") if remaining else "现有材料已经覆盖了主要的业务和财务线索")
+                + f"真正需要追踪的是{metric_text}，这些变量能把市场预期拉回经营结果。"
+            ),
+            (
+                f"风险边界也要先写清楚：{risk_text}。如果后续记录无法连续证明业务扩张和现金回收，当前的高增长判断就只能停留在阶段性判断；如果数据持续改善，市场才有理由重新评估{primary}的商业化质量。"
+            ),
+            (
+                "所以，现阶段更稳妥的结论不是急着给出成功或失败，而是把已确认事实、材料推测和待验证变量分开。"
+                f"你更看重{primary}后续先证明交付、客户复购，还是先证明利润和现金流？"
+            ),
+        ]
+        article = self._finalize_article(
+            "\n\n".join(paragraphs),
+            trend_report,
+            data_report,
+            comment_prompt=comment_prompt,
+            benchmark_track=benchmark_track,
+            self_benchmark_context=self_benchmark_context,
+        )
+
+        # The structural formatter intentionally limits the first pass to a
+        # compact number of blocks. Append unused source facts only as needed
+        # to reach the public long-form floor, keeping every addition traceable.
+        existing = re.sub(r"\s+", "", article)
+        pending = [fact for fact in facts if re.sub(r"\s+", "", fact) not in existing]
+        for fact in pending:
+            if len(re.sub(r"\s+", "", article)) >= self.LOCAL_SOURCE_ARTICLE_TARGET:
+                break
+            paragraph = frame(fact)
+            if self._is_duplicate_paragraph(paragraph, article.split("\n\n")):
+                continue
+            article = f"{article}\n\n{paragraph}".strip()
+        return article
 
     def _build_article(
         self,
@@ -648,7 +835,11 @@ class WriterAgent(BaseAgent):
         paragraphs = self._ensure_structured_headings(paragraphs, trend_report, data_report)
         paragraphs = self._ensure_closing_question(paragraphs, comment_prompt or self._default_comment_prompt(data_report))
         _min_paragraphs, max_paragraphs = self._paragraph_bounds(data_report.content_format or "deep_analysis")
-        paragraphs = paragraphs[:max_paragraphs]
+        # Headings are rendered as their own blocks, so they must not consume
+        # the prose paragraph budget.  Slicing to max_paragraphs here used to
+        # discard the latter half of structured project-breakdown articles.
+        heading_blocks = sum(1 for item in paragraphs if item.startswith("### "))
+        paragraphs = paragraphs[: max_paragraphs + heading_blocks]
         paragraphs = self._ensure_min_char_count(paragraphs, data_report)
         article_text = "\n\n".join(paragraphs).strip()
         return article_text
@@ -1819,6 +2010,7 @@ class WriterAgent(BaseAgent):
             *(getattr(data_report, "growth_numbers", []) or []),
             *(getattr(data_report, "evidence_notes", []) or []),
             *(getattr(data_report, "core_data", []) or []),
+            *(getattr(data_report, "source_facts", []) or []),
         ]
         for item in sources:
             for token in self._NUMERIC_TOKEN_RE.findall(str(item)):
@@ -1829,6 +2021,31 @@ class WriterAgent(BaseAgent):
 
     def _has_unknown_company_mention(self, text: str, data_report: "DataReport") -> bool:
         known = [item.lower() for item in self._company_candidates(data_report)]
+        # A source-led fallback may contain a former company name or a
+        # product name that matches the broad suffix regex (for example,
+        # "阿童木机器人" or "并联机器人").  When that name is explicitly
+        # present in the clean source-fact ledger, it is evidence rather than
+        # an unsupported model insertion and must survive the trim pass.
+        source_facts = self.clean_publish_list(
+            getattr(data_report, "source_facts", []) or [],
+            limit=self.LOCAL_SOURCE_FACT_LIMIT,
+        )
+        source_entities: set[str] = set()
+        for fact in source_facts:
+            fact_text = str(fact)
+            for end in range(1, len(fact_text) + 1):
+                if not any(fact_text[:end].endswith(suffix) for suffix in COMPANY_SUFFIXES):
+                    continue
+                for start in range(max(0, end - 24), end - 1):
+                    candidate = self._normalize_company_name(fact_text[start:end])
+                    if candidate and self._is_valid_company_name(candidate):
+                        source_entities.add(candidate.casefold())
+        known.extend(
+            item.lower()
+            for item in source_entities
+            if item.strip()
+        )
+        known = list(dict.fromkeys(known))
         mentions = [
             mention
             for mention in self._extract_company_mentions(text)
@@ -1843,6 +2060,10 @@ class WriterAgent(BaseAgent):
             return True
         for mention in mentions:
             lowered = mention.lower()
+            if any(marker in lowered for marker in self.GENERIC_COMPANY_MENTION_MARKERS):
+                continue
+            if any(entity in lowered for entity in source_entities):
+                continue
             if not any(lowered in item or item in lowered for item in known):
                 return True
         return False

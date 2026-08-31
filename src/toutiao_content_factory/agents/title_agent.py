@@ -343,6 +343,7 @@ class TitleAgent(BaseAgent):
                 *(data_report.core_data or [])[:4],
                 *(data_report.evidence_notes or [])[:4],
                 *(data_report.key_points or [])[:4],
+                *(getattr(data_report, "source_facts", []) or [])[:8],
             )
             if str(item).strip()
         )
@@ -970,7 +971,37 @@ class TitleAgent(BaseAgent):
 
     def _primary_company(self, data_report: DataReport) -> str:
         companies = self._company_candidates(data_report)
-        return companies[0] if companies else ""
+        if not companies:
+            return ""
+
+        factual_text = " ".join(
+            str(item)
+            for item in (
+                data_report.topic_title,
+                *(getattr(data_report, "source_facts", []) or []),
+            )
+            if str(item).strip()
+        )
+        generic_terms = {
+            "机器人",
+            "并联机器人",
+            "工业机器人",
+            "高速工业机器人",
+            "人形机器人",
+            "AI机器人",
+            "机器人行业",
+        }
+        ranked = sorted(
+            enumerate(companies),
+            key=lambda item: (
+                item[1] in factual_text,
+                item[1] not in generic_terms,
+                any(item[1].endswith(suffix) for suffix in ("技术", "科技", "自动化", "智能", "集团", "公司")),
+                -item[0],
+            ),
+            reverse=True,
+        )
+        return ranked[0][1]
 
     def _primary_scene(self, content: GeneratedContent, data_report: DataReport) -> str:
         candidates = [

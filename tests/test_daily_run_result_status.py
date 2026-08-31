@@ -132,6 +132,29 @@ def test_content_guard_blocks_high_score_auto_approval(app_settings) -> None:
     ) is True
 
 
+def test_pending_run_notification_uses_candidate_title_from_workflow_result(tmp_path: Path) -> None:
+    service = ContentFactoryAppService.__new__(ContentFactoryAppService)
+    run_dir = tmp_path / "pending-run"
+    run_dir.mkdir()
+    (run_dir / "review_status.json").write_text(
+        json.dumps({"status": "pending", "selected_title": ""}),
+        encoding="utf-8",
+    )
+    (run_dir / "workflow_result.json").write_text(
+        json.dumps(
+            {
+                "content": {
+                    "recommended_titles": ["辰星技术7.7%：并联机器人如何实测"],
+                    "titles": ["机器人业务观察"],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert service._load_selected_title(run_dir) == "辰星技术7.7%：并联机器人如何实测"
+
+
 def test_duplicate_title_publish_failure_is_safe_to_fallback(app_settings) -> None:
     service = ContentFactoryAppService(app_settings, logging.getLogger("test-title-fallback"))
     error = (

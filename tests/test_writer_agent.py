@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 from toutiao_content_factory.agents.polish_agent import PolishAgent
 from toutiao_content_factory.agents.writer_agent import WriterAgent
-from toutiao_content_factory.models import DataReport, TrendReport
+from toutiao_content_factory.models import CacheContext, DataReport, TrendReport
 
 
 def _build_writer_agent(app_settings, mock_openai_service, logger) -> WriterAgent:
@@ -210,6 +210,65 @@ def test_supplementary_paragraphs_skip_evidence_already_covered_by_article(
     assert not any("后续复盘可以先核对" in item for item in supplements)
 
 
+def test_local_source_fallback_builds_grounded_long_draft_when_model_is_unavailable(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    data_report = DataReport(
+        topic_title="辰星技术赴港IPO前改名，机器人业务能否穿越盈利考验",
+        focus_industry="工业机器人",
+        focus_keywords=["工业机器人", "并联机器人"],
+        companies=["辰星技术"],
+        core_data=["2025年中国并联机器人出货量占五分之一市场"],
+        growth_numbers=["2025年", "7.7%", "2.53亿", "2880万", "30%"],
+        evidence_notes=["公开材料：辰星技术的经营现金流仍需核对"],
+        watch_metrics=["客户验证", "交付节奏", "经营现金流"],
+        risk_flags=["盈利稳定性尚未得到连续数据证明"],
+        content_format="project_breakdown",
+        word_target=1800,
+        evidence_strength=88,
+        source_facts=[
+            "公司最早叫辰星自动化，2025年股改后改成了阿童木机器人，不到十个月又改回了辰星技术",
+            "公司脱胎于天津大学并联机器人实验室，创始团队具有学术背景",
+            "食品饮料、日化、制药、新能源、3C和汽车工厂使用其机器人进行分拣、搬运、包装和码垛",
+            "2025年中国并联机器人出货量第一，占了五分之一的市场，全球排第二，7.7%的份额",
+            "高速工业机器人出货量同样国内第一，全球第四",
+            "2023年到2025年，辰星技术收入从9349万增长到2.53亿",
+            "2026年上半年收入1.35亿，同比增长了四成多",
+            "毛利率从17%提升到30%上下",
+            "2026年上半年亏损2880万，经营活动现金流流出2856万",
+            "2026年上半年研发开支占收入将近18%，公司拥有175项专利",
+            "公司2023年亏损3925万，2024年亏损4707万",
+            "公司2025年净利润为73.9万",
+            "公司2026年全年大概率仍然亏损",
+            "2023年至2026年上半年经营活动现金流全部为负数",
+            "政府补助对公司2025年的盈利起到关键作用",
+            "公司销售费用一年超过三千万元",
+            "公司需要继续投入研发、市场和产能建设",
+            "应收账款和存货存在需要进一步核对的隐患",
+        ],
+    )
+
+    content = agent._fallback(
+        TrendReport(recommended_angle="先核对收入增长能否转化为现金流"),
+        data_report,
+        app_settings.get_style("deep_industry_analysis"),
+        CacheContext(),
+    )
+    article = content.article
+    article_chars = len(article.replace("\n", "").replace(" ", ""))
+
+    assert article_chars >= agent.LOCAL_SOURCE_ARTICLE_TARGET
+    assert "辰星技术" in article
+    assert "2.53亿" in article
+    assert "2880万" in article
+    assert agent._unsupported_numeric_tokens(article, data_report) == []
+    assert "材料里的推测会明确保留为推测" in article
+    mock_openai_service.create_json_completion.assert_not_called()
+
+
 def test_cautious_polish_fallback_keeps_unknown_order_claim_conditional(
     app_settings,
     mock_openai_service,
@@ -303,6 +362,21 @@ def test_unknown_known_brand_is_rejected_from_polished_article(
 
     assert not agent._has_unknown_company_mention("特斯拉已经发布新产品。", data_report)
     assert agent._has_unknown_company_mention("华为已经发布新产品。", data_report)
+
+
+def test_source_fact_company_aliases_are_allowed_during_trim(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    data_report = DataReport(
+        companies=["辰星技术"],
+        source_facts=["公司改名为阿童木机器人，业务覆盖并联机器人场景。"],
+    )
+
+    assert not agent._has_unknown_company_mention("阿童木机器人进入并联机器人市场。", data_report)
+    assert agent._has_unknown_company_mention("陌生机器人公司获得大额订单。", data_report)
 
 
 def test_order_evidence_must_match_company_and_order_type(

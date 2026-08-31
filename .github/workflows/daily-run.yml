@@ -454,6 +454,18 @@ jobs:
           restore-keys: |
             daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-
 
+      - name: Restore notification log cache
+        # Keep the ServerChan daily de-duplication state across ephemeral
+        # runners and across the main/fallback jobs of this workflow.
+        uses: actions/cache@v4
+        with:
+          path: |
+            output/accounts/*/automation/notification_log.jsonl
+            output/automation/notification_log.jsonl
+          key: daily-notification-log-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            daily-notification-log-${{ github.ref_name }}-
+
       - name: Restore browser profile cache
         uses: actions/cache@v4
         with:
@@ -976,6 +988,18 @@ jobs:
           key: pip-${{ runner.os }}-py3.11-${{ hashFiles('requirements.txt') }}
           restore-keys: |
             pip-${{ runner.os }}-py3.11-
+
+      - name: Restore notification log cache
+        # The fallback job has its own runner, so it must restore the same
+        # cross-run notification state explicitly.
+        uses: actions/cache@v4
+        with:
+          path: |
+            output/accounts/*/automation/notification_log.jsonl
+            output/automation/notification_log.jsonl
+          key: daily-notification-log-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            daily-notification-log-${{ github.ref_name }}-
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -3338,10 +3339,55 @@ class ContentFactoryAppService:
         if run_dir is None:
             return ""
         status_path = run_dir / "review_status.json"
-        if not status_path.exists():
-            return ""
-        payload = _safe_json_loads(status_path.read_text(encoding="utf-8"), default={})
-        return str(payload.get("selected_title", "")).strip()
+        if status_path.exists():
+            payload = _safe_json_loads(status_path.read_text(encoding="utf-8"), default={})
+            if isinstance(payload, dict):
+                selected = str(payload.get("selected_title", "")).strip()
+                if selected:
+                    return selected
+
+        # Pending/skipped runs intentionally leave selected_title empty. The
+        # review packet still has usable candidates, so notifications should
+        # identify the actual draft instead of reporting "未选择标题".
+        workflow_path = run_dir / "workflow_result.json"
+        if workflow_path.exists():
+            payload = _safe_json_loads(workflow_path.read_text(encoding="utf-8"), default={})
+            if isinstance(payload, dict):
+                content = payload.get("content", {})
+                if isinstance(content, dict):
+                    for field in ("recommended_titles", "titles"):
+                        candidates = content.get(field, [])
+                        if isinstance(candidates, list):
+                            for candidate in candidates:
+                                title = str(candidate).strip()
+                                if title:
+                                    return title
+
+        titles_path = run_dir / "titles.txt"
+        if titles_path.exists():
+            recommended: list[str] = []
+            all_titles: list[str] = []
+            in_recommended_section = False
+            for raw_line in titles_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if "推荐标题" in line:
+                    in_recommended_section = True
+                    continue
+                if line.startswith(("全部标题", "候选标题")):
+                    continue
+                line = re.sub(r"^\d+[.)、：:]\s*", "", line).strip()
+                if not line:
+                    continue
+                all_titles.append(line)
+                if in_recommended_section:
+                    recommended.append(line)
+            if recommended:
+                return recommended[0]
+            if all_titles:
+                return all_titles[0]
+        return ""
 
     _STALE_RUN_MAX_AGE_DAYS = 30
 

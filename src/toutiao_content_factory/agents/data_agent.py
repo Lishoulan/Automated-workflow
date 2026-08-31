@@ -45,6 +45,8 @@ class DataAgent(BaseAgent):
         "来源摘要：",
         "来源摘要:",
     )
+    SOURCE_FACT_MAX_COUNT = 40
+    SOURCE_FACT_MAX_LENGTH = 300
     GENERIC_KEYWORDS = frozenset({"AI", "公司", "企业", "科技", "技术", "模型", "行业", "产业", "市场", "供应链", "产业链"})
     TOPIC_TYPE_LABELS = {
         "data_recap": "数据复盘",
@@ -140,6 +142,7 @@ class DataAgent(BaseAgent):
             for item in (extraction.merged_text, extraction.focus_industry, extraction.topic_title)
             if str(item).strip()
         )
+        source_facts = self._extract_source_facts(extraction)
 
         focus_keywords = self._clean_focus_keywords(
             self._list_values(merged.get("focus_keywords"), []),
@@ -307,6 +310,7 @@ class DataAgent(BaseAgent):
             topic_quality_flags=list(route["topic_quality_flags"]),
             word_target=int(route["word_target"]),
             is_hot_topic=bool(getattr(extraction, "is_hot_topic", False)),
+            source_facts=source_facts,
         )
 
     def _build_title_fact_evidence(self, extraction: ExtractionResult) -> list[str]:
@@ -367,7 +371,37 @@ class DataAgent(BaseAgent):
             source_name = "公开材料"
         return [f"{source_name}：{item}" for item in evidence]
 
+    def _extract_source_facts(self, extraction: ExtractionResult) -> list[str]:
+        """Retain a bounded, cleaned fact ledger for local model-free writing.
+
+        The normal model path receives the full extraction payload, but the
+        local fallback previously saw only a few ranked fields. That made a
+        long pasted source collapse into three short evidence sentences after
+        a provider outage. These sentences remain source material, not newly
+        inferred facts, and are filtered for prompt/control metadata.
+        """
+        raw_text = str(extraction.merged_text or "").strip()
+        if not raw_text:
+            return []
+
+        facts: list[str] = []
+        for raw_sentence in re.split(r"[。！？!?\n]+", raw_text):
+            sentence = self._sanitize_prompt_input(raw_sentence)
+            sentence = re.sub(r"^\s*(?:原文标题|导语|摘要|补充片段)[：:]\s*", "", sentence).strip()
+            sentence = self._clean_evidence_item(sentence)
+            sentence = re.sub(r"\s+", " ", sentence).strip()
+            if len(sentence) < 8:
+                continue
+            if len(sentence) > self.SOURCE_FACT_MAX_LENGTH:
+                sentence = sentence[: self.SOURCE_FACT_MAX_LENGTH].rstrip("，,；;：:")
+            if sentence and sentence not in facts:
+                facts.append(sentence)
+            if len(facts) >= self.SOURCE_FACT_MAX_COUNT:
+                break
+        return facts
+
     def _fallback(self, extraction: ExtractionResult, trend_report: TrendReport) -> DataReport:
+        source_facts = self._extract_source_facts(extraction)
         keywords = self.clean_publish_list(
             extraction.focus_keywords[:5] or extraction.supply_chain_keywords[:5] or ["科技制造", "产业链"],
             limit=5,
@@ -375,15 +409,20 @@ class DataAgent(BaseAgent):
         primary = self.clean_publish_text(extraction.focus_industry.strip() or (keywords[0] if keywords else "相关赛道"))
         secondary = keywords[1] if len(keywords) > 1 else "关键环节"
         companies = self._sanitize_companies(extraction.focus_companies + extraction.companies, extraction, limit=8)
-        evidence_notes = self._build_evidence_notes(extraction)
-        supply_chain_keywords = self.clean_publish_list(extraction.supply_chain_keywords[:8] or keywords, limit=8)
-        watch_metrics = self._build_watch_metrics(primary, secondary, extraction.follow_up_focus)
-        risk_flags = self._build_risk_flags(primary, secondary, trend_report, keywords)
         factual_context = " ".join(
             item
             for item in (extraction.merged_text, extraction.focus_industry, extraction.topic_title)
             if str(item).strip()
         )
+        evidence_notes = self._merge_evidence_lists(
+            [*self._build_evidence_notes(extraction), *source_facts],
+            [],
+            limit=8,
+            factual_text=factual_context,
+        )
+        supply_chain_keywords = self.clean_publish_list(extraction.supply_chain_keywords[:8] or keywords, limit=8)
+        watch_metrics = self._build_watch_metrics(primary, secondary, extraction.follow_up_focus)
+        risk_flags = self._build_risk_flags(primary, secondary, trend_report, keywords)
         watch_metrics = self._clean_contextual_list(
             watch_metrics,
             fallback=self._build_watch_metrics(primary, secondary, extraction.follow_up_focus),
@@ -396,9 +435,24 @@ class DataAgent(BaseAgent):
             factual_text=factual_context,
             limit=4,
         )
-        core_data = self.clean_publish_list(extraction.core_data[:6], limit=6)
-        industry_trends = self.clean_publish_list(extraction.industry_trends[:6], limit=6)
-        key_points = self.clean_publish_list(extraction.key_points[:6], limit=6)
+        core_data = self._merge_evidence_lists(
+            [*extraction.core_data, *source_facts],
+            [],
+            limit=10,
+            factual_text=factual_context,
+        )
+        industry_trends = self._merge_evidence_lists(
+            [*extraction.industry_trends, *source_facts],
+            [],
+            limit=8,
+            factual_text=factual_context,
+        )
+        key_points = self._merge_evidence_lists(
+            [*extraction.key_points, *source_facts],
+            [],
+            limit=10,
+            factual_text=factual_context,
+        )
         focus_keywords = self.clean_publish_list(extraction.focus_keywords[:6] or keywords, limit=6)
         normalized_fields = self._normalize_mode_fields(
             extraction=extraction,
@@ -465,6 +519,7 @@ class DataAgent(BaseAgent):
             topic_quality_flags=list(route["topic_quality_flags"]),
             word_target=int(route["word_target"]),
             is_hot_topic=bool(getattr(extraction, "is_hot_topic", False)),
+            source_facts=source_facts,
         )
 
     def _resolve_content_route(

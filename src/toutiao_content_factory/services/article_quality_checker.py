@@ -509,7 +509,16 @@ class ArticleQualityChecker:
                 return False
             suffix = content_lower[index + len(first_marker):]
             if not any(suffix.startswith(item) for item in self._FIRST_ORDINAL_SUFFIXES):
-                return True
+                # Rankings such as "出货量第一" or "全球第一" are
+                # qualified claims tied to a scope/metric, not the generic
+                # absolute wording this gate is intended to catch.
+                prefix = content_lower[max(0, index - 18):index]
+                if not re.search(
+                    r"(?:国内|中国|全球|行业|市场|出货量|销量|排名|份额|占比|市占率)"
+                    r"[^。！？!?\n]{0,10}$",
+                    prefix,
+                ):
+                    return True
             start = index + len(first_marker)
 
     def _check_depth(self, content: str) -> int:

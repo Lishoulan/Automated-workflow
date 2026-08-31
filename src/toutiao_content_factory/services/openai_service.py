@@ -43,12 +43,23 @@ class OpenAIContentService:
     MAX_DELAY = 60.0
     REQUEST_TIMEOUT = 90.0
     RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
+    INSUFFICIENT_BALANCE_MARKERS = (
+        "account balance is insufficient",
+        "insufficient balance",
+        "余额不足",
+        "账户余额不足",
+        "account balance",
+    )
 
     def __init__(self, settings: AppSettings, logger: logging.Logger, force_mock: bool = False) -> None:
         self.settings = settings
         self.logger = logger
         self.force_mock = force_mock
         self.client = None
+        # A payment/quota failure is not transient for the remainder of this
+        # workflow.  Marking the client unavailable prevents every downstream
+        # agent from repeating the same request before falling back locally.
+        self._unavailable_reason = ""
         self.usage_snapshot = UsageCostSnapshot()
         
         # 预计算模型类型以避免重复调用
@@ -100,7 +111,11 @@ class OpenAIContentService:
 
     @property
     def available(self) -> bool:
-        return self.client is not None
+        return self.client is not None and not self._unavailable_reason
+
+    @property
+    def unavailable_reason(self) -> str:
+        return self._unavailable_reason
 
     def create_text_completion(
         self,
@@ -199,6 +214,11 @@ class OpenAIContentService:
                 ],
             )
         except Exception as exc:
+            if self._is_insufficient_balance_error(exc):
+                self._mark_unavailable(exc)
+                raise AIRequestError(
+                    "Model request disabled for this run because the provider account balance is insufficient."
+                ) from exc
             self.logger.warning(
                 "Structured JSON mode failed (response_format not supported or transient error: %s), "
                 "trying prompt-only JSON mode.",
@@ -228,6 +248,11 @@ class OpenAIContentService:
                 return self.client.chat.completions.create(**kwargs)
             except Exception as exc:
                 last_exc = exc
+                if self._is_insufficient_balance_error(exc):
+                    self._mark_unavailable(exc)
+                    raise AIRequestError(
+                        "Model request disabled for this run because the provider account balance is insufficient."
+                    ) from exc
                 if not self._is_retryable_error(exc):
                     raise AIRequestError(f"Model request failed (non-retryable): {exc}") from exc
                 if attempt >= self.MAX_RETRIES:
@@ -249,6 +274,27 @@ class OpenAIContentService:
         raise AIRequestError(
             f"Model request failed after {self.MAX_RETRIES} attempts: {last_exc}"
         ) from last_exc
+
+    def _mark_unavailable(self, exc: Exception) -> None:
+        reason = str(exc).strip() or "provider account balance is insufficient"
+        if not self._unavailable_reason:
+            self._unavailable_reason = reason
+            self.logger.error(
+                "Model client disabled for the remainder of this run: account balance is insufficient."
+            )
+
+    def _is_insufficient_balance_error(self, exc: Exception) -> bool:
+        status_code = getattr(exc, "status_code", None)
+        if status_code is None:
+            response = getattr(exc, "response", None)
+            status_code = getattr(response, "status_code", None)
+        if str(status_code).strip() == "402":
+            return True
+
+        message = str(exc).lower()
+        if any(marker in message for marker in self.INSUFFICIENT_BALANCE_MARKERS):
+            return True
+        return bool(re.search(r"(?:error|status|code)[^0-9]{0,12}402\b", message))
 
     def _is_rate_limit_error(self, exc: Exception) -> bool:
         if APIStatusError is not None and isinstance(exc, APIStatusError):

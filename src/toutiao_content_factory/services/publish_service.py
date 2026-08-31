@@ -1149,6 +1149,7 @@ class PublishService:
                         str((draft_save_event or {}).get("post_data", "")),
                         expected_inline_images=inline_image_inserted,
                         expected_refs=list(media_state.get("refs", [])),
+                        editor_state_verified=bool(media_state.get("verified", False)),
                     )
                     draft_media_payload["event_captured"] = draft_save_event is not None
                     inline_image_summary["draft_save_payload"] = draft_media_payload
@@ -1321,6 +1322,7 @@ class PublishService:
                         str(publish_event.get("post_data", "")),
                         expected_inline_images=inline_image_inserted,
                         expected_refs=list(media_state.get("refs", [])),
+                        editor_state_verified=bool(media_state.get("verified", False)),
                     )
                     final_media_payload["event_captured"] = True
                     inline_image_summary["final_publish_payload"] = final_media_payload
@@ -2363,6 +2365,7 @@ class PublishService:
         *,
         expected_inline_images: int,
         expected_refs: list[str] | tuple[str, ...] = (),
+        editor_state_verified: bool = False,
     ) -> dict[str, Any]:
         payload_refs = self._extract_persistent_image_refs_from_post_data(post_data)
         content_values = self._extract_article_content_payload_values(post_data)
@@ -2381,10 +2384,30 @@ class PublishService:
             if not any(self._image_reference_matches(expected, actual) for actual in payload_refs)
             and not any(expected in content for content in content_values)
         ]
-        verified = expected_count <= 0 or (
+        unexpected_refs = [
+            actual
+            for actual in payload_refs
+            if normalized_expected_refs
+            and not any(self._image_reference_matches(expected, actual) for expected in normalized_expected_refs)
+        ]
+        request_refs_are_expected = bool(payload_refs) and bool(normalized_expected_refs) and not unexpected_refs
+        complete_verified = expected_count <= 0 or (
             len(payload_refs) >= expected_count
             and not missing_refs
+            and not unexpected_refs
         )
+        partial_verified = (
+            bool(editor_state_verified)
+            and expected_count > 0
+            and request_refs_are_expected
+        )
+        verified = complete_verified or partial_verified
+        if complete_verified:
+            verification_mode = "complete_request"
+        elif partial_verified:
+            verification_mode = "editor_state_plus_request_subset"
+        else:
+            verification_mode = "unverified"
         failure_reason = ""
         if not verified:
             if len(payload_refs) < expected_count:
@@ -2394,6 +2417,8 @@ class PublishService:
                 )
             elif missing_refs:
                 failure_reason = "payload omitted one or more editor image references"
+            elif unexpected_refs:
+                failure_reason = "payload contains an unexpected editor image reference"
             else:
                 failure_reason = "payload image persistence could not be verified"
 
@@ -2403,6 +2428,10 @@ class PublishService:
             "payload_refs": payload_refs[:20],
             "expected_refs": normalized_expected_refs[:20],
             "missing_refs": missing_refs[:20],
+            "unexpected_refs": unexpected_refs[:20],
+            "request_refs_are_expected": request_refs_are_expected,
+            "editor_state_verified": bool(editor_state_verified),
+            "verification_mode": verification_mode,
             "verified": verified,
             "failure_reason": failure_reason,
         }
@@ -4453,6 +4482,7 @@ class PublishService:
                             post_data,
                             expected_inline_images=int(state["expected_inline_images"]),
                             expected_refs=list(state["expected_refs"]),
+                            editor_state_verified=bool(state["ready"]),
                         )
                         ready_for_override = bool(state["ready"]) and bool(media_payload["verified"])
                         request_record.update(

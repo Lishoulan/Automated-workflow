@@ -150,13 +150,22 @@ def test_publish_media_payload_requires_persistent_refs_and_expected_count(
         expected_refs=["tos-cn-i-persisted", "https://p3-sign.douyinpic.com/persisted.png"],
     )
 
+    editor_verified_partial = service._summarize_publish_media_payload(
+        urlencode({"content": '<p>body</p><img web_uri="tos-cn-i-persisted">'}),
+        expected_inline_images=2,
+        expected_refs=["tos-cn-i-persisted", "https://p3-sign.douyinpic.com/persisted.png"],
+        editor_state_verified=True,
+    )
+
     assert verified["verified"] is True
     assert verified["payload_count"] == 2
     assert missing["verified"] is False
     assert missing["payload_count"] == 0
+    assert editor_verified_partial["verified"] is True
+    assert editor_verified_partial["verification_mode"] == "editor_state_plus_request_subset"
 
 
-def test_save_override_waits_for_persistent_inline_images_before_consuming_once(
+def test_save_override_allows_editor_verified_partial_payload_and_consumes_once(
     app_settings,
 ) -> None:
     service = PublishService(app_settings, logging.getLogger("save-override-image-gate-test"))
@@ -205,6 +214,18 @@ def test_save_override_waits_for_persistent_inline_images_before_consuming_once(
         ready=True,
     )
 
+    unexpected = _Route(
+        urlencode(
+            {
+                "content": '<p>body</p><img web_uri="tos-cn-i-unexpected">',
+                "save": "0",
+            }
+        )
+    )
+    page.handler(unexpected)
+    assert unexpected.aborted == ["blockedbyclient"]
+    assert service._save_override_state["consumed"] is False
+
     incomplete = _Route(
         urlencode(
             {
@@ -214,27 +235,16 @@ def test_save_override_waits_for_persistent_inline_images_before_consuming_once(
         )
     )
     page.handler(incomplete)
-    assert incomplete.aborted == ["blockedbyclient"]
-    assert service._save_override_state["consumed"] is False
-
-    complete = _Route(
-        urlencode(
-            {
-                "content": (
-                    '<p>正文</p><img web_uri="tos-cn-i-persisted">'
-                    '<img src="https://p3-sign.douyinpic.com/persisted.png">'
-                ),
-                "save": "0",
-            }
-        )
-    )
-    page.handler(complete)
-    assert complete.aborted == []
-    assert len(complete.continued) == 1
-    assert "save=1" in complete.continued[0]
+    assert incomplete.aborted == []
+    assert len(incomplete.continued) == 1
+    assert "save=1" in incomplete.continued[0]
     assert service._save_override_state["consumed"] is True
     assert service._save_override_state["last_request"]["decision"] == "rewritten_save_0_to_save_1"
     assert service._save_override_state["request_log"][-1]["rewritten_save_mode"] == 1
+    assert (
+        service._save_override_state["request_log"][-1]["media_payload"]["verification_mode"]
+        == "editor_state_plus_request_subset"
+    )
 
 
 def test_rewrite_publish_request_preserves_encoded_form_and_updates_cover_mode(

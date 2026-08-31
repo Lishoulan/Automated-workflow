@@ -47,6 +47,36 @@ def test_clean_article_text_removes_leaked_source_labels() -> None:
     assert "全尺寸人形机器人收入增长" in cleaned
 
 
+def test_clean_article_text_removes_copied_byline_account_cta_and_hashtags() -> None:
+    article = (
+        "机器人在热，兑现偏冷，优必选半年卖了16123台人形机器人。\n\n"
+        "机器人前瞻（公众号：robot_pro） 作者 | 钟宸编辑 | 漠影看着提速，实则分化。"
+        "后续判断仍要回到订单和回款。\n\n"
+        "关注我。聚焦科技商业、AI产业与先进制造，用数据拆热点。\n\n"
+        "#机器人 #具身智能 #AI #科技"
+    )
+
+    cleaned = clean_article_text(article, min_word_count=0)
+
+    assert "优必选" in cleaned
+    assert "16123台" in cleaned
+    assert "看着提速，实则分化" in cleaned
+    assert "作者" not in cleaned
+    assert "编辑" not in cleaned
+    assert "robot_pro" not in cleaned
+    assert "关注我" not in cleaned
+    assert "#机器人" not in cleaned
+    assert "#具身智能" not in cleaned
+
+
+def test_clean_article_text_preserves_body_after_compact_byline() -> None:
+    article = "机器人前瞻（公众号：robot_pro） 作者 | 钟宸 编辑 | 漠影看着提速，实则分化"
+
+    cleaned = clean_article_text(article, min_word_count=0)
+
+    assert cleaned == "看着提速，实则分化"
+
+
 def test_clean_article_text_removes_internal_review_paragraphs() -> None:
     article = (
         "公开材料显示，项目已经进入验证阶段。\n\n"

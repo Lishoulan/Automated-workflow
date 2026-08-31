@@ -94,3 +94,19 @@ class TestPublishPrecheckService:
         report_path = Path(result["report_path"])
         assert report_path.exists()
         assert report_path.name == "precheck_report.json"
+
+    def test_external_source_metadata_blocked(
+        self, service: PublishPrecheckService, tmp_path: Path
+    ) -> None:
+        article = _CLEAN_ARTICLE + (
+            "\n\n作者 | 钟宸\n编辑 | 漠影\n"
+            "公众号：robot_pro\n#机器人 #具身智能"
+        )
+
+        result = service.run_precheck(article, project_root=tmp_path)
+
+        assert result["status"] == "blocked"
+        assert any(
+            violation["rule"] == "external_source_metadata"
+            for violation in result["violations"]
+        )

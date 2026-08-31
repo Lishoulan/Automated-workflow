@@ -125,6 +125,87 @@ _LEADING_SOURCE_LABEL_RE = re.compile(
     r"(?:（[^）\n]{0,80}）|\([^\)\n]{0,80}\))?\s*[：:]\s*"
 )
 
+# Public copy must not inherit the source account's byline, account handle,
+# promotion text, or topic labels.  These patterns deliberately target
+# metadata-shaped text instead of ordinary phrases such as "据报道".
+_PUBLISHER_NAME_PATTERN = r"[\u4e00-\u9fffA-Za-z0-9·&]{1,40}"
+_SOURCE_ACCOUNT_GROUP = (
+    r"[（(]\s*(?:公众号|微信号|微博|抖音号)\s*[：:]\s*[^）)\n]{1,80}[）)]"
+)
+_SOURCE_ACCOUNT_AT_BOUNDARY_RE = re.compile(
+    rf"(?P<boundary>^|[。！？!?；;，,：:])\s*"
+    rf"(?P<source>{_PUBLISHER_NAME_PATTERN})\s*"
+    rf"(?P<account>{_SOURCE_ACCOUNT_GROUP})"
+)
+_SOURCE_CREDIT_SOURCE_PREFIX_RE = re.compile(
+    rf"^(?P<source>{_SOURCE_LABEL_NAME})\s*"
+    r"(?=(?:作者|编辑|责编|责任编辑|撰文|审校|整理)\s*(?:[|｜：:]|\s))"
+)
+_CREDIT_LABEL_RE = re.compile(
+    r"(?:作者|编辑|责编|责任编辑|撰文|审校|整理)\s*(?:[|｜：:]|\s+)"
+)
+_SOURCE_ACCOUNT_TOKEN_RE = re.compile(
+    r"(?:公众号|微信号|微博|抖音号)\s*[：:]\s*[A-Za-z0-9][A-Za-z0-9_.-]{1,80}"
+)
+_HASHTAG_LINE_RE = re.compile(r"\s*(?:#[^\s#]+(?:\s+|(?=#)|$))+\s*")
+_TRAILING_HASHTAGS_RE = re.compile(r"(?:\s+#[^\s#]+){1,}\s*$")
+_EXTERNAL_CTA_MARKERS = (
+    "关注我",
+    "欢迎关注",
+    "关注本号",
+    "关注本账号",
+    "关注公众号",
+    "扫码关注",
+)
+
+# A compact name is normally followed by the first words of the source
+# article when the source pasted its byline and opening on one physical line.
+# This lets us remove "编辑 | 漠影" while retaining "看着提速...".
+_CREDIT_BODY_START_MARKERS = (
+    "看着",
+    "看似",
+    "再看",
+    "先看",
+    "从",
+    "而",
+    "但",
+    "这",
+    "这个",
+    "这条",
+    "公司",
+    "业务",
+    "如果",
+    "材料",
+    "当前",
+    "公开",
+    "此次",
+    "随后",
+    "后续",
+    "真正",
+    "市场",
+    "财务",
+    "机器人",
+    "优必选",
+    "半年",
+    "兑现",
+    "在",
+    "的",
+    "与",
+    "把",
+    "将",
+    "能",
+    "是否",
+    "已经",
+    "尚未",
+    "目前",
+    "需要",
+    "这些",
+    "因此",
+    "根据",
+    "数据显示",
+    "正文",
+)
+
 
 def clean_article_text(
     article: str,
@@ -142,6 +223,7 @@ def clean_article_text(
         return ""
 
     text = _strip_inline_noise(text)
+    text = strip_external_source_metadata(text)
     text = strip_internal_source_labels(text)
     text = _normalize_markdown_structure(text)
     text = _strip_markdown_blocks(text)
@@ -211,6 +293,163 @@ def strip_internal_source_labels(text: str) -> str:
             break
         cleaned = updated
     return cleaned
+
+
+def strip_external_source_metadata(text: str) -> str:
+    """Remove copied source bylines, account promotion, and topic hashtags.
+
+    Source material is often pasted from a public account as one block, for
+    example ``账号（公众号：handle） 作者 | A 编辑 | B 正文``.  The account
+    metadata is not evidence for the article and must not reach either the
+    model-free fallback or the final Toutiao payload.
+    """
+
+    cleaned = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not cleaned.strip():
+        return ""
+
+    lines: list[str] = []
+    for raw_line in cleaned.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if lines and lines[-1] != "":
+                lines.append("")
+            continue
+
+        line = _strip_source_credit_segments(line)
+        line = _strip_external_cta(line)
+        line = _SOURCE_ACCOUNT_TOKEN_RE.sub("", line)
+        line = _TRAILING_HASHTAGS_RE.sub("", line).rstrip()
+
+        if not line or _HASHTAG_LINE_RE.fullmatch(line):
+            continue
+        lines.append(line)
+
+    while lines and lines[-1] == "":
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+def _strip_source_credit_segments(line: str) -> str:
+    """Strip source/account credits at the beginning or sentence boundary."""
+
+    current = str(line or "").strip()
+    if not current:
+        return ""
+
+    for _ in range(4):
+        changed = False
+
+        # Handle both a whole line and an inline lead such as
+        # "材料提到，机器人前瞻（公众号：robot_pro）作者 | ...".
+        account_match = _SOURCE_ACCOUNT_AT_BOUNDARY_RE.search(current)
+        if account_match:
+            boundary = account_match.group("boundary")
+            after = current[account_match.end() :].lstrip(" \t|｜：:")
+            current = current[: account_match.start()] + boundary + _strip_leading_credit_labels(after)
+            changed = True
+            continue
+
+        source_match = _SOURCE_CREDIT_SOURCE_PREFIX_RE.match(current)
+        if source_match:
+            after = current[source_match.end() :].lstrip(" \t|｜：:")
+            current = _strip_leading_credit_labels(after)
+            changed = True
+            continue
+
+        # A standalone credit line may remain after the source account was
+        # removed.  Only labels with an explicit separator are considered.
+        if _CREDIT_LABEL_RE.match(current):
+            stripped = _strip_leading_credit_labels(current)
+            if stripped != current:
+                current = stripped
+                changed = True
+                continue
+
+        if not changed:
+            break
+    return current.strip(" \t|｜：:，,；;")
+
+
+def _strip_leading_credit_labels(text: str) -> str:
+    """Remove 作者/编辑 labels and their short names, preserving article text."""
+
+    current = str(text or "").lstrip(" \t|｜：:")
+    if not current:
+        return ""
+
+    author_match = re.match(
+        r"^作者\s*(?:[|｜：:]\s*|\s+)",
+        current,
+    )
+    if author_match:
+        rest = current[author_match.end() :]
+        editor_match = re.search(
+            r"(?:编辑|责编|责任编辑|撰文|审校|整理)\s*(?:[|｜：:]\s*|\s+)",
+            rest,
+        )
+        if editor_match:
+            current = rest[editor_match.end() :]
+            return _drop_credit_name_prefix(current)
+        return _drop_credit_name_prefix(rest)
+
+    editor_match = re.match(
+        r"^(?:编辑|责编|责任编辑|撰文|审校|整理)\s*(?:[|｜：:]\s*|\s+)",
+        current,
+    )
+    if editor_match:
+        return _drop_credit_name_prefix(current[editor_match.end() :])
+    return current
+
+
+def _drop_credit_name_prefix(text: str) -> str:
+    """Drop a short byline name without discarding the opening sentence."""
+
+    current = str(text or "").lstrip(" \t|｜：:")
+    if not current:
+        return ""
+    if "\n" in current:
+        return current.split("\n", 1)[1].lstrip()
+
+    max_name_end = min(len(current), 24)
+    marker_positions = [
+        current.find(marker, 2, max_name_end + len(marker))
+        for marker in _CREDIT_BODY_START_MARKERS
+    ]
+    marker_positions = [position for position in marker_positions if position >= 2]
+    if marker_positions:
+        return current[min(marker_positions) :].lstrip(" \t|｜：:")
+
+    spaced_name = re.match(
+        r"(?:[\u4e00-\u9fffA-Za-z·]{2,12}\s+){1,3}(.+)$",
+        current,
+    )
+    if spaced_name:
+        return spaced_name.group(1).lstrip()
+
+    punctuation_match = re.search(r"[。！？!?；;，,]", current[: max_name_end + 1])
+    if punctuation_match and punctuation_match.start() >= 2:
+        return current[punctuation_match.end() :].lstrip()
+
+    if re.fullmatch(r"[\u4e00-\u9fffA-Za-z·]{2,12}", current):
+        return ""
+
+    # Most Chinese bylines are two or three characters.  The body-marker
+    # branch above handles compact bylines followed immediately by正文; this
+    # conservative fallback keeps the remaining content available for review.
+    return current[2:].lstrip(" \t|｜：:")
+
+
+def _strip_external_cta(line: str) -> str:
+    current = str(line or "").strip()
+    for marker in _EXTERNAL_CTA_MARKERS:
+        index = current.find(marker)
+        if index < 0:
+            continue
+        prefix = current[:index].rstrip()
+        if not prefix or prefix[-1] in "。！？!?；;，,：:\n":
+            return prefix.rstrip(" ，,。；;：:")
+    return current
 
 
 def _normalize_markdown_structure(text: str) -> str:

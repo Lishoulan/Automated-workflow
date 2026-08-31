@@ -15,7 +15,10 @@ from toutiao_content_factory.services.company_entities import (
     is_valid_company_name as is_shared_company_name,
     normalize_company_name as normalize_shared_company_name,
 )
-from toutiao_content_factory.services.article_sanitizer import strip_internal_source_labels
+from toutiao_content_factory.services.article_sanitizer import (
+    strip_external_source_metadata,
+    strip_internal_source_labels,
+)
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.services.prompt_repository import PromptRepository
@@ -468,6 +471,7 @@ class BaseAgent:
             return ""
         for raw, label in self.INTERNAL_LABEL_MAP.items():
             cleaned = cleaned.replace(raw, label)
+        cleaned = strip_external_source_metadata(cleaned)
         cleaned = strip_internal_source_labels(cleaned)
         cleaned = self._WHITESPACE_RE.sub(" ", cleaned)
         cleaned = self._strip_brand_mentions(cleaned)
@@ -490,6 +494,7 @@ class BaseAgent:
 
         cleaned = "\n".join(cleaned_lines)
         cleaned = self._MULTIPLE_NEWLINES_RE.sub("\n\n", cleaned)
+        cleaned = strip_external_source_metadata(cleaned)
         cleaned = strip_internal_source_labels(cleaned)
         # Normalize spaces inside lines while preserving paragraph boundaries.
         # Collapsing all whitespace here turns every paragraph into one block

@@ -127,6 +127,27 @@ def test_short_article_does_not_raise_undefined_notes_error(
     assert any("字数不足1500字" in item for item in payload["preflight_summary"]["warnings"])
 
 
+def test_toutiao_final_sanitizer_removes_external_source_metadata(
+    app_settings, tmp_path: Path, monkeypatch
+) -> None:
+    service = _make_service(app_settings, monkeypatch)
+    article = (
+        "机器人前瞻（公众号：robot_pro） 作者 | 钟宸编辑 | 漠影看着提速，实则分化。\n\n"
+        "关注我。聚焦科技商业、AI产业与先进制造。\n\n"
+        "#机器人 #具身智能 #AI"
+    )
+
+    cleaned = service._sanitize_article_for_publish(article)
+
+    assert "看着提速，实则分化" in cleaned
+    assert "机器人前瞻" not in cleaned
+    assert "robot_pro" not in cleaned
+    assert "作者" not in cleaned
+    assert "编辑" not in cleaned
+    assert "关注我" not in cleaned
+    assert "#机器人" not in cleaned
+
+
 def test_content_guard_block_is_not_bypassed_by_publishable_platform(
     app_settings, tmp_path: Path, monkeypatch
 ) -> None:

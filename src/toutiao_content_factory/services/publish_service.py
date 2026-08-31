@@ -19,7 +19,10 @@ from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlencode
 from toutiao_content_factory.config import AppSettings, RPAResilienceSettings
 from toutiao_content_factory.constants.selectors import TOUTIAO_EDITOR_PAGE, TOUTIAO_WEITOUTIAO_PAGE
 from toutiao_content_factory.models import PublishRecord
-from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.article_sanitizer import (
+    clean_article_text,
+    strip_external_source_metadata,
+)
 from toutiao_content_factory.services.browser_launch_guard import (
     ensure_browser_session_ready,
     prepare_browser_profile,
@@ -1840,6 +1843,10 @@ class PublishService:
 
     def _sanitize_article_for_publish(self, article: str) -> str:
         cleaned = clean_article_text(article)
+        # Keep the public-platform boundary explicit: older review packages
+        # may have been generated before the shared sanitizer learned these
+        # source byline and account patterns.
+        cleaned = strip_external_source_metadata(cleaned)
         # 头条为公域平台，剥离 MonetizationService 注入的私域引流 CTA 段落
         # （CTA 仅保留给微信等私域渠道）
         cleaned = self._strip_cta_for_toutiao(cleaned)

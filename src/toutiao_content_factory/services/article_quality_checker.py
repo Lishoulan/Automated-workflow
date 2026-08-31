@@ -97,6 +97,10 @@ class ArticleQualityChecker:
         r"benchmark_hotspot",
         r"evergreen_pool",
         r"evergreen://[^\s，。]*",
+        r"(?m)^\s*(?:作者|编辑|责编|责任编辑|撰文|审校|整理)\s*[|｜：:]",
+        r"(?:公众号|微信号|微博|抖音号)\s*[：:]",
+        r"(?m)^\s*(?:关注我|欢迎关注|关注本号|关注本账号|关注公众号|扫码关注)",
+        r"(?m)^\s*#[^\s#]+(?:\s+#[^\s#]+)*\s*$",
     ]
     # 预编译来源标记正则表达式
     _SOURCE_MARKER_PATTERNS_COMPILED = [re.compile(pattern) for pattern in SOURCE_MARKER_PATTERNS]

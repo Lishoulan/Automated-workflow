@@ -248,6 +248,9 @@ def test_local_source_fallback_builds_grounded_long_draft_when_model_is_unavaila
             "公司销售费用一年超过三千万元",
             "公司需要继续投入研发、市场和产能建设",
             "应收账款和存货存在需要进一步核对的隐患",
+            "机器人前瞻（公众号：robot_pro） 作者 | 钟宸编辑 | 漠影看着提速，实则分化",
+            "关注我。聚焦科技商业、AI产业与先进制造，用数据拆热点。",
+            "#机器人 #具身智能 #AI #科技",
         ],
     )
 
@@ -264,6 +267,12 @@ def test_local_source_fallback_builds_grounded_long_draft_when_model_is_unavaila
     assert "辰星技术" in article
     assert "2.53亿" in article
     assert "2880万" in article
+    assert "机器人前瞻" not in article
+    assert "robot_pro" not in article
+    assert "作者" not in article
+    assert "编辑" not in article
+    assert "关注我" not in article
+    assert "#机器人" not in article
     assert agent._unsupported_numeric_tokens(article, data_report) == []
     assert "材料里的推测会明确保留为推测" in article
     mock_openai_service.create_json_completion.assert_not_called()

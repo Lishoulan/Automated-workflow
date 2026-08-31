@@ -35,6 +35,16 @@ INTERNAL_IDENTIFIERS: tuple[str, ...] = (
     "对标账号高热内容",
 )
 
+# These are copied-account metadata, not article evidence.  They are checked
+# again here because this service sees the exact text about to cross into the
+# public platform boundary.
+EXTERNAL_SOURCE_METADATA_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?m)^\s*(?:作者|编辑|责编|责任编辑|撰文|审校|整理)\s*[|｜：:]"),
+    re.compile(r"(?:公众号|微信号|微博|抖音号)\s*[：:]"),
+    re.compile(r"(?m)^\s*(?:关注我|欢迎关注|关注本号|关注本账号|关注公众号|扫码关注)"),
+    re.compile(r"(?m)^\s*#[^\s#]+(?:\s+#[^\s#]+)*\s*$"),
+)
+
 # 内部 URL 正则：evergreen://xxx 与 .runtime/xxx
 INTERNAL_URL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"evergreen://[^\s]*"),
@@ -82,6 +92,7 @@ class PublishPrecheckService:
 
         violations.extend(self._check_cta_markers(text))
         violations.extend(self._check_internal_identifiers(text))
+        violations.extend(self._check_external_source_metadata(text))
         violations.extend(self._check_repeated_phrases(text))
         violations.extend(self._check_internal_urls(text))
 
@@ -131,6 +142,20 @@ class PublishPrecheckService:
             if identifier in article:
                 violations.append(
                     {"rule": "internal_identifier", "matched": identifier}
+                )
+        return violations
+
+    def _check_external_source_metadata(self, article: str) -> list[dict]:
+        """Block copied bylines, account handles, CTAs, and hashtag rows."""
+        violations: list[dict] = []
+        for pattern in EXTERNAL_SOURCE_METADATA_PATTERNS:
+            match = pattern.search(article)
+            if match:
+                violations.append(
+                    {
+                        "rule": "external_source_metadata",
+                        "matched": match.group(0).strip(),
+                    }
                 )
         return violations
 

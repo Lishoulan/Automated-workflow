@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import base64
+from io import BytesIO
 import json
 import logging
 import os
 import platform
 import random
 import re
+from urllib.request import urlopen
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from toutiao_content_factory.config import AppSettings
 
 
@@ -210,10 +213,16 @@ def gen_infographic(text, output_path):
     return str(output.resolve())
 
 
+class ImageGenerationAPIUnavailable(RuntimeError):
+    """Raised when the configured image API cannot produce a usable asset."""
+
+
 class ImageGenerationService:
     MAX_PUBLISH_IMAGE_BYTES = 1_500_000
     COMPRESS_TRIGGER_BYTES = 2_000_000
     MAX_PUBLISH_IMAGE_WIDTH = 1200
+    API_COVER_OUTPUT_SIZE = (1200, 675)
+    API_BACKENDS = {"image2", "image-api", "api", "openai", "auto"}
 
     def __init__(self, settings, logger):
         self.settings = settings
@@ -232,6 +241,185 @@ class ImageGenerationService:
             self.logger.debug("Frontend renderer init failed: %s", exc)
             return None
 
+    def _api_backend_requested(self) -> bool:
+        backend = str(getattr(self.settings.image_generation, "backend", "") or "")
+        backend = backend.strip().lower().split(",", 1)[0].strip()
+        return backend in self.API_BACKENDS or backend.startswith("gpt-image-")
+
+    def _resolve_image_api_key(self) -> str:
+        image_settings = self.settings.image_generation
+        candidates = (
+            getattr(image_settings, "model_api_key", ""),
+            os.getenv("IMAGE_API_KEY", ""),
+            os.getenv("OPENAI_API_KEY", ""),
+        )
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+            if value:
+                return value
+        return ""
+
+    def _get_image_api_client(self):
+        api_key = self._resolve_image_api_key()
+        if not api_key:
+            raise ImageGenerationAPIUnavailable(
+                "IMAGE_API_KEY or OPENAI_API_KEY is not configured"
+            )
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise ImageGenerationAPIUnavailable("openai SDK is not installed") from exc
+
+        image_settings = self.settings.image_generation
+        timeout = max(
+            10.0,
+            float(getattr(image_settings, "request_timeout_seconds", 180.0) or 180.0),
+        )
+        base_url = str(getattr(image_settings, "model_base_url", "") or "").strip()
+        # Image credentials are independent from the content-model relay. An
+        # empty IMAGE_BASE_URL therefore intentionally means the OpenAI API.
+        kwargs = {
+            "api_key": api_key,
+            "base_url": base_url or "https://api.openai.com/v1",
+            "timeout": timeout,
+            "max_retries": 0,
+        }
+        try:
+            return OpenAI(**kwargs)
+        except Exception as exc:
+            raise ImageGenerationAPIUnavailable(
+                f"image API client initialization failed: {exc.__class__.__name__}"
+            ) from exc
+
+    @staticmethod
+    def _response_value(item: Any, name: str) -> Any:
+        if isinstance(item, dict):
+            return item.get(name)
+        return getattr(item, name, None)
+
+    def _generate_api_image(self, prompt: str, output_path: Path, size: str) -> str:
+        """Generate one image through the configured GPT Image API."""
+        image_settings = self.settings.image_generation
+        model = str(getattr(image_settings, "model_name", "gpt-image-2") or "gpt-image-2").strip()
+        api_mode = str(getattr(image_settings, "api_mode", "images") or "images").strip().lower()
+        if api_mode not in {"images", "image", "generations", "auto"}:
+            raise ImageGenerationAPIUnavailable(
+                f"unsupported image API mode: {api_mode or 'empty'}"
+            )
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "n": 1,
+            "size": str(size or "auto"),
+            "quality": str(getattr(image_settings, "quality", "high") or "high").strip().lower(),
+            "output_format": "png",
+        }
+        background = str(getattr(image_settings, "background", "opaque") or "opaque").strip().lower()
+        if background in {"transparent", "opaque", "auto"}:
+            payload["background"] = background
+        if model != "gpt-image-2":
+            style = str(getattr(image_settings, "style", "") or "").strip().lower()
+            if style in {"vivid", "natural"}:
+                payload["style"] = style
+
+        client = self._get_image_api_client()
+        try:
+            response = client.images.generate(**payload)
+        except Exception as exc:
+            raise ImageGenerationAPIUnavailable(
+                f"image API request failed: {exc.__class__.__name__}"
+            ) from exc
+
+        data = getattr(response, "data", None)
+        if data is None and isinstance(response, dict):
+            data = response.get("data")
+        if not data:
+            raise ImageGenerationAPIUnavailable("image API returned no image data")
+        item = data[0]
+        b64_json = self._response_value(item, "b64_json")
+        raw: bytes
+        if b64_json:
+            encoded = str(b64_json)
+            if encoded.startswith("data:") and "," in encoded:
+                encoded = encoded.split(",", 1)[1]
+            try:
+                raw = base64.b64decode(encoded, validate=True)
+            except Exception as exc:
+                raise ImageGenerationAPIUnavailable("image API returned invalid base64 data") from exc
+        else:
+            image_url = self._response_value(item, "url")
+            if not image_url:
+                raise ImageGenerationAPIUnavailable("image API response has no b64_json or url")
+            try:
+                timeout = max(
+                    10.0,
+                    float(getattr(image_settings, "request_timeout_seconds", 180.0) or 180.0),
+                )
+                with urlopen(str(image_url), timeout=timeout) as response_stream:
+                    raw = response_stream.read()
+            except Exception as exc:
+                raise ImageGenerationAPIUnavailable(
+                    f"image API image download failed: {exc.__class__.__name__}"
+                ) from exc
+
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with Image.open(BytesIO(raw)) as image:
+                image.load()
+                image.convert("RGBA").save(output, format="PNG", optimize=True)
+        except Exception as exc:
+            raise ImageGenerationAPIUnavailable(
+                f"image API returned an unreadable image: {exc.__class__.__name__}"
+            ) from exc
+        return str(output.resolve())
+
+    @classmethod
+    def _compose_api_cover(cls, source_path: Path, title: str, output_path: Path) -> str:
+        """Crop the AI visual to the publish canvas and typeset the exact title locally."""
+        target_width, target_height = cls.API_COVER_OUTPUT_SIZE
+        with Image.open(source_path) as source:
+            base = ImageOps.fit(
+                source.convert("RGB"),
+                (target_width, target_height),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.58, 0.5),
+            ).convert("RGBA")
+
+        overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        for x in range(target_width):
+            progress = min(1.0, x / 760.0)
+            alpha = int(205 * (1.0 - progress) ** 1.35)
+            overlay_draw.line((x, 0, x, target_height), fill=(4, 10, 18, alpha))
+        base = Image.alpha_composite(base, overlay)
+
+        draw = ImageDraw.Draw(base)
+        title_font = load_font(58)
+        lines = wrap_text(title, title_font, 570, max_lines=3) or [title]
+        line_heights = [title_font.getbbox(line)[3] - title_font.getbbox(line)[1] for line in lines]
+        spacing = 12
+        block_height = sum(line_heights) + spacing * max(0, len(lines) - 1)
+        start_y = max(165, (target_height - block_height) / 2)
+        draw.line((72, 92, 176, 92), fill=(52, 218, 255, 235), width=4)
+        current_y = start_y
+        for line, line_height in zip(lines, line_heights):
+            draw.text(
+                (72, current_y),
+                line,
+                font=title_font,
+                fill=(248, 251, 255, 255),
+                stroke_width=3,
+                stroke_fill=(0, 0, 0, 150),
+            )
+            current_y += line_height + spacing
+
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        base.convert("RGB").save(output, format="PNG", optimize=True)
+        return str(output.resolve())
+
     def generate_for_run(self, run_dir, include_infographics=True):
         publish_dir = run_dir / self.settings.review.publish_dirname
         if not publish_dir.exists():
@@ -246,27 +434,58 @@ class ImageGenerationService:
         cr = ri / "cover.png"
         cp = pi / "cover.png"
 
-        # Try frontend renderer first, fall back to Pillow
-        used_frontend = False
-        renderer = self._get_frontend_renderer()
-        if renderer is not None:
-            try:
-                result_path = renderer.render_cover(title, str(cr))
-                if result_path and cr.exists():
-                    used_frontend = True
-                    self.logger.info("Cover generated via frontend renderer")
-            except Exception as e:
-                self.logger.warning("Frontend cover failed, falling back to Pillow: %s", e)
+        cover_prompt = self._build_api_cover_prompt(title)
+        cover_backend = ""
+        api_attempted = False
+        api_error_type = ""
+        api_cover_source = ri / "cover_ai.png"
+        api_cover_source.unlink(missing_ok=True)
+        renderer = None
+        infographic_backends: set[str] = set()
 
-        if not used_frontend:
+        if self._api_backend_requested():
+            api_attempted = True
+            try:
+                self._generate_api_image(
+                    cover_prompt,
+                    api_cover_source,
+                    str(getattr(self.settings.image_generation, "cover_size", "auto") or "auto"),
+                )
+                self._compose_api_cover(api_cover_source, title, cr)
+                cover_backend = "image2"
+                self.logger.info("Cover generated via image API (%s)", getattr(self.settings.image_generation, "model_name", "gpt-image-2"))
+            except Exception as exc:
+                api_error_type = exc.__class__.__name__
+                api_cover_source.unlink(missing_ok=True)
+                self.logger.warning(
+                    "GPT image cover failed (%s); using local image fallback",
+                    api_error_type,
+                )
+                if not bool(getattr(self.settings.image_generation, "fallback_to_renderer", True)):
+                    raise
+
+        if not cover_backend:
+            renderer = self._get_frontend_renderer()
+            if renderer is not None:
+                try:
+                    result_path = renderer.render_cover(title, str(cr))
+                    if result_path and cr.exists():
+                        cover_backend = "frontend"
+                        self.logger.info("Cover generated via frontend renderer")
+                except Exception as exc:
+                    self.logger.warning("Frontend cover failed, falling back to Pillow: %s", exc)
+
+        if not cover_backend:
             try:
                 generate_text_cover(title, str(cr))
+                cover_backend = "pillow"
             except Exception as e:
                 self.logger.error("Cover failed: %s", e)
                 raise
 
         if cr.exists():
-            Image.open(cr).save(cp, format="PNG")
+            with Image.open(cr) as cover_image:
+                cover_image.save(cp, format="PNG", optimize=True)
         ips = []
         publish_infographic_paths = []
         infographic_specs = []
@@ -283,8 +502,11 @@ class ImageGenerationService:
                 pt = str(spec.get("prompt", "")).strip() or title
                 rp = ri / ("infographic_" + str(idx) + ".png")
                 pp = pi / ("infographic_" + str(idx) + ".png")
-                # Try frontend renderer for infographic
+                # Statistical inserts stay deterministic so exact values and
+                # source notes cannot be altered by an image model.
                 infographic_frontend = False
+                if renderer is None:
+                    renderer = self._get_frontend_renderer()
                 if renderer is not None:
                     try:
                         result_path = renderer.render_infographic(
@@ -301,6 +523,7 @@ class ImageGenerationService:
                         )
                         if result_path and rp.exists():
                             infographic_frontend = True
+                            infographic_backends.add("frontend")
                     except Exception as e:
                         self.logger.debug("Frontend infographic %d failed: %s", idx, e)
                 if not infographic_frontend:
@@ -312,6 +535,7 @@ class ImageGenerationService:
                             ]
                         )
                         gen_infographic(fallback_text or pt, str(rp))
+                        infographic_backends.add("pillow")
                     except Exception as e:
                         self.logger.warning("Infographic %d skipped: %s", idx, e)
                         continue
@@ -324,18 +548,33 @@ class ImageGenerationService:
             for d in (pi, ri):
                 for f in sorted(d.glob("infographic_*.png")):
                     f.unlink(missing_ok=True)
+        if not infographic_backends:
+            infographic_backend = "none"
+        elif len(infographic_backends) == 1:
+            infographic_backend = next(iter(infographic_backends))
+        else:
+            infographic_backend = "mixed"
         result = {
             "generated_at": self._now(),
-            "backend": "frontend" if used_frontend else "pillow",
-            "model": "local",
-            "used_fallback": not used_frontend,
-            "cover_prompt": self._build_cover_prompt(title),
+            "backend": cover_backend,
+            "cover_backend": cover_backend,
+            "infographic_backend": infographic_backend,
+            "model": str(getattr(self.settings.image_generation, "model_name", "gpt-image-2")) if cover_backend == "image2" else "local",
+            "used_fallback": (api_attempted and cover_backend != "image2") or cover_backend == "pillow",
+            "api_attempted": api_attempted,
+            "api_succeeded": cover_backend == "image2",
+            "api_error_type": api_error_type,
+            "cover_prompt": cover_prompt,
             "infographic_prompts": [
                 str(spec.get("prompt", ""))
                 for spec in successful_infographic_specs
                 if str(spec.get("prompt", "")).strip()
             ],
-            "artifacts": {"cover": str(cr), "infographics": [str(p) for p in ips]},
+            "artifacts": {
+                "cover": str(cr),
+                "cover_ai_source": str(api_cover_source) if api_cover_source.exists() else "",
+                "infographics": [str(p) for p in ips],
+            },
             "publish_artifacts": {
                 "cover": str(cp),
                 "infographics": [str(p) for p in publish_infographic_paths],
@@ -823,6 +1062,35 @@ class ImageGenerationService:
             "Composition: 移动端可读的强标题层级，主体视觉简洁，保留足够留白，标题区域清楚。\n"
             f"Text (verbatim): “{title}”\n"
             "Constraints: 只使用给定标题，不添加数字、公司、排名、口号或未经证实的事实；中文清晰；无水印、无额外文字。"
+        )
+
+    @staticmethod
+    def _build_api_cover_prompt(title: str) -> str:
+        topic = str(title or "technology industry analysis").strip()
+        lowered = topic.casefold()
+        if any(keyword in lowered for keyword in ("robot", "robotics", "机器人", "人形")):
+            subject = (
+                "a physically plausible industrial humanoid robot with visible actuators and gripper detail "
+                "working near a modern assembly line"
+            )
+        elif any(keyword in lowered for keyword in ("energy", "battery", "storage", "能源", "电池", "储能")):
+            subject = (
+                "clean battery modules and a credible grid-scale energy storage installation in a modern facility"
+            )
+        else:
+            subject = "one credible industrial technology subject that visually represents the article topic"
+        return (
+            "Use case: photorealistic-natural\n"
+            "Asset type: premium Chinese technology and business article cover\n"
+            f"Primary request: create a credible editorial cover for the article topic \"{topic}\".\n"
+            f"Scene/backdrop: a clean modern industrial environment; subject: {subject}.\n"
+            "Style/medium: high-end business journalism and product photography, realistic materials, crisp engineering detail.\n"
+            "Composition/framing: wide landscape cover; keep the main subject on the right half and leave generous uncluttered negative space on the left for a locally typeset headline.\n"
+            "Lighting/mood: controlled studio-documentary lighting, calm, analytical, premium, with subtle depth and no visual noise.\n"
+            "Color palette: dark neutral background, steel blue and restrained cyan accents, with a small amount of warm practical light.\n"
+            "Text (verbatim): \"\". Do not render any text, letters, numbers, logos, labels, or watermark in the generated image.\n"
+            "Constraints: the local application will add the exact article title after generation; keep the left side readable and avoid invented company branding or specific claims.\n"
+            "Avoid: fantasy sci-fi, floating hologram overload, generic gradient poster, stock-photo cliches, clutter, distorted machinery, extra objects, illegible text, logos, and watermark."
         )
 
     @staticmethod

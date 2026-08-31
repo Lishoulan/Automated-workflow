@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import base64
+from dataclasses import replace
+from io import BytesIO
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 from PIL import Image
 
-from toutiao_content_factory.services.image_generation_service import ImageGenerationService
+from toutiao_content_factory.services.image_generation_service import (
+    ImageGenerationAPIUnavailable,
+    ImageGenerationService,
+)
 
 
 def _prepare_run(tmp_path: Path) -> Path:
@@ -133,3 +140,87 @@ def test_generate_for_run_removes_stale_infographics_when_disabled(
     assert result["cover_image"].exists()
     assert payload["inline_ready"] is False
     assert payload["publish_artifacts"]["infographics"] == []
+
+
+def test_image2_backend_generates_ai_cover_but_keeps_statistical_inserts_local(
+    app_settings, tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = _prepare_run(tmp_path)
+    app_settings.image_generation = replace(
+        app_settings.image_generation,
+        backend="image2",
+        model_name="gpt-image-2",
+        model_api_key="test-image-key",
+        cover_size="1536x1024",
+    )
+    service = ImageGenerationService(app_settings, logging.getLogger("image-api-test"))
+    calls: list[dict] = []
+    source = Image.new("RGB", (1536, 1024), (28, 74, 96))
+    source_buffer = BytesIO()
+    source.save(source_buffer, format="PNG")
+    encoded = base64.b64encode(source_buffer.getvalue()).decode("ascii")
+
+    class FakeImages:
+        def generate(self, **payload):
+            calls.append(payload)
+            return SimpleNamespace(data=[SimpleNamespace(b64_json=encoded)])
+
+    monkeypatch.setattr(service, "_get_image_api_client", lambda: SimpleNamespace(images=FakeImages()))
+    monkeypatch.setattr(service, "_get_frontend_renderer", lambda: None)
+
+    result = service.generate_for_run(run_dir, include_infographics=True)
+
+    payload = json.loads(
+        (run_dir / "publish" / "image_generation_result.json").read_text(encoding="utf-8")
+    )
+    assert calls and calls[0]["model"] == "gpt-image-2"
+    assert calls[0]["size"] == "1536x1024"
+    assert "Do not render any text" in calls[0]["prompt"]
+    assert result["cover_image"].exists()
+    with Image.open(result["cover_image"]) as cover:
+        assert cover.size == (1200, 675)
+    assert payload["backend"] == "image2"
+    assert payload["api_attempted"] is True
+    assert payload["api_succeeded"] is True
+    assert payload["model"] == "gpt-image-2"
+    assert payload["infographic_backend"] == "pillow"
+    assert payload["inline_ready"] is True
+
+
+def test_image2_backend_falls_back_when_api_fails(app_settings, tmp_path: Path, monkeypatch) -> None:
+    run_dir = _prepare_run(tmp_path)
+    app_settings.image_generation = replace(
+        app_settings.image_generation,
+        backend="image2",
+        model_name="gpt-image-2",
+        model_api_key="test-image-key",
+    )
+    service = ImageGenerationService(app_settings, logging.getLogger("image-api-fallback-test"))
+    def fail_generation(*_args):
+        raise ImageGenerationAPIUnavailable("provider rejected the request")
+
+    monkeypatch.setattr(service, "_generate_api_image", fail_generation)
+    monkeypatch.setattr(service, "_get_frontend_renderer", lambda: None)
+
+    result = service.generate_for_run(run_dir, include_infographics=False)
+
+    payload = json.loads(
+        (run_dir / "publish" / "image_generation_result.json").read_text(encoding="utf-8")
+    )
+    assert result["cover_image"].exists()
+    with Image.open(result["cover_image"]) as cover:
+        assert cover.size == (900, 383)
+    assert payload["backend"] == "pillow"
+    assert payload["used_fallback"] is True
+    assert payload["api_attempted"] is True
+    assert payload["api_succeeded"] is False
+    assert payload["api_error_type"] == "ImageGenerationAPIUnavailable"
+
+
+def test_image_api_key_resolution_accepts_openai_key_fallback(app_settings, monkeypatch) -> None:
+    service = ImageGenerationService(app_settings, logging.getLogger("image-key-test"))
+    app_settings.image_generation = replace(app_settings.image_generation, model_api_key="")
+    monkeypatch.delenv("IMAGE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "fallback-key")
+
+    assert service._resolve_image_api_key() == "fallback-key"

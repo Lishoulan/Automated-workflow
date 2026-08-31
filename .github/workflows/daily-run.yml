@@ -63,7 +63,7 @@ jobs:
       OPENAI_MODEL: ${{ secrets.OPENAI_BASE_URL && secrets.OPENAI_MODEL || '' }}
       OPENAI_TEMPERATURE: ${{ secrets.OPENAI_TEMPERATURE || '0.7' }}
 
-      IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY }}
+      IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY || secrets.OPENAI_API_KEY }}
       IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
 
       WECHAT_APP_ID: ${{ secrets.WECHAT_APP_ID }}
@@ -80,16 +80,17 @@ jobs:
       PYTHONUTF8: "1"
       TOUTIAO_ACCOUNT: default
 
-      # 图片生成（frontend = HTML+Playwright截图，renderer = Pillow兜底）
-      IMAGE_BACKEND: ${{ secrets.IMAGE_BACKEND || 'frontend' }}
+      # Image generation: image2 cover first; exact statistical inserts stay local.
+      IMAGE_BACKEND: ${{ secrets.IMAGE_BACKEND || 'image2' }}
       IMAGE_API_MODE: ${{ secrets.IMAGE_API_MODE || 'images' }}
-      IMAGE_MODEL: ${{ secrets.IMAGE_MODEL || 'gpt-image-1' }}
+      IMAGE_MODEL: ${{ secrets.IMAGE_MODEL || 'gpt-image-2' }}
       IMAGE_MAX_ASSETS: ${{ secrets.IMAGE_MAX_ASSETS || '2' }}
       IMAGE_COVER_SIZE: ${{ secrets.IMAGE_COVER_SIZE || '1536x1024' }}
       IMAGE_INFOGRAPHIC_SIZE: ${{ secrets.IMAGE_INFOGRAPHIC_SIZE || '1024x1536' }}
       IMAGE_QUALITY: ${{ secrets.IMAGE_QUALITY || 'high' }}
       IMAGE_STYLE: ${{ secrets.IMAGE_STYLE || 'vivid' }}
       IMAGE_BACKGROUND: ${{ secrets.IMAGE_BACKGROUND || 'opaque' }}
+      IMAGE_REQUEST_TIMEOUT_SECONDS: ${{ secrets.IMAGE_REQUEST_TIMEOUT_SECONDS || '180' }}
       IMAGE_FALLBACK_TO_RENDERER: "1"
 
       # 内容生成
@@ -810,7 +811,7 @@ jobs:
       OPENAI_MODEL: ${{ secrets.OPENAI_BASE_URL && secrets.OPENAI_MODEL || '' }}
       OPENAI_TEMPERATURE: ${{ secrets.OPENAI_TEMPERATURE || '0.7' }}
 
-      IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY }}
+      IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY || secrets.OPENAI_API_KEY }}
       IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
 
       WECHAT_APP_ID: ${{ secrets.WECHAT_APP_ID }}
@@ -827,16 +828,17 @@ jobs:
       PYTHONUTF8: "1"
       TOUTIAO_ACCOUNT: default
 
-      # 图片生成（frontend = HTML+Playwright截图，renderer = Pillow兜底）
-      IMAGE_BACKEND: ${{ secrets.IMAGE_BACKEND || 'frontend' }}
+      # Image generation: image2 cover first; exact statistical inserts stay local.
+      IMAGE_BACKEND: ${{ secrets.IMAGE_BACKEND || 'image2' }}
       IMAGE_API_MODE: ${{ secrets.IMAGE_API_MODE || 'images' }}
-      IMAGE_MODEL: ${{ secrets.IMAGE_MODEL || 'gpt-image-1' }}
+      IMAGE_MODEL: ${{ secrets.IMAGE_MODEL || 'gpt-image-2' }}
       IMAGE_MAX_ASSETS: ${{ secrets.IMAGE_MAX_ASSETS || '2' }}
       IMAGE_COVER_SIZE: ${{ secrets.IMAGE_COVER_SIZE || '1536x1024' }}
       IMAGE_INFOGRAPHIC_SIZE: ${{ secrets.IMAGE_INFOGRAPHIC_SIZE || '1024x1536' }}
       IMAGE_QUALITY: ${{ secrets.IMAGE_QUALITY || 'high' }}
       IMAGE_STYLE: ${{ secrets.IMAGE_STYLE || 'vivid' }}
       IMAGE_BACKGROUND: ${{ secrets.IMAGE_BACKGROUND || 'opaque' }}
+      IMAGE_REQUEST_TIMEOUT_SECONDS: ${{ secrets.IMAGE_REQUEST_TIMEOUT_SECONDS || '180' }}
       IMAGE_FALLBACK_TO_RENDERER: "1"
 
       # 内容生成

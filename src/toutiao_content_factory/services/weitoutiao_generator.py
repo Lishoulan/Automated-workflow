@@ -153,6 +153,14 @@ def _sanitize_slug(text: str) -> str:
 class WeiToutiaoStandaloneGenerator:
     """独立微头条生成器：选题 → 写作 → 构造发布包 → 复用浏览器发布。"""
 
+    BALANCE_FAILURE_MARKERS = (
+        "account balance is insufficient",
+        "insufficient balance",
+        "provider account balance",
+        "余额不足",
+        "账户余额不足",
+    )
+
     def __init__(self, settings: AppSettings, logger_: logging.Logger) -> None:
         self.settings = settings
         self.logger = logger_
@@ -317,6 +325,32 @@ class WeiToutiaoStandaloneGenerator:
             current = next_error if isinstance(next_error, Exception) else None
         return False
 
+    @classmethod
+    def _contains_balance_failure(cls, value: object) -> bool:
+        text = str(value or "").lower()
+        return any(marker in text for marker in cls.BALANCE_FAILURE_MARKERS)
+
+    def _is_local_fallback_eligible(self, exc: Exception) -> bool:
+        """Allow evidence-only writing after a provider quota failure.
+
+        OpenAIContentService disables the client after the first 402 response.
+        Subsequent agents then receive only ``Model client is not available``;
+        consult the service's recorded reason so the later micro-posts do not
+        become false generation failures. Authentication errors remain blocked.
+        """
+        if self._is_transient_model_error(exc):
+            return True
+        if self._contains_balance_failure(exc):
+            return True
+        error_text = str(exc or "").lower()
+        unavailable_reason = str(
+            getattr(self.openai_service, "unavailable_reason", "") or ""
+        )
+        return (
+            "model client is not available" in error_text
+            and self._contains_balance_failure(unavailable_reason)
+        )
+
     def build_local_fallback_content(self, topic: TopicCandidate, persona: str = "hot_comment") -> str:
         """Build an evidence-only short post without inventing facts when the model is down."""
         title = re.sub(r"\s+", " ", str(topic.title or "").strip()) or "今日行业观察"
@@ -474,12 +508,12 @@ class WeiToutiaoStandaloneGenerator:
             try:
                 content = self.generate_content(topic, persona=persona)
             except Exception as exc:
-                if self._local_fallback_enabled() and self._is_transient_model_error(exc):
+                if self._local_fallback_enabled() and self._is_local_fallback_eligible(exc):
                     generation_mode = "local_fallback"
                     fallback_reason = self._safe_error(exc)
                     content = self.build_local_fallback_content(topic, persona=persona)
                     self.logger.warning(
-                        "WeiToutiao model generation failed transiently; using local fallback: %s",
+                        "WeiToutiao model generation unavailable; using local fallback: %s",
                         fallback_reason,
                     )
                 else:

@@ -104,6 +104,45 @@ def test_unconfigured_model_does_not_generate_low_quality_fallback(app_settings)
     generator.publish_service.publish_weitoutiao.assert_not_called()
 
 
+def test_insufficient_balance_uses_local_fallback_for_all_selected_topics(app_settings) -> None:
+    object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
+    topics = [
+        _topic(),
+        TopicCandidate(
+            title="机器人交付节奏变化值得观察",
+            url="https://example.test/topic-2",
+            source="公开信息",
+            source_type="test",
+            summary="机器人行业的公开材料把讨论从演示效果推向交付节奏和实际应用，后续仍需等待新的可核验进展。",
+            snippet="机器人交付节奏变化",
+            matched_keywords=["机器人", "交付"],
+            rank=2,
+            total_score=85,
+        ),
+    ]
+    generator.select_topics = MagicMock(return_value=topics)
+    generator.generate_content = MagicMock(
+        side_effect=[
+            AIRequestError("Model request disabled for this run because the provider account balance is insufficient."),
+            AIRequestError("Model client is not available."),
+        ]
+    )
+    generator.openai_service._unavailable_reason = "Error code: 402 - account balance is insufficient"
+    generator.publish_service.publish_weitoutiao = MagicMock(
+        return_value={"status": "submitted_for_review"}
+    )
+
+    result = generator.publish_standalone(count=2, purpose="test_balance_fallback")
+
+    assert result["status"] == "success"
+    assert result["accepted"] == 2
+    assert result["fallback_count"] == 2
+    assert result["skipped_count"] == 0
+    assert all(item["generation_mode"] == "local_fallback" for item in result["published"])
+    assert generator.publish_service.publish_weitoutiao.call_count == 2
+
+
 def test_incomplete_topic_pool_is_reported_as_partial_success(app_settings) -> None:
     object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))

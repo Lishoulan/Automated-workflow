@@ -64,7 +64,7 @@ jobs:
       OPENAI_TEMPERATURE: ${{ secrets.OPENAI_TEMPERATURE || '0.7' }}
 
       IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY || secrets.OPENAI_API_KEY }}
-      IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+      IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL || secrets.OPENAI_BASE_URL }}
 
       WECHAT_APP_ID: ${{ secrets.WECHAT_APP_ID }}
       WECHAT_APP_SECRET: ${{ secrets.WECHAT_APP_SECRET }}
@@ -812,7 +812,7 @@ jobs:
       OPENAI_TEMPERATURE: ${{ secrets.OPENAI_TEMPERATURE || '0.7' }}
 
       IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY || secrets.OPENAI_API_KEY }}
-      IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+      IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL || secrets.OPENAI_BASE_URL }}
 
       WECHAT_APP_ID: ${{ secrets.WECHAT_APP_ID }}
       WECHAT_APP_SECRET: ${{ secrets.WECHAT_APP_SECRET }}

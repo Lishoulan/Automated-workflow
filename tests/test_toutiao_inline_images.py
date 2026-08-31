@@ -233,6 +233,90 @@ def test_save_override_waits_for_persistent_inline_images_before_consuming_once(
     assert len(complete.continued) == 1
     assert "save=1" in complete.continued[0]
     assert service._save_override_state["consumed"] is True
+    assert service._save_override_state["last_request"]["decision"] == "rewritten_save_0_to_save_1"
+    assert service._save_override_state["request_log"][-1]["rewritten_save_mode"] == 1
+
+
+def test_rewrite_publish_request_preserves_encoded_form_and_updates_cover_mode(
+    app_settings,
+) -> None:
+    service = PublishService(app_settings, logging.getLogger("publish-request-rewrite-test"))
+    original = urlencode(
+        {
+            "content": "<p>article body</p>",
+            "title": "article title",
+            "save": "0",
+            "draft_form_data": '{"coverType":2,"extra":"keep"}',
+        }
+    )
+
+    rewritten, changed = service._rewrite_publish_request(
+        original,
+        save_mode=1,
+        cover_type=1,
+    )
+
+    parsed = publish_service_module.parse_qs(rewritten, keep_blank_values=True)
+    assert changed is True
+    assert parsed["save"] == ["1"]
+    assert parsed["content"] == ["<p>article body</p>"]
+    assert parsed["title"] == ["article title"]
+    assert publish_service_module.json.loads(parsed["draft_form_data"][0]) == {
+        "coverType": 1,
+        "extra": "keep",
+    }
+
+
+def test_save_override_blocks_save_zero_when_handler_errors(
+    app_settings,
+    monkeypatch,
+) -> None:
+    service = PublishService(app_settings, logging.getLogger("save-override-error-test"))
+
+    class _Request:
+        def __init__(self, post_data: str) -> None:
+            self.post_data = post_data
+
+    class _Route:
+        def __init__(self, post_data: str) -> None:
+            self.request = _Request(post_data)
+            self.aborted: list[str | None] = []
+            self.continued: list[str | None] = []
+
+        def abort(self, *, error_code: str | None = None) -> None:
+            self.aborted.append(error_code)
+
+        def continue_(self, *, post_data: str | None = None) -> None:
+            self.continued.append(post_data)
+
+    class _Page:
+        def __init__(self) -> None:
+            self.handler = None
+
+        def route(self, _pattern: str, handler) -> None:
+            self.handler = handler
+
+    monkeypatch.setattr(
+        service,
+        "_summarize_publish_media_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic route error")),
+    )
+    page = _Page()
+    notes: list[str] = []
+    service._install_save_mode_override(page, notes)
+    service._update_save_mode_override_gate(
+        expected_inline_images=0,
+        expected_refs=(),
+        ready=True,
+    )
+
+    request = _Route(urlencode({"content": "<p>article</p>", "save": "0"}))
+    page.handler(request)
+
+    assert request.aborted == ["blockedbyclient"]
+    assert request.continued == []
+    assert service._save_override_state["last_request"]["decision"] == "blocked_handler_error"
+    assert "synthetic route error" in service._save_override_state["last_error"]
 
 
 def test_save_override_is_usable_for_draft_only_flow(app_settings) -> None:

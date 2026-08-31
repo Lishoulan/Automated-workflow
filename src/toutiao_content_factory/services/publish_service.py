@@ -14,7 +14,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote_plus
+from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlencode
 
 from toutiao_content_factory.config import AppSettings, RPAResilienceSettings
 from toutiao_content_factory.constants.selectors import TOUTIAO_EDITOR_PAGE, TOUTIAO_WEITOUTIAO_PAGE
@@ -975,11 +975,14 @@ class PublishService:
                 browser = self._launch_persistent_browser(playwright, profile_dir=profile_dir)
                 try:
                     page = browser.pages[0] if browser.pages else browser.new_page()
-                    self._ensure_browser_session_ready(browser, page, publish_url)
                     publish_events: list[dict[str, Any]] = []
                     diagnostic_events: list[dict[str, Any]] = []
                     self._install_publish_event_capture(page, publish_events)
                     self._install_publish_diagnostic_capture(page, diagnostic_events)
+                    # Arm the request guard before any session/probe navigation. The editor can
+                    # emit its first save=0 request while the publish page is still settling.
+                    self._install_save_mode_override(page, notes)
+                    self._ensure_browser_session_ready(browser, page, publish_url)
 
                     self._goto_publish_page(page, publish_url)
                     page.wait_for_timeout(1500)
@@ -1056,7 +1059,6 @@ class PublishService:
                     # Toutiao currently rejects the editor's initial save=0 request (7050).
                     # The route must be armed for both draft-only and publish flows so the
                     # first persisted payload uses the accepted save mode.
-                    self._install_save_mode_override(page, notes)
                     self._retry_playwright_action(
                         lambda: self._set_editor_content(page, editor_selector, article, notes),
                         description="set_editor_content",
@@ -4410,57 +4412,283 @@ class PublishService:
                 "expected_refs": [],
                 "blocked_request_count": 0,
                 "blocked_note_written": False,
+                "observed_request_count": 0,
+                "rewritten_request_count": 0,
+                "last_request": {},
+                "request_log": [],
+                "last_error": "",
             }
             self._save_override_state = state
             self._save_override_applied_at = [None]
 
             def handle_route(route):
+                post_data = ""
+                save_mode: int | None = None
+                request_record: dict[str, Any] = {}
                 try:
-                    post_data = route.request.post_data
-                    if post_data:
-                        modified = False
-                        has_pgc_id = "pgc_id=" in post_data and "pgc_id=0" not in post_data
-                        save_zero_request = "save=0" in post_data
-                        if save_zero_request and not state["consumed"] and not has_pgc_id:
-                            media_payload = self._summarize_publish_media_payload(
-                                post_data,
-                                expected_inline_images=int(state["expected_inline_images"]),
-                                expected_refs=list(state["expected_refs"]),
-                            )
-                            ready_for_override = bool(state["ready"]) and bool(media_payload["verified"])
-                            if not ready_for_override:
-                                state["blocked_request_count"] += 1
-                                if not state["blocked_note_written"]:
-                                    notes.append(
-                                        "Blocked a pre-media save=0 request; save=1 override remains armed "
-                                        "until persistent inline image references are present."
-                                    )
-                                    state["blocked_note_written"] = True
-                                route.abort(error_code="blockedbyclient")
-                                return
-                            post_data = post_data.replace("save=0", "save=1")
-                            state["consumed"] = True
-                            self._save_override_applied_at[0] = datetime.now().isoformat(timespec="milliseconds")
-                            modified = True
-                        if (
-                            not save_zero_request
-                            or state["consumed"]
-                            or modified
-                        ) and ("coverType%22%3A2" in post_data or '"coverType":2' in post_data):
-                            post_data = post_data.replace("coverType%22%3A2", "coverType%22%3A1")
-                            post_data = post_data.replace('"coverType":2', '"coverType":1')
-                            modified = True
-                        if modified:
-                            route.continue_(post_data=post_data)
+                    post_data = route.request.post_data or ""
+                    save_mode = self._extract_save_mode(post_data)
+                    state["observed_request_count"] += 1
+                    request_record = {
+                        "captured_at": datetime.now().isoformat(timespec="milliseconds"),
+                        "save_mode": save_mode,
+                        "post_data_length": len(post_data),
+                        "gate_ready": bool(state["ready"]),
+                        "expected_inline_images": int(state["expected_inline_images"]),
+                        "expected_refs_count": len(state["expected_refs"]),
+                        "decision": "observed",
+                    }
+                    state["last_request"] = request_record
+
+                    if not post_data:
+                        route.continue_()
+                        return
+
+                    has_pgc_id = self._post_data_has_persisted_pgc_id(post_data)
+                    save_zero_request = save_mode == 0
+                    modified = False
+
+                    if save_zero_request and not state["consumed"] and not has_pgc_id:
+                        media_payload = self._summarize_publish_media_payload(
+                            post_data,
+                            expected_inline_images=int(state["expected_inline_images"]),
+                            expected_refs=list(state["expected_refs"]),
+                        )
+                        ready_for_override = bool(state["ready"]) and bool(media_payload["verified"])
+                        request_record.update(
+                            {
+                                "has_persisted_pgc_id": has_pgc_id,
+                                "media_payload": media_payload,
+                                "ready_for_override": ready_for_override,
+                            }
+                        )
+                        if not ready_for_override:
+                            state["blocked_request_count"] += 1
+                            request_record["decision"] = "blocked_not_ready"
+                            if not state["blocked_note_written"]:
+                                notes.append(
+                                    "Blocked a pre-media save=0 request; save=1 override remains armed "
+                                    "until the editor payload is ready."
+                                )
+                                state["blocked_note_written"] = True
+                            route.abort(error_code="blockedbyclient")
                             return
-                except Exception:
-                    pass
-                route.continue_()
+
+                        rewritten_post_data, modified = self._rewrite_publish_request(
+                            post_data,
+                            save_mode=1,
+                            cover_type=1,
+                        )
+                        if not modified or self._extract_save_mode(rewritten_post_data) != 1:
+                            request_record.update(
+                                {
+                                    "decision": "blocked_rewrite_failed",
+                                    "rewrite_error": "save=0 could not be converted to save=1",
+                                }
+                            )
+                            state["last_error"] = "save=0 could not be converted to save=1"
+                            route.abort(error_code="blockedbyclient")
+                            return
+
+                        post_data = rewritten_post_data
+                        state["consumed"] = True
+                        state["rewritten_request_count"] += 1
+                        self._save_override_applied_at[0] = datetime.now().isoformat(timespec="milliseconds")
+                        request_record.update(
+                            {
+                                "decision": "rewritten_save_0_to_save_1",
+                                "rewritten_save_mode": self._extract_save_mode(post_data),
+                            }
+                        )
+                        modified = True
+                    elif save_zero_request:
+                        request_record.update(
+                            {
+                                "has_persisted_pgc_id": has_pgc_id,
+                                "decision": "passed_save_0_after_consumed",
+                            }
+                        )
+
+                    if not save_zero_request or state["consumed"] or modified:
+                        rewritten_post_data, cover_modified = self._rewrite_publish_request(
+                            post_data,
+                            cover_type=1,
+                        )
+                        if cover_modified:
+                            post_data = rewritten_post_data
+                            modified = True
+
+                    if modified:
+                        route.continue_(post_data=post_data)
+                    else:
+                        route.continue_()
+                except Exception as exc:
+                    state["last_error"] = self._clean_visible_text(exc)
+                    request_record.update(
+                        {
+                            "decision": "blocked_handler_error" if save_mode == 0 else "passed_handler_error",
+                            "error": state["last_error"],
+                        }
+                    )
+                    state["last_request"] = request_record
+                    # Never allow an unmodified save=0 request through after the guard failed.
+                    # That request is the known 7050 failure mode.
+                    if save_mode == 0 and not state["consumed"]:
+                        state["blocked_request_count"] += 1
+                        try:
+                            route.abort(error_code="blockedbyclient")
+                        except Exception:
+                            pass
+                        return
+                    route.continue_()
+                finally:
+                    if request_record:
+                        state["request_log"].append(dict(request_record))
+                        del state["request_log"][:-50]
 
             page.route("**/mp/agw/article/publish**", handle_route)
             notes.append("Installed save=1 + coverType=1 override route handler.")
         except Exception as exc:
             notes.append(f"Failed to install save mode override: {exc}")
+
+    def _post_data_has_persisted_pgc_id(self, post_data: str) -> bool:
+        if not post_data:
+            return False
+
+        stripped = post_data.strip()
+        if stripped.startswith(("{", "[")):
+            try:
+                payload = json.loads(stripped)
+            except Exception:
+                payload = {}
+            if isinstance(payload, dict):
+                value = payload.get("pgc_id")
+                if value is not None and str(value).strip() not in {"", "0"}:
+                    return True
+
+        try:
+            parsed = parse_qs(post_data, keep_blank_values=True)
+        except Exception:
+            parsed = {}
+        values = parsed.get("pgc_id", [])
+        return any(str(value).strip() not in {"", "0"} for value in values)
+
+    def _rewrite_publish_request(
+        self,
+        post_data: str,
+        *,
+        save_mode: int | None = None,
+        cover_type: int | None = None,
+    ) -> tuple[str, bool]:
+        """Rewrite only publish form fields while preserving the article payload."""
+        if not post_data or (save_mode is None and cover_type is None):
+            return post_data, False
+
+        stripped = post_data.strip()
+        if stripped.startswith("{"):
+            try:
+                payload = json.loads(stripped)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                changed = False
+                if save_mode is not None and str(payload.get("save", "")) != str(save_mode):
+                    payload["save"] = save_mode
+                    changed = True
+                if cover_type is not None:
+                    changed = self._set_publish_cover_type(payload, cover_type) or changed
+                if changed:
+                    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")), True
+
+        try:
+            pairs = parse_qsl(post_data, keep_blank_values=True)
+        except Exception:
+            pairs = []
+        if pairs:
+            changed = False
+            save_found = False
+            cover_found = False
+            rewritten_pairs: list[tuple[str, str]] = []
+            for key, value in pairs:
+                normalized_key = str(key)
+                rewritten_value = value
+                if save_mode is not None and normalized_key == "save":
+                    save_found = True
+                    if value != str(save_mode):
+                        rewritten_value = str(save_mode)
+                        changed = True
+                if cover_type is not None and normalized_key == "draft_form_data":
+                    cover_found = True
+                    rewritten_value, cover_changed = self._rewrite_draft_form_data(
+                        value,
+                        cover_type,
+                    )
+                    changed = cover_changed or changed
+                rewritten_pairs.append((normalized_key, rewritten_value))
+
+            if save_mode is not None and not save_found:
+                rewritten_pairs.append(("save", str(save_mode)))
+                changed = True
+            if cover_type is not None and not cover_found:
+                rewritten_pairs.append(
+                    ("draft_form_data", json.dumps({"coverType": cover_type}, separators=(",", ":")))
+                )
+                changed = True
+            if changed:
+                return urlencode(rewritten_pairs), True
+
+        # Keep a narrow fallback for legacy request bodies that are not parseable as a form.
+        rewritten = post_data
+        changed = False
+        if save_mode is not None:
+            pattern = re.compile(r"(^|&)save=\d+(?=&|$)")
+            rewritten, count = pattern.subn(
+                lambda match: f"{match.group(1)}save={save_mode}",
+                rewritten,
+                count=1,
+            )
+            changed = count > 0
+        if cover_type is not None:
+            rewritten, count = re.subn(
+                r"(coverType%22%3A)\d+",
+                lambda match: f"{match.group(1)}{cover_type}",
+                rewritten,
+                count=1,
+            )
+            changed = count > 0 or changed
+        return rewritten, changed
+
+    def _set_publish_cover_type(self, payload: dict[str, Any], cover_type: int) -> bool:
+        changed = False
+        for key in ("draft_form_data", "draftFormData"):
+            if key not in payload:
+                continue
+            value = payload.get(key)
+            if isinstance(value, str):
+                rewritten, value_changed = self._rewrite_draft_form_data(value, cover_type)
+                if value_changed:
+                    payload[key] = rewritten
+                    changed = True
+            elif isinstance(value, dict):
+                if value.get("coverType") != cover_type:
+                    value["coverType"] = cover_type
+                    changed = True
+        if "draft_form_data" not in payload and "draftFormData" not in payload:
+            payload["draft_form_data"] = {"coverType": cover_type}
+            changed = True
+        return changed
+
+    def _rewrite_draft_form_data(self, value: str, cover_type: int) -> tuple[str, bool]:
+        try:
+            payload = json.loads(value)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            if payload.get("coverType") == cover_type:
+                return value, False
+            payload["coverType"] = cover_type
+            return json.dumps(payload, ensure_ascii=False, separators=(",", ":")), True
+        return value, False
 
     def _update_save_mode_override_gate(
         self,
@@ -4782,6 +5010,7 @@ class PublishService:
                 payload["response_json"] = json.loads(text)
             except Exception:
                 payload["response_json"] = None
+            payload["save_override_state"] = self._save_override_debug_snapshot()
             bucket.append(payload)
 
         def handle_request_failed(request) -> None:
@@ -4802,6 +5031,7 @@ class PublishService:
                     ),
                     "response_text": str(failure),
                     "response_json": None,
+                    "save_override_state": self._save_override_debug_snapshot(),
                 }
             )
 
@@ -4831,57 +5061,28 @@ class PublishService:
 
         page.on("response", handle_response)
 
-    def _wait_for_draft_save(self, page, publish_events: list[dict[str, Any]], notes: list[str], expect_save_mode_1: bool = False) -> bool:
-        start_index = len(publish_events)
-        timeout_ms = max(self.settings.publishing.wait_timeout_ms, 20000)
-        deadline = datetime.now().timestamp() + (timeout_ms / 1000)
-        last_footer_text = ""
-        override_disabled = False
-
-        while datetime.now().timestamp() < deadline:
-            successful_autosave = self._latest_publish_event(
-                publish_events,
-                start_index=start_index,
-                save_mode=1,
-                success_only=True,
-            )
-            footer_text = self._read_draft_status_text(page)
-            footer_saving = self._draft_status_indicates_saving(footer_text)
-            footer_saved = self._draft_status_indicates_saved(footer_text)
-
-            if successful_autosave is not None and not footer_saving:
-                if not override_disabled:
-                    self._disable_save_mode_override(page, notes)
-                    override_disabled = True
-                if footer_text:
-                    notes.append(f"Draft autosave completed: {footer_text}")
-                else:
-                    notes.append("Draft autosave completed and no footer status text remained visible.")
-                return True
-
-            if footer_saved and not expect_save_mode_1:
-                if not override_disabled:
-                    self._disable_save_mode_override(page, notes)
-                    override_disabled = True
-                notes.append(f"Draft footer reported saved state: {footer_text}")
-                return True
-
-            last_footer_text = footer_text
-            page.wait_for_timeout(500)
-
-        debug_dir = self._capture_debug_artifacts(
-            page,
-            extra_payload={
-                "publish_events": publish_events,
-                "last_footer_text": last_footer_text,
-            },
-        )
-        notes.append(
-            "Draft autosave did not complete before publish. "
-            f"Last footer state: {last_footer_text or 'unavailable'}. "
-            f"Continuing with publish attempt. Debug files saved to: {debug_dir}"
-        )
-        return False
+    def _save_override_debug_snapshot(self, *, include_log: bool = False) -> dict[str, Any]:
+        state = self._save_override_state
+        if not isinstance(state, dict):
+            return {}
+        snapshot: dict[str, Any] = {
+            "consumed": bool(state.get("consumed")),
+            "ready": bool(state.get("ready")),
+            "expected_inline_images": int(state.get("expected_inline_images", 0)),
+            "expected_refs": list(state.get("expected_refs", [])),
+            "blocked_request_count": int(state.get("blocked_request_count", 0)),
+            "observed_request_count": int(state.get("observed_request_count", 0)),
+            "rewritten_request_count": int(state.get("rewritten_request_count", 0)),
+            "last_error": str(state.get("last_error", "")),
+            "last_request": dict(state.get("last_request") or {}),
+        }
+        if include_log:
+            snapshot["request_log"] = [
+                dict(item)
+                for item in list(state.get("request_log") or [])[-50:]
+                if isinstance(item, dict)
+            ]
+        return snapshot
 
     def _latest_publish_event(
         self,
@@ -5917,10 +6118,15 @@ class PublishService:
         except Exception as exc:
             self.logger.warning("Failed to save publish debug url: %s", exc)
 
-        if extra_payload is not None:
+        debug_payload = dict(extra_payload or {})
+        override_snapshot = self._save_override_debug_snapshot(include_log=True)
+        if override_snapshot:
+            debug_payload["save_override_state"] = override_snapshot
+
+        if debug_payload:
             try:
                 (debug_dir / "publish_context.json").write_text(
-                    json.dumps(extra_payload, ensure_ascii=False, indent=2),
+                    json.dumps(debug_payload, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
             except Exception as exc:

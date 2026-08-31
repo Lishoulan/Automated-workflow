@@ -178,20 +178,64 @@ class ContentGenerator:
     def _build_cover_prompt(self, extraction: ExtractionResult) -> str:
         keyword = extraction.supply_chain_keywords[0] if extraction.supply_chain_keywords else "科技制造"
         secondary = extraction.supply_chain_keywords[1] if len(extraction.supply_chain_keywords) > 1 else "产业链"
+        title = f"{keyword}进入兑现阶段"
         return (
-            f"深色科技风头条封面，16:9，中文主标题“{keyword}进入兑现阶段”，"
-            f"副标题“重点看{secondary}”，蓝黑色背景，数据流、芯片纹理、信息图布局，"
-            "画面高级、适合今日头条科技内容。"
+            "Use case: productivity-visual\n"
+            "Asset type: 今日头条科技商业文章 16:9 封面\n"
+            f"Primary request: 为“{keyword}”制作编辑部数据新闻风封面，主标题为“{title}”，副标题为“重点看{secondary}”。\n"
+            "Style/medium: 克制、现代、专业的科技媒体视觉；使用抽象数据网格和主题相关的几何视觉隐喻，"
+            "不要做成普通渐变海报或素材拼贴。\n"
+            "Composition: 移动端可读的强标题层级，主体视觉简洁，标题区域留出稳定留白，16:9 横版。\n"
+            f"Text (verbatim): “{title}” and “重点看{secondary}”\n"
+            "Constraints: 只使用给定文字，不添加数字、公司、排名、口号或未经核验的事实；中文清晰；"
+            "无水印、无额外文字。"
         )
 
     def _build_infographic_prompts(self, extraction: ExtractionResult) -> list[str]:
         keyword = extraction.supply_chain_keywords[0] if extraction.supply_chain_keywords else "科技制造"
         companies = "、".join(extraction.companies[:4]) or "头部企业"
         numbers = "、".join(extraction.growth_numbers[:3]) or "关键增长数字"
+        evidence = "\n".join(
+            f"- {item}" for item in extraction.core_data[:5] if str(item).strip()
+        ) or "- 当前材料没有足够的可核验数值，只保留事实摘录"
+        source = "；".join(
+            str(item.get("title", "")).strip()
+            for item in extraction.source_summaries[:2]
+            if isinstance(item, dict) and str(item.get("title", "")).strip()
+        ) or "本次文章已保存的核验材料"
         return [
-            f"信息图：{keyword}产业链结构图，深色科技风，中文标签，突出上游、中游、下游关键环节。",
-            f"一图看懂：{keyword}核心公司与卡位环节，包含 {companies}，移动端友好，数据卡片布局。",
-            f"数据图：展示 {numbers} 的对比图表，深色背景，蓝紫高亮，适合头条封面或配图。",
+            (
+                "Use case: infographic-diagram\n"
+                "Asset type: 今日头条移动端正文统计图，竖版 1024x1536\n"
+                f"Primary request: 制作“{keyword}”的事实数据统计图，优先使用同口径的横向条形图、前后对比图或单一占比进度条。\n"
+                f"Verified data (use only these exact values):\n{evidence}\n"
+                f"Additional numeric hints from the source: {numbers}\n"
+                f"Source: {source}\n"
+                "Composition: 标题、统计口径、主图、两到三条短事实摘录、来源脚注；高级数据新闻编辑风，"
+                "清晰网格，青绿色和珊瑚色强调，白底或浅灰底。\n"
+                "Data integrity: 不得估算、补全、四舍五入、跨单位比较、编造趋势线、行业份额、排名、客户或订单；"
+                "没有可靠的同口径数据时不要画比较图。\n"
+                "Typography: 简体中文无衬线字体，所有数字、单位和标签逐字准确，无小字堆叠、无水印。"
+            ),
+            (
+                "Use case: infographic-diagram\n"
+                "Asset type: 今日头条移动端正文产业链结构图，竖版 1024x1536\n"
+                f"Primary request: 梳理“{keyword}”已在材料中明确出现的产业链环节，只显示上游、中游、下游的原文标签。\n"
+                f"Named entities available in the source: {companies}\n"
+                f"Source-derived facts:\n{evidence}\n"
+                "Composition: 从上到下的三层结构，简短标签和清晰连接线，留白充足，避免把未给出的公司、产品或供应关系补进图中。\n"
+                "Style/medium: 高级科技产业研究信息图，平面、简洁、可读；不要使用复杂 3D、装饰性芯片纹理或假数据卡。\n"
+                "Constraints: 只能使用上述材料；如果某个环节没有证据就留空，不要猜测；中文标签逐字准确，无水印。"
+            ),
+            (
+                "Use case: infographic-diagram\n"
+                "Asset type: 今日头条移动端后续观察清单，竖版 1024x1536\n"
+                f"Primary request: 为“{keyword}”制作一张可收藏的后续观察框架，围绕这些已给出的数字：{numbers}。\n"
+                "Composition: 顶部一个核心问题，中部三到五个观察指标，每项配简洁的线性图标或编号，底部注明数据边界和来源。\n"
+                "Style/medium: 高级数据新闻编辑风，留白充足，墨色文字、青绿色主色、珊瑚色提示，适合手机阅读。\n"
+                "Data integrity: 不把观察指标画成已经发生的结果，不新增预测值，不把单家公司数据外推为行业结论；"
+                "所有来源数字和中文标签逐字准确，无水印、无额外文字。"
+            ),
         ]
 
     def _ensure_list(self, value: object, expected_size: int, fallback: list[str]) -> list[str]:

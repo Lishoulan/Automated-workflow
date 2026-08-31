@@ -61,8 +61,11 @@ class FrontendImageRenderer:
             return None
         try:
             page = browser.new_page(viewport={"width": width, "height": height})
-            page.set_content(html, wait_until="networkidle")
-            page.wait_for_timeout(500)  # let fonts load
+            # The templates use local system fallbacks. Waiting for every
+            # remote font/import would make scheduled runs hang when the
+            # runner has no outbound browser access.
+            page.set_content(html, wait_until="domcontentloaded")
+            page.wait_for_timeout(250)
             out = Path(output_path)
             out.parent.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(out), full_page=False, type="png")
@@ -105,6 +108,10 @@ class FrontendImageRenderer:
         metrics: list[dict] | None = None,
         section_title: str = "核心要点",
         items: list[str] | None = None,
+        chart: dict[str, Any] | None = None,
+        source_note: str = "",
+        period_label: str = "",
+        notes: list[str] | None = None,
         brand: str = _BRAND,
     ) -> str | None:
         """Render an infographic (800x1200) from HTML template."""
@@ -119,6 +126,10 @@ class FrontendImageRenderer:
             metrics=metrics,
             section_title=section_title,
             items=items,
+            chart=chart or {},
+            source_note=source_note,
+            period_label=period_label,
+            notes=notes or [],
             brand=brand,
             date=datetime.now().strftime("%Y.%m.%d"),
         )

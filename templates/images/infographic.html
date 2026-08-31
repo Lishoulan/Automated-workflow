@@ -5,247 +5,463 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Infographic</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;500;700;900&family=Space+Grotesk:wght@400;700&display=swap');
-
   :root {
-    --accent: #00e5a0;
-    --accent-dim: rgba(0,229,160,0.12);
-    --accent-glow: rgba(0,229,160,0.3);
-    --blue: #00b4ff;
-    --purple: #7850ff;
-    --text: #e8ecf2;
-    --muted: rgba(232,236,242,0.45);
-    --card: rgba(255,255,255,0.04);
-    --card-border: rgba(255,255,255,0.07);
+    --paper: #f3f5f2;
+    --surface: #ffffff;
+    --ink: #17252f;
+    --muted: #637078;
+    --line: #dce4e0;
+    --teal: #008f7a;
+    --teal-soft: #dff1ec;
+    --coral: #d96b4b;
+    --gold: #a97b27;
   }
 
-  * { margin:0; padding:0; box-sizing:border-box; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
 
   body {
     width: 800px;
     height: 1200px;
     overflow: hidden;
-    font-family: 'Noto Sans SC', sans-serif;
-    background: #0a0e17;
-    color: var(--text);
-    position: relative;
-    padding: 48px;
+    padding: 42px 40px 28px;
+    font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", Arial, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
   }
 
-  .bg-mesh {
-    position: absolute;
-    inset: 0;
-    background:
-      radial-gradient(ellipse 70% 40% at 80% 10%, rgba(0,229,160,0.08) 0%, transparent 60%),
-      radial-gradient(ellipse 50% 50% at 20% 90%, rgba(0,180,255,0.06) 0%, transparent 50%),
-      linear-gradient(180deg, #0a0e17 0%, #0f1525 50%, #0a0e17 100%);
-  }
-
-  .content { position: relative; z-index: 2; height: 100%; display: flex; flex-direction: column; }
-
-  /* Header */
-  .header {
-    margin-bottom: 36px;
-    padding-bottom: 24px;
-    border-bottom: 1px solid var(--card-border);
-  }
-  .eyebrow {
-    font-family: 'Space Grotesk', monospace;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--accent);
-    margin-bottom: 12px;
-  }
-  .header h1 {
-    font-size: 32px;
-    font-weight: 900;
-    line-height: 1.2;
-    letter-spacing: -0.01em;
-    background: linear-gradient(135deg, #fff 0%, #b8c4d4 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-  }
-
-  /* Metric cards */
-  .metrics-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
-    margin-bottom: 28px;
-  }
-  .metric-card {
-    background: var(--card);
-    border: 1px solid var(--card-border);
-    border-radius: 16px;
-    padding: 20px;
-    position: relative;
-    overflow: hidden;
-  }
-  .metric-card::before {
-    content: "";
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, var(--accent), transparent);
-  }
-  .metric-label {
-    font-size: 12px;
-    color: var(--muted);
-    margin-bottom: 8px;
-    letter-spacing: 0.04em;
-  }
-  .metric-value {
-    font-family: 'Space Grotesk', monospace;
-    font-size: 28px;
-    font-weight: 700;
-    color: var(--accent);
-  }
-  .metric-unit {
-    font-size: 14px;
-    font-weight: 400;
-    color: var(--muted);
-    margin-left: 4px;
-  }
-
-  /* Section */
-  .section {
-    background: var(--card);
-    border: 1px solid var(--card-border);
-    border-radius: 16px;
-    padding: 24px;
-    margin-bottom: 16px;
-    flex: 1;
+  .content {
+    height: 100%;
     display: flex;
     flex-direction: column;
   }
-  .section-title {
-    font-size: 16px;
+
+  .header {
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 13px;
+    color: var(--teal);
+    font-size: 12px;
     font-weight: 700;
+    letter-spacing: 0.12em;
+  }
+
+  .eyebrow::before {
+    content: "";
+    width: 22px;
+    height: 3px;
+    background: var(--teal);
+  }
+
+  .header h1 {
+    max-width: 700px;
+    color: var(--ink);
+    font-size: 30px;
+    font-weight: 900;
+    line-height: 1.28;
+  }
+
+  .period {
+    margin-top: 13px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin: 20px 0 14px;
+  }
+
+  .metric-card {
+    min-height: 105px;
+    padding: 16px 15px 14px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: 0 5px 16px rgba(23, 37, 47, 0.05);
+  }
+
+  .metric-label {
+    min-height: 18px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .metric-value {
+    margin-top: 7px;
+    color: var(--teal);
+    font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+    font-size: 25px;
+    font-weight: 700;
+    line-height: 1.08;
+    white-space: nowrap;
+  }
+
+  .metric-unit {
+    margin-left: 4px;
+    color: var(--muted);
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    font-size: 13px;
+    font-weight: 400;
+  }
+
+  .chart-panel,
+  .evidence-panel {
+    padding: 19px 21px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+
+  .chart-panel {
+    margin-bottom: 14px;
+  }
+
+  .panel-kicker {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 14px;
     margin-bottom: 16px;
+  }
+
+  .panel-kicker strong {
+    font-size: 15px;
+    font-weight: 800;
+  }
+
+  .panel-kicker span {
+    color: var(--muted);
+    font-size: 10px;
+    text-align: right;
+  }
+
+  .share-main {
+    display: grid;
+    grid-template-columns: 1fr 150px;
+    gap: 20px;
+    align-items: end;
+  }
+
+  .chart-label {
+    color: var(--ink);
+    font-size: 17px;
+    font-weight: 800;
+    line-height: 1.45;
+  }
+
+  .chart-note {
+    margin-top: 5px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .share-number {
+    color: var(--teal);
+    font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+    font-size: 46px;
+    font-weight: 700;
+    line-height: 1;
+    text-align: right;
+  }
+
+  .share-track {
+    height: 18px;
+    margin-top: 20px;
+    overflow: hidden;
+    background: #e8eeeb;
+    border-radius: 9px;
+  }
+
+  .share-fill {
+    height: 100%;
+    min-width: 3px;
+    background: var(--teal);
+    border-radius: 9px;
+  }
+
+  .scale {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 7px;
+    color: var(--muted);
+    font-size: 10px;
+  }
+
+  .secondary-chart {
+    margin-top: 21px;
+    padding-top: 17px;
+    border-top: 1px solid var(--line);
+  }
+
+  .secondary-chart .chart-label {
+    margin-bottom: 13px;
+    font-size: 14px;
+  }
+
+  .bar-row {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr) 60px;
+    gap: 10px;
+    align-items: center;
+    margin: 10px 0;
+  }
+
+  .bar-label {
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .bar-track {
+    height: 11px;
+    overflow: hidden;
+    background: #edf1ef;
+    border-radius: 6px;
+  }
+
+  .bar-fill {
+    height: 100%;
+    min-width: 3px;
+    background: var(--coral);
+    border-radius: 6px;
+  }
+
+  .bar-fill.current {
+    background: var(--teal);
+  }
+
+  .bar-value {
+    color: var(--ink);
+    font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+    font-size: 12px;
+    font-weight: 700;
+    text-align: right;
+  }
+
+  .evidence-panel {
+    flex: 1;
+    min-height: 300px;
+  }
+
+  .checklist-panel {
+    flex: 0 0 auto;
+    min-height: 430px;
+  }
+
+  .checklist-panel .evidence-item {
+    padding: 18px 0;
+  }
+
+  .checklist-panel .evidence-index {
+    width: 30px;
+    height: 30px;
+    font-size: 12px;
+  }
+
+  .checklist-panel + .footer {
+    margin-top: auto;
+  }
+
+  .section-title {
     display: flex;
     align-items: center;
     gap: 10px;
+    margin-bottom: 5px;
+    font-size: 15px;
+    font-weight: 800;
   }
+
   .section-title::before {
     content: "";
-    width: 4px; height: 18px;
-    background: var(--accent);
+    width: 4px;
+    height: 18px;
+    background: var(--coral);
     border-radius: 2px;
   }
 
-  /* List items */
-  .list-item {
-    display: flex;
-    align-items: flex-start;
-    gap: 14px;
-    padding: 12px 0;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
-  }
-  .list-item:last-child { border-bottom: none; }
-  .list-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: var(--accent);
-    margin-top: 7px;
-    flex-shrink: 0;
-    box-shadow: 0 0 0 4px var(--accent-dim);
-  }
-  .list-dot.blue { background: var(--blue); box-shadow: 0 0 0 4px rgba(0,180,255,0.15); }
-  .list-dot.purple { background: var(--purple); box-shadow: 0 0 0 4px rgba(120,80,255,0.15); }
-  .list-text {
-    font-size: 14px;
-    line-height: 1.6;
-    color: rgba(232,236,242,0.8);
+  .evidence-item {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 12px;
+    padding: 13px 0;
+    border-bottom: 1px solid #edf1ef;
   }
 
-  /* Timeline */
-  .timeline-item {
-    display: flex;
-    gap: 16px;
-    padding: 10px 0;
-    position: relative;
+  .evidence-item:last-of-type {
+    border-bottom: 0;
   }
-  .timeline-marker {
-    display: flex;
-    flex-direction: column;
+
+  .evidence-index {
+    display: inline-flex;
     align-items: center;
-    flex-shrink: 0;
-  }
-  .timeline-dot {
-    width: 10px; height: 10px;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    color: var(--teal);
+    background: var(--teal-soft);
     border-radius: 50%;
-    background: var(--accent);
-    box-shadow: 0 0 0 4px var(--accent-dim);
-  }
-  .timeline-line {
-    width: 1px;
-    flex: 1;
-    background: rgba(255,255,255,0.06);
-    margin-top: 4px;
-  }
-  .timeline-content {
-    font-size: 14px;
-    line-height: 1.6;
-    color: rgba(232,236,242,0.75);
-    padding-bottom: 8px;
+    font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+    font-size: 11px;
+    font-weight: 700;
   }
 
-  /* Footer */
+  .evidence-text {
+    align-self: center;
+    color: #33434c;
+    font-size: 13px;
+    line-height: 1.58;
+  }
+
+  .boundary-note {
+    display: flex;
+    gap: 8px;
+    margin-top: 14px;
+    padding: 10px 12px;
+    color: #78551d;
+    background: #fbf5e6;
+    border-left: 3px solid var(--gold);
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  .boundary-note strong {
+    flex-shrink: 0;
+    color: var(--gold);
+  }
+
   .footer {
-    margin-top: auto;
-    padding-top: 20px;
+    margin-top: 17px;
+    padding-top: 13px;
+    border-top: 1px solid var(--line);
+  }
+
+  .source-note {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.45;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .footer-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-top: 1px solid var(--card-border);
+    margin-top: 8px;
   }
+
   .footer-brand {
-    font-family: 'Space Grotesk', monospace;
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--accent);
-    letter-spacing: 0.08em;
-  }
-  .footer-note {
+    color: var(--teal);
     font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+  }
+
+  .footer-date {
     color: var(--muted);
+    font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+    font-size: 10px;
   }
 </style>
 </head>
 <body>
-  <div class="bg-mesh"></div>
-  <div class="content">
-    <div class="header">
+  <main class="content">
+    <header class="header">
       <div class="eyebrow">{{ eyebrow }}</div>
       <h1>{{ title }}</h1>
-    </div>
+      {% if period_label %}<div class="period">统计口径：{{ period_label }}</div>{% endif %}
+    </header>
 
-    <div class="metrics-grid">
+    {% if metrics %}
+    <section class="metrics-grid">
       {% for metric in metrics %}
-      <div class="metric-card">
+      <article class="metric-card">
         <div class="metric-label">{{ metric.label }}</div>
         <div class="metric-value">{{ metric.value }}<span class="metric-unit">{{ metric.unit }}</span></div>
+      </article>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    {% if chart and chart.type %}
+    <section class="chart-panel">
+      <div class="panel-kicker">
+        <strong>数据图表</strong>
+        <span>只展示来源材料中的同口径信息</span>
+      </div>
+
+      {% if chart.type == "share" %}
+      <div class="share-main">
+        <div>
+          <div class="chart-label">{{ chart.label }}</div>
+          <div class="chart-note">参照对象：{{ chart.reference }} · {{ chart.note }}</div>
+        </div>
+        <div class="share-number">{{ chart.display_value }}</div>
+      </div>
+      <div class="share-track"><div class="share-fill" style="width: {{ chart.value }}%;"></div></div>
+      <div class="scale"><span>0%</span><span>50%</span><span>100%</span></div>
+
+        {% if chart.secondary_chart and chart.secondary_chart.type == "comparison" %}
+        <div class="secondary-chart">
+          <div class="chart-label">{{ chart.secondary_chart.label }}</div>
+          {% for entry in chart.secondary_chart.entries %}
+          <div class="bar-row">
+            <span class="bar-label">{{ entry.label }}</span>
+            <span class="bar-track"><span class="bar-fill {% if loop.last %}current{% endif %}" style="width: {{ entry.width_pct }}%;"></span></span>
+            <span class="bar-value">{{ entry.display_value }}</span>
+          </div>
+          {% endfor %}
+          <div class="chart-note">{{ chart.secondary_chart.note }}</div>
+        </div>
+        {% endif %}
+      {% elif chart.type == "comparison" %}
+      <div class="chart-label">{{ chart.label }}</div>
+      {% for entry in chart.entries %}
+      <div class="bar-row">
+        <span class="bar-label">{{ entry.label }}</span>
+        <span class="bar-track"><span class="bar-fill {% if loop.last %}current{% endif %}" style="width: {{ entry.width_pct }}%;"></span></span>
+        <span class="bar-value">{{ entry.display_value }}</span>
       </div>
       {% endfor %}
-    </div>
+      <div class="chart-note">{{ chart.note }}</div>
+      {% endif %}
+    </section>
+    {% endif %}
 
-    <div class="section">
+    <section class="evidence-panel {% if not chart or not chart.type %}checklist-panel{% endif %}">
       <div class="section-title">{{ section_title }}</div>
       {% for item in items %}
-      <div class="list-item">
-        <div class="list-dot {% if loop.index0 % 3 == 1 %}blue{% elif loop.index0 % 3 == 2 %}purple{% endif %}"></div>
-        <div class="list-text">{{ item }}</div>
+      <div class="evidence-item">
+        <span class="evidence-index">{{ "%02d"|format(loop.index) }}</span>
+        <p class="evidence-text">{{ item }}</p>
       </div>
       {% endfor %}
-    </div>
+      {% if notes %}
+      <div class="boundary-note">
+        <strong>边界</strong>
+        <span>{{ notes|join("；") }}</span>
+      </div>
+      {% endif %}
+    </section>
 
-    <div class="footer">
-      <span class="footer-brand">{{ brand }}</span>
-      <span class="footer-note">{{ date }}</span>
-    </div>
-  </div>
+    <footer class="footer">
+      {% if source_note %}<div class="source-note">来源：{{ source_note }}</div>{% endif %}
+      <div class="footer-row">
+        <span class="footer-brand">{{ brand }}</span>
+        <span class="footer-date">{{ date }}</span>
+      </div>
+    </footer>
+  </main>
 </body>
 </html>

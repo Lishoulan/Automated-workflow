@@ -270,6 +270,7 @@ class ImageGenerationService:
         ips = []
         publish_infographic_paths = []
         infographic_specs = []
+        successful_infographic_specs = []
         if include_infographics:
             infographic_specs = self._build_infographic_specs(
                 run_dir=run_dir,
@@ -293,6 +294,10 @@ class ImageGenerationService:
                             metrics=list(spec.get("metrics", [])),
                             section_title=str(spec.get("section_title", "核心要点")),
                             items=list(spec.get("items", [])),
+                            chart=dict(spec.get("chart") or {}),
+                            source_note=str(spec.get("source_note", "")),
+                            period_label=str(spec.get("period_label", "")),
+                            notes=list(spec.get("notes", [])),
                         )
                         if result_path and rp.exists():
                             infographic_frontend = True
@@ -314,6 +319,7 @@ class ImageGenerationService:
                     Image.open(rp).save(pp, format="PNG")
                     ips.append(rp)
                     publish_infographic_paths.append(pp)
+                    successful_infographic_specs.append(spec)
         else:
             for d in (pi, ri):
                 for f in sorted(d.glob("infographic_*.png")):
@@ -323,15 +329,19 @@ class ImageGenerationService:
             "backend": "frontend" if used_frontend else "pillow",
             "model": "local",
             "used_fallback": not used_frontend,
-            "cover_prompt": title,
-            "infographic_prompts": [str(p) for p in ips],
+            "cover_prompt": self._build_cover_prompt(title),
+            "infographic_prompts": [
+                str(spec.get("prompt", ""))
+                for spec in successful_infographic_specs
+                if str(spec.get("prompt", "")).strip()
+            ],
             "artifacts": {"cover": str(cr), "infographics": [str(p) for p in ips]},
             "publish_artifacts": {
                 "cover": str(cp),
                 "infographics": [str(p) for p in publish_infographic_paths],
             },
             "inline_ready": bool(publish_infographic_paths),
-            "infographic_specs": infographic_specs[:len(ips)],
+            "infographic_specs": successful_infographic_specs,
         }
         rp = publish_dir / "image_generation_result.json"
         rp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -381,10 +391,13 @@ class ImageGenerationService:
         article = self._read_text(publish_dir / "article.md")
         topic = str((publish_meta.get("selected_topic") or {}).get("title", "")).strip()
 
+        core_data = self._text_list(data_report.get("core_data"))
+        evidence_notes = self._text_list(data_report.get("evidence_notes"))
+        growth_numbers = self._text_list(data_report.get("growth_numbers"))
         fact_items = self._unique_visual_items(
             [
-                *self._text_list(data_report.get("core_data")),
-                *self._text_list(data_report.get("evidence_notes")),
+                *core_data,
+                *evidence_notes,
                 *self._text_list(data_report.get("key_points")),
                 *self._article_paragraphs(article),
                 str(publish_meta.get("summary", "")),
@@ -394,19 +407,29 @@ class ImageGenerationService:
         tracking_items = self._unique_visual_items(
             [
                 *self._text_list(data_report.get("watch_metrics")),
-                *self._text_list(data_report.get("risk_flags")),
                 *self._text_list(data_report.get("key_points")),
-                *self._article_paragraphs(article)[-3:],
             ],
-            limit=5,
-        ) or fact_items
-        metrics = self._extract_visual_metrics(
-            [
-                *self._text_list(data_report.get("growth_numbers")),
-                *self._text_list(data_report.get("core_data")),
-                article,
-            ]
+            limit=4,
         )
+        if not tracking_items:
+            tracking_items = self._unique_visual_items(
+                [
+                    *self._text_list(data_report.get("risk_flags")),
+                    *self._article_paragraphs(article)[-3:],
+                ],
+                limit=4,
+            ) or fact_items
+        evidence_values = [
+            *core_data,
+            *evidence_notes,
+            *growth_numbers,
+            article,
+        ]
+        metrics = self._extract_visual_metrics(evidence_values)
+        chart = self._build_statistical_chart(evidence_values)
+        source_note = self._source_note(data_report, publish_meta)
+        period_label = self._period_label(evidence_values)
+        notes = self._text_list(data_report.get("risk_flags"))[:2]
         evidence_strength = data_report.get("evidence_strength")
         if not metrics and str(evidence_strength).strip().isdigit() and int(evidence_strength) > 0:
             metrics = [{"label": "证据强度", "value": str(int(evidence_strength)), "unit": "/100"}]
@@ -420,9 +443,23 @@ class ImageGenerationService:
                         "title": self._clip_visual_text(title, 42),
                         "eyebrow": "关键数据" if index == 1 else "跟踪框架",
                         "section_title": "文章中的事实锚点" if index == 1 else "后续观察重点",
-                        "metrics": metrics,
+                        "metrics": metrics if index == 1 else [],
                         "items": fact_items if index == 1 else tracking_items,
-                        "prompt": prompt,
+                        "chart": chart if index == 1 else {},
+                        "source_note": source_note,
+                        "period_label": period_label,
+                        "notes": notes,
+                        "prompt": self._build_infographic_prompt(
+                            title=self._clip_visual_text(title, 42),
+                            topic_label=topic or title,
+                            purpose="事实数据统计图" if index == 1 else "后续观察框架",
+                            base_prompt=prompt,
+                            chart=chart if index == 1 else {},
+                            metrics=metrics if index == 1 else [],
+                            items=fact_items if index == 1 else tracking_items,
+                            source_note=source_note,
+                            period_label=period_label,
+                        ),
                     }
                 )
             return specs
@@ -435,7 +472,20 @@ class ImageGenerationService:
                 "section_title": "文章中的事实锚点",
                 "metrics": metrics,
                 "items": fact_items,
-                "prompt": f"Evidence-backed facts for: {topic_label}",
+                "chart": chart,
+                "source_note": source_note,
+                "period_label": period_label,
+                "notes": notes,
+                "prompt": self._build_infographic_prompt(
+                    title=self._clip_visual_text(topic_label, 42),
+                    topic_label=topic_label,
+                    purpose="事实数据统计图",
+                    chart=chart,
+                    metrics=metrics,
+                    items=fact_items,
+                    source_note=source_note,
+                    period_label=period_label,
+                ),
             },
             {
                 "title": self._clip_visual_text(topic_label, 42),
@@ -443,7 +493,20 @@ class ImageGenerationService:
                 "section_title": "后续观察重点",
                 "metrics": [],
                 "items": tracking_items,
-                "prompt": f"Evidence-backed follow-up checklist for: {topic_label}",
+                "chart": {},
+                "source_note": source_note,
+                "period_label": period_label,
+                "notes": notes,
+                "prompt": self._build_infographic_prompt(
+                    title=self._clip_visual_text(topic_label, 42),
+                    topic_label=topic_label,
+                    purpose="后续观察框架",
+                    chart={},
+                    metrics=[],
+                    items=tracking_items,
+                    source_note=source_note,
+                    period_label=period_label,
+                ),
             },
         ]
 
@@ -493,11 +556,13 @@ class ImageGenerationService:
             return value
         return value[: max(1, limit - 3)].rstrip() + "..."
 
-    @staticmethod
-    def _extract_visual_metrics(values: list[str]) -> list[dict[str, str]]:
+    @classmethod
+    def _extract_visual_metrics(cls, values: list[str], limit: int = 3) -> list[dict[str, str]]:
+        """Extract labelled, source-derived metrics without inventing values."""
         metric_pattern = re.compile(
-            r"(?P<value>\d+(?:\.\d+)?(?:\s*[-~至—]\s*\d+(?:\.\d+)?)?)\s*"
-            r"(?P<unit>万亿元|亿元|万元|万辆|万台|GWh|MWh|kWh|GW|MW|km/h|个月|小时|分钟|天|%|％)",
+            r"(?P<value>[+-]?\d+(?:\.\d+)?(?:\s*[-~至—]\s*[+-]?\d+(?:\.\d+)?)?)\s*"
+            r"(?P<unit>万亿元|亿元|万元|千亿|万亿|万台|万辆|万件|GWh|MWh|kWh|GW|MW|km/h|"
+            r"个月|小时|分钟|天|项|台|辆|件|%|％|亿|万)",
             re.IGNORECASE,
         )
         metrics: list[dict[str, str]] = []
@@ -506,18 +571,259 @@ class ImageGenerationService:
             text = str(source or "")
             for match in metric_pattern.finditer(text):
                 value = re.sub(r"\s+", "", match.group("value"))
-                unit = match.group("unit")
+                unit = match.group("unit").replace("％", "%")
                 key = (value, unit.lower())
                 if key in seen:
                     continue
-                prefix = re.sub(r"\s+", "", text[max(0, match.start() - 14):match.start()])
-                prefix = prefix.strip("，,：:；;、")
-                label = prefix[-10:] if prefix else "数据锚点"
-                metrics.append({"label": label, "value": value, "unit": unit})
+                metrics.append(
+                    {
+                        "label": cls._metric_label(text, match.start()),
+                        "value": value,
+                        "unit": unit,
+                    }
+                )
                 seen.add(key)
-                if len(metrics) >= 3:
+                if len(metrics) >= max(0, limit):
                     return metrics
         return metrics
+
+    @classmethod
+    def _metric_label(cls, text: str, start: int) -> str:
+        context = re.sub(r"\s+", "", text[max(0, start - 34):start])
+        context = re.split(r"[。；;\n]", context)[-1]
+        context = re.split(r"[，,]", context)[-1]
+        context = re.sub(r"^.*?(?:公告|报告|披露)[：:]", "", context)
+        context = re.sub(r"\d{4}年(?:上半年|下半年|第[一二三四]季度)", "", context)
+        context = re.sub(r"[+-]?\d+(?:\.\d+)?(?:[-~至—][+-]?\d+(?:\.\d+)?)?"
+                         r"(?:万亿元|亿元|万元|千亿|万亿|万台|万辆|万件|GWh|MWh|kWh|GW|MW|km/h|"
+                         r"个月|小时|分钟|天|项|台|辆|件|%|％|亿|万)", "", context, flags=re.IGNORECASE)
+        context = context.strip("，,：:；;、()（）")
+        context = re.sub(r"(?:由|从|约|约为|达到|为)$", "", context).strip()
+        if not context:
+            return "数据锚点"
+        return cls._clip_visual_text(context[-18:], 18)
+
+    @classmethod
+    def _build_statistical_chart(
+        cls,
+        values: list[str],
+    ) -> dict[str, Any]:
+        """Return a chart only when the source contains a defensible comparison."""
+        text = "\n".join(str(value or "") for value in values)
+        share_chart = cls._extract_share_chart(text)
+        comparison_chart = cls._extract_percentage_comparison(text)
+        if share_chart:
+            if comparison_chart:
+                share_chart["secondary_chart"] = comparison_chart
+            return share_chart
+        if comparison_chart:
+            return comparison_chart
+
+        # A generic bar chart is intentionally omitted when the extracted
+        # metrics have different units or represent different concepts.
+        return {}
+
+    @classmethod
+    def _extract_share_chart(cls, text: str) -> dict[str, Any] | None:
+        percentage_pattern = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>%|％)")
+        number_pattern = (
+            r"[+-]?\d+(?:\.\d+)?(?:[-~至—][+-]?\d+(?:\.\d+)?)?\s*"
+            r"(?:万亿元|亿元|万元|千亿|万亿|万台|万辆|万件|GWh|MWh|kWh|GW|MW|km/h|"
+            r"个月|小时|分钟|天|项|台|辆|件|%|％|亿|万)"
+        )
+        for match in percentage_pattern.finditer(text):
+            sentence_start = max(
+                text.rfind("。", 0, match.start()),
+                text.rfind("；", 0, match.start()),
+                text.rfind(";", 0, match.start()),
+                text.rfind("\n", 0, match.start()),
+            ) + 1
+            sentence_end_candidates = [
+                position for position in (
+                    text.find("。", match.end()),
+                    text.find("；", match.end()),
+                    text.find(";", match.end()),
+                    text.find("\n", match.end()),
+                )
+                if position >= 0
+            ]
+            sentence_end = min(sentence_end_candidates, default=len(text))
+            window = text[sentence_start:sentence_end]
+            marker = re.search(r"占总收入|占收入|收入占比|占比|渗透率|比例", window)
+            if not marker:
+                continue
+            value = float(match.group("value"))
+            if not 0 <= value <= 100:
+                continue
+            sentence = text[sentence_start:match.start()]
+            sentence = re.sub(r"^.*?(?:公告|报告|披露)[：:]", "", sentence)
+            sentence = re.sub(r"(?:占总收入|占收入|收入占比|占比|渗透率|比例).*?$", "", sentence)
+            sentence = re.sub(number_pattern, "", sentence, flags=re.IGNORECASE)
+            sentence = sentence.strip("，,：:；;、 ")
+            if "渗透率" in marker.group(0):
+                label = cls._clip_visual_text((sentence + "渗透率") if sentence else "市场渗透率", 32)
+                reference = "市场总量"
+                note = "来源材料中的渗透率，不代表预测值"
+            elif "比例" in marker.group(0) and "占" not in marker.group(0):
+                label = cls._clip_visual_text((sentence + "比例") if sentence else "结构比例", 32)
+                reference = "整体"
+                note = "来源材料中的结构比例"
+            else:
+                label = cls._clip_visual_text((sentence + "占比") if sentence else "业务收入占比", 32)
+                reference = "总收入"
+                note = "公司披露的业务收入占比，不代表行业份额"
+            return {
+                "type": "share",
+                "label": label,
+                "value": value,
+                "display_value": f"{match.group('value')}%",
+                "reference": reference,
+                "note": note,
+            }
+        return None
+
+    @classmethod
+    def _extract_percentage_comparison(cls, text: str) -> dict[str, Any] | None:
+        comparison_pattern = re.compile(
+            r"(?P<previous>[+-]?\d+(?:\.\d+)?)\s*%\s*"
+            r"(?P<connector>升至|提高至|增至|上升至|降至|下降至|降为|变为|调整至)\s*"
+            r"(?P<current>[+-]?\d+(?:\.\d+)?)\s*%"
+        )
+        for match in comparison_pattern.finditer(text):
+            previous = float(match.group("previous"))
+            current = float(match.group("current"))
+            context = text[max(0, match.start() - 48):match.start()]
+            context = re.split(r"[。；;\n]", context)[-1]
+            context = re.split(r"[，,]", context)[-1]
+            context = re.sub(r"^.*?(?:公告|报告|披露)[：:]", "", context)
+            context = re.sub(r"(?:由|从)\s*$", "", context).strip("，,：: ")
+            label = cls._clip_visual_text(context or "指标变化", 22)
+            maximum = max(abs(previous), abs(current), 1.0)
+            direction = "上升" if current >= previous else "下降"
+            return {
+                "type": "comparison",
+                "label": label,
+                "unit": "%",
+                "entries": [
+                    {
+                        "label": "上年同期",
+                        "value": previous,
+                        "display_value": f"{match.group('previous')}%",
+                        "width_pct": round(abs(previous) / maximum * 100, 1),
+                    },
+                    {
+                        "label": "本期",
+                        "value": current,
+                        "display_value": f"{match.group('current')}%",
+                        "width_pct": round(abs(current) / maximum * 100, 1),
+                    },
+                ],
+                "note": f"同一指标的同期对比，材料显示为{direction}",
+            }
+        return None
+
+    def _source_note(self, data_report: dict[str, Any], publish_meta: dict[str, Any]) -> str:
+        notes = self._text_list(data_report.get("evidence_notes"))
+        for note in notes:
+            if any(token in note for token in ("来源", "公告", "报告", "数据")):
+                return self._clip_visual_text(note, 86)
+        summaries = data_report.get("source_summaries")
+        if isinstance(summaries, list):
+            for summary in summaries:
+                if isinstance(summary, dict):
+                    title = str(summary.get("title", "")).strip()
+                    if title:
+                        return self._clip_visual_text(f"来源：{title}", 86)
+        style = str(publish_meta.get("style_label", "")).strip()
+        return f"数据来自本次文章已保存的核验材料{f' · {style}' if style else ''}"
+
+    @staticmethod
+    def _period_label(values: list[str]) -> str:
+        text = "\n".join(str(value or "") for value in values)
+        patterns = [
+            r"截至\d{4}年\d{1,2}月\d{1,2}日(?:止[^，。；\n]*)?",
+            r"\d{4}年(?:上半年|下半年|第[一二三四]季度)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(0)[:34]
+        return "以来源材料披露期为准"
+
+    @classmethod
+    def _build_infographic_prompt(
+        cls,
+        *,
+        title: str,
+        topic_label: str,
+        purpose: str,
+        chart: dict[str, Any],
+        metrics: list[dict[str, str]],
+        items: list[str],
+        source_note: str,
+        period_label: str,
+        base_prompt: str = "",
+    ) -> str:
+        metric_lines = "\n".join(
+            f"- {metric.get('label', '数据锚点')}: {metric.get('value', '')}{metric.get('unit', '')}"
+            for metric in metrics[:5]
+        ) or "- 没有足够的同口径数值，只展示事实摘录，不补造统计量"
+        fact_lines = "\n".join(f"- {cls._clip_visual_text(item, 88)}" for item in items[:5])
+        if chart.get("type") == "share":
+            chart_line = (
+                f"主图为单一占比进度条：{chart.get('label', '业务收入')} "
+                f"{chart.get('display_value', '')}，参照对象为{chart.get('reference', '总量')}。"
+            )
+            secondary = chart.get("secondary_chart") or {}
+            if secondary:
+                chart_line += f"下方增加同口径前后对比：{secondary.get('label', '指标变化')}。"
+        elif chart.get("type") == "comparison":
+            chart_line = (
+                f"主图为同一指标的横向条形对比：{chart.get('label', '指标变化')}，"
+                "只显示来源材料给出的上年同期与本期。"
+            )
+        else:
+            chart_line = "没有可靠的同口径比较数据，不绘制柱状图、折线图或饼图，只做事实卡片与摘录。"
+        base_line = f"原始视觉方向：{base_prompt.strip()}\n" if base_prompt.strip() else ""
+        return (
+            "Use case: infographic-diagram\n"
+            "Asset type: 今日头条移动端正文数据图，竖版 1024x1536\n"
+            f"Primary request: 为“{topic_label}”制作{purpose}，标题为“{title}”。\n"
+            "Style/medium: 高级数据新闻编辑风，简洁的平面信息图，留白充足，"
+            "清晰网格，深墨色文字配青绿色和珊瑚色强调，适合手机阅读。\n"
+            f"Data period: {period_label}\n"
+            f"Chart direction: {chart_line}\n"
+            "Verified metrics (use only these exact values):\n"
+            f"{metric_lines}\n"
+            "Evidence excerpts (use as short labels or footnotes, do not rewrite into new facts):\n"
+            f"{fact_lines or '- 无可用事实摘录'}\n"
+            f"Source note (verbatim): “{source_note}”\n"
+            "Composition: top title and period, a strong data hierarchy, then the main chart, "
+            "two or three compact evidence callouts, and a small source footnote at the bottom.\n"
+            "Typography: readable Simplified Chinese sans-serif, exact numeric labels, no tiny text, "
+            "left-aligned body copy, consistent units and decimal precision.\n"
+            "Data integrity: use only the listed values and wording; do not estimate, interpolate, "
+            "round, extrapolate to the industry, or invent missing dates, companies, clients, orders, "
+            "market share, rankings, forecasts, or trend lines. Do not compare values with different units.\n"
+            "Constraints: render the title, labels, numbers, units, period, and source note accurately; "
+            "show that company-level shares are not industry shares; preserve a clear reading order.\n"
+            "Avoid: fake dashboard widgets, decorative 3D, photorealistic stock imagery, neon overload, "
+            "dense paragraphs, unreadable legends, excessive gradients, watermarks, logos, and extra text.\n"
+            f"{base_line}"
+        ).strip()
+
+    @staticmethod
+    def _build_cover_prompt(title: str) -> str:
+        return (
+            "Use case: productivity-visual\n"
+            "Asset type: 今日头条科技商业文章 16:9 封面\n"
+            f"Primary request: 为文章“{title}”制作高级科技媒体封面。\n"
+            "Style/medium: 编辑部数据新闻风，克制、现代、专业；用抽象数据网格和主题相关的几何视觉隐喻，"
+            "不要把封面做成普通渐变海报。\n"
+            "Composition: 移动端可读的强标题层级，主体视觉简洁，保留足够留白，标题区域清楚。\n"
+            f"Text (verbatim): “{title}”\n"
+            "Constraints: 只使用给定标题，不添加数字、公司、排名、口号或未经证实的事实；中文清晰；无水印、无额外文字。"
+        )
 
     @staticmethod
     def _read_text(path: Path) -> str:

@@ -86,6 +86,33 @@ def test_generate_for_run_writes_independent_evidence_backed_infographics(
     ]
     assert payload["infographic_specs"][0]["items"][0] == "Revenue grew 12.5% year on year"
     assert any(metric["value"] == "12.5" for metric in payload["infographic_specs"][0]["metrics"])
+    assert payload["infographic_prompts"]
+    assert "Verified metrics" in payload["infographic_prompts"][0]
+    assert payload["infographic_specs"][0]["source_note"]
+
+
+def test_statistical_chart_uses_only_explicit_share_and_same_metric_comparison(app_settings) -> None:
+    service = ImageGenerationService(app_settings, logging.getLogger("image-chart-test"))
+    values = [
+        "香港交易所官方公告：人形机器人产品及服务收入5.90299亿元，占总收入46.5%。",
+        "整体毛利率由35.0%升至44.7%。",
+    ]
+
+    chart = service._build_statistical_chart(values)
+
+    assert chart["type"] == "share"
+    assert chart["display_value"] == "46.5%"
+    assert "人形机器人" in chart["label"]
+    assert chart["secondary_chart"]["type"] == "comparison"
+    assert chart["secondary_chart"]["entries"][0]["display_value"] == "35.0%"
+    assert chart["secondary_chart"]["entries"][1]["display_value"] == "44.7%"
+
+
+def test_statistical_chart_does_not_compare_different_units(app_settings) -> None:
+    service = ImageGenerationService(app_settings, logging.getLogger("image-chart-boundary-test"))
+    values = ["收入12.5%，装机容量50 GWh。", "另一个指标为3.2亿元。"]
+
+    assert service._build_statistical_chart(values) == {}
 
 
 def test_generate_for_run_removes_stale_infographics_when_disabled(

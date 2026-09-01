@@ -45,7 +45,8 @@ on:
         default: 'false'
 
 concurrency:
-  group: daily-run-${{ github.ref }}
+  # The report-only schedule must not cancel an active content/publish run.
+  group: daily-run-${{ github.ref }}-${{ github.event_name == 'schedule' && github.event.schedule == '0 14 * * *' && 'report' || 'content' }}
   cancel-in-progress: true
 
 permissions:

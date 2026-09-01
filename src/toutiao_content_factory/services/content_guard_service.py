@@ -481,7 +481,7 @@ class ContentGuardService:
     )
 
     NUMBER_PATTERN = re.compile(
-        r"\d+(?:\.\d+)?(?:%|倍|年|亿元|亿美元|万元|万台|万辆|万套|万吨|GW|MW|kW|GWh|MWh|kWh)"
+        r"\d[\d,]*(?:\.\d+)?(?:%|倍|年|亿元|亿美元|万元|万台|万辆|万套|万吨|GWh|MWh|kWh|GW|MW|kW)"
     )
     _ASCII_TOKEN_PATTERN = re.compile(r"[a-z0-9%]{2,}")
     _NON_WORD_REPLACE_PATTERN = re.compile(r"[a-z0-9%]+")
@@ -1247,8 +1247,13 @@ class ContentGuardService:
             return warnings
         article_numbers = set(self.NUMBER_PATTERN.findall(article_text))
         source_numbers = set(self.NUMBER_PATTERN.findall(source_text))
+
+        def normalize_number(value: str) -> str:
+            return re.sub(r"(?<=\d),(?=\d)", "", str(value or ""))
+
+        normalized_source_numbers = {normalize_number(num) for num in source_numbers}
         for num in article_numbers:
-            if num not in source_numbers:
+            if normalize_number(num) not in normalized_source_numbers:
                 warnings.append(f"数字'{num}'在原始素材中未找到对应出处，可能存在引用错误")
         return warnings
 

@@ -114,3 +114,11 @@ def test_clean_article_text_keeps_lead_that_looks_like_a_title() -> None:
 
     assert cleaned.startswith("这份中期业绩释放的信号很明确：")
     assert "收入结构发生变化" in cleaned
+
+
+def test_clean_article_text_decodes_literal_newline_escapes() -> None:
+    article = "第一段。\\n\\n第二段。"
+
+    cleaned = clean_article_text(article, min_word_count=0)
+
+    assert cleaned == "第一段。\n\n第二段。"

@@ -311,6 +311,7 @@ def test_local_source_fallback_builds_grounded_long_draft_when_model_is_unavaila
     assert "编辑" not in article
     assert "关注我" not in article
     assert "#机器人" not in article
+    assert article.rstrip().split("\n\n")[-1].endswith("？")
     assert agent._unsupported_numeric_tokens(article, data_report) == []
     assert "材料里的推测会明确保留为推测" in article
     mock_openai_service.create_json_completion.assert_not_called()
@@ -397,6 +398,26 @@ def test_conditional_order_question_is_not_treated_as_an_assertion(
     assert not agent._has_unsupported_order_claim("若后续获得订单，再判断商业化进度。", data_report)
     assert not agent._has_unsupported_order_claim("订单是否落地，仍需等待公告。", data_report)
     assert agent._has_unsupported_order_claim("公司已经获得重复订单。", data_report)
+
+
+def test_finalize_comment_prompt_replaces_generic_question_with_grounded_choices(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    data_report = DataReport(
+        companies=["优必选"],
+        watch_metrics=["交付节奏", "经营现金流"],
+    )
+
+    prompt = agent._finalize_comment_prompt("对此你怎么看？", data_report)
+
+    assert "优必选" in prompt
+    assert "交付节奏" in prompt
+    assert "经营现金流" in prompt
+    assert "还是" in prompt
+    assert prompt.endswith("？")
 
 
 def test_unknown_known_brand_is_rejected_from_polished_article(

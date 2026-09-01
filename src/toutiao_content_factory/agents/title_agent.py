@@ -37,6 +37,18 @@ class TitleAgent(BaseAgent):
         "开始分化，先吃到利润的是哪一环",
     )
     WEAK_SUFFIXES = ("现在走到哪一步了", "会怎么走", "还能走多远", "怎么看", "是什么信号")
+    UNSUPPORTED_FINANCIAL_LINK_PATTERNS = (
+        re.compile(
+            r"(?:毛利率?|盈利|利润)[^，。；：:]{0,12}"
+            r"(?:撑住|支撑|决定|证明)[^，。；：:]{0,12}"
+            r"(?:批量|量产|订单|交付)"
+        ),
+        re.compile(
+            r"(?:收入|增速|毛利率?)[^，。；：:]{0,12}"
+            r"(?:意味着|说明|证明)[^，。；：:]{0,12}"
+            r"(?:成熟|规模化|量产)"
+        ),
+    )
 
     DISCOURAGED_TITLE_PATTERNS = (
         "竟然", "万万没想到", "背后原因", "原来是因为", "天理难容",
@@ -97,6 +109,8 @@ class TitleAgent(BaseAgent):
         for pattern in self.DISCOURAGED_TITLE_PATTERNS:
             if pattern in title:
                 return False
+        if any(pattern.search(title) for pattern in self.UNSUPPORTED_FINANCIAL_LINK_PATTERNS):
+            return False
         # 标题必须承接正文具象钩子：若正文含具体数字/场景/公司等地标元素，
         # 标题至少引用其一，避免"情绪模板+空泛主题词"的零点击标题。
         if body_text and 10 <= len(title) <= 30:
@@ -196,6 +210,10 @@ class TitleAgent(BaseAgent):
         ]
         if compliant_titles:
             ranked_titles = compliant_titles
+            compliant_set = set(compliant_titles)
+            recommended_titles = [title for title in recommended_titles if title in compliant_set]
+            if not recommended_titles:
+                recommended_titles = ranked_titles[: self.settings.recommended_title_count]
 
         return {
             "titles": ranked_titles[: self.settings.title_count],

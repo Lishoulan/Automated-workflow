@@ -218,7 +218,12 @@ def clean_article_text(
     function deliberately never pads a short article with generic facts or
     industry claims because it has no source context to ground them.
     """
-    text = str(article or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    # Some model responses encode paragraph breaks as the two literal
+    # characters ``\\n``. Decode those before block parsing so the publish
+    # gate and mobile paragraph splitter see the same structure as the model.
+    text = str(article or "")
+    text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not text:
         return ""
 

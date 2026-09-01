@@ -76,6 +76,52 @@ class PolishAgent(BaseAgent):
         "其次": "",
         "最后": "",
     }
+    EVIDENCE_BOUNDARY_REWRITES = (
+        (
+            "前者更接近复杂任务和行业部署的观察指标，后者则体现产品覆盖与销售规模",
+            "从产品定义看，前者属于全尺寸具身产品口径，后者属于非全尺寸非具身产品口径；二者应分别核对交付与收入结果",
+        ),
+        (
+            "客户更看重能够落地并形成交付结果的产品与定制化方案",
+            "收入结构变化可能反映业务重心转向定制化交付，但客户偏好仍需订单与验收数据验证",
+        ),
+        (
+            "将直接影响项目收入和利润的兑现节奏",
+            "可能影响项目收入确认和利润兑现节奏",
+        ),
+        (
+            "一增一减说明市场资源和收入结构正在重新排序",
+            "一增一减首先说明公司披露的收入结构发生变化，市场资源是否随之调整仍需更多数据验证",
+        ),
+        (
+            "说明当前产品与解决方案组合出现了一定利润弹性",
+            "与当前产品及解决方案组合变化同时出现，是否形成可持续利润弹性仍待验证",
+        ),
+        (
+            "这决定了产业链的利润不会平均分配",
+            "这也把观察范围延伸到产业链利润分配，但现有材料不足以判断具体环节",
+        ),
+        (
+            "收入增量更多集中在需要场景适配、项目交付和现场服务的业务中",
+            "按披露分类，收入增量主要出现在包含场景适配、项目交付和现场服务描述的业务中",
+        ),
+        (
+            "人形机器人商业化可能先在工业制造、物流等相对结构化场景寻找突破",
+            "从优必选现有收入结构看，人形机器人商业化或许先在工业制造、物流等相对结构化场景寻找突破",
+        ),
+        (
+            "更可能获得高于单纯硬件供应的议价权",
+            "是否能获得高于单纯硬件供应的议价权，仍要看合同、验收和回款数据",
+        ),
+        (
+            "市场资源正在向具身产品及定制化交付集中",
+            "收入结构正在向具身产品及定制化交付倾斜，市场资源是否同步变化仍待验证",
+        ),
+        (
+            "增长仍可能主要来自早期项目集中确认",
+            "增长也可能受到早期项目集中确认影响，但现有材料没有给出收入确认原因",
+        ),
+    )
 
 
     ANTI_AI_FLAVOR_APPENDIX = (
@@ -85,7 +131,9 @@ class PolishAgent(BaseAgent):
         "3. 段落按信息单元自然切分，通常每段1到3句即可，不要为了满足固定段数、固定句长或固定开头强行拆合。长短句要有变化，避免连续使用相同句式。\n"
         "4. 只保留输入材料里已有的数字和主体。素材没有硬数据时，明确写‘尚未披露’或改成待验证问题，不要用虚构场景、第一人称经历或抽象案例填充。\n"
         "5. 来源感表达只在输入确有依据时自然使用，不要给每个数字机械添加相同的‘公开材料显示’前缀，也不要把分析建议写成已发生的事实。\n"
-        "6. 结尾保留一个围绕文中具体变量的可争论问题，不添加 CTA、引流、咨询或其他营销段落。"
+        "6. 结尾保留一个围绕文中具体变量的可争论问题，不添加 CTA、引流、咨询或其他营销段落。\n"
+        "7. 数据报告中的 industry_trends 和 key_points 只提供分析方向，不等同于原始事实；涉及客户偏好、市场格局、利润弹性或行业阶段时，必须改成可能性判断并写出验证条件。\n"
+        "8. 质量审核指出的每一项问题都必须在 polished_article 中实际改写，不能只在 validation_notes 里承认问题。"
     )
 
     POLISH_SYSTEM_PROMPT = (
@@ -446,6 +494,7 @@ class PolishAgent(BaseAgent):
         # handling is performed by the workflow after polishing.
         cleaned = clean_article_text(cleaned, min_word_count=0)
         cleaned = self._remove_ai_cliches(cleaned)
+        cleaned = self._apply_evidence_boundary_edits(cleaned)
         paragraphs = [self._normalize_paragraph(block) for block in cleaned.split("\n\n") if block.strip()]
         paragraphs = [block for block in paragraphs if block]
 
@@ -491,6 +540,7 @@ class PolishAgent(BaseAgent):
         else:
             paragraphs = self._rebalance_paragraphs(paragraphs)
         article_text = "\n\n".join(paragraphs[:12]).strip()
+        article_text = clean_article_text(article_text, min_word_count=0)
         unsupported_tokens = self._unsupported_numeric_tokens(article_text, data_report)
         if self._should_rebuild_cautious(article_text, data_report, unsupported_tokens) or self._has_unsupported_order_claim(
             article_text,
@@ -505,7 +555,7 @@ class PolishAgent(BaseAgent):
                     "Polish was too aggressive, keeping original article.",
                     polished_chars, original_char_count, int(original_char_count * 0.6),
                 )
-                return article
+                return clean_article_text(self._apply_evidence_boundary_edits(article), min_word_count=0)
         return article_text
 
     def _validate_article(
@@ -659,6 +709,13 @@ class PolishAgent(BaseAgent):
         article = re.sub(r"^[，。、；：\s]+", "", article)
         article = re.sub(r"[，。、；：\s]+$", "", article, flags=re.MULTILINE)
         return article.strip()
+
+    def _apply_evidence_boundary_edits(self, article: str) -> str:
+        """Downgrade recurring unsupported causal claims without adding facts."""
+        revised = str(article or "")
+        for source, replacement in self.EVIDENCE_BOUNDARY_REWRITES:
+            revised = revised.replace(source, replacement)
+        return revised
 
     def _should_rebuild_cautious(
         self,

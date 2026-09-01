@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from toutiao_content_factory.services.content_guard_service import (
@@ -145,3 +147,29 @@ class TestCheckHighRiskCategories:
         assert result["blocked"] is False
         assert result["matched_category"] == ""
         assert result["matched_tokens"] == []
+
+
+class TestNumberAttribution:
+    def test_number_attribution_normalizes_thousands_separators(
+        self,
+        app_settings,
+        logger,
+        tmp_path,
+    ) -> None:
+        guard = ContentGuardService(app_settings, logger)
+        (tmp_path / "selected_topic.json").write_text(
+            json.dumps(
+                {"selected_topic": {"title": "Revenue grew 1445.0%"}},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        warnings = guard._check_number_attribution("Revenue grew 1,445.0%", tmp_path)
+
+        assert warnings == []
+
+    def test_number_pattern_keeps_kw_unit(self, app_settings, logger) -> None:
+        guard = ContentGuardService(app_settings, logger)
+
+        assert guard.NUMBER_PATTERN.findall("峰值功率1kW") == ["1kW"]

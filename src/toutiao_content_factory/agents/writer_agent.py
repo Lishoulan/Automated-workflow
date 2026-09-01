@@ -287,7 +287,10 @@ class WriterAgent(BaseAgent):
             benchmark_track=benchmark_track,
             self_benchmark_context=self_benchmark_context,
         )
-        comment_prompt = self._default_comment_prompt(data_report)
+        comment_prompt = self._finalize_comment_prompt(
+            self._default_comment_prompt(data_report),
+            data_report,
+        )
         if self._should_use_local_source_fallback(data_report):
             article = self._build_local_source_article(
                 trend_report,
@@ -324,10 +327,11 @@ class WriterAgent(BaseAgent):
 
     def _should_use_local_source_fallback(self, data_report: DataReport) -> bool:
         """Use a longer deterministic draft only when the source can support it."""
-        if self.openai_service.available:
-            return False
         if self._content_mode(data_report) == "hot_topic":
             return False
+        return self._has_sufficient_source_facts(data_report)
+
+    def _has_sufficient_source_facts(self, data_report: DataReport) -> bool:
         facts = self.clean_publish_list(
             getattr(data_report, "source_facts", []) or [],
             limit=self.LOCAL_SOURCE_FACT_LIMIT,
@@ -349,6 +353,8 @@ class WriterAgent(BaseAgent):
         return (
             "当前是自动发布候选：正文目标约1800字，最低1750字。即使数据路由标记为快讯点评，也必须写成完整的可审计分析稿；"
             "只能用输入材料中的事实做机制拆解、影响分析和风险边界，证据不足时收窄结论，不得重复套话凑字数。"
+            "数据报告里的industry_trends和key_points是分析假设，不是已确认事实，必须用‘可能’‘或许’‘仍需验证’限定；"
+            "不要把毛利率提升直接写成已经支撑批量交付，也不要从单家公司收入结构直接推出客户偏好或市场资源重排。"
         )
 
     def _article_word_target_for_prompt(self, data_report: DataReport) -> str:
@@ -510,18 +516,21 @@ class WriterAgent(BaseAgent):
         )
 
         # The structural formatter intentionally limits the first pass to a
-        # compact number of blocks. Append unused source facts only as needed
-        # to reach the public long-form floor, keeping every addition traceable.
+        # compact number of blocks. Insert unused source facts before the
+        # closing question so the interaction remains the last public text.
         existing = re.sub(r"\s+", "", article)
+        article_paragraphs = [item.strip() for item in article.split("\n\n") if item.strip()]
         pending = [fact for fact in facts if re.sub(r"\s+", "", fact) not in existing]
         for fact in pending:
             if len(re.sub(r"\s+", "", article)) >= self.LOCAL_SOURCE_ARTICLE_TARGET:
                 break
             paragraph = frame(fact)
-            if self._is_duplicate_paragraph(paragraph, article.split("\n\n")):
+            if self._is_duplicate_paragraph(paragraph, article_paragraphs):
                 continue
-            article = f"{article}\n\n{paragraph}".strip()
-        return article
+            insert_at = max(0, len(article_paragraphs) - 1)
+            article_paragraphs.insert(insert_at, paragraph)
+            article = "\n\n".join(article_paragraphs).strip()
+        return clean_article_text(article, min_word_count=0)
 
     def _build_article(
         self,
@@ -1133,9 +1142,50 @@ class WriterAgent(BaseAgent):
     def _finalize_comment_prompt(self, raw_prompt: object, data_report: DataReport | None) -> str:
         text = self.strip_prompt_leakage(str(raw_prompt or "")).replace("\n", " ").strip()
         text = re.sub(r"\s+", " ", text)
-        if not text:
-            return self._default_comment_prompt(data_report)
+        if not text or not self._comment_prompt_is_concrete(text, data_report):
+            return self._build_concrete_comment_prompt(data_report)
         return text.rstrip("。！？!?") + "？"
+
+    def _comment_prompt_is_concrete(self, text: str, data_report: DataReport | None) -> bool:
+        if data_report is None:
+            return False
+        if any(marker in text for marker in ("回复", "领取", "咨询", "周报", "你怎么看", "欢迎留言")):
+            return False
+        anchors = [
+            *self._company_candidates(data_report)[:4],
+            *self.clean_publish_list(getattr(data_report, "watch_metrics", []) or [], limit=4),
+            *self._extract_numeric_tokens(
+                " ".join(
+                    [
+                        *(getattr(data_report, "growth_numbers", []) or [])[:6],
+                        *(getattr(data_report, "source_facts", []) or [])[:6],
+                    ]
+                )
+            ),
+        ]
+        anchors = [str(item).strip() for item in anchors if str(item).strip()]
+        has_anchor = any(anchor in text for anchor in anchors)
+        has_choice = any(token in text for token in ("还是", "哪个", "哪一", "谁", "更看重", "更关注", "先看"))
+        return has_anchor and has_choice
+
+    def _build_concrete_comment_prompt(self, data_report: DataReport | None) -> str:
+        if data_report is None:
+            return "你更看重订单交付，还是利润和现金流改善？"
+        companies = self._company_candidates(data_report)
+        anchor = companies[0] if companies else self._primary_keyword(data_report, fallback="这个项目")
+        metrics = self.clean_publish_list(getattr(data_report, "watch_metrics", []) or [], limit=4)
+        if len(metrics) >= 2:
+            return f"{anchor}后续更该先看{metrics[0]}，还是看{metrics[1]}？"
+        numbers = self._extract_numeric_tokens(
+            " ".join(
+                [
+                    *(getattr(data_report, "growth_numbers", []) or [])[:6],
+                    *(getattr(data_report, "source_facts", []) or [])[:6],
+                ]
+            )
+        )
+        number = numbers[0] if numbers else "这组数据"
+        return f"{anchor}的{number}之后，更需要先验证交付，还是先看利润和回款？"
 
     def _default_comment_prompt(self, data_report: DataReport | None) -> str:
         content_mode = self._content_mode(data_report)
@@ -1628,6 +1678,7 @@ class WriterAgent(BaseAgent):
             self._company_candidates(data_report)
             or len(getattr(data_report, "growth_numbers", []) or []) >= 1
             or len(getattr(data_report, "evidence_notes", []) or []) >= 2
+            or self._has_sufficient_source_facts(data_report)
             or int(getattr(data_report, "evidence_strength", 0) or 0) >= 70
         )
 
@@ -2010,6 +2061,23 @@ class WriterAgent(BaseAgent):
                     "在这些信息到来之前，不宜把讨论热度写成确定结论。"
                 )
             return paragraphs
+
+        # When the model leaves a long-form draft short, prefer unused source
+        # sentences over generic analysis fields. This keeps the extra length
+        # traceable and gives the publish gate the same evidence ledger as the
+        # model prompt.
+        source_facts = clean_items(
+            getattr(data_report, "source_facts", []) or [],
+            4,
+        )
+        for fact in source_facts:
+            append_if_new(
+                (
+                    f"同一份公开材料还披露，{fact}。"
+                    "这项信息可以作为后续核对的事实锚点，但不能单独推出订单、利润或行业结论。"
+                ),
+                source_items=[fact],
+            )
 
         metrics = clean_items(data_report.watch_metrics, 4)
         if metrics:

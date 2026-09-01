@@ -74,6 +74,18 @@ class ArticleQualityChecker:
     ]
     # 预编译标题党正则表达式
     _CLICKBAIT_PATTERNS_COMPILED = [re.compile(pattern) for pattern in CLICKBAIT_PATTERNS]
+    _UNSUPPORTED_FINANCIAL_LINK_PATTERNS = (
+        re.compile(
+            r"(?:毛利率?|盈利|利润)[^，。；：:]{0,12}"
+            r"(?:撑住|支撑|决定|证明)[^，。；：:]{0,12}"
+            r"(?:批量|量产|订单|交付)"
+        ),
+        re.compile(
+            r"(?:收入|增速|毛利率?)[^，。；：:]{0,12}"
+            r"(?:意味着|说明|证明)[^，。；：:]{0,12}"
+            r"(?:成熟|规模化|量产)"
+        ),
+    )
 
     AI_CLICHE_PHRASES = [
         "正如我们所知",
@@ -418,6 +430,8 @@ class ArticleQualityChecker:
             if pattern.search(title_lower):
                 issues.append("标题存在标题党嫌疑")
                 break
+        if any(pattern.search(title) for pattern in self._UNSUPPORTED_FINANCIAL_LINK_PATTERNS):
+            issues.append("标题把财务指标与批量交付或规模化结果直接绑定，缺少证据边界")
 
         # 检查标题长度（头条实测爆款标题可达 38 字，上限放宽到 40 避免误杀高信息密度标题）
         title_len = len(title)

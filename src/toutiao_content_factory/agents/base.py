@@ -75,7 +75,7 @@ class BaseAgent:
     _DASH_LIST_PATTERN = re.compile(r"^-\s+")
     # 共享的数值处理正则表达式
     _NUMERIC_TOKEN_RE = re.compile(
-        r"\d+(?:\.\d+)?(?:%|倍|亿元|亿|万元|万亿元|万千瓦|万台|万套|GW|GWh|MWh|kWh|MW|W|年|月|季度|Q[1-4])?"
+        r"\d[\d,]*(?:\.\d+)?(?:%|倍|亿元|亿|万元|万亿元|万千瓦|万台|万套|GW|GWh|MWh|kWh|MW|W|年|月|季度|Q[1-4])?"
     )
 
     # 共享的常量和正则表达式
@@ -768,7 +768,7 @@ class BaseAgent:
     def _extract_numeric_tokens(self, text: str) -> list[str]:
         tokens: list[str] = []
         for match in self._NUMERIC_TOKEN_RE.findall(str(text or "")):
-            token = str(match).strip().replace(" ", "")
+            token = str(match).strip().replace(" ", "").replace(",", "")
             if not self._is_significant_numeric_token(token):
                 continue
             if token not in tokens:

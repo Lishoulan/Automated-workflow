@@ -232,6 +232,11 @@ class TestCheckArticleIntegration:
         )
         assert result.engagement_attractiveness_score == 0
 
+    def test_title_rejects_unsupported_financial_delivery_link(self) -> None:
+        result = self.checker._check_title("优必选毛利率提升支撑批量交付")
+
+        assert any("财务指标" in issue for issue in result["issues"])
+
 
 class TestRiskyWordOrdinalHandling:
     def setup_method(self) -> None:

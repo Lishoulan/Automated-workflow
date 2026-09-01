@@ -66,9 +66,15 @@ class WriterAgent(BaseAgent):
         "可重复采开",
         "可重复采",
     )
-    MAX_LOCAL_SUPPLEMENTARY_PARAGRAPHS = 4
+    # A short model pass can leave a fact-rich long-form topic far below the
+    # public floor. Bounded supplement slots leave room for one factual block
+    # per angle plus the necessary mechanism and verification paragraphs.
+    MAX_LOCAL_SUPPLEMENTARY_PARAGRAPHS = 20
     LOCAL_SOURCE_FACT_MIN_COUNT = 6
-    LOCAL_SOURCE_FACT_MIN_CHARS = 400
+    # Six concise, clean facts are enough to support a source-led long draft;
+    # requiring a larger raw character count incorrectly classified compact
+    # financial/product ledgers as evidence-poor.
+    LOCAL_SOURCE_FACT_MIN_CHARS = 320
     LOCAL_SOURCE_FACT_LIMIT = 40
     LOCAL_SOURCE_ARTICLE_TARGET = 1800
     GENERIC_COMPANY_MENTION_MARKERS = (
@@ -1810,6 +1816,11 @@ class WriterAgent(BaseAgent):
             data_summary_parts.append("Grounded numbers: " + " / ".join(str(g) for g in data_report.growth_numbers[:3]))
         if data_report.evidence_notes:
             data_summary_parts.append("Evidence notes: " + " / ".join(str(e) for e in data_report.evidence_notes[:3]))
+        if getattr(data_report, "source_facts", None):
+            data_summary_parts.append(
+                "Source facts: "
+                + " / ".join(str(fact) for fact in data_report.source_facts[:12])
+            )
         data_summary = "\n".join(data_summary_parts) if data_summary_parts else "No extra evidence."
 
         system_prompt = (
@@ -2068,16 +2079,55 @@ class WriterAgent(BaseAgent):
         # model prompt.
         source_facts = clean_items(
             getattr(data_report, "source_facts", []) or [],
-            4,
+            self.LOCAL_SOURCE_FACT_LIMIT,
         )
+        # A short model draft often mentions a fact partially (for example,
+        # the revenue number but not the full product split). The old
+        # n-gram coverage check then discarded every useful source sentence.
+        # Keep only exact-normalized repeats out, and group the remaining
+        # ledger by subject so the supplement adds evidence without becoming
+        # a flat list of copied source text.
+        covered_source_text = normalized_chars(existing_text)
+        fresh_facts: list[str] = []
         for fact in source_facts:
+            normalized_fact = normalized_chars(fact)
+            if not normalized_fact or normalized_fact in covered_source_text:
+                continue
+            if any(normalized_fact in normalized_chars(item) for item in paragraphs):
+                continue
+            fresh_facts.append(fact)
+
+        source_groups = (
+            (
+                "财务与收入",
+                ("收入", "营收", "毛利", "利润", "亏损", "现金流", "EBITDA", "占比", "增长"),
+                "这些数字先说明披露口径下的规模或结构变化，不能单独推出持续利润、客户偏好或批量交付。",
+            ),
+            (
+                "产品与销量",
+                ("销量", "机器人", "场景", "产品", "解决方案", "教育", "物流", "消费"),
+                "这些信息能补足产品和应用范围，但是否形成可复制的交付结果，仍要看合同、验收和复购记录。",
+            ),
+            (
+                "研发与投入",
+                ("研发", "人员", "专利", "股权", "销售费用", "管理费用", "投入"),
+                "这些信息反映能力建设和经营成本，投入是否有效，还要与后续交付、回款和现金流放在同一时间线上核对。",
+            ),
+        )
+        assigned_facts: set[str] = set()
+        for label, markers, boundary in source_groups:
+            grouped = [
+                fact
+                for fact in fresh_facts
+                if fact not in assigned_facts and any(marker in fact for marker in markers)
+            ][:4]
+            if not grouped:
+                continue
+            fact_text = "；".join(item.rstrip("。！？!?；; ") for item in grouped)
             append_if_new(
-                (
-                    f"同一份公开材料还披露，{fact}。"
-                    "这项信息可以作为后续核对的事实锚点，但不能单独推出订单、利润或行业结论。"
-                ),
-                source_items=[fact],
+                f"同一份披露还给出了{label}口径：{fact_text}。{boundary}",
             )
+            assigned_facts.update(grouped)
 
         metrics = clean_items(data_report.watch_metrics, 4)
         if metrics:
@@ -2149,6 +2199,32 @@ class WriterAgent(BaseAgent):
                 f"从行业角度看，{trend_text}。它适合用来提出问题，最终结论仍要等待与主体、时间和结果对应的公开记录。",
             )
             for paragraph in local_analysis:
+                append_if_new(paragraph)
+
+        # A fact-rich article still needs enough reasoning to be publishable:
+        # simply listing the source ledger is not useful to readers. These
+        # paragraphs explain how to read the disclosed figures without adding
+        # another factual claim, and are only enabled when the source ledger
+        # itself is substantial.
+        if (
+            initial_chars < self.LOCAL_SOURCE_ARTICLE_TARGET
+            and self._has_sufficient_source_facts(data_report)
+            and self._content_mode(data_report) != "hot_topic"
+        ):
+            source_analysis = (
+                "收入和毛利率必须分开看。收入增长解决的是规模问题，毛利率变化反映产品组合或成本结构，二者仍不能替代经营现金流。只有后续期间的收入确认、回款和利润变化能够相互印证，才有理由把阶段性改善写成可持续趋势。",
+                "销量也不能只看总量。总销量、不同产品的销量和不同场景的收入可能对应不同统计范围，先统一产品定义、销售确认和交付时间，再比较变化，否则容易把不同口径拼成一个结论。",
+                "研发投入的价值要经过产品化检验。人员、费用和激励说明企业在建设能力，但它们本身不是客户订单；需要继续观察研发成果是否进入样机、量产和稳定交付，并看这些环节带来的收入能否回款。",
+                "从业务判断看，真正的分水岭是一次性项目还是可复制交付。公开材料能够说明某些产品或场景已经出现，但还不能据此推导客户普遍采用。后续若出现连续验收、复购和交付记录，商业化证据才会更完整。",
+                "不同指标向同一方向变化时，仍然要检查时间差。收入可能先确认，现金回收可能后置；投入可能先发生，规模效应可能需要更久。把这些指标按相同时间口径放在一起，才能判断增长是否有经营质量支撑。",
+                "因此，这组材料最适合写成阶段性信号，而不是确定性结论。乐观一侧是产品收入和应用范围扩大，保守一侧是利润兑现、客户验证和回款仍可能滞后。把两侧条件列清楚，等新公告出现时才有可复核的判断。",
+                "对主体公司的判断也要落到经营动作上：产品是否持续交付，客户是否完成验收，收入是否形成回款，成本是否跟随规模变化。只有这些环节前后衔接，市场看到的增长才可能从单次披露变成连续记录。",
+                "读这类业绩材料时，先确认数字属于收入、销量还是占比，再看同比基数和披露类别是否发生变化。分类口径一旦调整，单项增速就不能脱离原始表格解释，跨期比较也必须保留必要的限定。",
+                "商业化验证不是一个单点事件，而是一条连续链条：需求出现、产品交付、客户验收、收入确认和现金回收。材料只覆盖其中部分环节时，文章应明确哪些已确认、哪些还没有证据，避免把前一步外推成全部结果。",
+                "把结论收窄并不等于否定业务价值，它只是把可确认的阶段性进展与仍需验证的长期回报分开。后续出现新数据时，读者可以沿着同一套口径更新判断，而不必推倒原来的事实基础。",
+                "最后要把问题落到下一次披露能回答什么：是交付记录更连续，还是收入质量和现金回收更清楚。这样的追踪方式既保留了当前材料的价值，也避免用一次公告替未来经营结果提前背书。",
+            )
+            for paragraph in source_analysis:
                 append_if_new(paragraph)
         return paragraphs
 

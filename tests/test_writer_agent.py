@@ -317,6 +317,47 @@ def test_local_source_fallback_builds_grounded_long_draft_when_model_is_unavaila
     mock_openai_service.create_json_completion.assert_not_called()
 
 
+def test_short_model_draft_uses_grouped_source_facts_to_clear_publish_floor(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    mock_openai_service.available = True
+    data_report = DataReport(
+        topic_title="优必选半年报的人形机器人业务",
+        companies=["优必选"],
+        content_format="project_breakdown",
+        word_target=1800,
+        source_facts=[
+            "优必选2026年上半年营收为12.7亿元，同比增长104.2%，这是公司披露的整体收入规模变化",
+            "全尺寸人形机器人产品及解决方案收入约为5.9亿元，增长率达1445.0%，对应产品分类口径的收入变化",
+            "优必选整体毛利率为44.7%，同比提升9.7个百分点，但单项毛利率变化仍需结合成本口径核对",
+            "优必选人形机器人总销量达16123台，全尺寸产品销量达921台，两个数字对应不同产品范围",
+            "优必选物流场景收入从0.6亿元增至1.4亿元，相关变化仍要结合项目交付和收入确认口径观察",
+            "优必选2026年上半年研发人员数达1103人，同比增加286人，披露中还包括硕士及以上研发人员数量",
+            "优必选研发费用为3.0亿元，同比增加38.9%，这项投入需要与产品交付和后续回款一起判断",
+            "优必选经营活动现金流和客户复购仍需后续公告核对，现有材料没有给出连续验证结果",
+        ],
+        growth_numbers=["12.7亿元", "104.2%", "44.7%"],
+        watch_metrics=["交付节奏", "客户验收", "经营现金流"],
+        risk_flags=["订单和回款节奏仍需验证"],
+        evidence_strength=90,
+    )
+
+    article = agent.ensure_article_min_chars(
+        "优必选的阶段性数据已经出现，后续要看交付节奏还是经营现金流？",
+        data_report,
+        min_chars=1750,
+    )
+
+    article_chars = len(article.replace("\n", "").replace(" ", ""))
+    assert article_chars >= 1750
+    assert "12.7亿元" in article
+    assert "16123台" in article
+    assert article.rstrip().split("\n\n")[-1].endswith("？")
+
+
 def test_cautious_polish_fallback_keeps_unknown_order_claim_conditional(
     app_settings,
     mock_openai_service,

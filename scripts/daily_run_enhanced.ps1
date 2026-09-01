@@ -10,6 +10,7 @@ param(
     [switch]$DryRun,
     [switch]$RefreshCache,
     [switch]$EnableAutoPublish,
+    [switch]$SendDailyReport,
     [switch]$SkipTopicCollection,
     [switch]$CollectPerformanceOnly,
     [switch]$EnableFeedbackLoop,
@@ -79,6 +80,14 @@ if (-not $PythonExe) {
     exit 1
 }
 Write-Host "[Python] $PythonExe" -ForegroundColor Gray
+
+if ($SendDailyReport.IsPresent) {
+    Write-Host "[日报] 发送统一每日通知汇总（不执行内容生成、浏览器和模型调用）" -ForegroundColor Cyan
+    $mainPath = Join-Path $ProjectRoot "main.py"
+    $reportResult = & $PythonExe $mainPath "--account" $Account "--send-daily-report" 2>&1
+    $reportResult | ForEach-Object { Write-Host $_ }
+    exit $LASTEXITCODE
+}
 
 # 网络检测函数
 function Test-NetworkConnectivity {

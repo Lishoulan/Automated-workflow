@@ -10,6 +10,7 @@
     [switch]$RefreshCache,
     [switch]$NoArchive,
     [switch]$EnableAutoPublish,
+    [switch]$SendDailyReport,
     [int]$RetryCount = -1,
     [int]$RetryDelaySeconds = -1
 )
@@ -831,6 +832,10 @@ function New-DailyRunCommand {
     return ,$args
 }
 
+function New-DailyReportCommand {
+    return ,@((Join-Path $ProjectRoot "main.py"), "--send-daily-report", "--account", $AccountKey)
+}
+
 function New-CollectPerformanceCommand {
     $script = @"
 from pathlib import Path
@@ -862,6 +867,26 @@ print(json.dumps(payload, ensure_ascii=False))
     }
 }
 
+if ($SendDailyReport.IsPresent) {
+    $reportArguments = New-DailyReportCommand
+    Write-Log "Running unified daily notification report for $AccountKey."
+    Push-Location $ProjectRoot
+    try {
+        $reportProcess = Start-Process `
+            -FilePath $PythonExe `
+            -ArgumentList $reportArguments `
+            -WorkingDirectory $ProjectRoot `
+            -NoNewWindow `
+            -Wait `
+            -PassThru
+        Write-Log "Daily notification report exited with code $($reportProcess.ExitCode)."
+        exit $reportProcess.ExitCode
+    }
+    finally {
+        Pop-Location
+    }
+}
+
 $script:RetryCount = 2
 if ($env:TOUTIAO_RETRY_COUNT) {
     $parsedRetryCount = 0
@@ -886,7 +911,7 @@ $lastRunSummary = @{}
 
 Write-Log "Using Python: $PythonExe"
 Write-Log "Account: $AccountKey"
-Write-Log "Run mode: $(if ($CollectPerformanceOnly.IsPresent) { 'collect_performance_only' } else { 'daily_run' })"
+Write-Log "Run mode: $(if ($SendDailyReport.IsPresent) { 'send_daily_report' } elseif ($CollectPerformanceOnly.IsPresent) { 'collect_performance_only' } else { 'daily_run' })"
 Write-Log "Scheduling mode: $(if ($CollectPerformanceOnly.IsPresent) { 'windows_task_collect_only' } else { 'windows_task_publish_orchestrator' })"
 Write-Log "Auto publish enabled: $($env:TOUTIAO_AUTO_PUBLISH -eq '1')"
 Write-Log "Publishing enabled: $($env:TOUTIAO_PUBLISH_ENABLED -eq '1')"

@@ -7,7 +7,8 @@ param(
     [switch]$EnableAutoPublish,
     [int]$RetryCount = 2,
     [int]$RetryDelaySeconds = 90,
-    [string[]]$Times = @("08:00", "12:00", "18:30", "22:00")
+    [string[]]$Times = @("08:00", "12:00", "18:30"),
+    [string]$DailyReportTime = "22:00"
 )
 
 $ErrorActionPreference = "Stop"
@@ -109,6 +110,7 @@ foreach ($accountKey in $accounts) {
         AccountKey = [string]$accountKey
         RetryCount = $RetryCount
         RetryDelaySeconds = $RetryDelaySeconds
+        DailyReportTime = $DailyReportTime
     }
     if ($Times -and $Times.Count -gt 0) {
         $invokeParameters["Times"] = $Times

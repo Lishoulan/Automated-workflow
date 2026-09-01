@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -145,7 +146,7 @@ class OpenAIContentService:
 
         response = self._call_with_retry(**kwargs)
         self._accumulate_usage(response)
-        return (response.choices[0].message.content or "").strip()
+        return self._extract_response_content(response)
 
     def create_json_completion(self, system_prompt: str, user_prompt: str) -> dict:
         if not self.available:
@@ -353,13 +354,16 @@ class OpenAIContentService:
         return False
 
     def _accumulate_usage(self, response) -> None:
-        usage = getattr(response, "usage", None)
+        usage = self._response_field(response, "usage")
         if usage is None:
             return
 
-        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-        total_tokens = int(getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or 0)
+        prompt_tokens = int(self._response_field(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(self._response_field(usage, "completion_tokens", 0) or 0)
+        total_tokens = int(
+            self._response_field(usage, "total_tokens", prompt_tokens + completion_tokens)
+            or 0
+        )
         request_cost = self._estimate_request_cost(prompt_tokens, completion_tokens)
 
         self.usage_snapshot.prompt_tokens += prompt_tokens
@@ -406,8 +410,64 @@ class OpenAIContentService:
             return 0.016
         return 0.002
 
+    @staticmethod
+    def _response_field(value: Any, field: str, default: Any = None) -> Any:
+        if isinstance(value, Mapping):
+            return value.get(field, default)
+        return getattr(value, field, default)
+
+    @classmethod
+    def _content_to_text(cls, content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, bytes):
+            return content.decode("utf-8", errors="replace").strip()
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, (list, tuple)):
+            return "".join(cls._content_to_text(item) for item in content).strip()
+        if isinstance(content, Mapping):
+            for field in ("text", "content", "value"):
+                if field in content and content[field] is not None:
+                    return cls._content_to_text(content[field])
+            return ""
+        for field in ("text", "content", "value"):
+            nested = getattr(content, field, None)
+            if nested is not None:
+                return cls._content_to_text(nested)
+        return str(content).strip()
+
+    def _extract_response_content(self, response: Any) -> str:
+        """Extract content from SDK objects and common proxy response shapes."""
+        if isinstance(response, (str, bytes)):
+            return self._content_to_text(response)
+        if response is None:
+            return ""
+
+        choices = self._response_field(response, "choices")
+        if choices:
+            try:
+                choice = choices[0]
+            except (IndexError, KeyError, TypeError):
+                choice = None
+            if choice is not None:
+                message = self._response_field(choice, "message")
+                if message is None:
+                    message = self._response_field(choice, "delta")
+                content = self._response_field(message, "content") if message is not None else None
+                if content is None:
+                    content = self._response_field(choice, "content")
+                if content is not None:
+                    return self._content_to_text(content)
+
+        for field in ("output_text", "text", "content"):
+            content = self._response_field(response, field)
+            if content is not None:
+                return self._content_to_text(content)
+        return ""
+
     def _extract_message_content(self, response) -> str:
-        content = (response.choices[0].message.content or "").strip()
+        content = self._extract_response_content(response)
         if not content:
             return "{}"
 

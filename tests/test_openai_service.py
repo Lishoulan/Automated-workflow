@@ -1,11 +1,67 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from toutiao_content_factory.exceptions import AIRequestError
 from toutiao_content_factory.services.openai_service import OpenAIContentService
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ("plain proxy response", "plain proxy response"),
+        (
+            {"choices": [{"message": {"content": "dictionary response"}}]},
+            "dictionary response",
+        ),
+        (
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="SDK response"))]
+            ),
+            "SDK response",
+        ),
+    ],
+)
+def test_text_completion_accepts_proxy_and_sdk_response_shapes(
+    app_settings,
+    logger,
+    response,
+    expected: str,
+) -> None:
+    service = OpenAIContentService(app_settings, logger, force_mock=True)
+    client = MagicMock()
+    client.chat.completions.create.return_value = response
+    service.client = client
+
+    assert service.create_text_completion("system", "user") == expected
+
+
+def test_json_completion_accepts_plain_string_from_proxy(app_settings, logger) -> None:
+    service = OpenAIContentService(app_settings, logger, force_mock=True)
+    client = MagicMock()
+    client.chat.completions.create.return_value = '{"result": "proxy"}'
+    service.client = client
+
+    assert service.create_json_completion("system", "user") == {"result": "proxy"}
+
+
+def test_json_completion_accepts_dictionary_response_and_usage(app_settings, logger) -> None:
+    service = OpenAIContentService(app_settings, logger, force_mock=True)
+    client = MagicMock()
+    client.chat.completions.create.return_value = {
+        "choices": [{"message": {"content": '{"result": "dictionary"}'}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+    service.client = client
+
+    assert service.create_json_completion("system", "user") == {"result": "dictionary"}
+    usage = service.get_usage_snapshot()
+    assert usage.prompt_tokens == 10
+    assert usage.completion_tokens == 5
+    assert usage.total_tokens == 15
 
 
 def test_insufficient_balance_disables_client_for_remainder_of_run(

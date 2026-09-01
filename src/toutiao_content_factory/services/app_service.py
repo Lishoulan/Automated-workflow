@@ -39,7 +39,7 @@ from toutiao_content_factory.services.image_generation_service import ImageGener
 from toutiao_content_factory.services.topic_pool_service import TopicPoolService
 from toutiao_content_factory.services.platform_health_service import PlatformHealthService
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
-from toutiao_content_factory.services.notification_service import NotificationService
+from toutiao_content_factory.services.notification_service import NotificationService, notification_now
 from toutiao_content_factory.services.circuit_breaker import PlatformCircuitBreaker
 from toutiao_content_factory.services.company_os_service import CompanyOSService
 from toutiao_content_factory.services.lead_ops_service import LeadOpsService
@@ -469,7 +469,7 @@ class ContentFactoryAppService:
                 self.notification_service._broadcast(
                     "【自动运行】无可用选题",
                     f"账号: {self.settings.account_label}\n"
-                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                    f"时间: {notification_now().strftime('%Y-%m-%d %H:%M')}\n"
                     f"原因: 话题池为空或所有话题已发布\n"
                     f"建议: 检查话题源是否正常，或手动添加选题",
                 )
@@ -703,7 +703,7 @@ class ContentFactoryAppService:
                 self.notification_service._broadcast(
                     "【定时任务】今日无可用选题",
                     f"账号: {self.settings.account_label}\n"
-                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                    f"时间: {notification_now().strftime('%Y-%m-%d %H:%M')}\n"
                     f"原因: 话题池为空或所有话题已发布\n"
                     f"建议: 检查话题源是否正常，或手动添加选题",
                 )
@@ -2592,7 +2592,7 @@ class ContentFactoryAppService:
                         self.notification_service.notify_success(
                             platform="WeChat",
                             article_title=self._load_selected_title(run_dir),
-                            run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            run_time=notification_now().strftime("%Y-%m-%d %H:%M"),
                         )
                     else:
                         self.circuit_breaker.record_failure("wechat")
@@ -2623,7 +2623,7 @@ class ContentFactoryAppService:
                         platform="WeChat",
                         stage="browser_publish",
                         error_msg=str(exc),
-                        run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        run_time=notification_now().strftime("%Y-%m-%d %H:%M"),
                     )
                     if self._is_session_expired_error(exc):
                         self._notify_session_expired("WeChat", exc)
@@ -2674,7 +2674,7 @@ class ContentFactoryAppService:
                         self.notification_service.notify_success(
                             platform="Toutiao",
                             article_title=self._load_selected_title(run_dir),
-                            run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            run_time=notification_now().strftime("%Y-%m-%d %H:%M"),
                         )
                     elif toutiao_status == "draft_saved" and bool(self.settings.publishing.draft_only):
                         self.logger.info(
@@ -2692,7 +2692,7 @@ class ContentFactoryAppService:
                             platform="Toutiao",
                             stage="publish_verification",
                             error_msg=message,
-                            run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            run_time=notification_now().strftime("%Y-%m-%d %H:%M"),
                         )
                     # 图文发布成功后，同步发一条微头条引流（涨粉 + 图文双通道）。
                     # 微头条内容取自同一 run，可复用登录会话与内容包。
@@ -2709,7 +2709,7 @@ class ContentFactoryAppService:
                                 self.notification_service.notify_success(
                                     platform="WeiToutiao",
                                     article_title=self._load_selected_title(run_dir),
-                                    run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                    run_time=notification_now().strftime("%Y-%m-%d %H:%M"),
                                 )
                         except Exception as wtt_exc:
                             companion = {
@@ -2752,7 +2752,7 @@ class ContentFactoryAppService:
                         platform="Toutiao",
                         stage="browser_publish",
                         error_msg=str(exc),
-                        run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        run_time=notification_now().strftime("%Y-%m-%d %H:%M"),
                     )
                     if self._is_session_expired_error(exc):
                         self._notify_session_expired("Toutiao", exc)
@@ -3148,7 +3148,7 @@ class ContentFactoryAppService:
                 selected_title=str(final_attempt.get("selected_title", "")).strip(),
                 run_dir=run_dir,
                 reason=reason,
-                run_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                run_time=notification_now().strftime("%Y-%m-%d %H:%M"),
             )
         except Exception as exc:
             self.logger.warning("Failed to send daily review-required notification: %s", exc)
@@ -3273,7 +3273,7 @@ class ContentFactoryAppService:
         platform_health_path: str,
         auth_health: dict[str, object],
     ) -> None:
-        run_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+        run_time = notification_now().strftime("%Y-%m-%d %H:%M")
         platform_labels = {
             "toutiao": "Toutiao",
             "wechat": "WeChat OA",
@@ -3321,7 +3321,7 @@ class ContentFactoryAppService:
         return any(kw in msg for kw in session_keywords)
 
     def _notify_session_expired(self, platform: str, exc: Exception) -> None:
-        run_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+        run_time = notification_now().strftime("%Y-%m-%d %H:%M")
         message = (
             f"{run_time} {platform} session expired during publish.\n"
             f"account: {self.settings.account_key}\n"
@@ -3493,7 +3493,7 @@ class ContentFactoryAppService:
         }
         readable_platforms = [platform_labels.get(p, p) for p in blocking_platforms]
         message = (
-            f"{datetime.now().strftime('%Y-%m-%d %H:%M')} auto_run 前置健康检查失败。\n"
+            f"{notification_now().strftime('%Y-%m-%d %H:%M')} auto_run 前置健康检查失败。\n"
             f"账号: {self.settings.account_key}\n"
             f"阻塞平台: {', '.join(readable_platforms)}\n"
             f"原因: {'; '.join(str(f) for f in blocking_flags[:5]) if blocking_flags else '认证状态异常'}\n"

@@ -9,7 +9,7 @@ if ([string]::IsNullOrWhiteSpace($AccountSlug)) {
     $AccountSlug = "default"
 }
 $taskNames = New-Object System.Collections.Generic.List[string]
-$defaultPublishCount = 4
+$defaultPublishCount = 20
 for ($index = 1; $index -le $defaultPublishCount; $index++) {
     $taskNames.Add("$TaskPrefix-$AccountSlug-$index")
     if ($AccountSlug -eq "default") {
@@ -17,8 +17,10 @@ for ($index = 1; $index -le $defaultPublishCount; $index++) {
     }
 }
 $taskNames.Add("$TaskPrefix-$AccountSlug-collect-performance")
+$taskNames.Add("$TaskPrefix-$AccountSlug-daily-report")
 if ($AccountSlug -eq "default") {
     $taskNames.Add("$TaskPrefix-collect-performance")
+    $taskNames.Add("$TaskPrefix-daily-report")
 }
 
 $taskNames = $taskNames | Select-Object -Unique

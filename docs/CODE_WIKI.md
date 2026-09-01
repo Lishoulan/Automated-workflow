@@ -594,7 +594,7 @@ python .\webapp.py --port 8001
 ### 10.4 定时任务
 
 ```powershell
-# 注册 4 个时段的日更任务 (08:00, 12:00, 18:30, 22:00)
+# 注册内容任务，并注册 22:00 通知日报任务
 powershell -ExecutionPolicy Bypass -File .\scripts\register_daily_task.ps1 -EnableAutoPublish
 
 # 注册所有账号

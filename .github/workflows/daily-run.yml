@@ -11,6 +11,8 @@ on:
     # 周末早间 Beijing 08:00 (周六-周日) = UTC 00:00
     # 周末仅1次发布，避免历史数据中周末过度发布（周日14篇占32.6%）
     - cron: '0 0 * * 0,6'
+    # 每日统一发送通知汇总 Beijing 22:00 = UTC 14:00
+    - cron: '0 14 * * *'
   workflow_dispatch:
     inputs:
       account:
@@ -51,6 +53,10 @@ permissions:
 
 jobs:
   daily-run:
+    # The 22:00 schedule is report-only; do not start the content pipeline.
+    if: >-
+      github.event_name != 'schedule' ||
+      github.event.schedule != '0 14 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -229,6 +235,7 @@ jobs:
       # ---- 发布结果通知 ----
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
       SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+      NOTIFY_DAILY_LIMIT: ${{ secrets.NOTIFY_DAILY_LIMIT || '5' }}
 
     steps:
       - name: Checkout repository
@@ -467,7 +474,7 @@ jobs:
           path: |
             output/accounts/*/automation/notification_log.jsonl
             output/automation/notification_log.jsonl
-          key: daily-notification-log-${{ github.ref_name }}-${{ github.run_id }}
+          key: daily-notification-log-${{ github.ref_name }}-${{ github.run_id }}-primary
           restore-keys: |
             daily-notification-log-${{ github.ref_name }}-
 
@@ -1028,6 +1035,7 @@ jobs:
       # ---- 发布结果通知 ----
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
       SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+      NOTIFY_DAILY_LIMIT: ${{ secrets.NOTIFY_DAILY_LIMIT || '5' }}
 
     steps:
       - name: Checkout repository
@@ -1067,14 +1075,17 @@ jobs:
 
       - name: Restore notification log cache
         # The fallback job has its own runner, so it must restore the same
-        # cross-run notification state explicitly.
+        # cross-run notification state explicitly. Its snapshot has a
+        # different suffix because the primary job may already have saved
+        # its cache key before this job starts.
         uses: actions/cache@v4
         with:
           path: |
             output/accounts/*/automation/notification_log.jsonl
             output/automation/notification_log.jsonl
-          key: daily-notification-log-${{ github.ref_name }}-${{ github.run_id }}
+          key: daily-notification-log-${{ github.ref_name }}-${{ github.run_id }}-fallback
           restore-keys: |
+            daily-notification-log-${{ github.ref_name }}-${{ github.run_id }}-primary
             daily-notification-log-${{ github.ref_name }}-
 
       - name: Install Python dependencies
@@ -1113,4 +1124,71 @@ jobs:
             .runtime/debug/
             .runtime/automation/
             .runtime/accounts/
+          retention-days: 7
+
+  # 每日统一通知任务：只读取通知账本并发送一条汇总，不生成内容、不调用模型。
+  daily-report:
+    if: >-
+      github.event_name == 'schedule' &&
+      github.event.schedule == '0 14 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      PYTHONUTF8: "1"
+      TOUTIAO_ACCOUNT: ${{ secrets.CLOUD_DEFAULT_ACCOUNT || 'default' }}
+      LOG_LEVEL: INFO
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+      BARK_URL: ${{ secrets.BARK_URL }}
+      DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+      WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
+      PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+      NOTIFY_DAILY_LIMIT: ${{ secrets.NOTIFY_DAILY_LIMIT || '5' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py3.11-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-py3.11-
+
+      - name: Restore notification log cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            output/accounts/*/automation/notification_log.jsonl
+            output/automation/notification_log.jsonl
+          key: daily-notification-log-${{ github.ref_name }}-${{ github.run_id }}-report
+          restore-keys: |
+            daily-notification-log-${{ github.ref_name }}-
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Send unified daily report
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python main.py \
+            --send-daily-report \
+            --account "$TOUTIAO_ACCOUNT"
+
+      - name: Upload daily report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-report-${{ github.run_id }}
+          path: |
+            output/accounts/*/automation/notification_log.jsonl
+            output/automation/notification_log.jsonl
+            logs/
           retention-days: 7

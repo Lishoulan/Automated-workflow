@@ -43,7 +43,10 @@ class ContentFactoryPipeline:
         self.workflow = AgentWorkflowService(settings, self.prompt_repository, self.openai_service, logger)
         self.cache_service = CacheService(settings.cache_dir, settings.cache_similarity_threshold, logger)
         self.exporter = ExportService(settings, logger)
-        self.notification_service = NotificationService(asdict(settings))
+        self.notification_service = NotificationService(
+            asdict(settings),
+            fallback_log_dir=str(settings.output_dir / "automation"),
+        )
         self.state_manager = PipelineStateManager(
             settings.output_dir,
             notification_service=self.notification_service,

@@ -11,7 +11,8 @@ param(
     [int]$RetryCount = 2,
     [int]$RetryDelaySeconds = 90,
     [string[]]$Times = @("07:00", "09:30", "12:30", "15:30", "18:00", "21:30"),
-    [string]$CollectTime = "01:00"
+    [string]$CollectTime = "01:00",
+    [string]$DailyReportTime = "22:00"
 )
 
 $ErrorActionPreference = "Stop"
@@ -139,6 +140,32 @@ function Register-InteractiveTask {
     Write-Host "Scheduled task registered: $TaskName at $AtTime"
 }
 
+function Remove-StaleNumberedTasks {
+    $maxScheduledSlots = if ($Times) { $Times.Count } else { 0 }
+    # Older registrations used numbered tasks for content slots. Remove only
+    # stale names under this tool's exact prefix so re-registration cannot
+    # leave an old 22:00 content task beside the daily report task.
+    for ($candidateIndex = $maxScheduledSlots + 1; $candidateIndex -le 20; $candidateIndex++) {
+        $candidateNames = @("$TaskPrefix-$AccountSlug-$candidateIndex")
+        if ($AccountSlug -eq "default") {
+            $candidateNames += "$TaskPrefix-$candidateIndex"
+        }
+        foreach ($candidateName in $candidateNames) {
+            try {
+                if (Get-ScheduledTask -TaskName $candidateName -ErrorAction SilentlyContinue) {
+                    Unregister-ScheduledTask -TaskName $candidateName -Confirm:$false -ErrorAction Stop
+                    Write-Host "Removed stale numbered task: $candidateName"
+                }
+            }
+            catch {
+                Write-Host "Failed to remove stale numbered task: $candidateName"
+                Write-Host $_
+            }
+        }
+    }
+}
+
+Remove-StaleNumberedTasks
 $index = 1
 foreach ($time in $Times) {
     $taskName = "$TaskPrefix-$AccountSlug-$index"
@@ -151,9 +178,15 @@ Register-InteractiveTask `
     -AtTime $CollectTime `
     -ExtraArguments @("-CollectPerformanceOnly", "-EnableFeedbackLoop")
 
+Register-InteractiveTask `
+    -TaskName "$TaskPrefix-$AccountSlug-daily-report" `
+    -AtTime $DailyReportTime `
+    -ExtraArguments @("-SendDailyReport")
+
 Write-Host "Script: $ResolvedScriptPath"
 Write-Host "Account: $AccountKey"
 Write-Host "Retry policy: $RetryCount retry(s), delay $RetryDelaySeconds second(s)"
+Write-Host "Daily notification report: $DailyReportTime (Asia/Shanghai)"
 Write-Host "Auto publish: $($EnableAutoPublish.IsPresent)"
 Write-Host "Scheduled browser mode: $(if ($VisibleBrowser.IsPresent) { 'visible (explicit)' } else { 'visible (default for local desktop tasks)' })"
 Write-Host "Task logon mode: Run only when user is logged on (InteractiveToken)"

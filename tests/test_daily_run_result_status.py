@@ -12,6 +12,7 @@ from main import (
     _mark_daily_run_running,
     _write_daily_run_success_result,
 )
+from toutiao_content_factory.services import app_service as app_service_module
 from toutiao_content_factory.services.app_service import ContentFactoryAppService
 
 
@@ -153,6 +154,26 @@ def test_pending_run_notification_uses_candidate_title_from_workflow_result(tmp_
     )
 
     assert service._load_selected_title(run_dir) == "辰星技术7.7%：并联机器人如何实测"
+
+
+def test_daily_review_notification_uses_shanghai_time(monkeypatch) -> None:
+    service = ContentFactoryAppService.__new__(ContentFactoryAppService)
+    service.settings = Namespace(account_label="robot-notes")
+    service.notification_service = MagicMock()
+    fixed_now = datetime(2026, 9, 1, 1, 29)
+    monkeypatch.setattr(app_service_module, "notification_now", lambda: fixed_now)
+
+    service._notify_daily_review_required(
+        {
+            "selected_title": "Test title",
+            "run_dir": "run-dir",
+            "skip_reason": "needs revision",
+        }
+    )
+
+    assert service.notification_service.notify_review_required.call_args.kwargs["run_time"] == (
+        "2026-09-01 01:29"
+    )
 
 
 def test_duplicate_title_publish_failure_is_safe_to_fallback(app_settings) -> None:

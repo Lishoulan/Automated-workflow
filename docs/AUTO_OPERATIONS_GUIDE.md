@@ -205,8 +205,8 @@ python main.py --account robot_notes --publish-wtt-standalone 2 --draft-only
 
 ### ✅ 通知与数据记录（2026-08-26 更新）
 
-- **每日只推 1 条**：发布成功/失败改为只记日志（`automation/notification_log.jsonl`），
-  仅**紧急通知**（登录过期等）与**每日 22:00 日报**推送微信（ServerChan 免费额度每天 1 条）
+- **常规事件每日只推 1 条日报**：发布成功/失败/人工审核改为只记日志（`automation/notification_log.jsonl`），
+  仅**紧急通知**（登录过期等）可即时推送；每日 22:00 有事件时统一推送日报（ServerChan 免费额度每天最多 5 条，日报预留 1 条；空日报不发送）
 - **微头条记录入库**：微头条发布成功后写入 `publish_history.json`（platform=`toutiao_weitoutiao`），
   日报可统计微头条引流效果（今日图文 + 微头条分开计数）
 - 待用户提供 key 后填入 `.env`

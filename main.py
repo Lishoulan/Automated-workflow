@@ -50,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run the full scheduled workflow: collect, pick, generate, review, publish.",
     )
+    parser.add_argument(
+        "--send-daily-report",
+        action="store_true",
+        help="Send the date-scoped notification digest and consume at most one daily report quota.",
+    )
     parser.add_argument("--topic-rank", type=int, default=None, help="Ranked topic to use for auto-run.")
     parser.add_argument("--topic-title", type=str, default=None, help="Topic title keyword for auto-run.")
     parser.add_argument("--no-archive", action="store_true", help="Skip archiving the current run.")
@@ -525,6 +530,24 @@ def main() -> int:
         result = agent.run()
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
+
+    if args.send_daily_report:
+        from toutiao_content_factory.services.notification_service import NotificationService
+
+        notification_service = NotificationService(
+            dict(os.environ),
+            fallback_log_dir=str(settings.output_dir / "automation"),
+        )
+        result = notification_service.send_daily_report()
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("status") in {
+            "sent",
+            "already_sent",
+            "quota_exhausted",
+            "no_channels",
+            "no_events",
+        } else 1
+
     refresh_heartbeat(settings.automation_dir / "scheduled_status.json")
     if args.daily_run:
         _mark_daily_run_running(settings)

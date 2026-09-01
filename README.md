@@ -113,7 +113,7 @@ python .\main.py --account robot_notes --daily-run
 # 发布最新审核通过的文章
 python .\main.py --publish-latest-approved
 
-# 注册每日定时任务（08:00 / 12:00 / 18:30 / 22:00）
+# 注册每日定时任务（内容时段按脚本默认配置；22:00 统一发送通知日报）
 powershell -ExecutionPolicy Bypass -File .\scripts\register_daily_task.ps1 -EnableAutoPublish
 ```
 

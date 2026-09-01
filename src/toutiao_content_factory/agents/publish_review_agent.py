@@ -54,9 +54,9 @@ class PublishReviewAgent(BaseAgent):
             hot_topic_note=self._hot_topic_publish_note(data_report),
         )
         payload = self.request_json("你是 PublishReviewAgent，只输出 JSON。", prompt)
-        if payload:
+        if payload and self._validate_score_fields(payload, ("publish_readiness_score",)):
             result = {
-                "publish_readiness_score": int(payload.get("publish_readiness_score", 0)),
+                "publish_readiness_score": self._bound_score(payload["publish_readiness_score"]),
                 "publish_risk_flags": self._clean_list(payload.get("publish_risk_flags"), 6),
                 "publish_recommendation": str(payload.get("publish_recommendation", "manual_review")),
                 "publish_notes": self._clean_list(payload.get("publish_notes"), 6),

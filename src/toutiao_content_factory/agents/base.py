@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -763,6 +764,41 @@ class BaseAgent:
         except (TypeError, ValueError):
             score = 0
         return max(0, min(100, score))
+
+    def _validate_score_fields(self, payload: dict[str, object], fields: tuple[str, ...]) -> bool:
+        """Accept complete score payloads without treating a missing value as zero."""
+        missing = [field for field in fields if field not in payload]
+        invalid = [
+            field
+            for field in fields
+            if field in payload and not self._is_valid_score_value(payload[field])
+        ]
+        if missing or invalid:
+            self.logger.warning(
+                "%s model response has invalid score fields: missing=%s invalid=%s",
+                self.agent_name,
+                missing,
+                invalid,
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _is_valid_score_value(value: object) -> bool:
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, (int, float)):
+            return math.isfinite(value) and 0 <= value <= 100
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return False
+            try:
+                number = float(text)
+            except ValueError:
+                return False
+            return math.isfinite(number) and 0 <= number <= 100
+        return False
 
     # 共享的数值处理方法
     def _extract_numeric_tokens(self, text: str) -> list[str]:

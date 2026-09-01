@@ -60,7 +60,14 @@ class ReviewAgent(BaseAgent):
         unsupported_tokens = self._unsupported_numeric_tokens(content, data_report)
 
         payload = self.request_json("你是 ReviewAgent，只输出 JSON。", prompt)
-        if payload:
+        score_fields = (
+            "title_attraction",
+            "information_density",
+            "save_potential",
+            "completion_rate_potential",
+            "ai_generated_risk",
+        )
+        if payload and self._validate_score_fields(payload, score_fields):
             title_attraction = self._bound_score(payload.get("title_attraction", 0))
             information_density = self._bound_score(payload.get("information_density", 0))
             save_potential = self._bound_score(payload.get("save_potential", 0))

@@ -134,6 +134,8 @@ GENERIC_COMPANY_EXCLUSIONS = frozenset(
     {
         "人形机器人",
         "机器人",
+        "具身智能",
+        "具身智能公司",
         "AI机器人",
         "AI硬件",
         "储能",
@@ -308,6 +310,7 @@ COMPANY_GENERIC_SUBSTRINGS = (
     "新能源",
     "储能",
     "人形机器人",
+    "具身智能",
     "机器人行业",
     "机器人产业",
     "工业自动化",

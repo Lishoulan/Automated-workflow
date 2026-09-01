@@ -21,6 +21,9 @@ from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 class WriterAgent(BaseAgent):
     agent_name = "WriterAgent"
+    SHORT_CONTENT_FORMATS = frozenset(("quick_commentary", "short_comment", "news_flash"))
+    AUTO_PUBLISH_ARTICLE_TARGET = 1800
+    AUTO_PUBLISH_ARTICLE_MIN_CHARS = 1750
     REQUIRED_HEADING_COUNT = (3, 4)
     INTERNAL_ARTICLE_MARKERS = (
         "manual_paste",
@@ -129,13 +132,14 @@ class WriterAgent(BaseAgent):
             cache_note=self.cache_note(cache_context),
             trend_json=self.json_text(trend_report.__dict__),
             data_json=self.json_text(data_report.__dict__),
-            article_word_target=str(data_report.word_target or self.settings.article_word_target),
+            article_word_target=self._article_word_target_for_prompt(data_report),
             min_word_target=self._min_word_target_for(data_report),
             content_format_label=data_report.content_format_label or "深度分析",
-            format_brief=data_report.format_brief or "写成完整产业分析稿。",
-            paragraph_instruction=data_report.paragraph_instruction or "5到7段，每段2到3句。",
+            format_brief=self._format_brief_for_prompt(data_report),
+            paragraph_instruction=self._paragraph_instruction_for_prompt(data_report),
             evidence_strength=str(data_report.evidence_strength or 0),
             topic_quality_score=str(data_report.topic_quality_score or 0),
+            auto_publish_directive=self._auto_publish_directive(),
         )
         system_prompt = f"{self._writer_system_prompt(style)}{self._dynamic_rules_for(data_report)}"
         payload = self.request_json(system_prompt, prompt)
@@ -217,12 +221,13 @@ class WriterAgent(BaseAgent):
             trend_json=self.json_text(trend_report.__dict__),
             data_json=self.json_text(data_report.__dict__),
             insight_json=self.json_text(insight_report.__dict__),
-            article_word_target=str(data_report.word_target or self.settings.article_word_target),
+            article_word_target=self._article_word_target_for_prompt(data_report),
             min_word_target=self._min_word_target_for(data_report),
             content_format_label=data_report.content_format_label or "深度分析",
-            format_brief=data_report.format_brief or "写成完整产业分析稿。",
-            paragraph_instruction=data_report.paragraph_instruction or "5到7段，每段2到3句。",
+            format_brief=self._format_brief_for_prompt(data_report),
+            paragraph_instruction=self._paragraph_instruction_for_prompt(data_report),
             best_practices=self.best_practices_instruction(),
+            auto_publish_directive=self._auto_publish_directive(),
         )
         system_prompt = f"{self._writer_system_prompt(style)}{self._dynamic_rules_for(data_report)}"
         # 模块 C 合并新增：从 best_practices_rule.txt 加载并注入活跃规则
@@ -329,6 +334,42 @@ class WriterAgent(BaseAgent):
         )
         fact_chars = sum(len(item.replace(" ", "")) for item in facts)
         return len(facts) >= self.LOCAL_SOURCE_FACT_MIN_COUNT and fact_chars >= self.LOCAL_SOURCE_FACT_MIN_CHARS
+
+    def _auto_publish_mode(self) -> bool:
+        publishing = getattr(self.settings, "publishing", None)
+        return bool(
+            getattr(publishing, "enabled", False)
+            and getattr(publishing, "auto_publish", False)
+            and not getattr(publishing, "draft_only", False)
+        )
+
+    def _auto_publish_directive(self) -> str:
+        if not self._auto_publish_mode():
+            return ""
+        return (
+            "当前是自动发布候选：正文目标约1800字，最低1750字。即使数据路由标记为快讯点评，也必须写成完整的可审计分析稿；"
+            "只能用输入材料中的事实做机制拆解、影响分析和风险边界，证据不足时收窄结论，不得重复套话凑字数。"
+        )
+
+    def _article_word_target_for_prompt(self, data_report: DataReport) -> str:
+        target = int(getattr(data_report, "word_target", 0) or self.settings.article_word_target or 0)
+        if self._auto_publish_mode():
+            target = max(self.AUTO_PUBLISH_ARTICLE_TARGET, target)
+        return str(target)
+
+    def _format_brief_for_prompt(self, data_report: DataReport) -> str:
+        brief = str(getattr(data_report, "format_brief", "") or "写成完整产业分析稿。").strip()
+        if self._auto_publish_mode() and data_report.content_format in self.SHORT_CONTENT_FORMATS:
+            return "写成可自动发布的完整产业分析稿，围绕事实、机制、影响和风险边界展开，不得把快讯压缩成短评。"
+        return brief
+
+    def _paragraph_instruction_for_prompt(self, data_report: DataReport) -> str:
+        instruction = str(getattr(data_report, "paragraph_instruction", "") or "5到7段，每段2到3句。").strip()
+        if self._auto_publish_mode():
+            if data_report.content_format in self.SHORT_CONTENT_FORMATS:
+                return "7到10段，每段1到3句，先判断，再写事实和机制，最后保留风险边界与一个具体问题；全文至少1800字。"
+            return "7到10段，每段1到3句，围绕事实、机制、影响、主体和风险边界推进；全文至少1800字。"
+        return instruction
 
     def _build_local_source_article(
         self,
@@ -840,9 +881,24 @@ class WriterAgent(BaseAgent):
         # discard the latter half of structured project-breakdown articles.
         heading_blocks = sum(1 for item in paragraphs if item.startswith("### "))
         paragraphs = paragraphs[: max_paragraphs + heading_blocks]
-        paragraphs = self._ensure_min_char_count(paragraphs, data_report)
+        # The first pass should rely on the model plus deterministic evidence
+        # supplements. Reserve a costly expansion request for the workflow's
+        # final post-polish gate, where the article can be measured once more.
+        paragraphs = self._ensure_min_char_count(
+            paragraphs,
+            data_report,
+            allow_llm_expansion=False,
+        )
         article_text = "\n\n".join(paragraphs).strip()
         return article_text
+
+    def _paragraph_bounds(self, content_format: str) -> tuple[int, int]:
+        # Auto-publish quick commentary still needs enough information density
+        # for the public length gate, so allow more natural paragraphs than the
+        # concise manual-review route.
+        if self._auto_publish_mode() and content_format in self.SHORT_CONTENT_FORMATS:
+            return 7, 12
+        return super()._paragraph_bounds(content_format)
 
     def _load_active_rules(self, category_filter: str = None) -> list[dict]:
         """模块 C 合并新增：从 best_practices_rule.txt 中读取规则，并根据分类筛选。
@@ -926,6 +982,8 @@ class WriterAgent(BaseAgent):
 
         热点快评 / 快讯点评：600~900 字；其余体裁维持 1500 字长文标准。
         """
+        if self._auto_publish_mode():
+            return str(self.AUTO_PUBLISH_ARTICLE_TARGET)
         content_format = str(getattr(data_report, "content_format", "") or "")
         word_target = int(getattr(data_report, "word_target", 0) or 0)
         if self._content_mode(data_report) == "hot_topic":
@@ -951,6 +1009,9 @@ class WriterAgent(BaseAgent):
             "只在输入确有来源时自然写‘公开材料’‘公告’‘财报’等中性表达，不要给每个数字机械套同一个来源前缀。",
             f"Current tone: {style.tone}",
         ]
+        auto_publish_directive = self._auto_publish_directive()
+        if auto_publish_directive:
+            parts.append(auto_publish_directive)
         return "\n".join(parts)
 
     def _tone_directive(self, style: StyleProfile) -> str:
@@ -1682,7 +1743,6 @@ class WriterAgent(BaseAgent):
                 min_chars,
             )
             return paragraphs
-        self._llm_expansion_call_count += 1
 
         current_text = "\n\n".join(paragraphs)
         current_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in paragraphs)
@@ -1746,6 +1806,10 @@ class WriterAgent(BaseAgent):
             if not new_paragraphs:
                 return paragraphs
 
+            # Count only a completed expansion. A format error, timeout or
+            # unusable response must not consume the one useful retry that is
+            # reserved for the final post-polish length check.
+            self._llm_expansion_call_count += 1
             result = list(paragraphs)
             insert_pos = max(1, len(result) - 1)
             for offset, para in enumerate(new_paragraphs):
@@ -1756,24 +1820,40 @@ class WriterAgent(BaseAgent):
             logger.warning("LLM expansion failed: %s", exc)
             return paragraphs
 
-    def _ensure_min_char_count(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 0) -> list[str]:
+    def _ensure_min_char_count(
+        self,
+        paragraphs: list[str],
+        data_report: "DataReport",
+        min_chars: int = 0,
+        *,
+        allow_llm_expansion: bool = True,
+    ) -> list[str]:
+        explicit_min_chars = min_chars > 0
         content_mode = self._content_mode(data_report)
         if min_chars <= 0:
-            word_target = getattr(data_report, "word_target", 0) or 0
-            if content_mode == "hot_topic":
-                # 热点快评：600~900 字即可，不强制 1500 字长文
-                min_chars = max(600, min(int(word_target * 0.8) if word_target > 0 else 700, 900))
-            elif word_target > 0:
-                min_chars = max(1500, int(word_target * 0.8))
+            if self._auto_publish_mode():
+                min_chars = max(
+                    self.AUTO_PUBLISH_ARTICLE_TARGET,
+                    int(getattr(data_report, "word_target", 0) or self.settings.article_word_target or 0),
+                )
             else:
-                min_chars = max(1500, int(getattr(self.settings, "article_word_target", 1500) * 0.8))
+                word_target = getattr(data_report, "word_target", 0) or 0
+                if content_mode == "hot_topic":
+                    # 热点快评：600~900 字即可，不强制 1500 字长文
+                    min_chars = max(600, min(int(word_target * 0.8) if word_target > 0 else 700, 900))
+                elif word_target > 0:
+                    min_chars = max(1500, int(word_target * 0.8))
+                else:
+                    min_chars = max(1500, int(getattr(self.settings, "article_word_target", 1500) * 0.8))
 
         content_format = getattr(data_report, "content_format", "") or ""
-        if content_format in ("quick_commentary", "short_comment", "news_flash") and min_chars > 900:
+        # Only derived defaults may use the concise quick-commentary floor.
+        # An explicit 1500/1750 publish gate must remain intact.
+        if not explicit_min_chars and content_format in self.SHORT_CONTENT_FORMATS and min_chars > 900:
             min_chars = 900
 
         grounded = self._has_grounded_evidence(data_report)
-        if not grounded:
+        if not explicit_min_chars and not grounded:
             min_chars = min(min_chars, max(950, int((getattr(data_report, "word_target", 0) or 1200) * 0.7)))
 
         logger = logging.getLogger(__name__)
@@ -1813,7 +1893,7 @@ class WriterAgent(BaseAgent):
             len(p.replace("\n", "").replace(" ", ""))
             for p in trimmed_result
         )
-        if final_chars < min_chars and grounded and self.openai_service.available:
+        if final_chars < min_chars and allow_llm_expansion and grounded and self.openai_service.available:
             logger.info(
                 "Supplementary paragraphs brought article to %d chars, still below %d. Attempting grounded LLM expansion.",
                 final_chars,

@@ -152,6 +152,44 @@ def test_medium_grounded_draft_stays_blocked_without_llm_expansion(
     mock_openai_service.create_json_completion.assert_not_called()
 
 
+def test_explicit_publish_length_is_not_clamped_to_quick_commentary_floor(
+    app_settings,
+    mock_openai_service,
+    logger,
+    caplog,
+) -> None:
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    agent._build_supplementary_paragraphs = MagicMock(return_value=[])
+    data_report = DataReport(
+        content_format="quick_commentary",
+        word_target=800,
+        companies=["优必选"],
+        core_data=["优必选发布机器人进展"],
+        evidence_notes=["公开材料：优必选发布机器人进展"],
+    )
+
+    with caplog.at_level("WARNING"):
+        ensured = agent.ensure_article_min_chars("优必选的阶段性进展。" * 70, data_report, min_chars=1750)
+
+    assert len(ensured.replace("\n", "").replace(" ", "")) < 1750
+    assert "minimum 1750" in caplog.text
+
+
+def test_writer_auto_publish_prompt_uses_long_form_floor(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    object.__setattr__(app_settings.publishing, "enabled", True)
+    object.__setattr__(app_settings.publishing, "auto_publish", True)
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    data_report = DataReport(content_format="quick_commentary", word_target=800)
+
+    assert agent._article_word_target_for_prompt(data_report) == "1800"
+    assert agent._min_word_target_for(data_report) == "1800"
+    assert "自动发布候选" in agent._writer_system_prompt(app_settings.get_style("deep_industry_analysis"))
+
+
 def test_supplementary_paragraphs_are_bounded_and_reject_incomplete_fragments(
     app_settings,
     mock_openai_service,

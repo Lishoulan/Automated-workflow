@@ -10,6 +10,10 @@ from toutiao_content_factory.services.company_entities import extract_known_comp
 
 class DataAgent(BaseAgent):
     agent_name = "DataAgent"
+    SHORT_CONTENT_FORMATS = frozenset(("quick_commentary", "short_comment", "news_flash"))
+    AUTO_PUBLISH_ARTICLE_TARGET = 1800
+    SOURCE_FACT_MIN_COUNT = 3
+    SOURCE_FACT_MIN_CHARS = 180
     TITLE_FACT_NUMBER_RE = re.compile(
         r"\d[\d,]*(?:\.\d+)?\s*(?:万亿元|亿元|亿美元|万元|万台|万辆|万套|万吨|万千瓦时|万千瓦|"
         r"GWh|MWh|kWh|Wh|Ah|GW|MW|kW|W|V|A|个月|季度|年|月|倍|台|辆|套|家|个|万|%)?",
@@ -279,6 +283,7 @@ class DataAgent(BaseAgent):
             growth_numbers=growth_numbers,
             core_data=core_data,
             evidence_notes=evidence_notes,
+            source_facts=source_facts,
         )
 
         return DataReport(
@@ -488,6 +493,7 @@ class DataAgent(BaseAgent):
             growth_numbers=self.clean_publish_list(extraction.growth_numbers[:8], limit=8),
             core_data=core_data,
             evidence_notes=evidence_notes,
+            source_facts=source_facts,
         )
 
         return DataReport(
@@ -530,6 +536,7 @@ class DataAgent(BaseAgent):
         growth_numbers: list[str],
         core_data: list[str],
         evidence_notes: list[str],
+        source_facts: list[str] | None = None,
     ) -> dict[str, object]:
         content_mode = self._content_mode(extraction)
         topic_type = extraction.topic_type.strip() or self._infer_topic_type(extraction)
@@ -566,17 +573,35 @@ class DataAgent(BaseAgent):
             growth_numbers=growth_numbers,
             companies=companies,
             evidence_notes=evidence_notes,
+            source_facts=source_facts,
         )
         word_target = extraction.word_target or self._word_target_for_format(content_format, content_mode=content_mode)
-        paragraph_instruction = extraction.paragraph_instruction.strip() or self._paragraph_instruction_for_format(
-            content_format,
-            content_mode=content_mode,
-        )
-        format_brief = extraction.format_brief.strip() or self._format_brief_for_format(
-            content_format,
-            focus_industry,
-            content_mode=content_mode,
-        )
+        if self._auto_publish_mode():
+            # Topic collection may carry the old 800-char quick-commentary
+            # default. Automatic publication must be prepared as a complete
+            # article before it reaches the public quality gate.
+            word_target = max(self.AUTO_PUBLISH_ARTICLE_TARGET, int(word_target or 0))
+            paragraph_instruction = self._paragraph_instruction_for_format(
+                content_format,
+                content_mode=content_mode,
+                auto_publish=True,
+            )
+            format_brief = self._format_brief_for_format(
+                content_format,
+                focus_industry,
+                content_mode=content_mode,
+                auto_publish=True,
+            )
+        else:
+            paragraph_instruction = extraction.paragraph_instruction.strip() or self._paragraph_instruction_for_format(
+                content_format,
+                content_mode=content_mode,
+            )
+            format_brief = extraction.format_brief.strip() or self._format_brief_for_format(
+                content_format,
+                focus_industry,
+                content_mode=content_mode,
+            )
         return {
             "topic_type": topic_type,
             "topic_type_label": self.TOPIC_TYPE_LABELS.get(topic_type, topic_type or "行业事件"),
@@ -597,8 +622,17 @@ class DataAgent(BaseAgent):
         growth_numbers: list[str],
         companies: list[str],
         evidence_notes: list[str],
+        source_facts: list[str] | None = None,
     ) -> list[str]:
         flags = list(extraction.topic_quality_flags)
+        facts = (
+            self._extract_source_facts(extraction)
+            if source_facts is None
+            else [str(item).strip() for item in source_facts if str(item).strip()]
+        )
+        fact_chars = len(re.sub(r"\s+", "", "".join(facts)))
+        if len(facts) < self.SOURCE_FACT_MIN_COUNT or fact_chars < self.SOURCE_FACT_MIN_CHARS:
+            flags.append("insufficient_source_facts")
         # 实时热榜二创：标题型热点天然缺证据/公司/数字，不把这些记为质量缺陷
         if bool(getattr(extraction, "is_hot_topic", False)):
             return flags
@@ -691,7 +725,17 @@ class DataAgent(BaseAgent):
             return "project_breakdown"
         return "quick_commentary"
 
+    def _auto_publish_mode(self) -> bool:
+        publishing = getattr(self.settings, "publishing", None)
+        return bool(
+            getattr(publishing, "enabled", False)
+            and getattr(publishing, "auto_publish", False)
+            and not getattr(publishing, "draft_only", False)
+        )
+
     def _word_target_for_format(self, content_format: str, content_mode: str = "generic") -> int:
+        if self._auto_publish_mode():
+            return max(self.AUTO_PUBLISH_ARTICLE_TARGET, int(self.settings.article_word_target or 0))
         if content_mode == "sports":
             return 900
         if content_mode == "international":
@@ -706,7 +750,16 @@ class DataAgent(BaseAgent):
         # even when the cloud environment supplies the old 1200-char default.
         return max(int(self.settings.article_word_target or 0), 1800)
 
-    def _paragraph_instruction_for_format(self, content_format: str, content_mode: str = "generic") -> str:
+    def _paragraph_instruction_for_format(
+        self,
+        content_format: str,
+        content_mode: str = "generic",
+        auto_publish: bool = False,
+    ) -> str:
+        if auto_publish:
+            if content_format in self.SHORT_CONTENT_FORMATS:
+                return "7到10段，每段1到3句，先判断，再写事实和机制，最后保留风险边界与一个具体问题；全文至少1800字。"
+            return "7到10段，每段1到3句，围绕事实、机制、影响、主体和风险边界推进；全文至少1800字。"
         if content_mode == "sports":
             return "4到6段，每段2到3句，先判断影响，再讲关键人物和后续走势，结尾只留一个互动问题。"
         if content_mode == "international":
@@ -719,7 +772,15 @@ class DataAgent(BaseAgent):
             return "5到6段，每段2到3句，围绕主体、环节位置、订单兑现和交付节奏展开。"
         return "5到7段，每段2到3句，先判断、再数据、再产业链、再主体、再风险边界。"
 
-    def _format_brief_for_format(self, content_format: str, focus_industry: str, content_mode: str = "generic") -> str:
+    def _format_brief_for_format(
+        self,
+        content_format: str,
+        focus_industry: str,
+        content_mode: str = "generic",
+        auto_publish: bool = False,
+    ) -> str:
+        if auto_publish and content_format in self.SHORT_CONTENT_FORMATS:
+            return "写成可自动发布的完整产业分析稿，围绕事实、机制、影响和风险边界展开，不得把快讯压缩成短评。"
         if content_mode == "sports":
             return "写成深度分析稿，重点解释事件对产业格局、技术路线和市场预期的影响。"
         if content_mode == "international":
@@ -742,12 +803,38 @@ class DataAgent(BaseAgent):
         candidates: list[str] = []
         for item in cleaned:
             candidate = self._normalize_company_name(item)
-            if candidate and self._is_valid_company_name(candidate) and candidate not in candidates:
+            if (
+                candidate
+                and self._is_valid_company_name(candidate)
+                and self._company_is_grounded(candidate, extraction)
+                and candidate not in candidates
+            ):
                 candidates.append(candidate)
         for item in self._extract_company_like_names(extraction):
             if item not in candidates:
                 candidates.append(item)
         return self.unique(candidates)[:limit]
+
+    @staticmethod
+    def _compact_company_text(value: object) -> str:
+        return re.sub(r"[\s,，。；：:、.!！？?\"'“”‘’()（）\-]+", "", str(value or "")).casefold()
+
+    def _company_source_text(self, extraction: ExtractionResult) -> str:
+        parts = [str(extraction.merged_text or "")]
+        for item in extraction.evidence_items:
+            if isinstance(item, dict):
+                parts.extend(str(item.get(key, "")) for key in ("fact", "title", "preview"))
+        for item in extraction.source_summaries:
+            if isinstance(item, dict):
+                parts.extend(str(item.get(key, "")) for key in ("title", "preview"))
+        return "\n".join(part for part in parts if part.strip())
+
+    def _company_is_grounded(self, candidate: str, extraction: ExtractionResult) -> bool:
+        candidate_text = self._compact_company_text(candidate)
+        source_text = self._compact_company_text(self._company_source_text(extraction))
+        if not candidate_text or not source_text:
+            return False
+        return candidate_text in source_text
 
     def _extract_company_like_names(self, extraction: ExtractionResult) -> list[str]:
         text_parts = [extraction.merged_text]

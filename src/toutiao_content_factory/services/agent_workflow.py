@@ -475,9 +475,35 @@ class AgentWorkflowService:
     def _abort_if_low_quality(self, extraction: ExtractionResult, data_report) -> None:
         # 实时热榜二创：标题型热点没有完整原文/证据链，是正常形态，
         # 不以"缺证据/缺公司/质量分低"拦截（热点时效和观点密度才是价值）。
-        if bool(getattr(extraction, "is_hot_topic", False)) or bool(getattr(data_report, "is_hot_topic", False)):
+        is_hot_topic = bool(getattr(extraction, "is_hot_topic", False)) or bool(
+            getattr(data_report, "is_hot_topic", False)
+        )
+        quality_flags = {
+            str(flag).strip()
+            for flag in (
+                getattr(data_report, "topic_quality_flags", None)
+                or getattr(extraction, "topic_quality_flags", None)
+                or []
+            )
+            if str(flag).strip()
+        }
+        is_title_only = "title_only" in quality_flags
+        publishing = getattr(self.settings, "publishing", None)
+        toutiao_auto_publish = bool(
+            getattr(publishing, "enabled", False)
+            and getattr(publishing, "auto_publish", False)
+            and not getattr(publishing, "draft_only", False)
+        )
+        if "insufficient_source_facts" in quality_flags and (
+            toutiao_auto_publish or not (is_hot_topic or is_title_only)
+        ):
+            title = data_report.topic_title.strip() or extraction.topic_title.strip() or "untitled-topic"
+            raise LowQualityAbortException(
+                f"{title} | reasons=insufficient_source_facts"
+            )
+        if is_hot_topic or is_title_only:
             self.logger.info(
-                "Hot-topic mode: skipping evidence-based quality gate for %s",
+                "Hot/title-only mode: skipping evidence-based quality gate for %s",
                 extraction.topic_title.strip() or data_report.topic_title.strip(),
             )
             return
@@ -831,9 +857,10 @@ class AgentWorkflowService:
             and getattr(publishing, "auto_publish", False)
             and not getattr(publishing, "draft_only", False)
         )
-        if is_hot_topic and toutiao_auto_publish:
-            # A hot topic can stay concise in draft/manual mode, but an
-            # auto-published article must still pass the public 1500-char gate.
+        if toutiao_auto_publish:
+            # Concise formats can stay short in draft/manual mode, but every
+            # auto-published article must leave room for publish-time cleanup
+            # and still clear Toutiao's public 1500-char gate.
             effective_min_chars = self.AUTO_PUBLISH_ARTICLE_MIN_CHARS
         else:
             effective_min_chars = 850 if is_hot_topic else self.ARTICLE_MIN_CHARS

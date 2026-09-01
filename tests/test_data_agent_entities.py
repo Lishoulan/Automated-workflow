@@ -18,7 +18,7 @@ def test_data_agent_sanitizes_scene_and_source_labels_from_company_fields(
         logger=logger,
     )
     extraction = ExtractionResult(
-        merged_text="特斯拉Optimus机器人进入柏林工厂。",
+        merged_text="特斯拉Optimus机器人进入柏林工厂。国瓷材料参与相关供应。",
         core_data=[],
         industry_trends=[],
         growth_numbers=[],
@@ -34,6 +34,76 @@ def test_data_agent_sanitizes_scene_and_source_labels_from_company_fields(
     )
 
     assert result == ["特斯拉", "国瓷材料"]
+
+
+def test_data_agent_rejects_payload_company_not_traceable_to_source(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = DataAgent(
+        app_settings,
+        prompt_repository=MagicMock(),
+        openai_service=mock_openai_service,
+        logger=logger,
+    )
+    extraction = ExtractionResult(
+        merged_text="优必选发布人形机器人阶段性进展。",
+        companies=["优必选"],
+        focus_industry="人形机器人",
+        core_data=["优必选发布人形机器人阶段性进展"],
+        industry_trends=[],
+        growth_numbers=[],
+        supply_chain_keywords=["人形机器人"],
+        key_points=[],
+    )
+
+    result = agent._build_from_payload(
+        {
+            "companies": ["优必选", "给具身智能", "陌生机器人公司"],
+            "focus_companies": ["给具身智能", "优必选"],
+        },
+        extraction,
+        TrendReport(),
+    )
+
+    assert result.companies == ["优必选"]
+    assert result.focus_companies == ["优必选"]
+    assert "给具身智能" not in result.companies
+
+
+def test_data_agent_raises_quick_commentary_target_for_auto_publish(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    object.__setattr__(app_settings.publishing, "enabled", True)
+    object.__setattr__(app_settings.publishing, "auto_publish", True)
+    agent = DataAgent(
+        app_settings,
+        prompt_repository=MagicMock(),
+        openai_service=mock_openai_service,
+        logger=logger,
+    )
+    extraction = ExtractionResult(
+        merged_text="特斯拉机器人进入验证阶段。",
+        companies=["特斯拉"],
+        focus_industry="人形机器人",
+        focus_keywords=["人形机器人"],
+        content_format="quick_commentary",
+        word_target=800,
+        core_data=["特斯拉机器人进入验证阶段"],
+        industry_trends=[],
+        growth_numbers=[],
+        supply_chain_keywords=[],
+        key_points=[],
+    )
+
+    result = agent._build_from_payload({}, extraction, TrendReport())
+
+    assert result.word_target >= 1800
+    assert "1800" in result.paragraph_instruction
+    assert "完整产业分析稿" in result.format_brief
 
 
 def test_data_agent_accepts_string_company_payload_without_splitting_characters() -> None:
@@ -157,3 +227,71 @@ def test_data_agent_payload_filters_contaminated_company_lists(
 
     assert result.companies == ["特斯拉"]
     assert result.focus_companies == ["特斯拉"]
+
+
+def test_data_agent_flags_insufficient_source_facts(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = DataAgent(
+        app_settings,
+        prompt_repository=MagicMock(),
+        openai_service=mock_openai_service,
+        logger=logger,
+    )
+    extraction = ExtractionResult(
+        merged_text="",
+        core_data=[],
+        industry_trends=[],
+        growth_numbers=[],
+        companies=[],
+        supply_chain_keywords=[],
+        key_points=[],
+        topic_title="source-backed topic",
+    )
+
+    flags = agent._build_topic_quality_flags(
+        extraction=extraction,
+        core_data=["fact"],
+        growth_numbers=["1%"],
+        companies=["Company"],
+        evidence_notes=["evidence"],
+        source_facts=["first source fact", "second source fact"],
+    )
+
+    assert "insufficient_source_facts" in flags
+
+
+def test_data_agent_accepts_sufficient_source_facts(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = DataAgent(
+        app_settings,
+        prompt_repository=MagicMock(),
+        openai_service=mock_openai_service,
+        logger=logger,
+    )
+    extraction = ExtractionResult(
+        merged_text="",
+        core_data=[],
+        industry_trends=[],
+        growth_numbers=[],
+        companies=[],
+        supply_chain_keywords=[],
+        key_points=[],
+        topic_title="source-backed topic",
+    )
+
+    flags = agent._build_topic_quality_flags(
+        extraction=extraction,
+        core_data=["fact"],
+        growth_numbers=["1%"],
+        companies=["Company"],
+        evidence_notes=["evidence"],
+        source_facts=["a" * 60, "b" * 60, "c" * 60],
+    )
+
+    assert "insufficient_source_facts" not in flags

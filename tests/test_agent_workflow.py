@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from toutiao_content_factory.agents.polish_agent import PolishAgent
+from toutiao_content_factory.exceptions import LowQualityAbortException
 from toutiao_content_factory.models import (
     ContentScore,
     DataReport,
@@ -181,6 +182,87 @@ class TestCollectLowQualityReasons:
         reasons = workflow_service._collect_low_quality_reasons(extraction, data_report, 72)
 
         assert "fallback_topic_without_hard_evidence" in reasons
+
+
+def test_abort_rejects_insufficient_source_facts_for_normal_candidate(
+    workflow_service: AgentWorkflowService,
+) -> None:
+    extraction = ExtractionResult(
+        merged_text="",
+        core_data=[],
+        industry_trends=[],
+        growth_numbers=[],
+        companies=[],
+        supply_chain_keywords=[],
+        key_points=[],
+        topic_title="normal topic",
+    )
+    data_report = DataReport(
+        topic_title="normal topic",
+        core_data=["fact"],
+        key_points=["point"],
+        growth_numbers=["1%"],
+        evidence_notes=["evidence"],
+        companies=["Company"],
+        focus_industry="industry",
+        topic_quality_score=90,
+        topic_quality_flags=["insufficient_source_facts"],
+    )
+
+    with pytest.raises(LowQualityAbortException, match="insufficient_source_facts"):
+        workflow_service._abort_if_low_quality(extraction, data_report)
+
+
+def test_abort_keeps_insufficient_hot_topic_for_manual_review(
+    workflow_service: AgentWorkflowService,
+) -> None:
+    extraction = ExtractionResult(
+        merged_text="",
+        core_data=[],
+        industry_trends=[],
+        growth_numbers=[],
+        companies=[],
+        supply_chain_keywords=[],
+        key_points=[],
+        topic_title="hot topic",
+        is_hot_topic=True,
+    )
+    data_report = DataReport(
+        topic_title="hot topic",
+        is_hot_topic=True,
+        topic_quality_score=90,
+        topic_quality_flags=["insufficient_source_facts"],
+    )
+
+    workflow_service._abort_if_low_quality(extraction, data_report)
+
+
+def test_abort_rejects_insufficient_hot_topic_for_auto_publish(
+    app_settings,
+    workflow_service: AgentWorkflowService,
+) -> None:
+    object.__setattr__(app_settings.publishing, "enabled", True)
+    object.__setattr__(app_settings.publishing, "auto_publish", True)
+    extraction = ExtractionResult(
+        merged_text="",
+        core_data=[],
+        industry_trends=[],
+        growth_numbers=[],
+        companies=[],
+        supply_chain_keywords=[],
+        key_points=[],
+        topic_title="hot topic",
+        is_hot_topic=True,
+    )
+    data_report = DataReport(
+        topic_title="hot topic",
+        is_hot_topic=True,
+        topic_quality_score=90,
+        topic_quality_flags=["insufficient_source_facts"],
+    )
+
+    with pytest.raises(LowQualityAbortException, match="insufficient_source_facts"):
+        workflow_service._abort_if_low_quality(extraction, data_report)
 
 
 class TestShouldRunSecondPolish:

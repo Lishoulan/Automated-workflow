@@ -63,6 +63,8 @@
 目标: {{article_word_target}} 字
 最低: {{min_word_target}} 字
 
+{{auto_publish_directive}}
+
 ## 特别要求
 
 {{best_practices}}

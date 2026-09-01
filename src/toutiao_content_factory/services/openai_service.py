@@ -156,15 +156,9 @@ class OpenAIContentService:
         self._accumulate_usage(response)
         content = self._extract_message_content(response)
 
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            # 尝试从 markdown 代码块中提取 JSON
-            fallback_payload = self._extract_json_from_markdown(content)
-            if fallback_payload is not None:
-                self.logger.warning("JSON 解析失败，但成功从 markdown 代码块中提取到有效 JSON。")
-                return fallback_payload
-            raise AIResponseFormatError("The model did not return valid JSON.") from None
+        payload = self._parse_json_object(content)
+        if payload is None:
+            raise AIResponseFormatError("The model did not return valid JSON.")
 
         self.logger.info("Model response parsed as JSON successfully.")
         return payload
@@ -427,43 +421,76 @@ class OpenAIContentService:
         if isinstance(content, (list, tuple)):
             return "".join(cls._content_to_text(item) for item in content).strip()
         if isinstance(content, Mapping):
-            for field in ("text", "content", "value"):
+            for field in ("text", "content", "value", "output_text"):
                 if field in content and content[field] is not None:
                     return cls._content_to_text(content[field])
             return ""
-        for field in ("text", "content", "value"):
+        for field in ("text", "content", "value", "output_text"):
             nested = getattr(content, field, None)
             if nested is not None:
                 return cls._content_to_text(nested)
         return str(content).strip()
 
     def _extract_response_content(self, response: Any) -> str:
-        """Extract content from SDK objects and common proxy response shapes."""
+        """Extract content from SDK objects and common proxy response shapes.
+
+        Providers and gateways do not all return the OpenAI SDK object.  Some
+        return a mapping, a plain string, a response nested under ``data`` or
+        ``response``, or content blocks instead of one string.  Keep this
+        adapter at the boundary so every agent sees the same text.
+        """
+        return self._extract_response_content_nested(response, depth=0)
+
+    def _extract_response_content_nested(self, response: Any, depth: int) -> str:
+        if depth > 5:
+            return ""
         if isinstance(response, (str, bytes)):
             return self._content_to_text(response)
         if response is None:
             return ""
 
         choices = self._response_field(response, "choices")
-        if choices:
-            try:
-                choice = choices[0]
-            except (IndexError, KeyError, TypeError):
-                choice = None
-            if choice is not None:
+        if choices is not None:
+            if isinstance(choices, Mapping):
+                choice_items = [choices]
+            elif isinstance(choices, (list, tuple)):
+                choice_items = choices
+            else:
+                choice_items = [choices]
+            for choice in choice_items:
                 message = self._response_field(choice, "message")
                 if message is None:
                     message = self._response_field(choice, "delta")
-                content = self._response_field(message, "content") if message is not None else None
+                if isinstance(message, (str, bytes)):
+                    content = message
+                else:
+                    content = self._response_field(message, "content") if message is not None else None
+                    if content is None and message is not None:
+                        content = self._response_field(message, "text")
                 if content is None:
                     content = self._response_field(choice, "content")
                 if content is not None:
-                    return self._content_to_text(content)
+                    text = self._content_to_text(content)
+                    if text:
+                        return text
 
         for field in ("output_text", "text", "content"):
             content = self._response_field(response, field)
             if content is not None:
-                return self._content_to_text(content)
+                text = self._content_to_text(content)
+                if text:
+                    return text
+
+        # A few gateways wrap the actual completion in one or more envelope
+        # fields.  Only recurse after checking the direct SDK-like shapes so a
+        # legitimate ``response`` string containing JSON is preserved.
+        for field in ("response", "data", "result", "output", "payload"):
+            nested = self._response_field(response, field)
+            if nested is None or nested is response:
+                continue
+            text = self._extract_response_content_nested(nested, depth + 1)
+            if text:
+                return text
         return ""
 
     def _extract_message_content(self, response) -> str:
@@ -471,29 +498,81 @@ class OpenAIContentService:
         if not content:
             return "{}"
 
-        if content.startswith("```"):
-            lines = content.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            content = "\n".join(lines).strip()
-            if content.lower().startswith("json"):
-                content = content[4:].strip()
-
-        return content or "{}"
+        # DeepSeek-style reasoning tags are not part of the JSON payload.
+        content = re.sub(r"<think\b[^>]*>[\s\S]*?</think>", "", content, flags=re.IGNORECASE)
+        content = re.sub(r"<think\b[^>]*>[\s\S]*$", "", content, flags=re.IGNORECASE)
+        return content.strip() or "{}"
 
     _MARKDOWN_JSON_PATTERN = re.compile(r"```(?:json)?\s*([\s\S]*?)```")
+
+    @staticmethod
+    def _balanced_json_end(text: str, start: int) -> int | None:
+        """Return the end offset of a balanced JSON object.
+
+        Braces inside JSON strings must not affect the depth count.  This is
+        intentionally a small scanner instead of a greedy regular expression,
+        because model explanations often contain unrelated braces.
+        """
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+                if depth < 0:
+                    return None
+        return None
+
+    @classmethod
+    def _parse_json_object(cls, content: str) -> dict | None:
+        """Parse a JSON object with tolerant handling of model wrappers."""
+        cleaned = re.sub(r"<think\b[^>]*>[\s\S]*?</think>", "", str(content or ""), flags=re.IGNORECASE).strip().lstrip("\ufeff")
+        if not cleaned:
+            return None
+
+        try:
+            payload = json.loads(cleaned)
+            return payload if isinstance(payload, dict) else None
+        except (TypeError, json.JSONDecodeError):
+            pass
+
+        for start, char in enumerate(cleaned):
+            if char != "{":
+                continue
+            end = cls._balanced_json_end(cleaned, start)
+            if end is None:
+                continue
+            try:
+                payload = json.loads(cleaned[start:end])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
+        return None
 
     def _extract_json_from_markdown(self, content: str) -> dict | None:
         for match in self._MARKDOWN_JSON_PATTERN.finditer(content):
             candidate = match.group(1).strip()
             if candidate.lower().startswith("json"):
                 candidate = candidate[4:].strip()
-            try:
-                return json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
+            payload = self._parse_json_object(candidate)
+            if payload is not None:
+                return payload
         return None
 
     def close(self) -> None:

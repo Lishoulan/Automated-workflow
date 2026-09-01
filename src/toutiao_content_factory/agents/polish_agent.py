@@ -14,6 +14,8 @@ from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 class PolishAgent(BaseAgent):
     agent_name = "PolishAgent"
+    SHORT_CONTENT_FORMATS = frozenset(("quick_commentary", "short_comment", "news_flash"))
+    AUTO_PUBLISH_ARTICLE_TARGET = 1800
     UNSUPPORTED_ORDER_CLAIM_RES = (
         re.compile(
             r"(?:获得|拿到|签下|形成|已有|已经有|已获|转化为|落实|落地|接到|收到|拿下|确认)"
@@ -164,14 +166,18 @@ class PolishAgent(BaseAgent):
             data_json=self.json_text(data_report.__dict__),
             article=content.article,
             summary=content.summary,
+            auto_publish_directive=self._auto_publish_directive(),
         )
         prompt = prompt + self.ANTI_AI_FLAVOR_APPENDIX
+        auto_publish_directive = self._auto_publish_directive()
+        if auto_publish_directive:
+            prompt = prompt + "\n\n" + auto_publish_directive
         if rule_block:
             prompt = prompt + "\n\n" + rule_block + "\n请在润色时严格执行以上规则。"
         engagement_directive = self._iteration_engagement_directive()
         if engagement_directive:
             prompt = prompt + "\n\n" + engagement_directive
-        payload = self.request_json(self.POLISH_SYSTEM_PROMPT, prompt)
+        payload = self.request_json(self._polish_system_prompt(), prompt)
         if payload:
             polished = str(payload.get("polished_article", "")).strip()
             if polished:
@@ -210,6 +216,26 @@ class PolishAgent(BaseAgent):
                     ),
                 }
         return self._fallback(content, trend_report, data_report, revision_focus=revision_focus)
+
+    def _auto_publish_mode(self) -> bool:
+        publishing = getattr(self.settings, "publishing", None)
+        return bool(
+            getattr(publishing, "enabled", False)
+            and getattr(publishing, "auto_publish", False)
+            and not getattr(publishing, "draft_only", False)
+        )
+
+    def _auto_publish_directive(self) -> str:
+        if not self._auto_publish_mode():
+            return ""
+        return (
+            "当前是自动发布候选：润色后正文仍需保持约1800字，最低1750字。不得为了简洁把完整分析压缩成800字短评；"
+            "只能重组输入材料已有事实，缺证据处收窄结论，不得用重复套话或新增事实补长度。"
+        )
+
+    def _polish_system_prompt(self) -> str:
+        directive = self._auto_publish_directive()
+        return f"{self.POLISH_SYSTEM_PROMPT}{directive}" if directive else self.POLISH_SYSTEM_PROMPT
 
     def _fallback(
         self,
@@ -456,7 +482,14 @@ class PolishAgent(BaseAgent):
                 if source_anchor:
                     paragraphs.insert(1 if len(paragraphs) > 1 else 0, source_anchor)
 
-        paragraphs = self._rebalance_paragraphs(paragraphs)
+        if self._auto_publish_mode():
+            paragraphs = self._rebalance_paragraphs(
+                paragraphs,
+                min_paragraphs=7,
+                max_paragraphs=12,
+            )
+        else:
+            paragraphs = self._rebalance_paragraphs(paragraphs)
         article_text = "\n\n".join(paragraphs[:12]).strip()
         unsupported_tokens = self._unsupported_numeric_tokens(article_text, data_report)
         if self._should_rebuild_cautious(article_text, data_report, unsupported_tokens) or self._has_unsupported_order_claim(

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from toutiao_content_factory.exceptions import AIRequestError
+from toutiao_content_factory.exceptions import AIRequestError, AIResponseFormatError
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 
@@ -22,6 +22,14 @@ from toutiao_content_factory.services.openai_service import OpenAIContentService
                 choices=[SimpleNamespace(message=SimpleNamespace(content="SDK response"))]
             ),
             "SDK response",
+        ),
+        (
+            {"choices": [{"message": {"content": [{"type": "text", "text": "content block"}]}}]},
+            "content block",
+        ),
+        (
+            {"response": {"data": {"choices": [{"message": {"content": "nested response"}}]}}},
+            "nested response",
         ),
     ],
 )
@@ -62,6 +70,36 @@ def test_json_completion_accepts_dictionary_response_and_usage(app_settings, log
     assert usage.prompt_tokens == 10
     assert usage.completion_tokens == 5
     assert usage.total_tokens == 15
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        '```json\n{"result": "fenced"}\n```',
+        'Here is the JSON payload:\n{"result": "explained"}\nEnd.',
+        '<think>先分析返回格式 {not_json}</think>\n{"result": "after think"}',
+        '{"result": "brace } inside string", "nested": {"ok": true}} trailing text',
+    ],
+)
+def test_json_completion_extracts_wrapped_and_reasoned_json(app_settings, logger, response) -> None:
+    service = OpenAIContentService(app_settings, logger, force_mock=True)
+    client = MagicMock()
+    client.chat.completions.create.return_value = response
+    service.client = client
+
+    payload = service.create_json_completion("system", "user")
+
+    assert payload["result"] in {"fenced", "explained", "after think", "brace } inside string"}
+
+
+def test_json_completion_rejects_response_without_a_json_object(app_settings, logger) -> None:
+    service = OpenAIContentService(app_settings, logger, force_mock=True)
+    client = MagicMock()
+    client.chat.completions.create.return_value = "模型只返回了无法解析的说明"
+    service.client = client
+
+    with pytest.raises(AIResponseFormatError, match="valid JSON"):
+        service.create_json_completion("system", "user")
 
 
 def test_insufficient_balance_disables_client_for_remainder_of_run(

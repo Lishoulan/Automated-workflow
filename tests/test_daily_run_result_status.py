@@ -176,6 +176,32 @@ def test_daily_review_notification_uses_shanghai_time(monkeypatch) -> None:
     )
 
 
+def test_platform_auth_failure_is_queued_for_daily_report(monkeypatch) -> None:
+    service = ContentFactoryAppService.__new__(ContentFactoryAppService)
+    service.settings = Namespace(account_key="robot_notes")
+    service.notification_service = MagicMock()
+    fixed_now = datetime(2026, 9, 1, 1, 29)
+    monkeypatch.setattr(app_service_module, "notification_now", lambda: fixed_now)
+
+    service._notify_platform_auth_failure(
+        blocking_platforms=["toutiao"],
+        platform_health_path="automation/platform_health.json",
+        auth_health={
+            "platforms": {
+                "toutiao": {
+                    "blocking_flags": ["login session invalid"],
+                }
+            }
+        },
+    )
+
+    service.notification_service.notify_urgent.assert_not_called()
+    kwargs = service.notification_service.notify_failure.call_args.kwargs
+    assert kwargs["stage"] == "auth_preflight"
+    assert kwargs["run_time"] == "2026-09-01 01:29"
+    assert "continued in draft mode" in kwargs["error_msg"]
+
+
 def test_duplicate_title_publish_failure_is_safe_to_fallback(app_settings) -> None:
     service = ContentFactoryAppService(app_settings, logging.getLogger("test-title-fallback"))
     error = (

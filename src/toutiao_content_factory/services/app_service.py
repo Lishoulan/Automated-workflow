@@ -3289,18 +3289,20 @@ class ContentFactoryAppService:
                 blockers = [str(item) for item in payload.get("blocking_flags", []) if str(item).strip()]
                 if blockers:
                     platform_messages.append(f"{platform_labels.get(key, key)}: {' | '.join(blockers)}")
-        message = (
-            f"{run_time} publish auth precheck failed before model generation.\n"
-            f"account: {self.settings.account_key}\n"
-            f"blocked platforms: {', '.join(readable_platforms)}\n"
-            f"reasons: {'; '.join(platform_messages) if platform_messages else 'login session invalid'}\n"
-            f"platform health: {platform_health_path or 'N/A'}\n"
-            "This run was aborted before any AI generation to avoid unnecessary cost."
-        )
+        reason = "; ".join(platform_messages) if platform_messages else "login session invalid"
         try:
-            self.notification_service.notify_urgent("[URGENT] Publish auth precheck failed", message)
+            self.notification_service.notify_failure(
+                platform=", ".join(readable_platforms),
+                stage="auth_preflight",
+                error_msg=(
+                    "Publish auth precheck failed; publishing was disabled for this run and "
+                    f"content generation continued in draft mode. reasons: {reason}"
+                ),
+                run_time=run_time,
+                debug_url=platform_health_path or None,
+            )
         except Exception as exc:
-            self.logger.warning("Failed to send urgent platform auth notification: %s", exc)
+            self.logger.warning("Failed to queue platform auth notification: %s", exc)
 
     @staticmethod
     def _is_session_expired_error(exc: Exception) -> bool:

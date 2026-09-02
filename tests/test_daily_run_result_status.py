@@ -467,6 +467,26 @@ def test_already_published_keeps_weitoutiao_topup_status(app_settings, tmp_path:
     assert scheduled_status["platforms"]["weitoutiao"]["status"] == "success"
 
 
+def test_weitoutiao_candidate_shortfall_is_success_with_explicit_note(app_settings, tmp_path: Path) -> None:
+    service = ContentFactoryAppService(app_settings, logging.getLogger("test.daily.wtt.shortfall"))
+    run_dir = tmp_path / "run"
+
+    _result_path, payload = service._write_weitoutiao_daily_result(
+        run_dir,
+        companion={"status": "submitted_for_review"},
+        topup={
+            "status": "success",
+            "requested": 2,
+            "selected": 1,
+            "accepted": 1,
+            "selection_shortfall": 1,
+        },
+    )
+
+    assert payload["status"] == "success"
+    assert "candidate pool was short by 1 item(s)" in payload["message"]
+
+
 def test_no_topics_keeps_last_article_in_scheduled_status(app_settings, tmp_path: Path) -> None:
     exports, run_dir = _prepare_run(app_settings, tmp_path, publish_status="submitted_for_review")
 

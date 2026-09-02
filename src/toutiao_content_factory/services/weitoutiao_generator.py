@@ -459,6 +459,7 @@ class WeiToutiaoStandaloneGenerator:
                     "message": "WeiToutiao daily target was already reached; no top-up was needed.",
                     "requested": 0,
                     "selected": 0,
+                    "selection_shortfall": 0,
                     "attempted": 0,
                     "generated": 0,
                     "accepted": 0,
@@ -643,12 +644,21 @@ class WeiToutiaoStandaloneGenerator:
             for item in [*published, *skipped]
             if str(item.get("generation_mode", "")).strip().lower() == "local_fallback"
         )
+        selection_shortfall = max(0, requested - len(topics))
+        all_selected_accepted = bool(topics) and accepted == len(topics) and not skipped
         if not topics:
             status = "no_topics"
             message = "No eligible topics were available for the WeiToutiao batch."
-        elif accepted > 0 and not skipped and len(topics) >= requested and accepted >= len(topics):
+        elif all_selected_accepted:
             status = "success"
-            message = "WeiToutiao batch completed successfully."
+            if selection_shortfall:
+                message = (
+                    "WeiToutiao batch completed all eligible candidates without publish failures; "
+                    f"requested={requested}, selected={len(topics)}, accepted={accepted}. "
+                    "No additional eligible topics were available for this slot."
+                )
+            else:
+                message = "WeiToutiao batch completed successfully."
         elif accepted > 0:
             status = "partial_success"
             message = "WeiToutiao batch partially succeeded; some items need follow-up."
@@ -665,6 +675,7 @@ class WeiToutiaoStandaloneGenerator:
                 "message": message,
                 "requested": requested,
                 "selected": len(topics),
+                "selection_shortfall": selection_shortfall,
                 "attempted": len(published) + len(skipped),
                 "generated": sum(1 for item in [*published, *skipped] if str(item.get("run_dir", "")).strip()),
                 "accepted": accepted,

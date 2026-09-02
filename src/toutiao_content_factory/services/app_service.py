@@ -1266,6 +1266,15 @@ class ContentFactoryAppService:
             "target_reached",
         }:
             details.append(f"top-up: {topup_message}")
+        try:
+            topup_shortfall = max(0, int(topup.get("selection_shortfall", 0) or 0))
+        except (TypeError, ValueError):
+            topup_shortfall = 0
+        if topup_shortfall:
+            details.append(
+                "top-up: all eligible candidates were processed, "
+                f"but the candidate pool was short by {topup_shortfall} item(s)."
+            )
         skipped_items = topup.get("skipped", [])
         if isinstance(skipped_items, list):
             for item in skipped_items:

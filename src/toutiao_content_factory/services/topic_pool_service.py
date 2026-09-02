@@ -73,7 +73,51 @@ class TopicPoolService:
                 "recommended_format": "deep_analysis",
                 "recommended_format_label": "深度分析",
                 "title_playbook_track": "AI机器人",
-            }
+            },
+            {
+                "title": "机器人真正进入工厂后，哪些指标会先决定订单能不能续签",
+                "summary": "从任务稳定性、维护成本和交付节奏拆解机器人订单能否持续，避免把一次演示直接等同于长期需求。",
+                "matched_industries": ["humanoid_robot", "industrial_automation"],
+                "matched_keywords": ["机器人", "工厂", "稳定性", "维护", "订单"],
+                "topic_type": "evergreen",
+                "topic_type_label": "产业判断",
+                "recommended_format": "deep_analysis",
+                "recommended_format_label": "深度分析",
+                "title_playbook_track": "AI机器人",
+            },
+            {
+                "title": "人形机器人订单从试点走向批量，最容易被忽略的成本是什么",
+                "summary": "围绕零部件、现场部署和售后维护拆解试点到批量之间的成本变化，只讨论可验证的经营变量。",
+                "matched_industries": ["humanoid_robot", "ai_hardware"],
+                "matched_keywords": ["人形机器人", "订单", "试点", "成本", "维护"],
+                "topic_type": "evergreen",
+                "topic_type_label": "商业化观察",
+                "recommended_format": "deep_analysis",
+                "recommended_format_label": "深度分析",
+                "title_playbook_track": "AI机器人",
+            },
+            {
+                "title": "机器人公司公布出货量后，还要看哪些数据判断收入质量",
+                "summary": "从出货口径、交付验收、回款节奏和服务收入拆解机器人业务的收入质量，不预设具体公司结论。",
+                "matched_industries": ["humanoid_robot", "ai_hardware"],
+                "matched_keywords": ["机器人", "出货量", "交付", "验收", "回款"],
+                "topic_type": "evergreen",
+                "topic_type_label": "经营分析",
+                "recommended_format": "deep_analysis",
+                "recommended_format_label": "深度分析",
+                "title_playbook_track": "AI机器人",
+            },
+            {
+                "title": "具身智能的竞争进入应用端，谁能把一次演示变成长期任务",
+                "summary": "围绕场景复用、任务成功率和运维服务观察具身智能的应用兑现，区分公开事实与后续推测。",
+                "matched_industries": ["humanoid_robot", "industrial_automation"],
+                "matched_keywords": ["具身智能", "机器人", "应用", "任务", "运维"],
+                "topic_type": "evergreen",
+                "topic_type_label": "应用观察",
+                "recommended_format": "deep_analysis",
+                "recommended_format_label": "深度分析",
+                "title_playbook_track": "AI机器人",
+            },
         ],
         "intl_notes": [
             {
@@ -172,24 +216,28 @@ class TopicPoolService:
 
     def build_fallback_report(self) -> DailyTopicsReport:
         pending = self.list_pending_topics(limit=24)
-        if pending:
-            return DailyTopicsReport(
-                generated_at=self._now(),
-                lookback_days=int(getattr(self.settings.topic_collection, "lookback_days", 0) or 0),
-                max_topic_age_hours=int(getattr(self.settings.topic_collection, "max_topic_age_hours", 0) or 0),
-                focus_industries=list(getattr(self.settings.topic_collection, "focus_industries", []) or []),
-                total_raw_items=len(pending),
-                total_selected_items=len(pending),
-                topics=self._rank_topics(pending),
-                source_stats={"topic_pool": {"raw_count": len(pending), "status": "cached"}},
-                failed_sources=[],
-                filtered_out={},
-            )
-
         evergreen_topics = self._load_evergreen_topics()
-        ranked = self._rank_topics(evergreen_topics)
-        if ranked:
+        # Merge pending live topics with a bounded evergreen reserve. A
+        # partially populated pool must not hide the reserve, otherwise one
+        # pending topic can incorrectly cap a top-up batch at one item.
+        combined: list[TopicCandidate] = []
+        seen: set[str] = set()
+        for topic in [*pending, *evergreen_topics[: self.DEFAULT_FALLBACK_LIMIT]]:
+            key = self._topic_identity(topic)
+            if key in seen:
+                continue
+            seen.add(key)
+            combined.append(topic)
+
+        ranked = self._rank_topics(combined)
+        if evergreen_topics and not pending:
             self.logger.warning("[Topic Engine] 今日热点选题不足，已启用长青选题兜底: %s", ranked[0].title)
+        elif evergreen_topics and pending:
+            self.logger.info(
+                "[Topic Engine] 题库候选不足，已追加长青选题兜底: pending=%d evergreen=%d",
+                len(pending),
+                min(len(evergreen_topics), self.DEFAULT_FALLBACK_LIMIT),
+            )
         return DailyTopicsReport(
             generated_at=self._now(),
             lookback_days=0,
@@ -198,7 +246,10 @@ class TopicPoolService:
             total_raw_items=len(ranked),
             total_selected_items=len(ranked),
             topics=ranked,
-            source_stats={"evergreen": {"raw_count": len(ranked), "status": "fallback"}},
+            source_stats={
+                **({"topic_pool": {"raw_count": len(pending), "status": "cached"}} if pending else {}),
+                **({"evergreen": {"raw_count": len(evergreen_topics), "status": "fallback"}} if evergreen_topics else {}),
+            },
             failed_sources=[],
             filtered_out={},
         )

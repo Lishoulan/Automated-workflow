@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from toutiao_content_factory.exceptions import AIRequestError
 from toutiao_content_factory.models import TopicCandidate
+from toutiao_content_factory.services.topic_pool_service import TopicPoolService
 from toutiao_content_factory.services.weitoutiao_generator import (
     WeiToutiaoStandaloneGenerator,
 )
@@ -143,7 +144,7 @@ def test_insufficient_balance_uses_local_fallback_for_all_selected_topics(app_se
     assert generator.publish_service.publish_weitoutiao.call_count == 2
 
 
-def test_incomplete_topic_pool_is_reported_as_partial_success(app_settings) -> None:
+def test_incomplete_topic_pool_with_all_selected_items_accepted_is_success(app_settings) -> None:
     object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
     generator.select_topics = MagicMock(return_value=[_topic()])
@@ -154,7 +155,36 @@ def test_incomplete_topic_pool_is_reported_as_partial_success(app_settings) -> N
 
     result = generator.publish_standalone(count=2, purpose="test_incomplete_pool")
 
-    assert result["status"] == "partial_success"
+    assert result["status"] == "success"
     assert result["requested"] == 2
     assert result["selected"] == 1
     assert result["accepted"] == 1
+    assert result["selection_shortfall"] == 1
+    assert "No additional eligible topics" in result["message"]
+
+
+def test_fallback_report_merges_pending_and_evergreen_topics(app_settings) -> None:
+    service = TopicPoolService(app_settings, logging.getLogger("test.topic_pool"))
+    pending = _topic()
+    evergreen = TopicCandidate(
+        title="机器人交付节奏变化值得观察",
+        url="evergreen://default/robot-delivery",
+        source="evergreen_pool",
+        source_type="evergreen",
+        summary="围绕机器人交付节奏和实际应用拆解可验证的经营变量。",
+        matched_industries=["humanoid_robot"],
+        matched_keywords=["机器人", "交付"],
+        total_score=80,
+    )
+    service.list_pending_topics = MagicMock(return_value=[pending])
+    service._load_evergreen_topics = MagicMock(return_value=[evergreen])
+
+    report = service.build_fallback_report()
+
+    assert len(report.topics) == 2
+    assert {topic.url for topic in report.topics} == {
+        pending.url,
+        evergreen.url,
+    }
+    assert report.source_stats["topic_pool"]["raw_count"] == 1
+    assert report.source_stats["evergreen"]["raw_count"] == 1

@@ -37,8 +37,8 @@ playwright install chromium
 # 登录头条（如果还没登录）
 py main.py --init-publish-login --account default
 
-# 登录135编辑器（如果还没登录）
-py main.py --init-135editor-login --account default
+# 登录微信公众号后台（如果还没登录）
+py main.py --init-wechat-login --account default
 ```
 
 ### 3. 测试本地发布
@@ -69,7 +69,7 @@ py scripts/local_publish.py --skip-cloud-check
 1. **检查云端状态** — 查看 GitHub Actions 最新一次运行是否成功
 2. **下载内容** — 从云端 artifact 下载最新文章、配图等
 3. **发布到头条** — 使用本地浏览器 profile 发布（IP固定，cookie不失效）
-4. **发布到公众号** — 通过135编辑器发布到草稿箱
+4. **发布到公众号** — 通过官方 API 或微信公众号后台浏览器流程发布
 5. **记录结果** — 日志保存在 `.runtime/logs/`
 
 ## 注意事项

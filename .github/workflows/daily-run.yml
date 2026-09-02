@@ -32,7 +32,7 @@ on:
         required: false
         default: 'true'
       publish_wechat_via_135:
-        description: 'Publish to WeChat via 135 Editor when a cached profile exists (true/false)'
+        description: 'Legacy input retained for compatibility; 135 Editor is disabled'
         required: false
         default: 'false'
       topic_title:
@@ -151,8 +151,8 @@ jobs:
       WECHAT_LAYOUT_BACKEND: ${{ secrets.WECHAT_LAYOUT_BACKEND || 'builtin' }}
       WECHAT_MD2WECHAT_ENABLED: ${{ secrets.WECHAT_MD2WECHAT_ENABLED || '0' }}
       WECHAT_SERV00_PROXY_ENABLED: ${{ secrets.WECHAT_SERV00_PROXY_ENABLED || '0' }}
-      WECHAT_EDITOR_135_ENABLED: ${{ secrets.CLOUD_WECHAT_135_ENABLED || '1' }}
-      WECHAT_EDITOR_135_PROFILE_DIR: .runtime/editor_135_profile
+      # 135 Editor is intentionally disabled. Legacy secrets must not re-enable it.
+      WECHAT_EDITOR_135_ENABLED: "0"
       WECHAT_BROWSER_PROFILE_DIR: .runtime/wechat_profile
 
       # 抖音发布（云端只做内容生成，发布由本地脚本完成）
@@ -274,29 +274,29 @@ jobs:
           INPUT_DRY_RUN="${{ github.event.inputs.dry_run }}"
           INPUT_FAST_MODE="${{ github.event.inputs.fast_mode }}"
           INPUT_PUBLISH_TOUTIAO="${{ github.event.inputs.publish_toutiao }}"
-          INPUT_PUBLISH_WECHAT="${{ github.event.inputs.publish_wechat_via_135 }}"
 
           SECRET_DEFAULT_ACCOUNT="${{ secrets.CLOUD_DEFAULT_ACCOUNT }}"
           SECRET_DEFAULT_DRY_RUN="${{ secrets.CLOUD_DRY_RUN }}"
           SECRET_DEFAULT_FAST_MODE="${{ secrets.CLOUD_FAST_MODE }}"
           SECRET_DEFAULT_PUBLISH_TOUTIAO="${{ secrets.CLOUD_TOUTIAO_AUTOPUBLISH }}"
-          SECRET_DEFAULT_PUBLISH_WECHAT="${{ secrets.CLOUD_WECHAT_VIA_135_AUTOPUBLISH }}"
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             RUN_ACCOUNT="$(first_non_empty "$INPUT_ACCOUNT" "$SECRET_DEFAULT_ACCOUNT" "default")"
             RUN_DRY_RUN="$(normalize_bool "$(first_non_empty "$INPUT_DRY_RUN" "$SECRET_DEFAULT_DRY_RUN" "false")")"
             RUN_FAST_MODE="$(normalize_bool "$(first_non_empty "$INPUT_FAST_MODE" "$SECRET_DEFAULT_FAST_MODE" "true")")"
             RUN_PUBLISH_TOUTIAO="$(normalize_bool "$(first_non_empty "$INPUT_PUBLISH_TOUTIAO" "$SECRET_DEFAULT_PUBLISH_TOUTIAO" "true")")"
-            RUN_PUBLISH_WECHAT_VIA_135="$(normalize_bool "$(first_non_empty "$INPUT_PUBLISH_WECHAT" "$SECRET_DEFAULT_PUBLISH_WECHAT" "false")")"
             RUN_TOPIC_TITLE="${WORKFLOW_TOPIC_TITLE:-}"
           else
             RUN_ACCOUNT="$(first_non_empty "$SECRET_DEFAULT_ACCOUNT" "default")"
             RUN_DRY_RUN="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_DRY_RUN" "false")")"
             RUN_FAST_MODE="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_FAST_MODE" "true")")"
             RUN_PUBLISH_TOUTIAO="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_PUBLISH_TOUTIAO" "true")")"
-            RUN_PUBLISH_WECHAT_VIA_135="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_PUBLISH_WECHAT" "false")")"
             RUN_TOPIC_TITLE=""
           fi
+
+          # 135 Editor is retired for this workflow. Keep the legacy dispatch
+          # input and Secret names compatible, but never enable the route.
+          RUN_PUBLISH_WECHAT_VIA_135="false"
 
           TOUTIAO_AUTO_PUBLISH_VALUE="0"
           TOUTIAO_DRAFT_ONLY_VALUE="1"
@@ -494,12 +494,7 @@ jobs:
           # This path comes from config.yaml. Account keys may use underscores
           # while their on-disk slugs use hyphens.
           REQUIRED_PROFILES="$TOUTIAO_PROFILE_DIR"
-          WECHAT_PROFILE_DIR=".runtime/wechat_profile"
-          if [ "${WECHAT_EDITOR_135_ENABLED}" = "1" ]; then
-            WECHAT_PROFILE_DIR="$WECHAT_EDITOR_135_PROFILE_DIR"
-          else
-            WECHAT_PROFILE_DIR="$WECHAT_BROWSER_PROFILE_DIR"
-          fi
+          WECHAT_PROFILE_DIR="$WECHAT_BROWSER_PROFILE_DIR"
           REQUIRED_PROFILES="$REQUIRED_PROFILES $WECHAT_PROFILE_DIR"
           echo "WECHAT_PROFILE_DIR=$WECHAT_PROFILE_DIR" >> "$GITHUB_ENV"
           for profile in $REQUIRED_PROFILES; do
@@ -969,8 +964,8 @@ jobs:
       WECHAT_LAYOUT_BACKEND: ${{ secrets.WECHAT_LAYOUT_BACKEND || 'builtin' }}
       WECHAT_MD2WECHAT_ENABLED: ${{ secrets.WECHAT_MD2WECHAT_ENABLED || '0' }}
       WECHAT_SERV00_PROXY_ENABLED: ${{ secrets.WECHAT_SERV00_PROXY_ENABLED || '0' }}
-      WECHAT_EDITOR_135_ENABLED: ${{ secrets.CLOUD_WECHAT_135_ENABLED || '1' }}
-      WECHAT_EDITOR_135_PROFILE_DIR: .runtime/editor_135_profile
+      # 135 Editor is intentionally disabled in the fallback job as well.
+      WECHAT_EDITOR_135_ENABLED: "0"
       WECHAT_BROWSER_PROFILE_DIR: .runtime/wechat_profile
 
       # 抖音发布（备用 job 不发布）

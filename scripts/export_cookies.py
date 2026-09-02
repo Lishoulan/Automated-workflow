@@ -118,6 +118,10 @@ def export_cookies(
     result = {"exported_at": None, "platforms": {}}
 
     for platform in platforms:
+        if platform == "135editor":
+            logger.warning("Skipping 135editor cookie export: the integration is disabled.")
+            continue
+
         cfg = PLATFORM_CONFIGS.get(platform)
         if not cfg:
             logger.warning("未知平台: %s", platform)
@@ -176,8 +180,8 @@ def export_cookies(
 def main():
     parser = argparse.ArgumentParser(description="跨平台 Cookie 导出")
     parser.add_argument(
-        "--platforms", default="toutiao,135editor",
-        help="平台列表，逗号分隔 (toutiao,135editor)。默认: toutiao,135editor",
+        "--platforms", default="toutiao",
+        help="平台列表，逗号分隔 (toutiao)。默认: toutiao",
     )
     parser.add_argument(
         "--output", default="",

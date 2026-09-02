@@ -102,6 +102,9 @@ def generate_mcp_publish_steps(platform: str, *, title: str, content_html: str,
     Returns:
         操作步骤列表，每个步骤包含 MCP tool_name 和 arguments
     """
+    if platform == "135editor":
+        return [{"error": "135 Editor integration is disabled; use the WeChat backend workflow."}]
+
     config = PLATFORM_CONFIGS.get(platform)
     if not config:
         return [{"error": f"Unknown platform: {platform}"}]
@@ -230,6 +233,9 @@ def generate_mcp_publish_steps(platform: str, *, title: str, content_html: str,
 
 def generate_login_check_steps(platform: str) -> list[dict[str, Any]]:
     """生成 MCP browser-use 的登录检查步骤。"""
+    if platform == "135editor":
+        return [{"error": "135 Editor integration is disabled; use the WeChat backend workflow."}]
+
     config = PLATFORM_CONFIGS.get(platform)
     if not config:
         return [{"error": f"Unknown platform: {platform}"}]
@@ -316,7 +322,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="MCP Browser-Use 集成 — 生成发布步骤")
-    parser.add_argument("--platform", default="toutiao", help="平台名称 (toutiao / 135editor)")
+    parser.add_argument("--platform", default="toutiao", help="平台名称 (toutiao)")
     parser.add_argument("--title", default="测试标题", help="文章标题")
     parser.add_argument("--draft-only", action="store_true", default=True, help="仅保存草稿")
     parser.add_argument("--login-check", action="store_true", help="生成登录检查步骤")

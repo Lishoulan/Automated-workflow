@@ -111,6 +111,10 @@ function Set-ScopedProcessEnv {
     [Environment]::SetEnvironmentVariable($scopedName, $Value, "Process")
 }
 
+# 135 Editor is retired. Legacy .env and scoped values must not re-enable it.
+$env:WECHAT_EDITOR_135_ENABLED = "0"
+Set-ScopedProcessEnv -BaseName "WECHAT_EDITOR_135_ENABLED" -Value "0"
+
 function Normalize-TargetPlatform {
     param([string]$Value)
 

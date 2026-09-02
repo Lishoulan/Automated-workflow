@@ -12,14 +12,13 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from toutiao_content_factory.config import load_settings
-from toutiao_content_factory.services.wechat_135editor_service import Editor135Service
 from toutiao_content_factory.services.wechat_service import WechatPublishService
 from toutiao_content_factory.utils.logging_utils import configure_logging
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Route WeChat publishing through 135 Editor and sync to the WeChat draft box.",
+        description="Legacy WeChat publishing wrapper; uses the official backend/API workflow.",
     )
     parser.add_argument(
         "--account",
@@ -41,22 +40,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--keep-alive-only",
         action="store_true",
-        help="Only verify and refresh the 135 Editor session without publishing.",
+        help="Only verify and refresh the WeChat backend session without publishing.",
     )
     parser.add_argument(
         "--draft-only",
         action="store_true",
-        help="Save a 135 draft but do not request WeChat sync submission.",
+        help="Create a WeChat draft without requesting publication.",
     )
     parser.add_argument(
         "--headless",
         action="store_true",
-        help="Run the 135 session check and publish flow in headless mode.",
+        help="Run the WeChat session check and publish flow in headless mode.",
     )
     parser.add_argument(
         "--init-login",
         action="store_true",
-        help="Open the persistent 135 profile for manual login initialization.",
+        help="Open the persistent WeChat backend profile for manual login initialization.",
     )
     return parser
 
@@ -99,22 +98,22 @@ def main() -> int:
     logger = configure_logging(
         settings.logs_dir,
         settings.logging_level,
-        logger_name=f"auto_run_wechat_via_135.{settings.account_slug}",
+        logger_name=f"auto_run_wechat.{settings.account_slug}",
     )
-    editor_service = Editor135Service(settings, logger)
     wechat_service = WechatPublishService(settings, logger)
 
-    logger.info("auto_run_wechat_via_135 starting for account=%s", settings.account_key)
+    logger.info("auto_run_wechat starting for account=%s", settings.account_key)
 
     if args.init_login:
-        result = editor_service.initialize_login_session()
-        print_json("[135 Login Initialized]", result)
+        result = wechat_service.initialize_login_session(headless=args.headless or None)
+        print_json("[WeChat Login Initialized]", result)
         return 0
 
-    keep_alive_result = editor_service.keep_alive(headless=args.headless or None)
-    print_json("[135 Session Check]", keep_alive_result)
-    if not keep_alive_result.get("ready"):
-        logger.error("135 Editor session is not ready. Aborting publish flow.")
+    try:
+        session_result = wechat_service.initialize_login_session(headless=args.headless or None)
+        print_json("[WeChat Session Check]", session_result)
+    except Exception as exc:
+        logger.error("WeChat backend session is not ready. Aborting publish flow: %s", exc)
         return 2
 
     if args.keep_alive_only:
@@ -125,16 +124,16 @@ def main() -> int:
     logger.info("Resolved run directory: %s", run_dir)
     print(f"[Run Dir] {run_dir}")
 
-    exports = wechat_service.publish_run_via_135(run_dir, submit=not args.draft_only)
+    exports = wechat_service.publish_run(run_dir, submit=not args.draft_only)
     rendered_exports = {name: str(path) for name, path in exports.items()}
-    print_json("[135 Publish Exports]", rendered_exports)
+    print_json("[WeChat Publish Exports]", rendered_exports)
 
     result_path = Path(exports["wechat_publish_result"])
     if result_path.exists():
         payload = json.loads(result_path.read_text(encoding="utf-8"))
-        print_json("[135 Publish Result]", payload)
+        print_json("[WeChat Publish Result]", payload)
 
-    logger.info("auto_run_wechat_via_135 finished successfully for run=%s", run_dir)
+    logger.info("auto_run_wechat finished successfully for run=%s", run_dir)
     return 0
 
 

@@ -44,6 +44,12 @@ except ModuleNotFoundError:
     sync_playwright = None
 
 
+EDITOR_135_DISABLED_MESSAGE = (
+    "135 Editor integration is disabled. Use the WeChat Official Account API "
+    "or the WeChat backend browser workflow instead."
+)
+
+
 class Editor135Service:
     """135编辑器浏览器自动化服务。"""
 
@@ -84,6 +90,7 @@ class Editor135Service:
         Returns:
             包含发布状态信息的字典
         """
+        raise RuntimeError(EDITOR_135_DISABLED_MESSAGE)
         if sync_playwright is None:
             raise RuntimeError("Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.")
 
@@ -210,6 +217,7 @@ class Editor135Service:
 
     def initialize_login_session(self) -> dict[str, str]:
         """初始化135编辑器登录会话。打开浏览器让用户手动登录。"""
+        raise RuntimeError(EDITOR_135_DISABLED_MESSAGE)
         if sync_playwright is None:
             raise RuntimeError("Playwright is not installed.")
 
@@ -260,6 +268,7 @@ class Editor135Service:
                 browser.close()
 
     def keep_alive(self, *, headless: bool | None = None) -> dict[str, Any]:
+        raise RuntimeError(EDITOR_135_DISABLED_MESSAGE)
         if sync_playwright is None:
             raise RuntimeError("Playwright is not installed.")
 
@@ -312,6 +321,7 @@ class Editor135Service:
         submit_to_wechat: bool = True,
         headless: bool | None = None,
     ) -> dict[str, Any]:
+        raise RuntimeError(EDITOR_135_DISABLED_MESSAGE)
         resolved_run_dir = Path(run_dir)
         publish_dir = resolved_run_dir / self.settings.review.publish_dirname
         wechat_dir = publish_dir / "wechat"

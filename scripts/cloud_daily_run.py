@@ -191,7 +191,8 @@ def _configure_cloud_env(account_key: str) -> None:
 
     # --- 浏览器 profile 持久化到 .runtime/ ---
     os.environ.setdefault("TOUTIAO_BROWSER_PROFILE_DIR", ".runtime/toutiao_profile")
-    os.environ.setdefault("WECHAT_EDITOR_135_PROFILE_DIR", ".runtime/editor_135_profile")
+    # 135 Editor is retired. Keep legacy variables harmless for old runners.
+    os.environ["WECHAT_EDITOR_135_ENABLED"] = "0"
 
     # 确保 .runtime 目录存在
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
@@ -209,10 +210,8 @@ def _configure_cloud_env(account_key: str) -> None:
     # 如果 .runtime/ 下没有对应平台的 profile，说明首次运行，没有登录 session，
     # 此时必须禁用该平台的浏览器发布，否则 PlatformAuthError 会中断整个流程。
     # 用户可以通过手动上传 profile 缓存来启用浏览器发布。
-    # 微信：如果启用了 135 编辑器，检查 editor_135_profile；否则检查 wechat_profile
-    wechat_135_enabled = os.environ.get("WECHAT_EDITOR_135_ENABLED", "0") == "1"
-    wechat_profile_dir = ".runtime/editor_135_profile" if wechat_135_enabled else ".runtime/wechat_profile"
-    _check_and_disable_browser_platform("WECHAT", wechat_profile_dir)
+    # WeChat browser publishing always uses the official-account backend profile.
+    _check_and_disable_browser_platform("WECHAT", ".runtime/wechat_profile")
 
     # 用 account-aware 路径检查 toutiao profile
     # default 账号用 .runtime/toutiao_profile,非 default 账号用 .runtime/accounts/{account}/toutiao_profile

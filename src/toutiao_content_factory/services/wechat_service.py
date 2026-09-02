@@ -47,7 +47,6 @@ from toutiao_content_factory.services.monetization_service import MonetizationSe
 from toutiao_content_factory.services.notification_service import NotificationService
 from toutiao_content_factory.services.wechat_layout_engine import MarkdownToWechatConverter, append_wechat_footer
 from toutiao_content_factory.services.anti_ai_flavor import AntiAIFlavorPipeline
-from toutiao_content_factory.services.wechat_135editor_service import Editor135Service
 from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 from toutiao_content_factory.utils.browser_utils import apply_stealth, build_persistent_context_options
 
@@ -71,6 +70,12 @@ class WechatIpWhitelistBlockedException(RuntimeError):
         self.payload = payload or {}
 
 
+WECHAT_EDITOR_135_DISABLED_MESSAGE = (
+    "135 Editor publishing is disabled. Use the WeChat Official Account API "
+    "or the WeChat backend browser workflow instead."
+)
+
+
 class WechatPublishService:
     def __init__(self, settings: AppSettings, logger: logging.Logger) -> None:
         self.settings = settings
@@ -86,15 +91,14 @@ class WechatPublishService:
         self.growth_ops_service = GrowthOpsService(settings, logger)
         self._access_token: str | None = None
         self._access_token_expires_at = 0.0
-        self._editor_135_service = Editor135Service(settings, logger)
         # 模块 A 合并新增：读取 rpa_resilience 配置，若无则使用默认值（向下兼容）
         self.rpa_config = getattr(settings, "rpa_resilience", RPAResilienceSettings())
 
-    def _launch_persistent_browser(self, playwright, *, profile_dir: Path):
+    def _launch_persistent_browser(self, playwright, *, profile_dir: Path, headless: bool | None = None):
         launch_options, fingerprint = build_persistent_context_options(
             account_key=f"{self.settings.account_key}-wechat",
             profile_dir=profile_dir,
-            headless=self.settings.publishing.headless,
+            headless=self.settings.publishing.headless if headless is None else bool(headless),
             channel=self.settings.publishing.channel or None,
             executable_path=self.settings.publishing.executable_path or None,
             timezone_id="Asia/Shanghai",
@@ -178,6 +182,8 @@ class WechatPublishService:
         return closed_count
 
     def publish_run(self, run_dir: Path, submit: bool = False, force_editor_135: bool = False) -> dict[str, Path]:
+        if force_editor_135:
+            raise RuntimeError(WECHAT_EDITOR_135_DISABLED_MESSAGE)
         self._ensure_enabled()
         publish_dir = run_dir / self.settings.review.publish_dirname
         if not publish_dir.exists():
@@ -225,21 +231,18 @@ class WechatPublishService:
         inline_image_urls: list[str] = []
         draft_media_id = ""
 
-        if not force_editor_135:
-            try:
-                access_token = self._get_access_token()
-                thumb_media_id = self._upload_cover_material(access_token, cover_path)
-                inline_image_urls = [self._upload_inline_image(access_token, path) for path in inline_image_paths]
-                api_available = True
-                self.logger.info("WeChat API available, using API + browser hybrid mode.")
-            except WechatIpWhitelistBlockedException as exc:
-                self.logger.warning(
-                    "WeChat API blocked by IP whitelist, falling back to browser-only mode: %s", exc
-                )
-            except Exception as exc:
-                self.logger.warning("WeChat API unavailable, falling back to browser-only mode: %s", exc)
-        else:
-            self.logger.info("Force routing WeChat publish through 135 Editor for run: %s", run_dir)
+        try:
+            access_token = self._get_access_token()
+            thumb_media_id = self._upload_cover_material(access_token, cover_path)
+            inline_image_urls = [self._upload_inline_image(access_token, path) for path in inline_image_paths]
+            api_available = True
+            self.logger.info("WeChat API available, using API + browser hybrid mode.")
+        except WechatIpWhitelistBlockedException as exc:
+            self.logger.warning(
+                "WeChat API blocked by IP whitelist, falling back to browser-only mode: %s", exc
+            )
+        except Exception as exc:
+            self.logger.warning("WeChat API unavailable, falling back to browser-only mode: %s", exc)
 
         article_markdown = self._compose_article_markdown(article=article, inline_image_urls=inline_image_urls)
         article_markdown_path.write_text(article_markdown, encoding="utf-8")
@@ -289,27 +292,12 @@ class WechatPublishService:
                     raise RuntimeError(f"Draft creation did not return media_id: {draft_response}")
 
         publish_response: dict[str, Any] = {}
-        should_submit = submit if force_editor_135 else (submit or self.settings.wechat.auto_publish)
+        should_submit = submit or self.settings.wechat.auto_publish
         if should_submit:
-            if force_editor_135:
-                publish_response = self._publish_via_135editor(
-                    title=title,
-                    summary=summary,
-                    article_html=article_html,
-                    cover_path=cover_path,
-                )
-            elif api_available and draft_media_id:
+            if api_available and draft_media_id:
                 publish_response = self._submit_draft_via_browser(
                     draft_media_id=draft_media_id,
                     title=title,
-                )
-            elif self.settings.wechat.editor_135_enabled:
-                self.logger.info("WeChat API unavailable, using 135 Editor for publishing.")
-                publish_response = self._publish_via_135editor(
-                    title=title,
-                    summary=summary,
-                    article_html=article_html,
-                    cover_path=cover_path,
                 )
             else:
                 publish_response = self._publish_via_browser_only(
@@ -318,39 +306,6 @@ class WechatPublishService:
                     article_html=article_html,
                     cover_path=cover_path,
                 )
-        elif force_editor_135:
-            self.logger.info("Force-routing draft creation to 135 Editor.")
-            publish_response = self._publish_via_135editor(
-                title=title,
-                summary=summary,
-                article_html=article_html,
-                cover_path=cover_path,
-            )
-        elif not api_available and self.settings.wechat.editor_135_enabled:
-            # 即使不自动发布，也通过135编辑器创建草稿
-            # session 过期时降级为跳过，不中断流程（微信发布留给本地 one_click_publish.ps1）
-            self.logger.info("WeChat API unavailable and auto_publish disabled, using 135 Editor to create draft.")
-            try:
-                publish_response = self._publish_via_135editor(
-                    title=title,
-                    summary=summary,
-                    article_html=article_html,
-                    cover_path=cover_path,
-                )
-            except RuntimeError as exc:
-                if "session is invalid or expired" in str(exc):
-                    self.logger.warning(
-                        "135 Editor session expired, skipping WeChat draft creation on cloud. "
-                        "WeChat publish will be handled locally. Error: %s",
-                        exc,
-                    )
-                    publish_response = {
-                        "status": "skipped_session_expired",
-                        "method": "editor_135",
-                    }
-                else:
-                    raise
-
         result_payload = {
             "published_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "platform": "wechat",
@@ -410,9 +365,9 @@ class WechatPublishService:
         }
 
     def publish_run_via_135(self, run_dir: Path, submit: bool = True) -> dict[str, Path]:
-        return self.publish_run(run_dir, submit=submit, force_editor_135=True)
+        raise RuntimeError(WECHAT_EDITOR_135_DISABLED_MESSAGE)
 
-    def initialize_login_session(self) -> dict[str, str]:
+    def initialize_login_session(self, *, headless: bool | None = None) -> dict[str, str]:
         if sync_playwright is None:
             raise RuntimeError(
                 "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`."
@@ -430,7 +385,7 @@ class WechatPublishService:
         )
 
         with sync_playwright() as playwright:
-            browser = self._launch_persistent_browser(playwright, profile_dir=profile_dir)
+            browser = self._launch_persistent_browser(playwright, profile_dir=profile_dir, headless=headless)
             try:
                 page = browser.pages[0] if browser.pages else browser.new_page()
                 session_summary = ensure_browser_session_ready(
@@ -1269,32 +1224,9 @@ class WechatPublishService:
         history.append(payload)
         self.history_path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _publish_via_135editor(
-        self,
-        *,
-        title: str,
-        summary: str,
-        article_html: str,
-        cover_path: Path,
-    ) -> dict[str, Any]:
-        """通过135编辑器发布文章到微信公众号草稿箱。"""
-        try:
-            result = self._editor_135_service.publish_via_135editor(
-                title=title,
-                article_html=article_html,
-                cover_path=cover_path,
-                summary=summary,
-                author=self.settings.wechat.author_name,
-                account_name=self.settings.wechat.account_name,
-            )
-            return result
-        except Exception as exc:
-            self.logger.error("135编辑器发布失败: %s", exc)
-            raise
-
     def initialize_135editor_login_session(self) -> dict[str, str]:
         """初始化135编辑器登录会话。"""
-        return self._editor_135_service.initialize_login_session()
+        raise RuntimeError(WECHAT_EDITOR_135_DISABLED_MESSAGE)
 
     def _publish_via_browser_only(
         self,

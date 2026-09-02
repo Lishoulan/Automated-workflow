@@ -100,31 +100,6 @@ class PlatformHealthService:
         blockers: list[str] = []
         warnings: list[str] = []
 
-        # 当135编辑器启用时，优先检查135编辑器登录态，跳过微信后台检查
-        if self.settings.wechat.editor_135_enabled:
-            editor_135_preflight = self.settings.automation_dir / "editor_135_login_preflight.json"
-            if editor_135_preflight.exists():
-                try:
-                    cached = json.loads(editor_135_preflight.read_text(encoding="utf-8"))
-                    if isinstance(cached, dict) and cached.get("state") == "ready":
-                        return {
-                            "enabled": True,
-                            "required": bool(self.settings.wechat.auto_publish),
-                            "status": "ready",
-                            "blocking_flags": [],
-                            "warnings": ["Using 135 Editor for WeChat publishing (bypassing WeChat backend login)."],
-                        }
-                except Exception:
-                    pass
-            warnings.append("135 Editor login preflight not found. Run --init-135editor-login if WeChat publishing is needed.")
-            return {
-                "enabled": True,
-                "required": bool(self.settings.wechat.auto_publish),
-                "status": "ready",
-                "blocking_flags": [],
-                "warnings": warnings,
-            }
-
         has_api_credentials = bool(self.settings.wechat.app_id and self.settings.wechat.app_secret)
         if has_api_credentials:
             try:
@@ -184,35 +159,6 @@ class PlatformHealthService:
         blockers: list[str] = []
         warnings: list[str] = []
         diagnostics: dict[str, Any] = {}
-
-        # 当135编辑器启用时，检查135编辑器登录态而非微信后台
-        if self.settings.wechat.editor_135_enabled:
-            editor_135_preflight = self.settings.automation_dir / "editor_135_login_preflight.json"
-            diagnostics["publish_mode"] = "editor_135"
-            if editor_135_preflight.exists():
-                try:
-                    cached = json.loads(editor_135_preflight.read_text(encoding="utf-8"))
-                    diagnostics["editor_135_preflight"] = cached
-                    if isinstance(cached, dict) and cached.get("state") == "ready":
-                        return {
-                            "enabled": True,
-                            "required": bool(self.settings.wechat.auto_publish),
-                            "status": "ready",
-                            "blocking_flags": [],
-                            "warnings": ["Using 135 Editor for WeChat publishing (bypassing WeChat backend login)."],
-                            "diagnostics": diagnostics,
-                        }
-                except Exception:
-                    pass
-            warnings.append("135 Editor login preflight not found. Run --init-135editor-login if WeChat publishing is needed.")
-            return {
-                "enabled": True,
-                "required": bool(self.settings.wechat.auto_publish),
-                "status": "ready",
-                "blocking_flags": [],
-                "warnings": warnings,
-                "diagnostics": diagnostics,
-            }
 
         has_api_credentials = bool(self.settings.wechat.app_id and self.settings.wechat.app_secret)
         if has_api_credentials:

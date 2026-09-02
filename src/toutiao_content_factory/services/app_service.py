@@ -2588,7 +2588,7 @@ class ContentFactoryAppService:
                 platform_errors.append(message)
             else:
                 try:
-                    wechat_result = self.wechat_service.publish_run_via_135(run_dir, submit=True)
+                    wechat_result = self.wechat_service.publish_run(run_dir, submit=True)
                     wechat_exports = {name: str(path) for name, path in wechat_result.items()}
                     wechat_exports["resolved_run_dir"] = str(run_dir)
                     exported_files.update(wechat_exports)

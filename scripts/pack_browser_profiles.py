@@ -133,9 +133,7 @@ def resolve_profile_mappings(account: str) -> list[tuple[Path, Path]]:
     if not toutiao_src.is_absolute():
         toutiao_src = PROJECT_ROOT / toutiao_src
 
-    editor_src = Path(settings.wechat.editor_135_profile_dir)
-    if not editor_src.is_absolute():
-        editor_src = PROJECT_ROOT / editor_src
+    wechat_src = settings.account_runtime_dir / "wechat_profile"
 
     def _mirror_dst(src: Path) -> Path:
         """暂存目录镜像源路径结构,保留账号子目录。
@@ -152,7 +150,7 @@ def resolve_profile_mappings(account: str) -> list[tuple[Path, Path]]:
 
     mappings: list[tuple[Path, Path]] = [
         (toutiao_src, _mirror_dst(toutiao_src)),
-        (editor_src, _mirror_dst(editor_src)),
+        (wechat_src, _mirror_dst(wechat_src)),
     ]
 
     legacy_wechat_src = PROJECT_ROOT / ".runtime" / "wechat_profile"

@@ -150,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--init-135editor-login",
         action="store_true",
-        help="Initialize the persistent 135 Editor browser login session for WeChat publishing.",
+        help="Legacy option; 135 Editor is disabled. Use --init-wechat-login instead.",
     )
     parser.add_argument(
         "--prepare-wechat-launch-day",
@@ -598,7 +598,7 @@ def main() -> int:
 
             if args.init_135editor_login:
                 init_result = app_service.initialize_135editor_login()
-                _print_export_summary("135 Editor login session initialized.", init_result)
+                _print_export_summary("Legacy 135 Editor login is disabled; no session was opened.", init_result)
                 return 0
 
             if args.prepare_wechat_launch_day is not None:

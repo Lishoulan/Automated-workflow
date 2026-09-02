@@ -30,6 +30,7 @@ $env:TOUTIAO_PUBLISH_ENABLED = "0"
 $env:TOUTIAO_AUTO_PUBLISH = "0"
 $env:WECHAT_ENABLED = "1"
 $env:WECHAT_AUTO_PUBLISH = if ($EnableAutoPublish.IsPresent) { "1" } else { "0" }
+$env:WECHAT_EDITOR_135_ENABLED = "0"
 
 $arguments = @{
     AccountKey = $AccountKey

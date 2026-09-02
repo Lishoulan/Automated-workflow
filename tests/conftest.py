@@ -186,7 +186,7 @@ def app_settings(tmp_path: Path) -> AppSettings:
             serv00_proxy_enabled=False,
             serv00_proxy_url="",
             serv00_proxy_secret="",
-            editor_135_enabled=True,
+            editor_135_enabled=False,
             editor_135_base_url="https://www.135editor.com",
             editor_135_profile_dir="editor_135_profile",
             builtin_theme="tech_blue",

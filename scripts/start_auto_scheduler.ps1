@@ -78,7 +78,7 @@ Write-Host "Python: $pythonLabel"
 Write-Host "Account: $Account"
 Write-Host "Scheduler URL: $url"
 Write-Host "Schedule source: config.yaml -> automation.daily_run_times"
-Write-Host "WeChat publish path: 135 Editor sync"
+Write-Host "WeChat publish path: Official Account API / backend browser"
 
 if ($DryRun) {
     Write-Host ""
@@ -90,6 +90,7 @@ if ($DryRun) {
 $env:TOUTIAO_ACCOUNT = $Account
 $env:TOUTIAO_WEB_HOST = $BindHost
 $env:TOUTIAO_WEB_PORT = "$Port"
+$env:WECHAT_EDITOR_135_ENABLED = "0"
 
 if (Test-PortListening -BindHost $BindHost -BindPort $Port) {
     Write-Host "Scheduler web console is already running at $url"

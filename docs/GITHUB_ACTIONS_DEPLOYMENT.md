@@ -28,16 +28,15 @@ GitHub 的定时任务可能因平台负载延迟几分钟，不能保证精确�
 
 配置后，GitHub Actions 会在云端检测到登录态失效时通过方糖推送提醒。SendKey 只放在 GitHub Secrets 中，不要提交到代码仓库。
 
-只有需要同步 135 编辑器到微信公众号时，才设置：
-
-- `CLOUD_WECHAT_VIA_135_AUTOPUBLISH=true`
-- `CLOUD_WECHAT_135_ENABLED=1`
+微信公众号发布统一使用官方 API 或微信公众号后台浏览器流程。旧的
+`CLOUD_WECHAT_VIA_135_AUTOPUBLISH` 和 `CLOUD_WECHAT_135_ENABLED` Secret
+已废弃，workflow 和配置都会忽略它们，不要再设置或依赖它们。
 
 仓库必须保持为 Private。浏览器 profile 和 Cookie 是登录凭据，不能提交到代码仓库或公开 Release。
 
 ## 刷新登录态
 
-在本机完成头条和 135 编辑器登录后，在项目根目录运行：
+在本机完成头条和微信公众号后台登录后，在项目根目录运行：
 
 ```powershell
 .\scripts\deploy_cloud.ps1 -Account robot_notes -Headless
@@ -52,7 +51,7 @@ GitHub 的定时任务可能因平台负载延迟几分钟，不能保证精确�
 - `dry_run=false`
 - `fast_mode=true`
 - `publish_toutiao=true`
-- `publish_wechat_via_135=false`，除非 135 登录态已确认有效
+- `publish_wechat_via_135=false`（保留的兼容输入，始终不会启用 135）
 
 查看任务摘要中的 `Enforce publish result`，并下载 `daily-output-*` 检查：
 

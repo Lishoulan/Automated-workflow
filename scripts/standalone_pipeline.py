@@ -26,6 +26,7 @@ os.environ.setdefault("TOUTIAO_PUBLISH_CHANNEL", "")
 os.environ.setdefault("TOUTIAO_PUBLISH_HEADLESS", "1")
 os.environ.setdefault("WECHAT_ENABLED", "1")
 os.environ.setdefault("WECHAT_AUTO_PUBLISH", "1")
+os.environ["WECHAT_EDITOR_135_ENABLED"] = "0"
 os.environ.setdefault("TOUTIAO_AUTO_PUBLISH", "1")
 os.environ.setdefault("TOUTIAO_PUBLISH_ENABLED", "1")
 

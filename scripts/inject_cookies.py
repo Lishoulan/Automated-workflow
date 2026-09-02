@@ -156,6 +156,14 @@ def inject_cookies(
     results = {}
 
     for platform in platforms:
+        if platform == "135editor":
+            logger.warning("Skipping 135editor cookie injection: the integration is disabled.")
+            results[platform] = {
+                "status": "disabled",
+                "reason": "135 Editor integration is disabled",
+            }
+            continue
+
         platform_data = data.get("platforms", {}).get(platform)
         if not platform_data or not platform_data.get("cookies"):
             logger.warning("跳过 %s: 无可用 Cookie 数据", platform)
@@ -200,8 +208,8 @@ def inject_cookies(
 def main():
     parser = argparse.ArgumentParser(description="跨平台 Cookie 注入")
     parser.add_argument(
-        "--platforms", default="toutiao,135editor",
-        help="平台列表，逗号分隔。默认: toutiao,135editor",
+        "--platforms", default="toutiao",
+        help="平台列表，逗号分隔。默认: toutiao",
     )
     parser.add_argument(
         "--input", default="",

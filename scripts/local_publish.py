@@ -204,10 +204,10 @@ def publish_to_toutiao(run_dir: Path, logger: logging.Logger) -> dict:
     return result
 
 
-def publish_to_wechat(run_dir: Path, logger: logging.Logger) -> dict:
-    """发布到公众号（通过135编辑器）。"""
-    from toutiao_content_factory.config import AppSettings
-    from toutiao_content_factory.services.wechat_135editor_service import Editor135Service
+def publish_to_wechat(run_dir: Path, logger: logging.Logger, account_key: str = "default") -> dict:
+    """Publish to the WeChat Official Account through the supported backend/API paths."""
+    from toutiao_content_factory.config import load_settings
+    from toutiao_content_factory.services.wechat_service import WechatPublishService
     
     result = {"platform": "wechat", "status": "unknown", "message": ""}
     
@@ -230,21 +230,18 @@ def publish_to_wechat(run_dir: Path, logger: logging.Logger) -> dict:
         
         logger.info("准备发布公众号: title=%s", title)
         
-        # 加载配置
-        os.environ.setdefault("TOUTIAO_ACCOUNT", "default")
-        settings = AppSettings()
-        
-        # 发布
-        service = Editor135Service(settings, logger)
-        publish_result = service.publish_via_135editor(
-            title=title,
-            article_html=content,
-            cover_path=cover,
-            summary=summary,
-        )
-        
-        result["status"] = "success" if publish_result.get("success") else "failed"
-        result["message"] = publish_result.get("message", "")
+        # Use the official WeChat backend/API workflow. The legacy 135 route
+        # is intentionally unavailable even when old environment values exist.
+        os.environ.setdefault("TOUTIAO_ACCOUNT", account_key)
+        os.environ["WECHAT_ENABLED"] = "1"
+        os.environ["WECHAT_EDITOR_135_ENABLED"] = "0"
+        settings = load_settings(PROJECT_ROOT, account_key=account_key)
+        service = WechatPublishService(settings, logger)
+        publish_exports = service.publish_run(run_dir, submit=True)
+
+        result["status"] = "success"
+        result["message"] = "WeChat publish completed through the official backend workflow."
+        result["exports"] = {name: str(path) for name, path in publish_exports.items()}
         
         logger.info("公众号发布结果: %s - %s", result["status"], result["message"])
         
@@ -322,7 +319,7 @@ def main():
     logger.info("-" * 60)
     logger.info("开始发布到公众号")
     logger.info("-" * 60)
-    wechat_result = publish_to_wechat(run_dir, logger)
+    wechat_result = publish_to_wechat(run_dir, logger, args.account)
     results.append(wechat_result)
     
     # 汇总结果

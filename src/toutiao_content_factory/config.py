@@ -524,7 +524,9 @@ class WechatSettings:
             serv00_proxy_enabled=bool(payload.get("serv00_proxy_enabled", False)),
             serv00_proxy_url=str(payload.get("serv00_proxy_url", "")).strip(),
             serv00_proxy_secret=str(payload.get("serv00_proxy_secret", "")).strip(),
-            editor_135_enabled=bool(payload.get("editor_135_enabled", True)),
+            # Retain the legacy field for config compatibility, but the 135
+            # Editor integration is retired and cannot be enabled again.
+            editor_135_enabled=False,
             editor_135_base_url=str(payload.get("editor_135_base_url", "https://www.135editor.com")).strip(),
             editor_135_profile_dir=str(payload.get("editor_135_profile_dir", "editor_135_profile")).strip(),
             builtin_theme=str(payload.get("builtin_theme", "tech_blue")).strip() or "tech_blue",
@@ -1424,7 +1426,9 @@ def _load_wechat_config_final(
         serv00_proxy_enabled=_env_flag("WECHAT_SERV00_PROXY_ENABLED", wechat_config.serv00_proxy_enabled),
         serv00_proxy_url=os.getenv("WECHAT_SERV00_PROXY_URL", wechat_config.serv00_proxy_url),
         serv00_proxy_secret=os.getenv("WECHAT_SERV00_PROXY_SECRET", wechat_config.serv00_proxy_secret),
-        editor_135_enabled=_env_flag_scoped("WECHAT_EDITOR_135_ENABLED", account_profile.key, wechat_config.editor_135_enabled),
+        # Retain the legacy field for config compatibility, but never allow
+        # an old .env value, account override, or Secret to re-enable 135.
+        editor_135_enabled=False,
         editor_135_base_url=os.getenv("WECHAT_EDITOR_135_BASE_URL", wechat_config.editor_135_base_url),
         editor_135_profile_dir=os.getenv("WECHAT_EDITOR_135_PROFILE_DIR", wechat_config.editor_135_profile_dir),
         builtin_theme=os.getenv("WECHAT_BUILTIN_THEME", wechat_config.builtin_theme),
@@ -1937,7 +1941,7 @@ def _default_config_payload() -> dict[str, Any]:
             "serv00_proxy_enabled": False,
             "serv00_proxy_url": "",
             "serv00_proxy_secret": "",
-            "editor_135_enabled": True,
+            "editor_135_enabled": False,
             "editor_135_base_url": "https://www.135editor.com",
             "editor_135_profile_dir": ".runtime/editor_135_profile",
         },

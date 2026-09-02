@@ -368,7 +368,7 @@
     "serv00_proxy_enabled": false,
     "serv00_proxy_url": "",
     "serv00_proxy_secret": "",
-    "editor_135_enabled": true,
+    "editor_135_enabled": false,
     "editor_135_base_url": "https://www.135editor.com",
     "editor_135_profile_dir": ".runtime/editor_135_profile",
     "builtin_theme": "tech_blue"

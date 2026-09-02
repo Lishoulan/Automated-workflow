@@ -89,59 +89,12 @@ def _keep_alive_toutiao(settings: AppSettings, logger: logging.Logger, headless:
     return _run_playwright_in_thread(_run)
 
 
-def _keep_alive_wechat_135(settings: AppSettings, logger: logging.Logger, headless: bool) -> dict:
-    """访问135编辑器刷新Cookie。"""
-    from playwright.sync_api import sync_playwright
+def _keep_alive_wechat(settings: AppSettings, logger: logging.Logger, headless: bool) -> dict:
+    """Refresh the WeChat Official Account backend session."""
+    from toutiao_content_factory.services.wechat_service import WechatPublishService
 
-    profile_dir = Path(settings.wechat.editor_135_profile_dir)
-    if not profile_dir.is_absolute():
-        profile_dir = PROJECT_ROOT / profile_dir
-    profile_dir.mkdir(parents=True, exist_ok=True)
-
-    prepare_browser_profile(
-        profile_dir=profile_dir,
-        project_root=settings.project_root,
-        logger=logger,
-        label="keep-alive:wechat_135",
-        extra_paths=[settings.account_runtime_dir],
-    )
-
-    result = {"platform": "wechat_135", "status": "unknown", "cookies_refreshed": False}
-
-    def _run():
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=headless,
-                channel=settings.publishing.channel or None,
-                executable_path=settings.publishing.executable_path or None,
-            )
-            try:
-                page = browser.pages[0] if browser.pages else browser.new_page()
-                base_url = settings.wechat.editor_135_base_url.rstrip("/")
-                page.goto(
-                    f"{base_url}/beautify_editor.html",
-                    wait_until="domcontentloaded",
-                    timeout=30000,
-                )
-                page.wait_for_timeout(3000)
-
-                # 检查是否需要登录
-                current_url = page.url.lower()
-                page_content = page.content()[:2000].lower()
-                if "login" in current_url or "登录" in page_content and "editor" not in current_url:
-                    result["status"] = "login_required"
-                    result["cookies_refreshed"] = False
-                    logger.warning("135编辑器: 登录已过期，需要重新登录")
-                else:
-                    result["status"] = "alive"
-                    result["cookies_refreshed"] = True
-                    logger.info("135编辑器: Session保活成功，Cookie已刷新")
-            finally:
-                browser.close()
-        return result
-
-    return _run_playwright_in_thread(_run)
+    service = WechatPublishService(settings, logger)
+    return service.initialize_login_session(headless=headless)
 
 
 def main():
@@ -173,7 +126,7 @@ def main():
         platforms = []
         if settings.publishing.enabled:
             platforms.append("toutiao")
-        if settings.wechat.enabled and settings.wechat.editor_135_enabled:
+        if settings.wechat.enabled:
             platforms.append("wechat")
 
     if not platforms:
@@ -187,8 +140,15 @@ def main():
         try:
             if platform == "toutiao":
                 results[platform] = _keep_alive_toutiao(settings, logger, headless)
-            elif platform in ("wechat", "wechat_135"):
-                results[platform] = _keep_alive_wechat_135(settings, logger, headless)
+            elif platform == "wechat":
+                results[platform] = _keep_alive_wechat(settings, logger, headless)
+            elif platform == "wechat_135":
+                results[platform] = {
+                    "platform": platform,
+                    "status": "disabled",
+                    "cookies_refreshed": False,
+                    "error": "135 Editor integration is disabled; use the wechat platform.",
+                }
             else:
                 logger.warning("未知平台: %s", platform)
         except Exception as exc:

@@ -31,6 +31,18 @@ RAILWAY_SNIPPET = (
     "加权平均净资产收益率：3.21%；基本每股收益：0.1384元，同比增长7.37%。"
 )
 
+HYDRATED_ROBOT_CONTEXT = (
+    "当行业将大量注意力投向人形机器人、本体制造和基础模型时，机器人进入现实世界后的运行问题，正在成为另一个关键技术战场。"
+    "9月1日，港股上市公司弘毅文化集团（00419.HK）发布自愿公告，AIROBO中国大陆主体艾诺博（成都）科技有限公司与中国科学院力学研究所签署为期五年的合作协议。"
+    "双方拟围绕复杂场景运行机理、空间智能、仿真推演、多机协同、场景数据闭环及成果转化展开合作。"
+    "此次合作并未限定于某一款机器人，而是直接瞄准异构机器人规模化进入真实空间后出现的共性技术问题。"
+    "根据合作协议，双方将联合建设机器人物业商业场景全域智能运营平台，重点研究多品牌异构机器人统一接入、地图与空间模型、任务编排与协同调度、"
+    "梯控门禁及通道协同、状态监测、异常预警、数据闭环和运营评价。"
+    "这些能力构成机器人进入复杂建筑空间的操作系统层，解决的不是某台机器人如何完成单个动作，而是大量机器人如何共同理解空间、接受任务并被统一管理。"
+    "双方还拟开展空间物理建模、真实场景仿真推演、数字孪生、轮足复合运动控制和高密度集群协同研究。"
+    "场景数据闭环将把真实运行、数据采集、问题发现、仿真复现、算法优化和现场验证连接起来，但合作能否转化为可复制的商业交付仍需持续观察。"
+)
+
 
 def _topic_settings(app_settings, *, focus_industries=None, keyword_map=None):
     return app_settings.topic_collection.model_copy(
@@ -250,6 +262,44 @@ def test_selected_topic_input_keeps_long_evidence_once(app_settings, logger) -> 
     assert "海外销量占比和连续月份的交付变化" in input_text
     assert input_text.count("2026年7月新能源车企销量数据出炉") == 1
     assert input_text.count("补充片段：") == 0
+
+
+def test_hydrated_rss_context_reaches_data_agent_source_facts(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    service = TopicAutomationService(app_settings, logger)
+    topic = TopicCandidate(
+        title="AIROBO联手中科院力学所，机器人运营技术注入国家科研力量",
+        url="https://example.test/airobo",
+        source="leiphone",
+        source_type="rss",
+        snippet=HYDRATED_ROBOT_CONTEXT,
+        summary="AIROBO联手中科院力学所，机器人运营技术注入国家科研力量，重点看人形机器人对应的项目落地和交付节奏。",
+        matched_industries=["humanoid_robot", "industrial_automation"],
+        matched_keywords=["人形机器人", "具身智能", "机器人", "运动控制"],
+        topic_type="project_progress",
+        recommended_format="project_breakdown",
+    )
+
+    input_text = service._build_input_text(topic)
+    assert len(input_text) > 942
+    assert "联合建设机器人物业商业场景全域智能运营平台" in input_text
+
+    extraction = SignalExtractor().extract(
+        [SourceDocument(source_type="paste", title="manual_paste", content=input_text)]
+    )
+    data_agent = DataAgent(
+        app_settings,
+        PromptRepository(app_settings),
+        mock_openai_service,
+        logger,
+    )
+    source_facts = data_agent._extract_source_facts(extraction)
+
+    assert len(source_facts) >= data_agent.SOURCE_FACT_MIN_COUNT
+    assert len("".join(source_facts)) >= data_agent.SOURCE_FACT_MIN_CHARS
 
 
 def test_generated_input_keeps_facts_and_drops_editorial_controls(

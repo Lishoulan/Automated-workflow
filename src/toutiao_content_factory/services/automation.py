@@ -52,6 +52,8 @@ class TopicAutomationService:
     NORMALIZE_PATTERN = re.compile(r"[\s\W_]+", re.UNICODE)
     PROMPT_SUMMARY_LENGTH = 180
     PROMPT_EVIDENCE_CONTEXT_LENGTH = 1600
+    PROMPT_SOURCE_CONTEXT_TYPES = frozenset({"html", "rss", "google_rss"})
+    PROMPT_SOURCE_CONTEXT_MIN_LENGTH = 220
     ROBOT_TOKENS = (
         "机器人",
         "人形",
@@ -459,7 +461,11 @@ class TopicAutomationService:
 
     def _preferred_topic_summary(self, topic: TopicCandidate) -> str:
         summary = str(topic.summary or "").strip()
-        snippet = self._clean_topic_snippet_for_prompt(topic.snippet or "", topic.title)
+        snippet = self._clean_topic_snippet_for_prompt(
+            topic.snippet or "",
+            topic.title,
+            source_type=topic.source_type,
+        )
         if (
             not summary
             or summary == topic.title
@@ -474,7 +480,11 @@ class TopicAutomationService:
         return summary[: self.PROMPT_SUMMARY_LENGTH]
 
     def _preferred_topic_snippet(self, topic: TopicCandidate, fallback: str) -> str:
-        snippet = self._clean_topic_snippet_for_prompt(topic.snippet or "", fallback)
+        snippet = self._clean_topic_snippet_for_prompt(
+            topic.snippet or "",
+            fallback,
+            source_type=topic.source_type,
+        )
         if self._looks_like_mojibake(snippet):
             return fallback
         if self._is_evidence_rich_topic_text(snippet):
@@ -583,7 +593,13 @@ class TopicAutomationService:
             "后续最值得跟踪的变量是什么，以及哪些风险会影响兑现节奏。"
         )
 
-    def _clean_topic_snippet_for_prompt(self, snippet: str, fallback: str) -> str:
+    def _clean_topic_snippet_for_prompt(
+        self,
+        snippet: str,
+        fallback: str,
+        *,
+        source_type: str = "",
+    ) -> str:
         candidate = str(snippet or "").strip()
         if not candidate:
             return fallback
@@ -594,6 +610,8 @@ class TopicAutomationService:
             return fallback
         if "»" in candidate or "当前位置" in candidate or candidate.endswith("正文"):
             return fallback
+        if self._is_source_context_snippet(candidate, source_type):
+            return candidate[: self.PROMPT_EVIDENCE_CONTEXT_LENGTH]
         if self._is_evidence_rich_topic_text(candidate):
             return candidate[: self.PROMPT_EVIDENCE_CONTEXT_LENGTH]
         if len(re.findall(r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d+\s*(?:分钟前|小时前|天前))", candidate)) >= 2:
@@ -605,6 +623,13 @@ class TopicAutomationService:
         if sum(candidate.count(marker) for marker in ("鍥", "鏂", "鐢", "鑳", "缃", "鍌", "姹")) >= 6:
             return fallback
         return candidate[:160]
+
+    def _is_source_context_snippet(self, text: str, source_type: str) -> bool:
+        normalized_source_type = str(source_type or "").strip().lower()
+        return (
+            normalized_source_type in self.PROMPT_SOURCE_CONTEXT_TYPES
+            and len(text) >= self.PROMPT_SOURCE_CONTEXT_MIN_LENGTH
+        )
 
     @staticmethod
     def _is_evidence_rich_topic_text(text: str) -> bool:

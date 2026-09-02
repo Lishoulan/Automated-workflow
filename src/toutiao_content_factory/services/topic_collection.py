@@ -375,6 +375,8 @@ class TopicCollectionService:
     MAX_SNIPPET_LENGTH_FOR_UNUSABLE_CHECK_2 = 120
     ARTICLE_CONTEXT_MAX_LENGTH = 1800
     ARTICLE_CONTEXT_MIN_LENGTH = 220
+    TOPIC_PREVIEW_CONCURRENCY = 4
+    RSS_PREVIEW_MIN_LENGTH = 180
     MIN_KEYWORD_HITS_FOR_RELAXED = 2
     MIN_TITLE_HITS_FOR_RELAXED = 1
     MAX_EXPORT_TOPICS_FALLBACK = 6
@@ -1756,22 +1758,46 @@ class TopicCollectionService:
         if not topics:
             return topics
 
+        semaphore = asyncio.Semaphore(self.TOPIC_PREVIEW_CONCURRENCY)
+
+        async def refresh_with_limit(topic: TopicCandidate) -> None:
+            async with semaphore:
+                await self._refresh_topic_preview(topic)
+
         tasks = [
-            self._refresh_topic_preview(topic)
+            refresh_with_limit(topic)
             for topic in topics
             if self._should_refresh_topic_preview(topic)
         ]
         if not tasks:
             return topics
 
-        await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                self.logger.warning("Unexpected selected-topic preview refresh failure: %s", result)
         return topics
 
     def _should_refresh_topic_preview(self, topic: TopicCandidate) -> bool:
-        if not topic.url or topic.source_type != "html":
+        if not topic.url:
+            return False
+
+        source_type = str(topic.source_type or "").strip().lower()
+        if source_type not in {"html", "rss", "google_rss"}:
             return False
 
         snippet = str(topic.snippet or "").strip()
+        if source_type in {"rss", "google_rss"}:
+            # RSS descriptions are frequently only a headline plus one short
+            # sentence.  Fetch the selected item's canonical page so the
+            # writer receives facts, while retaining already evidence-rich
+            # feed entries and avoiding a fetch for every RSS candidate.
+            return (
+                self._is_unusable_topic_snippet(snippet)
+                or len(self._clean_text(snippet)) < self.RSS_PREVIEW_MIN_LENGTH
+                or not self._is_evidence_rich_topic_text(snippet)
+            )
+
         if not snippet:
             return True
         if self._is_unusable_topic_snippet(snippet):

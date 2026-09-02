@@ -300,7 +300,6 @@ def test_local_source_fallback_builds_grounded_long_draft_when_model_is_unavaila
     )
     article = content.article
     article_chars = len(article.replace("\n", "").replace(" ", ""))
-
     assert article_chars >= agent.LOCAL_SOURCE_ARTICLE_TARGET
     assert "辰星技术" in article
     assert "2.53亿" in article
@@ -314,6 +313,57 @@ def test_local_source_fallback_builds_grounded_long_draft_when_model_is_unavaila
     assert article.rstrip().split("\n\n")[-1].endswith("？")
     assert agent._unsupported_numeric_tokens(article, data_report) == []
     assert "材料里的推测会明确保留为推测" in article
+    mock_openai_service.create_json_completion.assert_not_called()
+
+
+def test_service_robot_local_fallback_uses_scene_and_delivery_analysis(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    data_report = DataReport(
+        topic_title="香港真实开放场景服务机器人落地酒吧",
+        focus_industry="服务机器人",
+        focus_keywords=["服务机器人", "商业服务"],
+        companies=["智平方"],
+        core_data=["智平方机器人在香港酒吧真实上岗"],
+        evidence_notes=["公开材料披露了具体服务场景和交付环节"],
+        watch_metrics=["连续运行时间", "客户复购", "服务成本"],
+        risk_flags=["单个示范项目不能代表规模化复制"],
+        content_format="project_breakdown",
+        word_target=1800,
+        evidence_strength=86,
+        source_facts=[
+            "智平方 AlphaBot 2 已在香港兰桂坊酒吧真实上岗，提供鸡尾酒制作和顾客互动服务",
+            "项目涉及机器人硬件出关、跨境运输、清关合规和当地运行资质",
+            "公开材料提到团队正在建立面向海外客户的付费服务体系和本地化运营流程",
+            "机器人使用 NeuroVLA 具身模型处理感知、决策和动作执行，模型能力要结合现场任务检验",
+            "披露数据显示，运动控制抖动和反射响应时间出现改善，但具体测试条件仍需回到原文核对",
+            "酒吧场景的价值不只在于完成一次调酒，还要看营业时段内能否稳定运行并减少人工重复工作",
+            "设备出现故障后需要本地维护、备件和远程支持，服务响应速度会影响客户是否继续使用",
+            "现有材料没有披露连续客户数量、完整收费价格和长期回款记录，这些仍属于待验证信息，现场服务质量也需要持续观察，并应结合不同班次的客流变化和人工介入次数持续记录",
+        ],
+    )
+
+    content = agent._fallback(
+        TrendReport(recommended_angle="服务机器人能否从示范上岗走向持续付费"),
+        data_report,
+        app_settings.get_style("deep_industry_analysis"),
+        CacheContext(),
+    )
+    assert agent._is_service_robot_source(data_report, data_report.source_facts)
+    article = content.article
+    article_chars = len(article.replace("\n", "").replace(" ", ""))
+
+    assert article_chars >= agent.LOCAL_SOURCE_ARTICLE_TARGET, article
+    assert "兰桂坊" in article
+    assert "清关合规" in article
+    assert "付费服务体系" in article
+    assert "赴港IPO" not in article
+    assert "资本市场" not in article
+    assert article.rstrip().split("\n\n")[-1].endswith("？")
+    assert agent._unsupported_numeric_tokens(article, data_report) == []
     mock_openai_service.create_json_completion.assert_not_called()
 
 

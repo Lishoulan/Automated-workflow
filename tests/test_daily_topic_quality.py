@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from toutiao_content_factory.agents.data_agent import DataAgent
 from toutiao_content_factory.agents.title_agent import TitleAgent
 from toutiao_content_factory.models import (
@@ -161,6 +163,47 @@ def test_html_article_context_hydrates_short_topic_preview(app_settings, logger)
     assert "营收12.7亿元" in context
     assert "16123台" in context
     assert "相关阅读" not in context
+
+
+def test_selected_rss_topic_hydrates_canonical_page_and_keeps_failure_fallback(
+    app_settings,
+    logger,
+) -> None:
+    service = TopicCollectionService(app_settings, logger)
+    topics = [
+        TopicCandidate(
+            title=f"机器人场景进展 {index}",
+            url=f"https://example.test/robot-{index}",
+            source="qbitai",
+            source_type="rss",
+            snippet="机器人在真实场景上岗",
+        )
+        for index in range(service.TOPIC_PREVIEW_CONCURRENCY + 2)
+    ]
+    failed = topics[-1]
+    active = 0
+    max_active = 0
+
+    async def fake_fetch(url: str) -> str:
+        nonlocal active, max_active
+        if url == failed.url:
+            raise RuntimeError("source unavailable")
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return (
+            "<p>智平方 AlphaBot 2 已在香港兰桂坊酒吧真实上岗，提供鸡尾酒和互动服务。</p>"
+            "<p>项目还涉及硬件出关、清关合规、本地资质和付费服务体系。</p>"
+            "<p>公开材料披露，具身模型和运动控制指标仍需结合实际运营结果观察。</p>"
+        )
+
+    service.fetch_text = fake_fetch
+    asyncio.run(service._hydrate_selected_topic_previews(topics))
+
+    assert max_active <= service.TOPIC_PREVIEW_CONCURRENCY
+    assert "兰桂坊" in topics[0].snippet
+    assert failed.snippet == "机器人在真实场景上岗"
 
 
 def test_selected_topic_input_does_not_discard_rich_snippet(app_settings, logger) -> None:

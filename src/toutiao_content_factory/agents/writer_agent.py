@@ -84,6 +84,7 @@ class WriterAgent(BaseAgent):
         "某公司",
         "公司主体",
         "硬科技",
+        "服务机器人",
     )
 
     def __init__(
@@ -345,6 +346,27 @@ class WriterAgent(BaseAgent):
         fact_chars = sum(len(item.replace(" ", "")) for item in facts)
         return len(facts) >= self.LOCAL_SOURCE_FACT_MIN_COUNT and fact_chars >= self.LOCAL_SOURCE_FACT_MIN_CHARS
 
+    def _is_service_robot_source(self, data_report: DataReport, facts: list[str]) -> bool:
+        source_text = " ".join(
+            [
+                str(getattr(data_report, "topic_title", "") or ""),
+                *facts,
+            ]
+        )
+        return "机器人" in source_text and any(
+            marker in source_text
+            for marker in (
+                "服务机器人",
+                "真实场景",
+                "酒吧",
+                "餐饮",
+                "酒店",
+                "零售",
+                "商业服务",
+                "互动服务",
+            )
+        )
+
     def _auto_publish_mode(self) -> bool:
         publishing = getattr(self.settings, "publishing", None)
         return bool(
@@ -408,6 +430,16 @@ class WriterAgent(BaseAgent):
                 trend_report,
                 data_report,
                 comment_prompt,
+                benchmark_track=benchmark_track,
+                self_benchmark_context=self_benchmark_context,
+            )
+
+        if self._is_service_robot_source(data_report, facts):
+            return self._build_local_service_robot_article(
+                trend_report,
+                data_report,
+                comment_prompt,
+                facts,
                 benchmark_track=benchmark_track,
                 self_benchmark_context=self_benchmark_context,
             )
@@ -535,6 +567,157 @@ class WriterAgent(BaseAgent):
                 continue
             insert_at = max(0, len(article_paragraphs) - 1)
             article_paragraphs.insert(insert_at, paragraph)
+            article = "\n\n".join(article_paragraphs).strip()
+        return clean_article_text(article, min_word_count=0)
+
+    def _build_local_service_robot_article(
+        self,
+        trend_report: TrendReport,
+        data_report: DataReport,
+        comment_prompt: str,
+        facts: list[str],
+        benchmark_track: str = "",
+        self_benchmark_context: dict[str, object] | None = None,
+    ) -> str:
+        """Build a grounded service-robot draft around operations, not IPO tropes."""
+        used: set[int] = set()
+
+        def take(markers: tuple[str, ...], limit: int) -> list[str]:
+            selected: list[str] = []
+            for index, fact in enumerate(facts):
+                if index in used or not any(marker in fact for marker in markers):
+                    continue
+                used.add(index)
+                selected.append(fact)
+                if len(selected) >= limit:
+                    break
+            return selected
+
+        def fact_text(items: list[str], fallback: str) -> str:
+            if not items:
+                return fallback
+            return "；".join(item.rstrip("。！？!? ") for item in items) + "。"
+
+        primary = self._primary_keyword(data_report, fallback="服务机器人")
+        title = self.clean_publish_text(data_report.topic_title).rstrip("。！？!? ") or primary
+        scene = take(
+            ("上岗", "落地", "场景", "酒吧", "餐饮", "酒店", "零售", "互动", "服务", "客户"),
+            6,
+        )
+        technology = take(
+            ("模型", "算法", "视觉", "感知", "运动", "抖动", "响应", "功耗", "控制", "训练"),
+            5,
+        )
+        delivery = take(
+            ("交付", "清关", "合规", "资质", "本地", "付费", "服务体系", "运营", "维护", "出关"),
+            5,
+        )
+        business = take(
+            ("收入", "订单", "收费", "付费", "客户", "商业", "成本", "价格", "回款"),
+            5,
+        )
+        metrics = take(
+            ("指标", "数据", "降低", "提升", "时间", "秒", "瓦", "%", "测试", "性能"),
+            5,
+        )
+        remaining = [fact for index, fact in enumerate(facts) if index not in used]
+        watch_metrics = self.clean_publish_list(
+            getattr(data_report, "watch_metrics", []) or [],
+            limit=5,
+        )
+        risk_flags = self.clean_publish_list(
+            getattr(data_report, "risk_flags", []) or [],
+            limit=4,
+        )
+        watch_text = "、".join(watch_metrics) or "连续运行、客户复购、交付周期和服务成本"
+        risk_text = "；".join(risk_flags) or "一次性展示与持续运营之间仍有证据缺口"
+
+        paragraphs = [
+            (
+                f"{title}把服务机器人的问题从发布会带到了真实经营现场。"
+                "判断这类项目，不能只看机器人能不能完成一个动作，还要看场景是否愿意持续使用、交付是否能够复制。"
+            ),
+            (
+                "先看已经发生的业务动作。"
+                + fact_text(scene, "现有材料确认了具体应用场景，但没有完整披露连续运营记录")
+                + "这说明产品已经与某个服务环节发生连接，但一次上岗不等于多个客户都会采用。"
+            ),
+            (
+                f"对{primary}来说，场景价值取决于它替客户解决了什么问题。"
+                "如果机器人只是完成一次展示，价值主要停留在注意力；如果能够稳定承担重复任务，才有机会进入日常运营。"
+            ),
+            (
+                "技术指标需要放回工作流程里解释。"
+                + fact_text(technology, "公开材料对模型、感知和动作控制的披露仍然有限")
+                + fact_text(metrics, "暂时没有足够连续的现场指标可以比较")
+                + "单项性能变化只能说明某个测试环节，不能直接推出客户已经形成稳定付费。"
+            ),
+            (
+                "真正容易被忽略的是交付。"
+                + fact_text(delivery, "现有材料没有完整展开设备进入当地并长期运行所需的流程")
+                + "硬件运输、清关合规、本地资质、安装维护和故障响应，任何一环没有接上，产品都可能停在样板项目阶段。"
+            ),
+            (
+                "商业模式也要从服务结果倒推。"
+                + fact_text(business, "材料尚未给出清晰的收费、订单或回款口径")
+                + "项目收入、设备销售和按次或按月服务对应的是不同的经营模型，不能把场景曝光直接当成收入规模。"
+            ),
+            (
+                "因此，这条线索的价值不只是证明机器人可以出现在服务业。"
+                "它还提供了一套检验路径：客户是否愿意持续使用，服务效率是否稳定，人工替代或增效是否能被量化，以及设备和服务成本能否覆盖运营。"
+            ),
+            (
+                f"后续先追踪{watch_text}。这些变量如果只出现一次，结论仍应停留在项目进展；只有连续记录能够相互印证，才有理由讨论可复制的商业化。"
+            ),
+            (
+                f"限制条件也要写清楚：{risk_text}。"
+                "现有公开材料能支持的是阶段性落地和待验证的经营问题，不能替未来客户数量、收入或利润提前背书。"
+            ),
+            (
+                "最后把问题落到可核验的结果上。"
+                + ("材料还提到：" + fact_text(remaining[:4], "仍有部分事实需要回到原始页面核对") if remaining else "现有材料已经覆盖了主要的场景与交付线索")
+                + f"你认为{primary}下一步更应该先证明连续交付，还是先证明客户愿意持续付费？"
+            ),
+        ]
+
+        article = self._finalize_article(
+            "\n\n".join(paragraphs),
+            trend_report,
+            data_report,
+            comment_prompt=comment_prompt,
+            benchmark_track=benchmark_track,
+            self_benchmark_context=self_benchmark_context,
+        )
+        existing = re.sub(r"\s+", "", article)
+        article_paragraphs = [item.strip() for item in article.split("\n\n") if item.strip()]
+        for fact in facts:
+            if re.sub(r"\s+", "", fact) in existing:
+                continue
+            if len(re.sub(r"\s+", "", article)) >= self.LOCAL_SOURCE_ARTICLE_TARGET:
+                break
+            paragraph = f"公开材料还提到，{fact.rstrip('。！？!? ')}。"
+            if self._is_duplicate_paragraph(paragraph, article_paragraphs):
+                continue
+            article_paragraphs.insert(max(0, len(article_paragraphs) - 1), paragraph)
+            article = "\n\n".join(article_paragraphs).strip()
+            existing = re.sub(r"\s+", "", article)
+
+        service_supplements = (
+            "服务机器人的第一道验证不是动作能否完成，而是任务能否在营业或生产节奏中重复完成。一次展示可以证明功能存在，连续运行才能说明产品与现场之间形成了稳定连接。",
+            "场景方愿意继续使用，通常取决于效率、稳定性和维护成本是否清楚。材料没有给出这些结果时，文章只能把它们列为下一阶段的验证问题，不能提前写成客户已经认可。",
+            "跨境落地还会改变项目的交付难度。设备运输、清关、当地资质、安装调试和故障响应属于同一条链，任何环节出现延迟，都可能让示范项目难以复制到下一个地点。",
+            "具身模型的意义也要回到具体任务。模型能够处理感知、决策和动作，并不等于它在不同空间、不同客流和不同工作时段都能保持同样的完成质量。",
+            "性能指标最好和任务结果一起看。抖动、响应时间或功耗的变化可以帮助定位技术改进，但只有当这些变化减少人工介入、缩短服务时间或降低运营成本时，才会产生清晰的商业含义。",
+            "付费服务体系比单次设备交付更能检验商业模式。它要求团队同时承担部署、培训、远程支持、备件管理和现场维护，收入确认之外还要观察服务是否可持续。",
+            "这类项目的收入口径也需要拆开。设备销售、项目实施费和持续服务费对应不同的合同与成本结构，不能因为项目出现在公开报道中，就把全部金额都归为稳定经营收入。",
+            "因此，当前最可靠的结论是服务机器人已经出现了真实场景验证，但规模化复制还需要更多连续记录。下一次披露若能同时给出运行时长、客户数量、收费方式和维护结果，判断才会更接近经营事实。",
+        )
+        for paragraph in service_supplements:
+            if len(re.sub(r"\s+", "", article)) >= self.LOCAL_SOURCE_ARTICLE_TARGET:
+                break
+            if re.sub(r"\s+", "", paragraph) in re.sub(r"\s+", "", article):
+                continue
+            article_paragraphs.insert(max(0, len(article_paragraphs) - 1), paragraph)
             article = "\n\n".join(article_paragraphs).strip()
         return clean_article_text(article, min_word_count=0)
 
@@ -2270,6 +2453,7 @@ class WriterAgent(BaseAgent):
             if item.strip()
         )
         known = list(dict.fromkeys(known))
+        source_fact_text = " ".join(source_facts).casefold()
         mentions = [
             mention
             for mention in self._extract_company_mentions(text)
@@ -2285,6 +2469,12 @@ class WriterAgent(BaseAgent):
         for mention in mentions:
             lowered = mention.lower()
             if any(marker in lowered for marker in self.GENERIC_COMPANY_MENTION_MARKERS):
+                continue
+            # An explicit source fact may name a brand, product or domain
+            # term without a corporate suffix.  It is grounded evidence even
+            # when the shared company extractor intentionally rejects that
+            # short form as a generic company candidate.
+            if lowered in source_fact_text:
                 continue
             if any(entity in lowered for entity in source_entities):
                 continue

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -759,3 +760,30 @@ def test_article_performance_from_dict_backfills_read_count_and_ctr() -> None:
 
     assert metric.read_count == 14
     assert metric.ctr == 2.06
+
+
+def test_performance_collection_defaults_to_publishing_headless(app_settings, monkeypatch, tmp_path) -> None:
+    settings = replace(
+        app_settings,
+        publishing=replace(app_settings.publishing, headless=True),
+    )
+    service = PerformanceService(settings, logging.getLogger("test"))
+    observed: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(
+        service,
+        "_collect_toutiao_metrics",
+        lambda *, headless: observed.append(("toutiao", headless)) or [],
+    )
+    monkeypatch.setattr(
+        service,
+        "_collect_wechat_metrics",
+        lambda *, headless: observed.append(("wechat", headless)) or [],
+    )
+    monkeypatch.setattr(service, "_sync_attribution_snapshots", lambda *args, **kwargs: {})
+    monkeypatch.setattr(service, "_build_automatic_reports", lambda: {})
+    monkeypatch.setattr(service, "_save_metrics", lambda payload: tmp_path / "performance.json")
+
+    service.collect_performance_data()
+
+    assert observed == [("toutiao", True), ("wechat", True)]

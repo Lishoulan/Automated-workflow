@@ -67,10 +67,10 @@ class PerformanceService:
         earnings_date: date | str | None = None,
         target_publish_date: date | str | None = None,
     ) -> dict[str, Any]:
-        # 数据采集必须使用有头浏览器：头条创作中心在 headless 模式下
-        # 不渲染文章管理表格（与发布一致），强制 headless=False 保证能读到数据。
+        # Default to the configured browser mode. Actions uses headless Chromium;
+        # local runs can retain the existing headed mode when required.
         if headless is None:
-            headless = False
+            headless = self.settings.publishing.headless
         observed_at = observed_at or datetime.now()
         resolved_earnings_date = self._resolve_date_argument(earnings_date) or (
             observed_at.date() - timedelta(days=1)

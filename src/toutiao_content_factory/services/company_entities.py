@@ -313,6 +313,7 @@ COMPANY_GENERIC_SUBSTRINGS = (
     "储能",
     "人形机器人",
     "具身智能",
+    "智能机器人",
     "机器人行业",
     "机器人产业",
     "工业自动化",
@@ -324,7 +325,18 @@ COMPANY_GENERIC_SUBSTRINGS = (
     "热管理",
     "核心零部件",
     "关键零部件",
+    "增长",
+    "驱动力",
+    "行业",
+    "定制",
+    "解决方案",
 )
+
+# Model extraction sometimes returns a clause or a product classification as
+# a company because it happens to end with a company-like suffix (for example
+# "为最主要的增长驱动力" or "其他行业定制智能机器人及智能机器人").
+COMPANY_SEMANTIC_PREFIX_NOISE = ("为", "其他")
+COMPANY_SEMANTIC_JOINER_NOISE = ("及",)
 
 COMPANY_SUFFIXES = (
     "有限责任公司",
@@ -411,6 +423,13 @@ def is_valid_company_name(value: object) -> bool:
     if candidate in GENERIC_COMPANY_EXCLUSIONS or candidate in COMPANY_STOP_WORDS:
         return False
     if any(marker in candidate for marker in COMPANY_GENERIC_SUBSTRINGS):
+        return False
+    if any(candidate.startswith(prefix) for prefix in COMPANY_SEMANTIC_PREFIX_NOISE):
+        return False
+    if any(
+        joiner in candidate and any(marker in candidate for marker in ("产品", "服务", "方案", "机器人"))
+        for joiner in COMPANY_SEMANTIC_JOINER_NOISE
+    ):
         return False
     if any(candidate.startswith(prefix) for prefix in COMPANY_PREFIX_NOISE):
         return False

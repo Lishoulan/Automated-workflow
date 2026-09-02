@@ -229,6 +229,47 @@ def test_data_agent_payload_filters_contaminated_company_lists(
     assert result.focus_companies == ["特斯拉"]
 
 
+def test_data_agent_rejects_growth_and_product_classification_as_companies(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = DataAgent(
+        app_settings,
+        prompt_repository=MagicMock(),
+        openai_service=mock_openai_service,
+        logger=logger,
+    )
+    extraction = ExtractionResult(
+        merged_text=(
+            "优必选披露全尺寸具身智能人形机器人产品及解决方案收入增长，"
+            "其中为最主要的增长驱动力。"
+            "其他行业定制智能机器人及智能机器人解决方案收入也有变化。"
+            "国瓷材料参与相关供应。"
+        ),
+        companies=["优必选"],
+        focus_industry="人形机器人",
+        core_data=[],
+        industry_trends=[],
+        growth_numbers=[],
+        supply_chain_keywords=[],
+        key_points=[],
+    )
+
+    result = agent._sanitize_companies(
+        [
+            "优必选",
+            "为最主要的增长驱动力",
+            "其他行业定制智能机器人及智能机器人",
+            "国瓷材料",
+        ],
+        extraction,
+        limit=8,
+    )
+
+    assert result == ["优必选", "国瓷材料"]
+
+
 def test_data_agent_flags_insufficient_source_facts(
     app_settings,
     mock_openai_service,

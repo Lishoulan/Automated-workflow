@@ -281,9 +281,19 @@ class QualityReviewCouncilAgent(BaseAgent):
             ]
         )
 
+        expected_companies = [
+            *(getattr(data_report, "focus_companies", []) or []),
+            *(getattr(data_report, "companies", []) or []),
+        ]
+        integrity = self.quality_checker.check_editorial_integrity(
+            title,
+            article,
+            expected_companies=expected_companies,
+            require_body=True,
+        )
         unsupported = self._unsupported_numeric_tokens(article, data_report)
         internal_leaks = self._INTERNAL_LEAK_RE.findall(article)
-        hard_blockers: list[str] = []
+        hard_blockers: list[str] = list(integrity.get("hard_blockers", []))
         if not clean_article:
             hard_blockers.append("正文为空，不能进入发布流程。")
         if unsupported:
@@ -332,7 +342,9 @@ class QualityReviewCouncilAgent(BaseAgent):
         if duplicate_count:
             originality_issues.append("重复段落会削弱文章的原创感和阅读节奏。")
 
-        compliance_issues = list(checker_issues)
+        compliance_issues = self.unique(
+            [*checker_issues, *integrity.get("issues", [])]
+        )
         absolute_hits = [phrase for phrase in self._ABSOLUTE_CLAIMS if phrase in article or phrase in title]
         if absolute_hits:
             compliance_issues.append(f"存在未经限定的绝对化表达：{'、'.join(absolute_hits[:5])}。")
@@ -362,6 +374,7 @@ class QualityReviewCouncilAgent(BaseAgent):
             "originality_score": max(0, min(100, originality_score)),
             "compliance_score": max(0, min(100, compliance_score)),
             "checker_score": checker.total_score,
+            "editorial_integrity_issues": self.unique(integrity.get("issues", [])),
             "unsupported_numeric_tokens": unsupported,
             "paragraph_count": len(paragraphs),
             "duplicate_paragraph_count": duplicate_count,
@@ -395,7 +408,7 @@ class QualityReviewCouncilAgent(BaseAgent):
         report.overall_score = min(report.overall_score, 59)
         report.verdict = "blocked"
         report.needs_revision = True
-        conclusion = "本地硬门禁发现未核实事实或内部标签泄露，模型通过意见不能覆盖该阻断。"
+        conclusion = "本地硬门禁发现确定性的事实或写作完整性问题，模型通过意见不能覆盖该阻断。"
         if report.chief_editor_conclusion:
             report.chief_editor_conclusion = f"{conclusion}{report.chief_editor_conclusion}"
         else:

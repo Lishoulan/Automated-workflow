@@ -237,6 +237,31 @@ class TestCheckArticleIntegration:
 
         assert any("财务指标" in issue for issue in result["issues"])
 
+    def test_title_rejects_vague_subject_even_with_a_number(self) -> None:
+        result = self.checker._check_title(
+            "其他智能12.7亿：机器人如何实测",
+            "公开材料显示，优必选的相关业务仍要看交付。",
+        )
+
+        assert any("模糊主体" in issue for issue in result["issues"])
+
+    def test_title_with_grounded_company_and_number_passes_subject_gate(self) -> None:
+        result = self.checker._check_title(
+            "优必选卖出921台全尺寸机器人，交付仍比销量更关键",
+            "公开材料显示，优必选卖出921台全尺寸机器人，后续仍要看交付。",
+        )
+
+        assert not any("模糊主体" in issue or "主体不一致" in issue for issue in result["issues"])
+
+    def test_editorial_integrity_rejects_html_and_residual_sentence(self) -> None:
+        result = self.checker.check_editorial_integrity(
+            "优必选业务观察",
+            "<!doctype html>优必选、为最主要的增长驱动力出现在现有材料中。",
+        )
+
+        assert any("HTML" in issue for issue in result["hard_blockers"])
+        assert any("残句" in issue for issue in result["hard_blockers"])
+
 
 class TestRiskyWordOrdinalHandling:
     def setup_method(self) -> None:

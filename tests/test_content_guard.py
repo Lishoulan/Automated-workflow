@@ -173,3 +173,42 @@ class TestNumberAttribution:
         guard = ContentGuardService(app_settings, logger)
 
         assert guard.NUMBER_PATTERN.findall("峰值功率1kW") == ["1kW"]
+
+
+def test_publish_guard_persists_writing_quality_blockers(
+    app_settings,
+    logger,
+    tmp_path,
+) -> None:
+    run_dir = tmp_path / "run"
+    publish_dir = run_dir / "publish"
+    publish_dir.mkdir(parents=True)
+    (run_dir / "review_status.json").write_text(
+        json.dumps({"status": "pending"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (run_dir / "titles.txt").write_text(
+        "全部标题：\n1. 其他智能12.7亿：机器人如何实测\n\n"
+        "推荐标题：\n1. 其他智能12.7亿：机器人如何实测\n",
+        encoding="utf-8",
+    )
+    (publish_dir / "article.md").write_text(
+        "公开材料显示，优必选、为最主要的增长驱动力出现在现有材料中。",
+        encoding="utf-8",
+    )
+
+    guard = ContentGuardService(app_settings, logger)
+    report = guard.build_publish_guard_report(run_dir)
+
+    assert report["blocking_flags"]
+    assert any("模糊主体" in item for item in report["blocking_flags"])
+    assert any("残句" in item for item in report["blocking_flags"])
+    persisted = json.loads(
+        (run_dir / "content_guard_report.json").read_text(encoding="utf-8")
+    )
+    assert persisted["blocking_flags"] == report["blocking_flags"]
+    status = json.loads(
+        (run_dir / "review_status.json").read_text(encoding="utf-8")
+    )
+    assert status["status"] == "rejected"
+    assert status["guard_reason"] == "writing_quality"

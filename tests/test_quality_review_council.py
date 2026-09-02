@@ -132,6 +132,27 @@ def test_model_approval_cannot_override_local_hard_blockers(app_settings, logger
     assert report.compliance_score <= 35
 
 
+def test_quality_council_blocks_vague_title_and_malformed_body(app_settings, logger) -> None:
+    openai_service = MagicMock()
+    openai_service.available = False
+    agent = QualityReviewCouncilAgent(app_settings, MagicMock(), openai_service, logger)
+
+    report = agent.run(
+        GeneratedContent(
+            article="公开材料显示，优必选、为最主要的增长驱动力出现在现有材料中。",
+            recommended_titles=["其他智能12.7亿：机器人如何实测"],
+        ),
+        _data_report(),
+        app_settings.style_profiles["deep_industry_analysis"],
+        CacheContext(),
+    )
+
+    assert report.verdict == "blocked"
+    assert report.needs_revision is True
+    assert any("模糊主体" in item for item in report.hard_blockers)
+    assert any("残句" in item for item in report.hard_blockers)
+
+
 def test_workflow_runs_one_automatic_quality_revision_then_rechecks(
     app_settings,
     mock_openai_service,

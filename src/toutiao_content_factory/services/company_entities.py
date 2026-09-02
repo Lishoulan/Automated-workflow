@@ -187,6 +187,8 @@ GENERIC_COMPANY_EXCLUSIONS = frozenset(
         "人形机器人公司",
         "AI机器人公司",
         "智能机器人",
+        "其他智能",
+        "某智能",
         "其他智能机器人",
         "其他机器人",
     }

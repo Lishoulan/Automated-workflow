@@ -8,6 +8,7 @@ from typing import Optional
 from toutiao_content_factory.agents.base import BaseAgent
 from toutiao_content_factory.config import AppSettings, IterationOverrides, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, TrendReport
+from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 
@@ -110,6 +111,8 @@ class TitleAgent(BaseAgent):
             if pattern in title:
                 return False
         if any(pattern.search(title) for pattern in self.UNSUPPORTED_FINANCIAL_LINK_PATTERNS):
+            return False
+        if ArticleQualityChecker().check_editorial_integrity(title, body_text).get("issues"):
             return False
         # 标题必须承接正文具象钩子：若正文含具体数字/场景/公司等地标元素，
         # 标题至少引用其一，避免"情绪模板+空泛主题词"的零点击标题。

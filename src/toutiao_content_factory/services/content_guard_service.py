@@ -575,6 +575,12 @@ class ContentGuardService:
     def evaluate_run(self, run_dir: Path) -> dict[str, Any]:
         run_dir = Path(run_dir)
         title, article = self._load_title_and_article(run_dir)
+        editorial_integrity = self.quality_checker.check_editorial_integrity(
+            title,
+            article,
+            require_body=True,
+        )
+        editorial_blockers = self._editorial_integrity_flags(editorial_integrity)
 
         raw_text = "\n".join(part for part in (title, article) if part)
         target_text = self._normalize_text(raw_text)
@@ -591,6 +597,8 @@ class ContentGuardService:
                     "warnings": bad_words["warnings"],
                     "human_review_required": True,
                     "recommendations": ["移除敏感词后再提交，并执行人工复核。"],
+                    "writing_integrity": editorial_integrity,
+                    "blocking_flags": editorial_blockers,
                 }
             )
             self._write_report(report, run_dir=run_dir)
@@ -599,7 +607,11 @@ class ContentGuardService:
         if not target_text or not corpus:
             report = self._empty_report(mode="run")
             report["run_dir"] = str(run_dir)
+            report["writing_integrity"] = editorial_integrity
+            report["blocking_flags"] = editorial_blockers
+            report["human_review_required"] = bool(editorial_blockers)
             self._write_report(report, run_dir=run_dir)
+            self._apply_review_override_from_report(run_dir, report)
             return report
 
         best_match, best_score, best_hamming = self._find_best_match(target_text, exclude_run_dir=run_dir)
@@ -616,7 +628,11 @@ class ContentGuardService:
         # 数据引用校验
         number_warnings = self._check_number_attribution(article, run_dir)
         warnings.extend(number_warnings)
-        review_required = bool(best_score >= self.HUMAN_REVIEW_THRESHOLD or ai_risk >= self.HUMAN_REVIEW_THRESHOLD)
+        review_required = bool(
+            best_score >= self.HUMAN_REVIEW_THRESHOLD
+            or ai_risk >= self.HUMAN_REVIEW_THRESHOLD
+            or editorial_blockers
+        )
         payload = {
             "generated_at": self._now(),
             "mode": "run",
@@ -635,9 +651,23 @@ class ContentGuardService:
             "recommendations": self._build_recommendations(best_match, best_score, ai_risk),
             "bad_words_blocked": False,
             "matched_bad_words": [],
+            "writing_integrity": editorial_integrity,
+            "blocking_flags": editorial_blockers,
         }
         self._write_report(payload, run_dir=run_dir)
+        self._apply_review_override_from_report(run_dir, payload)
         return payload
+
+    @staticmethod
+    def _editorial_integrity_flags(integrity: dict[str, Any]) -> list[str]:
+        blockers = integrity.get("hard_blockers", []) if isinstance(integrity, dict) else []
+        return list(
+            dict.fromkeys(
+                f"写作质量硬拦截：{str(item).strip()}"
+                for item in blockers
+                if str(item).strip()
+            )
+        )
 
     def build_publish_guard_report(self, run_dir: Path) -> dict[str, Any]:
         report = self.evaluate_run(run_dir)
@@ -649,6 +679,19 @@ class ContentGuardService:
         )
         blockers: list[str] = []
         title, article = self._load_title_and_article(run_dir)
+        editorial_integrity = report.get("writing_integrity", {})
+        if not isinstance(editorial_integrity, dict):
+            editorial_integrity = self.quality_checker.check_editorial_integrity(
+                title,
+                article,
+                require_body=True,
+            )
+        blockers.extend(self._editorial_integrity_flags(editorial_integrity))
+        blockers.extend(
+            str(item).strip()
+            for item in report.get("blocking_flags", [])
+            if str(item).strip()
+        )
         quality_result = None
         if title and article:
             quality_result = self.quality_checker.check_article(title, article)
@@ -667,12 +710,12 @@ class ContentGuardService:
             blockers.append("Content is too similar to a recently published run and should be revised before publishing.")
         if float(report.get("ai_risk_score", 0.0) or 0.0) >= self.AI_RISK_THRESHOLD:
             blockers.append("AI-style risk is high. Add more concrete facts, quotes, and human edits before publishing.")
-        return {
+        payload = {
             **report,
             "blocking_flags": self._unique_texts(blockers),
             "warnings": self._unique_texts(warnings),
             "recommendations": self._unique_texts(recommendations),
-            "review_status_override": self._review_override_payload(report) if blockers else {},
+            "review_status_override": {},
             "quality_check": {
                 "is_passed": quality_result.is_passed if quality_result else None,
                 "total_score": quality_result.total_score if quality_result else None,
@@ -683,7 +726,14 @@ class ContentGuardService:
                 "issues": quality_result.issues if quality_result else [],
                 "suggestions": quality_result.suggestions if quality_result else [],
             } if quality_result else {},
+            "writing_integrity": editorial_integrity,
         }
+        if payload["blocking_flags"]:
+            payload["review_status_override"] = self._review_override_payload(payload)
+            if payload["review_status_override"]:
+                self.apply_review_rejection(run_dir, payload["review_status_override"])
+        self._write_report(payload, run_dir=run_dir)
+        return payload
 
     # ----------------------------------------------------------------------
     # 敏感词扫描（上下文语境放行）
@@ -953,9 +1003,13 @@ class ContentGuardService:
         *,
         matched_words: list[str],
         extra_notes: list[str] | None = None,
+        guard_reason: str = "bad_words",
     ) -> dict[str, Any]:
         matched = self._unique_texts(matched_words)
-        note = f"{self.REVIEW_REJECTED_LABEL}：命中本地敏感词/违禁词 -> {', '.join(matched[:10])}"
+        if matched:
+            note = f"{self.REVIEW_REJECTED_LABEL}：命中本地敏感词/违禁词 -> {', '.join(matched[:10])}"
+        else:
+            note = f"{self.REVIEW_REJECTED_LABEL}：{guard_reason}硬拦截"
         if extra_notes:
             note = f"{note}；{'；'.join(self._unique_texts(extra_notes)[:3])}"
         return {
@@ -965,7 +1019,7 @@ class ContentGuardService:
             "publish_recommendation": "revise_before_publish",
             "reviewer_notes": note,
             "guard_blocked": True,
-            "guard_reason": "bad_words",
+            "guard_reason": guard_reason,
             "matched_bad_words": matched,
             "highlight_level": "red",
             "updated_at": self._now(),
@@ -987,11 +1041,21 @@ class ContentGuardService:
         return status_path
 
     def _review_override_payload(self, report: dict[str, Any]) -> dict[str, Any]:
-        if not bool(report.get("bad_words_blocked")):
+        bad_words_blocked = bool(report.get("bad_words_blocked"))
+        blocking_flags = [
+            str(item).strip()
+            for item in report.get("blocking_flags", [])
+            if str(item).strip()
+        ]
+        if not bad_words_blocked and not blocking_flags:
             return {}
         return self.build_review_rejection_payload(
             matched_words=list(report.get("matched_bad_words", [])),
-            extra_notes=list(report.get("warnings", [])) if isinstance(report.get("warnings"), list) else [],
+            extra_notes=(
+                blocking_flags
+                + (list(report.get("warnings", [])) if isinstance(report.get("warnings"), list) else [])
+            ),
+            guard_reason="bad_words" if bad_words_blocked else "writing_quality",
         )
 
     def _apply_review_override_from_report(self, run_dir: Path, report: dict[str, Any]) -> Path | None:
@@ -1001,9 +1065,9 @@ class ContentGuardService:
         status_path = self.apply_review_rejection(run_dir, override)
         matched_words = ", ".join(list(report.get("matched_bad_words", []))[:10])
         self.logger.error(
-            "Sensitive-word red line triggered for run %s: %s",
+            "Content guard rejection triggered for run %s: %s",
             run_dir,
-            matched_words,
+            matched_words or " | ".join(list(report.get("blocking_flags", []))[:3]),
         )
         return status_path
 
@@ -1303,7 +1367,9 @@ class ContentGuardService:
 
         if title_path.exists():
             try:
-                title = title_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[0].strip()
+                title = self._parse_title_file(
+                    title_path.read_text(encoding="utf-8", errors="replace")
+                )
             except Exception:
                 pass
 
@@ -1314,3 +1380,35 @@ class ContentGuardService:
                 pass
 
         return title, article
+
+    @staticmethod
+    def _parse_title_file(raw_text: str) -> str:
+        """Read either a single title file or the exported titles package."""
+
+        lines = [line.strip() for line in str(raw_text or "").splitlines() if line.strip()]
+        if not lines:
+            return ""
+
+        first_line = lines[0]
+        if not first_line.startswith(("全部标题", "推荐标题")):
+            return first_line
+
+        first_candidate = ""
+        in_recommended_section = False
+        for line in lines[1:]:
+            if line.startswith("推荐标题"):
+                in_recommended_section = True
+                continue
+            if line.startswith("全部标题"):
+                continue
+            match = re.match(r"^\d+\s*[.、]\s*(.+?)\s*$", line)
+            if not match:
+                continue
+            candidate = match.group(1).strip()
+            if not candidate:
+                continue
+            if in_recommended_section:
+                return candidate
+            if not first_candidate:
+                first_candidate = candidate
+        return first_candidate

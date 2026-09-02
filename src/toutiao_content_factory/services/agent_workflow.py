@@ -885,7 +885,7 @@ class AgentWorkflowService:
         """标题质量硬过滤（RULE_006/007 落地）
 
         在 TitleAgent 生成候选后，剔除模板滥用、纯抽象、标题-正文不一致的标题。
-        若全部被过滤，保留原列表并记录 warning，避免空列表导致后续流程崩溃。
+        若全部被过滤，清空候选并保留拒绝原因，强制进入人工审核。
         """
         article_text = content.article or ""
         original_titles = list(content.titles or [])
@@ -920,9 +920,18 @@ class AgentWorkflowService:
                     " | ".join(rejected),
                 )
         else:
-            # 全部被过滤，保留原列表避免空标题，但记录 warning 供人工介入
+            # 空列表会让后续自动选题/发布流程停在人工审核，而不是把
+            # 已明确判定不合格的标题重新交给发布链路。
+            rejection_notes = [
+                f"标题质量硬过滤：{item}" for item in rejected
+            ]
+            content.titles = []
+            content.recommended_titles = []
+            content.validation_notes = self._unique(
+                [*content.validation_notes, *rejection_notes[:6]]
+            )[:8]
             self.logger.warning(
-                "标题质量硬过滤：全部 %d 个候选标题均未通过 RULE_006/007 校验，保留原列表。明细：%s",
+                "标题质量硬过滤：全部 %d 个候选标题均未通过 RULE_006/007 校验，已清空候选并转人工审核。明细：%s",
                 len(original_titles),
                 " | ".join(rejected),
             )

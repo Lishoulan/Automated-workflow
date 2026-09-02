@@ -443,6 +443,22 @@ def test_post_polish_rebuild_stays_blocked_when_model_is_unavailable(
     assert len(buffered.replace("\n", "").replace(" ", "")) < 1750
 
 
+def test_all_rejected_titles_are_cleared_for_manual_review(
+    workflow_service: AgentWorkflowService,
+) -> None:
+    content = GeneratedContent(
+        article="公开材料显示，优必选的机器人业务仍要看交付。",
+        titles=["其他智能12.7亿：机器人如何实测"],
+        recommended_titles=["其他智能12.7亿：机器人如何实测"],
+    )
+
+    workflow_service._filter_titles_by_quality(content)
+
+    assert content.titles == []
+    assert content.recommended_titles == []
+    assert any("其他智能" in note for note in content.validation_notes)
+
+
 class TestApplyBadWordsGate:
     def test_no_bad_words(self, workflow_service: AgentWorkflowService) -> None:
         content = GeneratedContent(

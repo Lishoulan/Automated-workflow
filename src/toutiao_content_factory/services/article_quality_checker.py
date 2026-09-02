@@ -1,7 +1,14 @@
 """文章质量预检工具 - 头条首发激励合规性检查"""
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterable, Optional
+
+from toutiao_content_factory.services.company_entities import (
+    COMPANY_SUFFIX_RE,
+    extract_known_company_names,
+    is_valid_company_name,
+    normalize_company_name,
+)
 
 
 @dataclass
@@ -243,7 +250,10 @@ class ArticleQualityChecker:
         source_marker_issues = self._check_source_markers(content)
         issues.extend(source_marker_issues)
 
-        # 10. 互动吸引力检查
+        # 10. 成稿完整性检查
+        issues.extend(self._check_body_integrity(content))
+
+        # 11. 互动吸引力检查
         engagement_result = self._check_engagement_attractiveness(content)
         engagement_attractiveness_score = engagement_result["score"]
         issues.extend(engagement_result["warnings"])
@@ -412,6 +422,158 @@ class ArticleQualityChecker:
     _TITLE_SUBJECT_PATTERN = re.compile(
         r"(机器人|人形机器人|具身智能|灵巧手|宇树|特斯拉|英伟达|Optimus|澜起|富士康|宁德时代|比亚迪|华为|Walker|优必选|智元|Anthropic|OpenAI|苹果|Macmini|HBM|DDR5|波士顿动力)"
     )
+    # A title must name a real subject when the article is about a specific
+    # company. These placeholders are especially risky because a number can
+    # make an otherwise empty title look concrete to a score-based gate.
+    _GENERIC_TITLE_SUBJECT_PATTERN = re.compile(
+        r"(?:^|[：:，,、\s（(])"
+        r"((?:其他智能|其他机器人|某(?:智能|机器人)?(?:公司|企业|厂商|项目)?|"
+        r"这家(?:公司|企业)|该(?:公司|企业)|相关(?:公司|企业|厂商)))"
+    )
+    _BODY_HTML_LEAK_PATTERN = re.compile(
+        r"<!doctype\s+html\b|</?(?:html|head|body|script|style|div|table|tr|td)\b",
+        re.IGNORECASE,
+    )
+    _BODY_TEMPLATE_LEAK_PATTERN = re.compile(
+        r"\{\{[^{}\n]{1,120}\}\}|<%=?[^%\n]{1,120}%>|\[\[(?:[^\]\n]{1,120})\]\]"
+    )
+    _BODY_PLACEHOLDER_PATTERN = re.compile(
+        r"(?i)(?:\b(?:todo|tbd|placeholder)\b|占位符|占位文本|待补充(?:数据|来源|内容)?|"
+        r"请补充(?:数据|来源|内容)?|此处(?:补充|填写))"
+    )
+    _BODY_FRAGMENT_PATTERN = re.compile(
+        r"[\u4e00-\u9fffA-Za-z0-9]{2,24}、(?:为|是|在|与|和|并|但|或)"
+    )
+
+    @classmethod
+    def _extract_company_mentions(cls, text: str) -> list[str]:
+        """Extract grounded-looking company names for title/body checks."""
+
+        candidates: list[str] = []
+        raw_text = str(text or "")
+        for candidate in extract_known_company_names(raw_text):
+            normalized = normalize_company_name(candidate)
+            if is_valid_company_name(normalized) and normalized not in candidates:
+                candidates.append(normalized)
+        for match in COMPANY_SUFFIX_RE.finditer(raw_text):
+            normalized = normalize_company_name(match.group(0))
+            if is_valid_company_name(normalized) and normalized not in candidates:
+                candidates.append(normalized)
+        return candidates
+
+    @staticmethod
+    def _company_matches(left: str, right: str) -> bool:
+        left_folded = str(left or "").casefold()
+        right_folded = str(right or "").casefold()
+        return bool(
+            left_folded
+            and right_folded
+            and (left_folded in right_folded or right_folded in left_folded)
+        )
+
+    @classmethod
+    def _check_title_integrity(
+        cls,
+        title: str,
+        content: str = "",
+        expected_companies: Iterable[object] | None = None,
+    ) -> list[str]:
+        title_text = str(title or "").strip()
+        if not title_text:
+            return []
+
+        issues: list[str] = []
+        generic_subjects = [
+            match.group(1)
+            for match in cls._GENERIC_TITLE_SUBJECT_PATTERN.finditer(title_text)
+            if match.group(1)
+        ]
+        title_companies = cls._extract_company_mentions(title_text)
+        body_text = str(content or "")
+        body_companies = cls._extract_company_mentions(body_text)
+        expected: list[str] = []
+        for raw_company in expected_companies or ():
+            normalized = normalize_company_name(raw_company)
+            if is_valid_company_name(normalized) and normalized not in expected:
+                expected.append(normalized)
+
+        if generic_subjects:
+            grounded = expected or body_companies
+            if grounded:
+                grounded_text = "、".join(grounded[:3])
+                issues.append(
+                    f"标题使用了模糊主体“{'、'.join(generic_subjects[:3])}”，"
+                    f"但材料已有明确主体（{grounded_text}），不能用泛化主体替代。"
+                )
+            else:
+                issues.append(
+                    f"标题使用了无法回指事实的模糊主体“{'、'.join(generic_subjects[:3])}”，"
+                    "请改为真实公司、项目或明确事件主体。"
+                )
+
+        if body_text:
+            body_folded = body_text.casefold()
+            for company in title_companies:
+                if company.casefold() not in body_folded:
+                    issues.append(
+                        f"标题提及“{company}”但正文未出现，标题与正文主体不一致。"
+                    )
+
+            expected_in_body = [
+                company
+                for company in expected
+                if company.casefold() in body_folded
+            ]
+            if expected_in_body and title_companies and not any(
+                cls._company_matches(title_company, expected_company)
+                for title_company in title_companies
+                for expected_company in expected_in_body
+            ):
+                issues.append(
+                    f"标题主体（{'、'.join(title_companies[:3])}）与数据报告确认主体"
+                    f"（{'、'.join(expected_in_body[:3])}）不一致。"
+                )
+
+        return list(dict.fromkeys(issues))
+
+    @classmethod
+    def _check_body_integrity(cls, content: str) -> list[str]:
+        article = str(content or "").strip()
+        if not article:
+            return []
+
+        issues: list[str] = []
+        if cls._BODY_HTML_LEAK_PATTERN.search(article):
+            issues.append("正文疑似泄露HTML标签或网页模板，必须清除后再发布。")
+        if cls._BODY_TEMPLATE_LEAK_PATTERN.search(article):
+            issues.append("正文疑似泄露模板占位语法，必须补全真实内容后再发布。")
+        if cls._BODY_PLACEHOLDER_PATTERN.search(article):
+            issues.append("正文仍包含待补充或占位文本，不能作为成稿发布。")
+        if cls._BODY_FRAGMENT_PATTERN.search(article):
+            issues.append("正文存在明显残句或标点错接（如“主体、为……”），请重写完整句子。")
+        return list(dict.fromkeys(issues))
+
+    def check_editorial_integrity(
+        self,
+        title: str,
+        content: str,
+        expected_companies: Iterable[object] | None = None,
+        require_body: bool = False,
+    ) -> dict[str, list[str]]:
+        """Return deterministic hard-quality findings shared by publish gates."""
+
+        title_issues = self._check_title_integrity(title, content, expected_companies)
+        body_issues = self._check_body_integrity(content)
+        hard_blockers = [*title_issues, *body_issues]
+        if require_body and not str(content or "").strip():
+            hard_blockers.insert(0, "正文为空，不能进入发布流程。")
+        hard_blockers = list(dict.fromkeys(hard_blockers))
+        return {
+            "issues": hard_blockers,
+            "hard_blockers": hard_blockers,
+            "title_issues": title_issues,
+            "body_issues": body_issues,
+        }
 
     def _check_title(self, title: str, content: str = "") -> dict:
         """检查标题质量
@@ -464,6 +626,10 @@ class ArticleQualityChecker:
                 "标题为纯抽象概念堆砌（RULE_006）。历史数据：具象标题平均展现6806，"
                 "纯抽象标题仅1753，差距3.9倍。必须加入具象数字、公司名或地名。"
             )
+
+        # Do not let a number make an otherwise vague placeholder subject
+        # look concrete, e.g. “其他智能12.7亿：机器人如何实测”.
+        issues.extend(self._check_title_integrity(title, content))
 
         # RULE_009: 高阅读四要素校验（2026-08-25 头条真实数据：1.3万 vs 23 阅读）
         # 标题必须含"主体/动作/数字/结果"中至少 2 项，否则信息密度不足、点击率极低

@@ -18,9 +18,10 @@ from pathlib import Path
 from typing import Any
 
 from toutiao_content_factory.config import AppSettings
-from toutiao_content_factory.exceptions import AIRequestError
+from toutiao_content_factory.exceptions import AIRequestError, AIResponseFormatError
 from toutiao_content_factory.models import TopicCandidate
 from toutiao_content_factory.services.automation import TopicAutomationService
+from toutiao_content_factory.services.article_sanitizer import looks_like_html_document
 from toutiao_content_factory.services.compliance_service import count_today_published_by_platform
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.services.publish_service import PublishService
@@ -264,6 +265,10 @@ class WeiToutiaoStandaloneGenerator:
             max_tokens=900,
         )
         content = raw.strip()
+        if looks_like_html_document(content):
+            raise AIResponseFormatError(
+                "WeiToutiao model response was an HTML document instead of post text."
+            )
         # 兜底：内容过短时补话题标签，避免发布层 200 字门槛拦截
         if len(content.replace("\n", "").replace(" ", "")) < MIN_WTT_CHARS:
             content = content + "\n\n" + self._build_tags(topic)
@@ -397,6 +402,10 @@ class WeiToutiaoStandaloneGenerator:
         """构造独立微头条的 run 包（publish/article.md + publish_meta.json + tags.txt），
         供 publish_weitoutiao 复用浏览器发布流程。
         """
+        if looks_like_html_document(content):
+            raise AIResponseFormatError(
+                "WeiToutiao content was an HTML document instead of post text."
+            )
         root = self.settings.output_dir / "wtt_standalone"
         root.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -529,6 +538,20 @@ class WeiToutiaoStandaloneGenerator:
                         }
                     )
                     continue
+
+            if looks_like_html_document(content):
+                error = "WeiToutiao generated content was an HTML document, so publishing was blocked."
+                self.logger.warning(error)
+                skipped.append(
+                    {
+                        "topic_title": topic.title,
+                        "reason": "generate_failed",
+                        "error": error,
+                        "stage": "generation",
+                        "generation_mode": generation_mode,
+                    }
+                )
+                continue
 
             if self._content_char_count(content) < MIN_WTT_CHARS:
                 if self._local_fallback_enabled() and generation_mode == "model":

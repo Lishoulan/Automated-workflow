@@ -21,6 +21,7 @@ from toutiao_content_factory.constants.selectors import TOUTIAO_EDITOR_PAGE, TOU
 from toutiao_content_factory.models import PublishRecord
 from toutiao_content_factory.services.article_sanitizer import (
     clean_article_text,
+    looks_like_html_document,
     strip_external_source_metadata,
 )
 from toutiao_content_factory.services.browser_launch_guard import (
@@ -1533,7 +1534,12 @@ class PublishService:
                     page = browser.pages[0] if browser.pages else browser.new_page()
                     self._ensure_browser_session_ready(browser, page, publish_url)
                     publish_events: list[dict[str, Any]] = []
-                    self._install_publish_event_capture(page, publish_events)
+                    self._install_publish_event_capture(
+                        page,
+                        publish_events,
+                        patterns=("/mp/agw/",),
+                        post_only=True,
+                    )
                     self._goto_publish_page(page, publish_url)
                     page.wait_for_timeout(1500)
                     self._check_toutiao_login(page, notes)
@@ -1571,6 +1577,7 @@ class PublishService:
                     except Exception as exc:
                         self.logger.debug("PopupGuard weitoutiao sweep failed (non-blocking): %s", exc)
 
+                    publish_start_index = len(publish_events)
                     if not self._click_immediate_publish_button(page, publish_button_selectors, notes):
                         debug_dir = self._capture_debug_artifacts(
                             page, extra_payload={"notes": notes, "step": "weitoutiao_publish_button"}
@@ -1585,45 +1592,117 @@ class PublishService:
                     if success_selector:
                         notes.append(f"Detected WeiToutiao success indicator: {success_selector}")
                     else:
-                        notes.append("WeiToutiao backend accepted publish, but no explicit success toast detected.")
+                        notes.append("WeiToutiao publish completed without an explicit success toast.")
+
+                    publish_event = self._latest_weitoutiao_publish_event(
+                        publish_events,
+                        start_index=publish_start_index,
+                    )
+                    response_json = (publish_event or {}).get("response_json")
+                    response_is_html = bool((publish_event or {}).get("response_is_html"))
+                    backend_confirmed = bool(
+                        publish_event
+                        and not response_is_html
+                        and self._publish_response_is_success(response_json)
+                    )
+                    if backend_confirmed:
+                        notes.append("WeiToutiao backend returned an explicit success response.")
+                    elif response_is_html:
+                        notes.append(
+                            "WeiToutiao publish response was an HTML page, not an API response; "
+                            "result marked publish_uncertain."
+                        )
+                    elif publish_event and isinstance(response_json, dict):
+                        code, message = self._extract_publish_error(response_json)
+                        notes.append(
+                            f"WeiToutiao backend did not confirm publish: code={code}, message={message}."
+                        )
+                    elif publish_event:
+                        notes.append(
+                            "WeiToutiao publish response was not valid JSON; result marked publish_uncertain."
+                        )
+                    else:
+                        notes.append(
+                            "WeiToutiao showed no verifiable publish API response; "
+                            "result marked publish_uncertain."
+                        )
+
+                    if backend_confirmed:
+                        result_status = "submitted_for_review"
+                    elif publish_event and response_json is not None and not response_is_html:
+                        result_status = "failed"
+                    else:
+                        result_status = "publish_uncertain"
 
                     result_payload = {
-                        "status": "submitted_for_review",
+                        "status": result_status,
                         "published_at": datetime.now().isoformat(timespec="seconds"),
                         "external_url": page.url,
                         "notes": self._finalize_notes(notes),
                         "platform": "toutiao_weitoutiao",
+                        "backend_response_summary": self._compact_backend_response(response_json),
+                        "publish_request_summary": {
+                            "url": (publish_event or {}).get("url", ""),
+                            "method": (publish_event or {}).get("method", ""),
+                            "http_status": (publish_event or {}).get("status", ""),
+                            "event_captured": publish_event is not None,
+                            "response_is_html": response_is_html,
+                        },
                     }
                     # 微头条发布记录写入 publish_history（供日报统计微头条引流效果）
-                    try:
-                        from toutiao_content_factory.models import PublishRecord
-                        topic = publish_meta.get("selected_topic") or {}
-                        wtt_record = PublishRecord(
-                            published_at=str(result_payload["published_at"]),
-                            platform="toutiao_weitoutiao",
-                            title=str(publish_meta.get("selected_title", "")).strip() or self._load_topic_title(publish_dir),
-                            run_dir=str(run_dir),
-                            topic_title=str(topic.get("title", "")),
-                            topic_url=str(topic.get("url", "")),
-                            status=str(result_payload["status"]),
-                            notes=[str(item) for item in result_payload.get("notes", [])],
-                            external_url=str(result_payload.get("external_url", "")),
-                        )
-                        history = self._load_history()
-                        history.append(wtt_record)
-                        self._save_history(history)
-                        self.logger.info(
-                            "WeiToutiao record saved to publish_history: %s",
-                            wtt_record.title[:30],
-                        )
-                    except Exception as exc:
-                        self.logger.warning("WeiToutiao history save failed (non-fatal): %s", exc)
+                    if result_status in self.SUCCESS_HISTORY_STATUSES:
+                        try:
+                            from toutiao_content_factory.models import PublishRecord
+
+                            topic = publish_meta.get("selected_topic") or {}
+                            history_title = str(publish_meta.get("selected_title", "")).strip()
+                            if looks_like_html_document(history_title):
+                                history_title = ""
+                                notes.append(
+                                    "Ignored an HTML-like WeiToutiao title while saving publish history."
+                                )
+                            if not history_title:
+                                history_title = str(topic.get("title", "")).strip() or self._load_topic_title(publish_dir)
+                            if looks_like_html_document(history_title):
+                                history_title = "WeiToutiao"
+                            wtt_record = PublishRecord(
+                                published_at=str(result_payload["published_at"]),
+                                platform="toutiao_weitoutiao",
+                                title=history_title,
+                                run_dir=str(run_dir),
+                                topic_title=str(topic.get("title", "")),
+                                topic_url=str(topic.get("url", "")),
+                                status=str(result_payload["status"]),
+                                notes=[str(item) for item in result_payload.get("notes", [])],
+                                external_url=str(result_payload.get("external_url", "")),
+                            )
+                            history = self._load_history()
+                            history.append(wtt_record)
+                            self._save_history(history)
+                            self.logger.info(
+                                "WeiToutiao record saved to publish_history: %s",
+                                wtt_record.title[:30],
+                            )
+                        except Exception as exc:
+                            self.logger.warning("WeiToutiao history save failed (non-fatal): %s", exc)
 
                     return result_payload
                 finally:
                     browser.close()
 
         return run_sync_playwright_safe(_run, timeout=600)
+
+    @staticmethod
+    def _latest_weitoutiao_publish_event(
+        publish_events: list[dict[str, Any]],
+        *,
+        start_index: int,
+    ) -> dict[str, Any] | None:
+        """Return the latest API mutation observed after the micro-post click."""
+        for event in reversed(publish_events[start_index:]):
+            if str(event.get("method", "")).upper() in {"POST", "PUT", "PATCH"}:
+                return event
+        return None
 
     def _load_topic_title(self, publish_dir: Path) -> str:
         """从 publish_meta.json 读取选题标题（微头条记录用）。"""
@@ -1842,6 +1921,10 @@ class PublishService:
         return path.read_text(encoding="utf-8")
 
     def _sanitize_article_for_publish(self, article: str) -> str:
+        if looks_like_html_document(article):
+            raise RuntimeError(
+                "Publish content was an HTML document instead of article text."
+            )
         cleaned = clean_article_text(article)
         # Keep the public-platform boundary explicit: older review packages
         # may have been generated before the shared sanitizer learned these
@@ -5015,12 +5098,23 @@ class PublishService:
         else:
             notes.append("Waited for Toutiao autosave after no-cover selection.")
 
-    def _install_publish_event_capture(self, page, bucket: list[dict[str, Any]]) -> None:
+    def _install_publish_event_capture(
+        self,
+        page,
+        bucket: list[dict[str, Any]],
+        *,
+        patterns: tuple[str, ...] | None = None,
+        post_only: bool = False,
+    ) -> None:
+        event_patterns = patterns or self.PUBLISH_EVENT_PATTERNS
+
         def handle_response(response) -> None:
-            if not any(pattern in response.url for pattern in self.PUBLISH_EVENT_PATTERNS):
+            request = response.request
+            if post_only and str(request.method).upper() not in {"POST", "PUT", "PATCH"}:
+                return
+            if not any(pattern in response.url for pattern in event_patterns):
                 return
 
-            request = response.request
             post_data = request.post_data or ""
             save_mode = self._extract_save_mode(post_data)
             override_ts = getattr(self, "_save_override_applied_at", [None])[0]
@@ -5050,15 +5144,24 @@ class PublishService:
             except Exception as exc:
                 text = f"<<unavailable: {exc}>>"
             payload["response_text"] = text
+            content_type = ""
             try:
-                payload["response_json"] = json.loads(text)
+                content_type = str((response.headers or {}).get("content-type", ""))
+            except Exception:
+                pass
+            response_is_html = "text/html" in content_type.lower() or looks_like_html_document(text)
+            payload["response_is_html"] = response_is_html
+            try:
+                payload["response_json"] = None if response_is_html else json.loads(text)
             except Exception:
                 payload["response_json"] = None
             payload["save_override_state"] = self._save_override_debug_snapshot()
             bucket.append(payload)
 
         def handle_request_failed(request) -> None:
-            if not any(pattern in request.url for pattern in self.PUBLISH_EVENT_PATTERNS):
+            if post_only and str(request.method).upper() not in {"POST", "PUT", "PATCH"}:
+                return
+            if not any(pattern in request.url for pattern in event_patterns):
                 return
             failure = request.failure or {}
             bucket.append(
@@ -5075,6 +5178,7 @@ class PublishService:
                     ),
                     "response_text": str(failure),
                     "response_json": None,
+                    "response_is_html": False,
                     "save_override_state": self._save_override_debug_snapshot(),
                 }
             )
@@ -5265,6 +5369,8 @@ class PublishService:
     def _publish_response_is_success(self, payload: Any) -> bool:
         if not isinstance(payload, dict):
             return False
+        if self._contains_html_document(payload):
+            return False
 
         code = payload.get("code")
         err_no = payload.get("err_no")
@@ -5284,6 +5390,16 @@ class PublishService:
             return False
 
         return True
+
+    @staticmethod
+    def _contains_html_document(value: Any) -> bool:
+        if isinstance(value, str):
+            return looks_like_html_document(value)
+        if isinstance(value, dict):
+            return any(PublishService._contains_html_document(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(PublishService._contains_html_document(item) for item in value)
+        return False
 
     def _has_accepted_submission_evidence(
         self,

@@ -5,6 +5,23 @@ import re
 from difflib import SequenceMatcher
 from typing import Iterable
 
+_HTML_DOCUMENT_PREFIX_PATTERN = re.compile(
+    r"^\s*(?:<!doctype\s+html\b|<html\b|<head\b|<body\b|"
+    r"<(?:base|link|meta|title|script|style|div|main|section|form|table)\b)",
+    re.IGNORECASE,
+)
+
+
+def looks_like_html_document(value: object) -> bool:
+    """Return whether a value looks like a browser HTML page, not copy."""
+    text = str(value or "").lstrip("\ufeff")
+    if not text.strip():
+        return False
+    prefix = text[:2048]
+    if re.search(r"<!doctype\s+html\b|<html\b", prefix, flags=re.IGNORECASE):
+        return True
+    return bool(_HTML_DOCUMENT_PREFIX_PATTERN.match(prefix))
+
 _MIN_WORD_COUNT = 800
 _warned_short_article = False
 

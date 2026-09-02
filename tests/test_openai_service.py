@@ -47,6 +47,24 @@ def test_text_completion_accepts_proxy_and_sdk_response_shapes(
     assert service.create_text_completion("system", "user") == expected
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        "<!doctype html><html><body>gateway page</body></html>",
+        "<html lang='zh-CN'><body>login page</body></html>",
+        "<div class='error-page'>gateway page</div>",
+    ],
+)
+def test_text_completion_rejects_html_page_response(app_settings, logger, response) -> None:
+    service = OpenAIContentService(app_settings, logger, force_mock=True)
+    client = MagicMock()
+    client.chat.completions.create.return_value = response
+    service.client = client
+
+    with pytest.raises(AIResponseFormatError, match="HTML document"):
+        service.create_text_completion("system", "user")
+
+
 def test_json_completion_accepts_plain_string_from_proxy(app_settings, logger) -> None:
     service = OpenAIContentService(app_settings, logger, force_mock=True)
     client = MagicMock()

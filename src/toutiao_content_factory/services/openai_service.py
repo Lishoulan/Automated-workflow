@@ -24,6 +24,7 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency fallback
 
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import AIRequestError, AIResponseFormatError
+from toutiao_content_factory.services.article_sanitizer import looks_like_html_document
 
 
 @dataclass
@@ -146,7 +147,12 @@ class OpenAIContentService:
 
         response = self._call_with_retry(**kwargs)
         self._accumulate_usage(response)
-        return self._extract_response_content(response)
+        content = self._extract_response_content(response)
+        if looks_like_html_document(content):
+            raise AIResponseFormatError(
+                "Model response was an HTML document instead of completion text."
+            )
+        return content
 
     def create_json_completion(self, system_prompt: str, user_prompt: str) -> dict:
         if not self.available:
@@ -155,6 +161,10 @@ class OpenAIContentService:
         response = self._request_structured_json(system_prompt=system_prompt, user_prompt=user_prompt)
         self._accumulate_usage(response)
         content = self._extract_message_content(response)
+        if looks_like_html_document(content):
+            raise AIResponseFormatError(
+                "Model response was an HTML document instead of JSON."
+            )
 
         payload = self._parse_json_object(content)
         if payload is None:

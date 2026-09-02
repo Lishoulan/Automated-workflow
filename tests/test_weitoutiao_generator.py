@@ -70,6 +70,26 @@ def test_transient_model_failure_uses_local_fallback_and_publishes(app_settings,
     assert report["purpose"] == "test_fallback"
 
 
+def test_html_model_output_is_blocked_before_publish_or_history(app_settings) -> None:
+    object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
+    generator.select_topics = MagicMock(return_value=[_topic()])
+    generator.generate_content = MagicMock(
+        return_value="<!doctype html><html><body>gateway page</body></html>"
+    )
+    generator.publish_service.publish_weitoutiao = MagicMock()
+
+    result = generator.publish_standalone(count=1, purpose="test_html_response")
+
+    assert result["status"] == "failed"
+    assert result["accepted"] == 0
+    assert result["skipped"][0]["reason"] == "generate_failed"
+    assert "HTML document" in result["skipped"][0]["error"]
+    generator.publish_service.publish_weitoutiao.assert_not_called()
+    history_path = app_settings.output_dir / app_settings.publishing.history_filename
+    assert not history_path.exists()
+
+
 def test_non_transient_model_failure_is_recorded_without_fallback(app_settings) -> None:
     object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))

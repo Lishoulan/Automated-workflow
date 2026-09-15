@@ -53,14 +53,22 @@ $cache_note
 
 只输出 JSON，不要 Markdown 代码围栏或解释。`role_reviews` 至少包含每个角色一条意见。`verdict` 只能是 `approved`、`needs_revision` 或 `blocked`；存在未经核实的关键事实、内部标签泄露、明显合规风险或严重结构问题时，不得输出 `approved`。
 
+**关于分数（重要）**
+
+- `overall_score`、五个维度分以及 `role_reviews[].score` 都必须是 `0-100` 的整数，且必须来自你对本文的实际审核判断。
+- 下面示例里的数字**只是格式占位，禁止照抄**。示例值不代表本文的真实得分。
+- 分数要如实反映质量：一篇结构完整、事实有据的稿子通常落在 `75-90` 区间。
+- 只有当文章确实存在阻断级问题时才给低分（`30-50`），并且必须在 `hard_blockers` 里写清是哪一条问题导致的。
+- **禁止在没有具体理由的情况下把分数填成 0。** 如果你的判断是有问题但非阻断，请给出真实分数并写入 `verdict: "needs_revision"`。
+
 {
   "article_version": "post_polish",
-  "overall_score": 0,
-  "fact_score": 0,
-  "logic_score": 0,
-  "structure_score": 0,
-  "originality_score": 0,
-  "compliance_score": 0,
+  "overall_score": 82,
+  "fact_score": 80,
+  "logic_score": 85,
+  "structure_score": 78,
+  "originality_score": 84,
+  "compliance_score": 90,
   "verdict": "needs_revision",
   "hard_blockers": ["必须阻断发布的问题"],
   "fact_issues": ["事实、数字、来源或因果证据问题"],
@@ -73,7 +81,7 @@ $cache_note
   "role_reviews": [
     {
       "role": "quality-fact-checker",
-      "score": 0,
+      "score": 80,
       "findings": ["具体发现"],
       "recommendation": "具体建议",
       "confidence": 0.8

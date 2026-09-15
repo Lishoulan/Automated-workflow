@@ -14,6 +14,14 @@ from toutiao_content_factory.services.openai_service import OpenAIContentService
 class ReviewAgent(BaseAgent):
     agent_name = "ReviewAgent"
 
+    def _auto_publish_mode(self) -> bool:
+        publishing = getattr(self.settings, "publishing", None)
+        return bool(
+            getattr(publishing, "enabled", False)
+            and getattr(publishing, "auto_publish", False)
+            and not getattr(publishing, "draft_only", False)
+        )
+
     def run(
         self,
         content: GeneratedContent,
@@ -116,6 +124,7 @@ class ReviewAgent(BaseAgent):
                     else self._normalize_pass_status(payload.get("pass_status", "ready_with_light_edit"))
                 ),
             )
+            self._apply_length_gate(score, content, data_report)
             review_notes = self.unique(
                 self._clean_list(payload.get("review_notes"), 4)
                 + local_review_notes
@@ -204,6 +213,7 @@ class ReviewAgent(BaseAgent):
                 )
             ),
         )
+        self._apply_length_gate(score, content, data_report)
 
         review_notes = self.unique(
             self._build_review_notes(
@@ -222,18 +232,47 @@ class ReviewAgent(BaseAgent):
         }
 
     def _hot_topic_review_note(self, data_report: DataReport) -> str:
-        """热榜快评提示：标题型热点无原文素材是正常形态，评分标准相应放宽。"""
+        """Return a review brief whose length contract matches the run mode."""
         if not bool(getattr(data_report, "is_hot_topic", False)):
             return ""
+        if self._auto_publish_mode():
+            return (
+                "\n\n【本次为自动发布长文候选】本文基于热榜线索创作，但正文仍需达到约1800字、最低1750字，"
+                "并按完整分析稿检查事件事实、机制、影响、主体和风险边界。证据不足时应收窄结论，"
+                "不得用重复套话或新增事实填充篇幅；只有清理后的来源事实足够时，才允许继续扩展。"
+            )
         return (
-            "\n\n【本次为热榜快评模式】本文基于实时热榜标题创作（无原文素材），"
-            "属于短评/观点快评体裁（600-900字）。评分请注意：\n"
+            "\n\n【本次为热榜快评模式】本文基于实时热榜标题创作，"
+            "属于人工审核短评体裁（约850-900字）。评分请注意：\n"
             "1. 缺少订单金额、营收、出货量等硬数据是正常形态，不要因此大幅扣信息密度；\n"
             "2. ai_generated_risk 主要看句式模板化、套话堆砌、段落重复等写作腔调问题，"
             "不要因为『缺数据/缺来源』扣高；\n"
             "3. 信息密度按『观点密度+热点关联+互动引导』评估；\n"
-            "4. 综合分达到 60-70 即可视为可发布的快评。"
+            "4. 综合分只能作为参考，仍需确认正文达到短评字数并通过事实、合规和标题检查。"
         )
+
+    def _apply_length_gate(
+        self,
+        score: ContentScore,
+        content: GeneratedContent,
+        data_report: DataReport,
+    ) -> None:
+        """Keep a short hot/auto draft from being scored as publish-ready."""
+        is_hot_topic = bool(getattr(data_report, "is_hot_topic", False))
+        if not (is_hot_topic or self._auto_publish_mode()):
+            return
+        minimum = 1750 if self._auto_publish_mode() else 850
+        article_chars = len(re.sub(r"\s+", "", str(content.article or "")))
+        if article_chars >= minimum:
+            return
+        score.pass_status = "needs_revision"
+        score.completion_rate_potential = min(score.completion_rate_potential, 35)
+        score.revision_suggestions = self.unique(
+            [
+                *score.revision_suggestions,
+                f"正文当前仅{article_chars}字，未达到该运行模式要求的最低{minimum}字。",
+            ]
+        )[:6]
 
     def _score_title(self, title: str) -> int:
         score = 56
@@ -336,6 +375,10 @@ class ReviewAgent(BaseAgent):
         return max(30, min(95, score))
 
     def _paragraph_bounds(self, data_report: DataReport) -> tuple[int, int]:
+        if self._auto_publish_mode():
+            return 7, 12
+        if bool(getattr(data_report, "is_hot_topic", False)):
+            return 5, 8
         if data_report.content_format == "quick_commentary":
             return 4, 5
         if data_report.content_format == "data_recap":
@@ -345,6 +388,12 @@ class ReviewAgent(BaseAgent):
         return 5, 7
 
     def _word_bounds(self, data_report: DataReport) -> tuple[int, int]:
+        if self._auto_publish_mode():
+            target = max(int(data_report.word_target or 0), 1800)
+            return 1750, target + 300
+        if bool(getattr(data_report, "is_hot_topic", False)):
+            target = max(int(data_report.word_target or 0), 900)
+            return 850, target + 150
         target = max(int(data_report.word_target or 0), 600)
         if data_report.content_format == "quick_commentary":
             return max(500, target - 180), target + 220

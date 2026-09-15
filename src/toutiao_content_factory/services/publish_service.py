@@ -48,6 +48,7 @@ from toutiao_content_factory.services.rpa_resilience import (
 )
 from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 from toutiao_content_factory.utils.browser_utils import apply_stealth, build_persistent_context_options
+from toutiao_content_factory.utils.title_utils import fit_title_to_limit
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -1818,7 +1819,8 @@ class PublishService:
         limit = max(1, int(self.settings.publishing.title_max_length))
         if len(title) <= limit:
             return title
-        return title[:limit].rstrip(" \t\r\n,，。！？、:：;；-")
+        # 按标点语义边界回溯，避免截出 "……真正值得关" 这类半句标题。
+        return fit_title_to_limit(title, limit)
 
     def _goto_publish_page(self, page, url: str) -> None:
         timeout_ms = max(self.settings.publishing.wait_timeout_ms, 30000)
@@ -3565,6 +3567,10 @@ class PublishService:
         )
         if label:
             applied_labels.append(label)
+
+        # 说明：广告投放（投放广告赚收益）是 byte-radio 单选组，平台默认选中，
+        # 已于 2026-09-15 用真实发布页 DOM 验证（.byte-radio-inner.checked）。
+        # 不需要也不应该用代码干预，此处保持无操作。
 
         if applied_labels:
             action = "Applied" if declare_first_release else "Cleared"

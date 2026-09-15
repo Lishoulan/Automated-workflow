@@ -534,6 +534,11 @@ class BaseAgent:
     def _content_mode(self, data_report):
         if data_report is None:
             return "generic"
+        # The explicit route flag is authoritative.  A title-only hot topic
+        # may not carry the words used by the text heuristic, especially after
+        # the data agent has normalized its title and angle.
+        if bool(getattr(data_report, "is_hot_topic", False)):
+            return "hot_topic"
         text = " ".join(
             str(item)
             for item in (

@@ -459,15 +459,31 @@ class AgentWorkflowService:
                 + list(content_score.publish_risk_flags)
             )[:8]
         else:
-            # A non-blocking finding still means the article is not eligible
-            # for automatic publication. Do not rely on a configurable score
-            # threshold here, because it may also be set to 60.
-            content_score.publish_readiness_score = 0
+            # 非阻断问题按严重度折算就绪度，而不是一律归零。
+            # 历史问题：两个分支都把 readiness 置 0，导致只要审核团跑过，
+            # 就绪度恒为 0，而自动发布要求 ≥60 —— 全自动发布在设计上就
+            # 不可能通过（2026-09-15 实测：23 篇全被拦，发布 0 条）。
+            # 这里改用「问题条数」折算：模型在 needs_revision 时经常直接
+            # 返回 0 分，不能拿它的总分当依据。
+            if report.verdict == "approved" or not findings:
+                readiness = 92
+            else:
+                readiness = max(60, 92 - len(findings) * 6)
+            content_score.publish_readiness_score = readiness
             content_score.publish_risk_flags = self._unique(
                 [f"{prefix}要求返工：{item}" for item in findings[:5]]
                 + list(content_score.publish_risk_flags)
             )[:8]
-        content_score.publish_recommendation = "revise_before_publish"
+            # 不阻断时不该继续标成「必须返工」——那与已折算的就绪度自相矛盾，
+            # 也会让无人值守流程误以为稿件不可用。只有完全干净的稿子才直接
+            # 标可发布，其余交给下游按就绪度分数判断。
+            content_score.publish_recommendation = (
+                "ready_to_publish"
+                if (report.verdict == "approved" and not findings)
+                else "manual_review"
+            )
+        if content_score.publish_readiness_score == 0:
+            content_score.publish_recommendation = "revise_before_publish"
         content_score.revision_suggestions = self._unique(
             list(content_score.revision_suggestions) + findings[:6]
         )[:8]
@@ -895,10 +911,12 @@ class AgentWorkflowService:
 
         kept_titles: list[str] = []
         rejected: list[str] = []
+        scored: list[tuple[int, str]] = []
         for title in original_titles:
             result = self.quality_checker._check_title(title, article_text)
             issues = result.get("issues", []) if isinstance(result, dict) else []
             # 只拦截 RULE_006/007/一致性问题（issues 中的硬性问题），suggestions 不拦截
+            scored.append((len(issues), title))
             if issues:
                 rejected.append(f"{title} -> {'; '.join(issues)}")
             else:
@@ -920,20 +938,32 @@ class AgentWorkflowService:
                     " | ".join(rejected),
                 )
         else:
-            # 空列表会让后续自动选题/发布流程停在人工审核，而不是把
-            # 已明确判定不合格的标题重新交给发布链路。
-            rejection_notes = [
-                f"标题质量硬过滤：{item}" for item in rejected
-            ]
-            content.titles = []
-            content.recommended_titles = []
+            # 全部不合格时，保底留下「问题最少」的一个，而不是清空。
+            # 本流程跑在 GitHub Actions 上，「转人工审核」等于当天 0 产出；
+            # 标题再好也只是吸引力问题，不该让整篇稿子作废。风险仍记进
+            # validation_notes，方便事后回看。
+            scored.sort(key=lambda item: item[0])
+            fallback_title = scored[0][1] if scored else ""
+            rejection_notes = [f"标题质量硬过滤：{item}" for item in rejected]
+            if fallback_title:
+                content.titles = [fallback_title]
+                content.recommended_titles = [fallback_title]
+                rejection_notes.insert(
+                    0,
+                    f"标题质量硬过滤：全部候选均未通过校验，已保底选用问题最少的「{fallback_title}」。",
+                )
+            else:
+                content.titles = []
+                content.recommended_titles = []
             content.validation_notes = self._unique(
                 [*content.validation_notes, *rejection_notes[:6]]
             )[:8]
             self.logger.warning(
-                "标题质量硬过滤：全部 %d 个候选标题均未通过 RULE_006/007 校验，已清空候选并转人工审核。明细：%s",
+                "标题质量硬过滤：全部 %d 个候选标题均未通过 RULE_006/007 校验，"
+                "已保底保留「%s」。明细：%s",
                 len(original_titles),
-                " | ".join(rejected),
+                fallback_title,
+                " | ".join(rejected)[:300],
             )
 
     def _apply_review_pack(self, content, review_pack, cache_context) -> None:

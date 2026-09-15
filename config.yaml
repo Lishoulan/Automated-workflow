@@ -188,17 +188,10 @@
   "automation": {
     "default_topic_rank": 1,
     "daily_run_times": [
-      "07:00",
-      "09:30",
-      "12:30",
-      "15:30",
-      "18:00",
-      "21:30"
+      "09:00"
     ],
     "weekend_run_times": [
-      "08:00",
-      "14:00",
-      "20:00"
+      "10:00"
     ],
     "archive_outputs": true,
     "archive_dirname": "runs",
@@ -313,8 +306,9 @@
     "inline_images_enabled": true,
     "weitoutiao_enabled": true,
     "weitoutiao_publish_url": "https://mp.toutiao.com/profile_v4/weitoutiao/publish",
-    "weitoutiao_daily_target": 3,
+    "weitoutiao_daily_target": 1,
     "weitoutiao_standalone_enabled": true,
+    "weitoutiao_companion_enabled": false,
     "weitoutiao_local_fallback_enabled": true,
     "weitoutiao_personas": ["hot_comment", "warm", "sanhuo"],
     "weitoutiao_selectors": {

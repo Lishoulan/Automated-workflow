@@ -32,6 +32,20 @@ class QualityReviewCouncilAgent(BaseAgent):
         "quality-originality-auditor",
         "quality-compliance-editor",
     )
+    _FACT_FIELDS = (
+        "topic_title",
+        "core_data",
+        "industry_trends",
+        "growth_numbers",
+        "companies",
+        "supply_chain_keywords",
+        "key_points",
+        "watch_metrics",
+        "evidence_notes",
+        "risk_flags",
+        "source_facts",
+        "is_hot_topic",
+    )
     _INTERNAL_LEAK_RE = re.compile(
         r"manual_paste|evergreen_pool|benchmark_hotspot|source_document|source_material|"
         r"editorial_council|quality_review|内部标签|素材标签|已跳过缓存|强制重新生成|"
@@ -118,7 +132,7 @@ class QualityReviewCouncilAgent(BaseAgent):
             style_digest=self.style_digest(style),
             article=article,
             title=title,
-            data_json=self.json_text(data_report.__dict__),
+            data_json=self.json_text(self._fact_payload(data_report)),
             editorial_brief=editorial_brief,
             local_snapshot=self.json_text(local_snapshot),
             cache_note=self.cache_note(cache_context),
@@ -137,7 +151,7 @@ class QualityReviewCouncilAgent(BaseAgent):
             report.revision_round = max(0, int(revision_round))
             report.used_fallback = False
             if report.is_usable():
-                self._apply_local_hard_gate(report, local_snapshot)
+                self._apply_local_hard_gate(report, local_snapshot, article=article, title=title)
                 self.logger.info(
                     "Quality review council completed: verdict=%s score=%d blockers=%d",
                     report.verdict,
@@ -153,6 +167,21 @@ class QualityReviewCouncilAgent(BaseAgent):
             revision_round=revision_round,
             role_names=role_names,
         )
+
+    @classmethod
+    def _fact_payload(cls, data_report: DataReport) -> dict[str, Any]:
+        """只向评审模型暴露事实候选字段。
+
+        历史 bug：直接把 ``data_report.__dict__`` 全量塞进提示词，会把
+        writing_brief / content_format / evidence_strength 这类内部写作参数
+        一并喂给评审模型，模型据此判定「内部标签泄露」并阻断发布——而文章
+        正文其实是干净的。这里按白名单只保留事实候选。
+        """
+        return {
+            name: value
+            for name in cls._FACT_FIELDS
+            if (value := getattr(data_report, name, None)) not in (None, "", [], {})
+        }
 
     def _fallback(
         self,
@@ -380,18 +409,102 @@ class QualityReviewCouncilAgent(BaseAgent):
             "duplicate_paragraph_count": duplicate_count,
         }
 
+    # 只有能被代码复核的指控才允许一票否决。审核模型是「挑刺专家」，
+    # 任何稿子都能找出「可能存在……」，若让它直接决定 blocked，全自动发布
+    # 就永远过不了（2026-09-15 实测：23 篇全部被模型指控拦下，自动发布 0 条）。
+    # 能被代码复核、且适合作为阻断理由的指控类型。
+    # 注意「绝对化」不在其中：它属于可自动修复项（见 auto_repair_service），
+    # 修完就不成立，用它阻断只会白白废掉一篇稿子。
+    _VERIFIABLE_BLOCKER_HINTS: tuple[str, ...] = (
+        "内部标签",
+        "内部素材",
+        "流程标签",
+        "占位符",
+        "数字",
+        "口径",
+        "空",
+        "过短",
+        "字数",
+    )
+    # 正文低于此字数视为实质性缺失，可核实的「过短」指控成立。
+    _MIN_BODY_CHARS = 400
+
+    def _verify_model_blockers(
+        self,
+        model_blockers: list[str],
+        local_snapshot: dict[str, Any],
+        article: str,
+        title: str,
+    ) -> tuple[list[str], list[str]]:
+        """把模型给的阻断项按「能否被代码证实」拆成两组。
+
+        返回 (confirmed, advisory)：
+        - confirmed：正文里确实存在该问题的证据，允许阻断发布
+        - advisory：模型的主观疑虑（如「可能存在误导性因果」），降级为
+          待改进建议，降分但不阻止发布
+        """
+        confirmed: list[str] = []
+        advisory: list[str] = []
+        unsupported = {str(x) for x in local_snapshot.get("unsupported_numeric_tokens", [])}
+        has_internal_leak = bool(self._INTERNAL_LEAK_RE.search(article))
+        body_chars = len(re.sub(r"\s+", "", article))
+
+        for raw in model_blockers:
+            item = str(raw).strip()
+            if not item:
+                continue
+            verifiable = False
+            if any(hint in item for hint in ("内部标签", "内部素材", "流程标签", "占位符")):
+                verifiable = has_internal_leak
+            elif any(hint in item for hint in ("数字", "口径")):
+                verifiable = bool(unsupported)
+            elif any(hint in item for hint in ("空", "过短", "字数")):
+                verifiable = body_chars < self._MIN_BODY_CHARS
+            if verifiable:
+                confirmed.append(item)
+            else:
+                advisory.append(item)
+        return confirmed, advisory
+
     def _apply_local_hard_gate(
         self,
         report: QualityReviewReport,
         local_snapshot: dict[str, Any],
+        *,
+        article: str = "",
+        title: str = "",
     ) -> None:
-        """Prevent a model verdict from overriding deterministic hard blockers."""
+        """Prevent a model verdict from overriding deterministic hard blockers.
+
+        同时做反向收口：模型提出但我们复核不出证据的阻断项，降级为建议，
+        不再一票否决——否则自动发布永远无法通过。
+        """
+        model_original = [str(item).strip() for item in report.hard_blockers if str(item).strip()]
+        confirmed, advisory = self._verify_model_blockers(
+            model_original, local_snapshot, article, title
+        )
+        if advisory:
+            self.logger.info(
+                "Quality review: %d model blocker(s) downgraded to advisory (no verifiable evidence): %s",
+                len(advisory),
+                " | ".join(advisory)[:300],
+            )
+            report.required_revisions = self.unique(
+                [*advisory, *report.required_revisions]
+            )[:8]
+            report.fact_issues = self.unique([*advisory[:2], *report.fact_issues])[:8]
+        report.hard_blockers = confirmed
+
         blockers = [
             str(item).strip()
             for item in local_snapshot.get("hard_blockers", [])
             if str(item).strip()
         ]
         if not blockers:
+            # 本地无确定性硬伤，且模型阻断项已按证据筛选过，重新判定 verdict。
+            if report.verdict == "blocked" and not confirmed:
+                report.verdict = "needs_revision"
+                report.needs_revision = True
             return
 
         report.hard_blockers = self.unique([*blockers, *report.hard_blockers])

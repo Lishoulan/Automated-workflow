@@ -7,6 +7,7 @@ from pathlib import Path
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import WorkflowResult
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.auto_repair_service import repair_article
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.monetization_service import MonetizationService
 
@@ -72,6 +73,10 @@ class ExportService:
         # Re-sanitize at the file boundary because review/polish/model output
         # can reintroduce inline metadata after the agent-level cleanup.
         article = clean_article_text(article, min_word_count=0)
+        # 最后一道确定性清理：无论正文由哪条路径产出（首写 / 润色 / 模型返工
+        # 重建），都不允许把内部标签、提示词元叙述或绝对化断言带进发布文件。
+        # 这一步也让「兜底发布」看到的就是即将发出去的真实文本。
+        article = str(repair_article(article)["article"])
         return self.monetization_service.append_cta(article, platform_key="default")
 
     def _build_editorial_packet(self, result: WorkflowResult, benchmark_strategy: dict) -> str:

@@ -230,7 +230,7 @@ class PolishAgent(BaseAgent):
             polished = str(payload.get("polished_article", "")).strip()
             if polished:
                 original_chars = len(content.article.replace("\n", "").replace(" ", ""))
-                article = self._finalize_article(polished, data_report, trend_report, revision_focus=revision_focus, original_char_count=original_chars)
+                article = self._finalize_article(polished, data_report, trend_report, revision_focus=revision_focus, original_char_count=original_chars, original_article=content.article)
                 validation_notes, validation_score = self._validate_article(article, data_report, trend_report)
 
                 # 规则契合度门控校对
@@ -247,6 +247,7 @@ class PolishAgent(BaseAgent):
                         article = self._finalize_article(
                             repolish_article, data_report, trend_report,
                             revision_focus=revision_focus, original_char_count=original_chars,
+                            original_article=content.article,
                         )
                         # 二次校验
                         re_notes, re_score = self._validate_article(article, data_report, trend_report)
@@ -487,6 +488,7 @@ class PolishAgent(BaseAgent):
         trend_report: TrendReport,
         revision_focus: list[str] | None = None,
         original_char_count: int = 0,
+        original_article: str = "",
     ) -> str:
         content_mode = self._content_mode(data_report)
         cleaned = self.strip_prompt_leakage(article)
@@ -495,6 +497,19 @@ class PolishAgent(BaseAgent):
         cleaned = clean_article_text(cleaned, min_word_count=0)
         cleaned = self._remove_ai_cliches(cleaned)
         cleaned = self._apply_evidence_boundary_edits(cleaned)
+        # 自动修复：跑在审核之前，把「确定且可机械修复」的问题直接改掉。
+        # 自动化流程没有人工环节，发现问题就拦的话最终只会 0 篇可发。
+        try:
+            from toutiao_content_factory.services.auto_repair_service import repair_article
+
+            repaired = repair_article(cleaned)
+            if repaired.get("changed"):
+                cleaned = str(repaired["article"])
+                self.logger.info(
+                    "PolishAgent 自动修复：%s", "；".join(repaired.get("changes", []))
+                )
+        except Exception as exc:
+            self.logger.warning("PolishAgent 自动修复失败，保留原文：%s", exc)
         paragraphs = [self._normalize_paragraph(block) for block in cleaned.split("\n\n") if block.strip()]
         paragraphs = [block for block in paragraphs if block]
 
@@ -555,7 +570,12 @@ class PolishAgent(BaseAgent):
                     "Polish was too aggressive, keeping original article.",
                     polished_chars, original_char_count, int(original_char_count * 0.6),
                 )
-                return clean_article_text(self._apply_evidence_boundary_edits(article), min_word_count=0)
+                # 必须回退到「真正的原文」。注意入参 article 是模型输出的润色稿，
+                # 只对它再加工一遍无法恢复被删掉的内容——历史 bug：日志声称
+                # "keeping original article"，实际返回的仍是短稿，导致
+                # polished_article 过短、正文长度门槛不过、readiness 被置 0。
+                fallback = original_article or article
+                return clean_article_text(self._apply_evidence_boundary_edits(fallback), min_word_count=0)
         return article_text
 
     def _validate_article(
@@ -792,7 +812,7 @@ class PolishAgent(BaseAgent):
         numbers = "、".join(self.clean_publish_list(data_report.growth_numbers, limit=3))
         core_items = self.clean_publish_list(data_report.core_data, limit=3)
         if source_anchor:
-            anchor_fact = source_anchor.removeprefix("已有材料显示，").rstrip("。")
+            anchor_fact = source_anchor.removeprefix("公开信息显示，").rstrip("。")
             core_items = [item for item in core_items if item not in anchor_fact and anchor_fact not in item]
         core_data = "；".join(core_items)
         trends = "；".join(self.clean_publish_list(data_report.industry_trends, limit=2))
@@ -802,30 +822,30 @@ class PolishAgent(BaseAgent):
         closing_question = self._build_closing_question(data_report)
 
         first_paragraph = f"{primary}这条信息目前只能算阶段性进展。"
-        first_paragraph += source_anchor or "现有材料没有提供足够的来源细节和量化结果。"
+        first_paragraph += source_anchor or "目前公开披露的细节和量化结果仍然有限。"
         first_paragraph += "这还不足以推出订单、收入或量产已经兑现。"
 
-        second_paragraph = f"能直接核对的数字集中在{numbers}。" if numbers else f"素材没有给出{primary}当前进展的可量化结果。"
+        second_paragraph = f"能直接核对的数字集中在{numbers}。" if numbers else f"公开信息没有给出{primary}当前进展的可量化结果。"
         if core_data:
-            second_paragraph += f"材料同时提到：{core_data}。"
+            second_paragraph += f"公开信息还提到：{core_data}。"
         else:
             second_paragraph += "所以现阶段适合判断验证节奏，不适合提前下过满的业绩结论。"
 
         if companies:
             third_paragraph = (
-                f"主体方面，{'、'.join(companies)}出现在现有材料中，但这不等于它们已经获得订单或形成收入。"
-                "后续要核对的是客户验证、交付节奏和能否复制到更多项目。"
+                f"公开信息提到{'、'.join(companies)}，但这不等于它们已经获得订单或形成收入。"
+                "判断时应看客户验证、交付节奏和能否复制到更多项目。"
             )
         else:
             third_paragraph = (
                 f"目前没有足够依据点名具体公司。{primary}能否走强，要回到设备交付、项目验证、系统集成和后续服务这些执行环节。"
             )
         if trends:
-            third_paragraph += f"现有趋势描述是：{trends}。"
+            third_paragraph += f"公开信息呈现的趋势是：{trends}。"
 
-        fourth_paragraph = f"后续核验可以先看{metrics}。" if metrics else "后续核验可以先看部署表现、订单复制、成本和服务。"
+        fourth_paragraph = f"接下来可观察{metrics}。" if metrics else "接下来可观察部署表现、订单复制、成本和服务。"
         if angle:
-            fourth_paragraph += f"当前分析角度是：{angle}。"
+            fourth_paragraph += f"这条线索的判断重点是：{angle}。"
         else:
             fourth_paragraph += "这些信号没有连续出现前，不宜把单点进展写成全行业普涨。"
 
@@ -863,7 +883,7 @@ class PolishAgent(BaseAgent):
                         text = text[len(prefix) :].strip()
                 if not text.endswith(("。", "！", "？")):
                     text += "。"
-                return f"已有材料显示，{text}"
+                return f"公开信息显示，{text}"
         if data_report.growth_numbers:
             return f"目前已明确的数字信号包括{'、'.join(data_report.growth_numbers[:2])}。"
         return ""
@@ -894,7 +914,7 @@ class PolishAgent(BaseAgent):
         paragraphs = [
             f"{title}目前支持的判断是阶段性变化，而不是已经确定的长期结果。{source_anchor}",
             "事件影响要从后续比赛、技术路线和市场反馈中确认，单次讨论热度不能替代这些信息。",
-            f"后续核验可以先看{metrics}。这些指标分别对应事件能否延续，以及它是否会改变后续走势。",
+            f"接下来可观察{metrics}。这些指标分别对应事件能否延续，以及它是否会改变后续走势。",
             f"{angle or '目前更适合把关键人物、节点和走势拆开核对。'}",
             f"限制条件是：{risks}。{self._build_closing_question(data_report)}",
         ]
@@ -908,7 +928,7 @@ class PolishAgent(BaseAgent):
         paragraphs = [
             f"{title}目前只是博弈中的一个新动作，不能直接写成局势已经定型。{source_anchor}",
             "后续影响取决于各方有没有把表态转成实际动作，以及市场是否给出持续反馈。",
-            f"后续核验可以先看{metrics}。这些信息能帮助区分局势升级、暂时缓和和重新谈判。",
+            f"接下来可观察{metrics}。这些信息能帮助区分局势升级、暂时缓和和重新谈判。",
             f"{angle or '目前更适合把事件、利益关系和后续变量连接起来。'}",
             f"限制条件是：{risks}。{self._build_closing_question(data_report)}",
         ]

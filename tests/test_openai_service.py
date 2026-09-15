@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -108,6 +109,47 @@ def test_json_completion_extracts_wrapped_and_reasoned_json(app_settings, logger
     payload = service.create_json_completion("system", "user")
 
     assert payload["result"] in {"fenced", "explained", "after think", "brace } inside string"}
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ('{"result": "trailing comma",}', {"result": "trailing comma"}),
+        ('{"a": 1, "b": 2,}', {"a": 1, "b": 2}),
+        ('{"items": [1, 2, 3,], "ok": true,}', {"items": [1, 2, 3], "ok": True}),
+        ('{"nested": {"x": 1,},}', {"nested": {"x": 1}}),
+        ('```json\n{"result": "fenced",}\n```', {"result": "fenced"}),
+        ('模型说明在前：\n{"result": "explained",}\n后续说明。', {"result": "explained"}),
+    ],
+)
+def test_json_completion_tolerates_trailing_commas(app_settings, logger, response, expected) -> None:
+    """模型长 JSON 最常见的瑕疵是尾随逗号，不能因此让整条链路回退本地策略。"""
+    service = OpenAIContentService(app_settings, logger, force_mock=True)
+    client = MagicMock()
+    client.chat.completions.create.return_value = response
+    service.client = client
+
+    assert service.create_json_completion("system", "user") == expected
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        '{"text": "逗号在字符串里,} 不应被改动", "ok": true}',
+        '{"text": "a,b", "arr": [1, 2]}',
+        '{"text": "结尾也是逗号,", "n": 1}',
+    ],
+)
+def test_json_completion_keeps_commas_inside_strings(app_settings, logger, response) -> None:
+    """字符串内部的逗号与花括号必须原样保留，容错不能改坏正文。"""
+    service = OpenAIContentService(app_settings, logger, force_mock=True)
+    client = MagicMock()
+    client.chat.completions.create.return_value = response
+    service.client = client
+
+    payload = service.create_json_completion("system", "user")
+
+    assert payload == json.loads(response)
 
 
 def test_json_completion_rejects_response_without_a_json_object(app_settings, logger) -> None:

@@ -1,8 +1,53 @@
 version: 1
-updated_at: '2026-08-31'
+updated_at: '2026-09-04'
 articles:
+- key: 优必选12_7亿_机器人如何实测
+  enabled: false
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-09-03'
+  title: 优必选12.7亿：机器人如何实测
+  run_dir: ''
+  observed_metrics:
+    impression_count: 140
+    read_count: 0
+  keywords: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
+  inferred_patterns: []
+- key: 优必选卖出921台全尺寸机器人_交付仍比销量更关键
+  enabled: false
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-09-02'
+  title: 优必选卖出921台全尺寸机器人，交付仍比销量更关键
+  run_dir: ''
+  observed_metrics:
+    impression_count: 610
+    read_count: 3
+  keywords: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
+  inferred_patterns: []
+- key: 其他智能12_7亿_机器人如何实测
+  enabled: false
+  track: auto_generated
+  account_key: robot_notes
+  platform: toutiao
+  published_at: '2026-09-02'
+  title: 其他智能12.7亿：机器人如何实测
+  run_dir: ''
+  observed_metrics:
+    impression_count: 335
+    read_count: 0
+  keywords: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
+  inferred_patterns: []
 - key: 人形机器人进工厂后_3个指标决定谁能先拿到订单
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -13,10 +58,11 @@ articles:
     impression_count: 138
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 充电站26万千瓦_充电如何实测
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -27,10 +73,11 @@ articles:
     impression_count: 106
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 机器人热度之外_谁在拿走真正订单
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -41,10 +88,11 @@ articles:
     impression_count: 931
     read_count: 25
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 智元机器人的通报生意_真正的收入来自什么
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -55,10 +103,11 @@ articles:
     impression_count: 220
     read_count: 2
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 机器人不只卖整机_90_交付能力将重排产业链
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -69,10 +118,11 @@ articles:
     impression_count: 681
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 197_4亿背后_机器人的利润先流向谁
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -83,10 +133,11 @@ articles:
     impression_count: 103
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 1万元背后_灵巧手的利润先流向谁
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -97,10 +148,11 @@ articles:
     impression_count: 244
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 人形机器人9分钟演示_离进工厂还差哪些证据
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -111,10 +163,11 @@ articles:
     impression_count: 146
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 上千台机器人同场敬礼_展示规模不等于订单交付
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -125,10 +178,11 @@ articles:
     impression_count: 335
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 人形机器人订单多为试点_核心零部件厂商或先赚到钱
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -139,10 +193,11 @@ articles:
     impression_count: 335
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 天工ultra跑完1500米夺冠_人形机器人量产还要等多久
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -153,10 +208,11 @@ articles:
     impression_count: 142
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 90_背后_具身智能的利润先流向谁
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -167,10 +223,11 @@ articles:
     impression_count: 137
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 分配机器人进入工厂背后_机器人谁在抢跑
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -181,10 +238,11 @@ articles:
     impression_count: 133
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 具身智能毛利率的分化_正在改写座次
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -195,10 +253,11 @@ articles:
     impression_count: 0
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 2026年背后_具身智能的利润先流向谁
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -209,10 +268,11 @@ articles:
     impression_count: 0
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: 以完成一次演示工厂背后_具身智能谁在抢跑
-  enabled: true
+  enabled: false
   track: auto_generated
   account_key: robot_notes
   platform: toutiao
@@ -223,7 +283,8 @@ articles:
     impression_count: 0
     read_count: 0
   keywords: []
-  notes: []
+  notes:
+  - 2026-09-04 清理：阅读量未达门槛，从 few-shot 样本中剔除
   inferred_patterns: []
 - key: japan_airport_robot
   enabled: true

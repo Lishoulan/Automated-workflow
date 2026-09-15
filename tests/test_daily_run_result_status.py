@@ -133,6 +133,31 @@ def test_content_guard_blocks_high_score_auto_approval(app_settings) -> None:
     ) is True
 
 
+def test_auto_approval_length_floor_matches_hot_and_auto_publish_modes(app_settings) -> None:
+    service = ContentFactoryAppService(app_settings, logging.getLogger("test-length-gate"))
+    high_score = {
+        "overall_score": 90,
+        "ai_generated_risk": 10,
+        "validation_score": 90,
+        "publish_readiness_score": 90,
+        "article_char_count": 849,
+        "is_hot_topic": 1,
+    }
+
+    assert service._qualifies_for_auto_approval(high_score) is False
+
+    hot_boundary = {**high_score, "article_char_count": 850}
+    assert service._qualifies_for_auto_approval(hot_boundary) is True
+
+    object.__setattr__(app_settings.publishing, "enabled", True)
+    object.__setattr__(app_settings.publishing, "auto_publish", True)
+    auto_short = {**hot_boundary, "article_char_count": 1749}
+    assert service._qualifies_for_auto_approval(auto_short) is False
+
+    auto_boundary = {**hot_boundary, "article_char_count": 1750}
+    assert service._qualifies_for_auto_approval(auto_boundary) is True
+
+
 def test_pending_run_notification_uses_candidate_title_from_workflow_result(tmp_path: Path) -> None:
     service = ContentFactoryAppService.__new__(ContentFactoryAppService)
     run_dir = tmp_path / "pending-run"

@@ -28,6 +28,15 @@ from toutiao_content_factory.services.t1_policy import infer_availability_status
 
 logger = logging.getLogger(__name__)
 
+# 2026-09-04 修复自污染负反馈回路：
+# 此前 _compute_roi_score 在阅读为 0 时回退到「展现量 * 0.1」，
+# 导致 0 阅读但展现 300-470 的模板化标题（如「XX亿：XX如何实测」）
+# 被当成「高点击率标题」注入 title_prompt_v2.md 的 few-shot 范例，
+# 反过来训练模型生成更多同类垃圾标题。
+# 加最小阅读门槛：阅读量低于该值的文章不参与 few-shot 抽取，
+# 避免把「零阅读噪音」当「爆款信号」喂回模型。
+MIN_READS_FOR_FEWSHOT = 100
+
 
 class FeedbackLoopService:
     """Orchestrates the full data feedback loop.
@@ -452,6 +461,10 @@ class FeedbackLoopService:
 
         2026-08-27：few-shot 只取图文（platform=toutiao），微头条占位标题
         不进图文标题模板；微头条绩效数据通过 EvolutionAgent 规则学习生效。
+
+        2026-09-04：新增最小阅读门槛（MIN_READS_FOR_FEWSHOT）。
+        阅读量低于门槛的文章视为「零阅读噪音」，不参与 few-shot 抽取，
+        防止把垃圾标题当作爆款样本喂回模型（自污染负反馈回路）。
         """
         records = performance_data.get("records", [])
         if not records:
@@ -460,12 +473,18 @@ class FeedbackLoopService:
             (self._compute_roi_score(r), r)
             for r in records
             if self._is_analysis_eligible(r)
+            and self._meets_read_threshold(r)
         ]
         scored.sort(key=lambda x: x[0], reverse=True)
         return [
             r for _, r in scored[:top_k]
             if r.get("title") and str(r.get("platform", "toutiao")) == "toutiao"
         ]
+
+    def _meets_read_threshold(self, record: dict[str, Any]) -> bool:
+        """阅读量达到 few-shot 抽取门槛才视为有效样本。"""
+        views = int(record.get("views", 0) or record.get("read_count", 0) or 0)
+        return views >= MIN_READS_FOR_FEWSHOT
 
     def _update_prompt_templates(
         self,

@@ -12,6 +12,8 @@ from toutiao_content_factory.services.openai_service import OpenAIContentService
 
 class PublishReviewAgent(BaseAgent):
     agent_name = "PublishReviewAgent"
+    HOT_TOPIC_MANUAL_MIN_CHARS = 850
+    AUTO_PUBLISH_ARTICLE_MIN_CHARS = 1750
 
     def run(
         self,
@@ -61,13 +63,14 @@ class PublishReviewAgent(BaseAgent):
                 "publish_recommendation": str(payload.get("publish_recommendation", "manual_review")),
                 "publish_notes": self._clean_list(payload.get("publish_notes"), 6),
             }
-            return self._apply_self_benchmark_adjustments(
+            result = self._apply_self_benchmark_adjustments(
                 result,
                 content,
                 data_report,
                 content_score,
                 self_benchmark_context=self_benchmark_context,
             )
+            return self._apply_length_gate(result, content, data_report)
         return self._fallback(
             content,
             data_report,
@@ -77,17 +80,85 @@ class PublishReviewAgent(BaseAgent):
         )
 
     def _hot_topic_publish_note(self, data_report: DataReport) -> str:
-        """热榜快评发布审查提示：标题型热点无原文素材，就绪度按快评标准评估。"""
-        if not bool(getattr(data_report, "is_hot_topic", False)):
+        """Return the publish contract for manual hot reviews or auto long-form."""
+        if not self._is_hot_topic(data_report):
             return ""
+        if self._auto_publish_mode():
+            return (
+                "\n\n【本次为自动发布长文候选】虽然选题来自热榜，正文仍必须按完整分析稿处理："
+                "目标约1800字，清理后的正文最低1750字。热榜标签不能豁免事实、合规和标题检查；"
+                "只有来源事实足够时才能扩展篇幅，证据不足必须收窄结论并保持人工审核，"
+                "不得用重复套话、未披露数字或虚构案例凑够字数。"
+            )
         return (
-            "\n\n【本次为热榜快评模式】本文基于实时热榜标题创作（600-900字短评），"
-            "缺少订单/营收等硬数据是正常形态。发布就绪度评估请注意：\n"
-            "1. 不要把『缺数据锚点』作为主要扣分项，短评的价值在观点密度与热点时效；\n"
-            "2. 重点检查：标题是否过长/标题党、是否有违禁词/绝对化表述、"
-            "是否有明显 AI 套话、是否会误导读者；\n"
-            "3. publish_readiness_score 达到 55 以上即视为可发布快评。"
+            "\n\n【本次为热榜快评模式】本文属于人工审核短评，清理后的正文最低850字，"
+            "通常控制在850-900字。缺少订单、营收等硬数据可以是正常形态，但不能用重复套话填充；"
+            "发布就绪度评估请重点检查标题党、绝对化表述、AI 套话、事实误导和合规风险。"
         )
+
+    def _auto_publish_mode(self) -> bool:
+        publishing = getattr(self.settings, "publishing", None)
+        return bool(
+            getattr(publishing, "enabled", False)
+            and getattr(publishing, "auto_publish", False)
+            and not getattr(publishing, "draft_only", False)
+        )
+
+    def _is_hot_topic(self, data_report: DataReport) -> bool:
+        return bool(
+            getattr(data_report, "is_hot_topic", False)
+            or self._content_mode(data_report) == "hot_topic"
+        )
+
+    def _required_article_length(self, data_report: DataReport) -> int:
+        if self._auto_publish_mode():
+            return self.AUTO_PUBLISH_ARTICLE_MIN_CHARS
+        if self._is_hot_topic(data_report):
+            return self.HOT_TOPIC_MANUAL_MIN_CHARS
+        return 0
+
+    @staticmethod
+    def _article_char_count(content: GeneratedContent) -> int:
+        article = str(content.polished_article or content.article or "")
+        return len(re.sub(r"\s+", "", article))
+
+    def _apply_length_gate(
+        self,
+        result: dict[str, object],
+        content: GeneratedContent,
+        data_report: DataReport,
+    ) -> dict[str, object]:
+        """Force short hot/auto drafts into revision regardless of model score."""
+        minimum = self._required_article_length(data_report)
+        if minimum <= 0:
+            return result
+
+        article_chars = self._article_char_count(content)
+        if article_chars >= minimum:
+            return result
+
+        length_flag = f"正文当前仅{article_chars}字，未达到该运行模式要求的最低{minimum}字。"
+        risk_flags = [
+            length_flag,
+            *[
+                str(item).strip()
+                for item in result.get("publish_risk_flags", [])
+                if str(item).strip()
+            ],
+        ]
+        publish_notes = [
+            "请补足有依据的事实、机制和风险边界；证据不足时保留人工审核，不要重复套话凑字数。",
+            *[
+                str(item).strip()
+                for item in result.get("publish_notes", [])
+                if str(item).strip()
+            ],
+        ]
+        result["publish_readiness_score"] = 0
+        result["publish_recommendation"] = "revise_before_publish"
+        result["publish_risk_flags"] = self.unique(risk_flags)[:6]
+        result["publish_notes"] = self.unique(publish_notes)[:6]
+        return result
 
     def _fallback(
         self,
@@ -98,11 +169,11 @@ class PublishReviewAgent(BaseAgent):
         self_benchmark_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
         title = content.recommended_titles[0] if content.recommended_titles else ""
-        article_length = len(re.sub(r"\s+", "", content.article))
+        article_length = self._article_char_count(content)
         publish_risk_flags: list[str] = []
         publish_notes: list[str] = []
         readiness = 60
-        is_hot_topic = bool(getattr(data_report, "is_hot_topic", False))
+        is_hot_topic = self._is_hot_topic(data_report)
 
         if content_score.ai_generated_risk <= 35:
             readiness += 10
@@ -171,13 +242,14 @@ class PublishReviewAgent(BaseAgent):
             "publish_recommendation": recommendation,
             "publish_notes": self.unique(publish_notes)[:6],
         }
-        return self._apply_self_benchmark_adjustments(
+        result = self._apply_self_benchmark_adjustments(
             result,
             content,
             data_report,
             content_score,
             self_benchmark_context=self_benchmark_context,
         )
+        return self._apply_length_gate(result, content, data_report)
 
 
 
@@ -206,7 +278,7 @@ class PublishReviewAgent(BaseAgent):
             readiness += 5
         elif len(matched) == 2:
             readiness += 2
-        elif getattr(data_report, "is_hot_topic", False):
+        elif self._is_hot_topic(data_report):
             # 热榜快评：无历史自对标样本可比，不因命中少扣分
             pass
         else:

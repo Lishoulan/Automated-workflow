@@ -405,6 +405,10 @@ class PublishSettings:
     # 超出部分由「独立微头条选题+写作」能力补齐（weitoutiao_standalone_enabled 时生效）。
     weitoutiao_daily_target: int = 1
     weitoutiao_standalone_enabled: bool = False
+    # 微头条错峰（2026-09-04）：图文发布成功后是否「立即」发伴生微头条。
+    # 关闭后伴生动作交给后续时段的 standalone top-up（already_published 分支），
+    # 图文与微头条之间天然拉开 8-12 小时，避免同一窗口连发触发灌水风控。
+    weitoutiao_companion_enabled: bool = True
     # Allow deterministic short-content generation when the model gateway is transiently unavailable.
     weitoutiao_local_fallback_enabled: bool = True
     # 独立微头条人设（hot_comment / warm / sanhuo / shoulan），按序轮换
@@ -449,6 +453,7 @@ class PublishSettings:
             weitoutiao_selectors=weitoutiao_selectors,
             weitoutiao_daily_target=int(payload.get("weitoutiao_daily_target", 1)),
             weitoutiao_standalone_enabled=bool(payload.get("weitoutiao_standalone_enabled", False)),
+            weitoutiao_companion_enabled=bool(payload.get("weitoutiao_companion_enabled", True)),
             weitoutiao_local_fallback_enabled=bool(payload.get("weitoutiao_local_fallback_enabled", True)),
             weitoutiao_personas=personas,
         )
@@ -1362,6 +1367,10 @@ def _load_publishing_config_final(
         weitoutiao_standalone_enabled=_env_flag(
             "TOUTIAO_WEITOUTIAO_STANDALONE_ENABLED",
             publishing_config.weitoutiao_standalone_enabled,
+        ),
+        weitoutiao_companion_enabled=_env_flag(
+            "TOUTIAO_WEITOUTIAO_COMPANION_ENABLED",
+            publishing_config.weitoutiao_companion_enabled,
         ),
         weitoutiao_local_fallback_enabled=_env_flag(
             "TOUTIAO_WEITOUTIAO_LOCAL_FALLBACK_ENABLED",

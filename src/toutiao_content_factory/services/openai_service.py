@@ -43,7 +43,15 @@ class OpenAIContentService:
     MAX_RETRIES = 4
     BASE_DELAY = 3.0
     MAX_DELAY = 60.0
-    REQUEST_TIMEOUT = 90.0
+    # 2026-09-15：原值 90s，实测当前中转账号所有可用模型（gpt-5.6-luna / gpt-5.5 /
+    # gpt-6-astra）对 3000+ token 的中文 prompt 响应需 58-67s，稍大的 Agent prompt
+    # 直接撞破 90s → 重试 4 次全超时 → 关键 Agent 回退本地策略 → 内容质量降级被拦。
+    # 放宽到 240s 并允许用环境变量覆盖，避免以后再因上游速度波动改源码。
+    REQUEST_TIMEOUT = float(os.getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "240"))
+    # 2026-09-15：上游未显式指定 max_tokens 时，部分模型（实测智谱 glm-4-flash）
+    # 会按保守默认值输出——同一 prompt 不传仅 1384 字、传 8000 时 2530 字，
+    # 直接导致正文撞不上 1750 字门槛而被质量门拦下。这里统一兜底一个足够大的上限。
+    DEFAULT_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "8000"))
     RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
     INSUFFICIENT_BALANCE_MARKERS = (
         "account balance is insufficient",
@@ -53,11 +61,22 @@ class OpenAIContentService:
         "account balance",
     )
 
-    def __init__(self, settings: AppSettings, logger: logging.Logger, force_mock: bool = False) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        logger: logging.Logger,
+        force_mock: bool = False,
+        model_override: str = "",
+    ) -> None:
         self.settings = settings
         self.logger = logger
         self.force_mock = force_mock
         self.client = None
+        # 2026-09-15：支持按实例覆盖模型，用于「标题用强模型、正文用快模型」的分工。
+        # 实测：glm-4.6 生成的标题能通过 RULE_006/007/009 全部校验，但写 1750+ 字长文
+        # 会反复超时（45 分钟走不完）；glm-4-flash 反之——写作评分 92 但标题全被过滤。
+        # 故标题环节单独使用强模型，其余环节保持快模型。
+        self.model_override = str(model_override or "").strip()
         # A payment/quota failure is not transient for the remainder of this
         # workflow.  Marking the client unavailable prevents every downstream
         # agent from repeating the same request before falling back locally.
@@ -134,7 +153,7 @@ class OpenAIContentService:
             raise AIRequestError("Model client is not available.")
 
         kwargs: dict[str, Any] = {
-            "model": self.settings.openai_model,
+            "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -168,6 +187,12 @@ class OpenAIContentService:
 
         payload = self._parse_json_object(content)
         if payload is None:
+            # 保留一小段原始响应，否则这类失败只能看到「未返回合法 JSON」，
+            # 无法判断是尾随逗号、截断还是模型跑了别的格式。
+            self.logger.warning(
+                "Model did not return valid JSON. response_head=%r",
+                str(content or "")[:300],
+            )
             raise AIResponseFormatError("The model did not return valid JSON.")
 
         self.logger.info("Model response parsed as JSON successfully.")
@@ -191,7 +216,7 @@ class OpenAIContentService:
         # 避免每次请求都先浪费一次失败调用（省时间、省配额）。
         if getattr(self, "disable_response_format", False):
             return self._call_with_retry(
-                model=self.settings.openai_model,
+                model=self.model,
                 temperature=self.settings.temperature,
                 messages=[
                     {
@@ -210,7 +235,7 @@ class OpenAIContentService:
         # 若中转站不支持则快速回退到 prompt-only JSON 模式，而不是浪费重试次数。
         try:
             return self.client.chat.completions.create(
-                model=self.settings.openai_model,
+                model=self.model,
                 temperature=self.settings.temperature,
                 response_format={"type": "json_object"},
                 messages=[
@@ -230,7 +255,7 @@ class OpenAIContentService:
                 exc,
             )
             return self._call_with_retry(
-                model=self.settings.openai_model,
+                model=self.model,
                 temperature=self.settings.temperature,
                 messages=[
                     {
@@ -247,6 +272,10 @@ class OpenAIContentService:
             )
 
     def _call_with_retry(self, **kwargs):
+        # 兜底 max_tokens：调用方显式指定时尊重调用方，否则用一个足够大的默认值，
+        # 避免上游按保守默认截短长文（详见 DEFAULT_MAX_TOKENS 处说明）。
+        if kwargs.get("max_tokens") is None:
+            kwargs["max_tokens"] = self.DEFAULT_MAX_TOKENS
         last_exc: Exception | None = None
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
@@ -397,9 +426,14 @@ class OpenAIContentService:
             self.logger.warning("Invalid token rate for %s=%s, fallback to %.6f", env_name, raw, default_value)
             return default_value
 
+    @property
+    def model(self) -> str:
+        """本实例实际使用的模型名。model_override 为空时回落到全局配置。"""
+        return self.model_override or str(self.settings.openai_model or "")
+
     def _get_model_type(self) -> tuple[bool, bool]:
         """获取模型类型，返回 (is_deepseek_reasoner, is_deepseek)"""
-        model_name = str(self.settings.openai_model or "").lower()
+        model_name = str(self.model or "").lower()
         is_deepseek_reasoner = "deepseek-reasoner" in model_name
         is_deepseek = "deepseek" in model_name
         return is_deepseek_reasoner, is_deepseek
@@ -567,13 +601,62 @@ class OpenAIContentService:
             end = cls._balanced_json_end(cleaned, start)
             if end is None:
                 continue
-            try:
-                payload = json.loads(cleaned[start:end])
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                return payload
+            block = cleaned[start:end]
+            candidates = [block]
+            repaired = cls._strip_trailing_commas(block)
+            if repaired != block:
+                candidates.append(repaired)
+            for candidate in candidates:
+                try:
+                    payload = json.loads(candidate)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    return payload
         return None
+
+    @staticmethod
+    def _strip_trailing_commas(text: str) -> str:
+        """删除 JSON 结构位置上的尾随逗号，字符串内部一律不动。
+
+        模型生成大段 JSON 时最常见的瑕疵是 ``{"a": 1,}`` 与 ``[1, 2,]``，
+        标准 json 解析会直接失败并让整条链路回退到本地策略。这里沿用
+        _balanced_json_end 的扫描思路，只在字符串之外判定，因此正文里的
+        逗号、引号、花括号都不会被误改。
+        """
+        out: list[str] = []
+        in_string = False
+        escaped = False
+        comma_index: int | None = None
+        for char in text:
+            if in_string:
+                out.append(char)
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+                comma_index = None
+                out.append(char)
+                continue
+            if char == ",":
+                comma_index = len(out)
+                out.append(char)
+                continue
+            if char in "}]":
+                if comma_index is not None:
+                    del out[comma_index]
+                    comma_index = None
+                out.append(char)
+                continue
+            if char not in " \t\r\n":
+                comma_index = None
+            out.append(char)
+        return "".join(out)
 
     def _extract_json_from_markdown(self, content: str) -> dict | None:
         for match in self._MARKDOWN_JSON_PATTERN.finditer(content):

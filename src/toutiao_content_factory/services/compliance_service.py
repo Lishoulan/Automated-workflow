@@ -12,11 +12,45 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# src/toutiao_content_factory/services/ → 上溯三级即项目根目录
+CONFIG_PATH = os.getenv(
+    "CONTENT_FACTORY_CONFIG_PATH",
+    str(Path(__file__).resolve().parents[3] / "config.yaml"),
+)
+
+
+def _read_config_aigc_flag() -> bool | None:
+    """读取 config.yaml 中的 compliance.aigc_declaration_enabled。
+
+    config.yaml 虽然以 .yaml 结尾，实际内容是 JSON。
+    读取失败时返回 None，由调用方回退到环境变量。
+    """
+    try:
+        raw = Path(CONFIG_PATH).read_text(encoding="utf-8")
+        data = json.loads(raw)
+        value = data.get("compliance", {}).get("aigc_declaration_enabled")
+        if isinstance(value, bool):
+            return value
+    except Exception:  # noqa: BLE001 - 配置缺失/损坏时静默回退到环境变量
+        return None
+    return None
+
 
 def _is_platform_aigc_enabled(platform: str) -> bool:
-    """通用平台 AIGC 声明启用检查函数"""
+    """通用平台 AIGC 声明启用检查函数。
+
+    优先级：环境变量 > config.yaml。
+    环境变量未显式设置时，回退到 config.yaml 的 compliance.aigc_declaration_enabled；
+    两者都没有时保持历史默认行为（True），避免改变既有线上行为。
+    """
     env_key = f"{platform.upper()}_AIGC_DECLARATION_ENABLED"
-    return os.getenv(env_key, "1").strip() == "1"
+    raw = os.getenv(env_key)
+    if raw is not None and raw.strip() != "":
+        return raw.strip() == "1"
+    config_flag = _read_config_aigc_flag()
+    if config_flag is not None:
+        return config_flag
+    return True
 
 
 def is_aigc_declaration_enabled() -> bool:

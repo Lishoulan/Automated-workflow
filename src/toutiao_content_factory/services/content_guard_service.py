@@ -628,10 +628,18 @@ class ContentGuardService:
         # 数据引用校验
         number_warnings = self._check_number_attribution(article, run_dir)
         warnings.extend(number_warnings)
+        # 原创性：与素材原文的连续抄录率。头条原创库全网比对，素材常被别的
+        # 账号先发，这一项本地不查就永远发现不了（实测 51.5% 抄录被扣 5 分）。
+        originality = self._check_source_originality(run_dir, article)
+        warnings.extend(originality["flags"])
+        if originality["block"]:
+            blocked = True
+
         review_required = bool(
             best_score >= self.HUMAN_REVIEW_THRESHOLD
             or ai_risk >= self.HUMAN_REVIEW_THRESHOLD
             or editorial_blockers
+            or originality["review"]
         )
         payload = {
             "generated_at": self._now(),
@@ -653,10 +661,55 @@ class ContentGuardService:
             "matched_bad_words": [],
             "writing_integrity": editorial_integrity,
             "blocking_flags": editorial_blockers,
+            "source_copy_ratio": originality["ratio"],
+            "source_copy_chars": originality["copied_chars"],
+            "source_copy_reason": originality["reason"],
+            "source_copy_samples": originality["samples"],
         }
         self._write_report(payload, run_dir=run_dir)
         self._apply_review_override_from_report(run_dir, payload)
         return payload
+
+    def _check_source_originality(self, run_dir: Path, article: str) -> dict[str, object]:
+        """量化与素材原文的连续抄录率，返回供报告使用的结构化结果。"""
+        from toutiao_content_factory.services.originality_service import (
+            BLOCK_THRESHOLD,
+            REVIEW_THRESHOLD,
+            originality_flags,
+            source_copy_ratio,
+        )
+
+        result: dict[str, object] = {
+            "ratio": None,
+            "copied_chars": 0,
+            "reason": "",
+            "samples": [],
+            "flags": [],
+            "review": False,
+            "block": False,
+        }
+        source_file = Path(run_dir) / "source_material_full.txt"
+        if not source_file.exists():
+            result["reason"] = "无素材原文（多为热榜选题），无法查重"
+            return result
+        try:
+            source_text = source_file.read_text(encoding="utf-8")
+        except Exception:
+            result["reason"] = "素材原文读取失败"
+            return result
+
+        outcome = source_copy_ratio(article, source_text)
+        ratio = outcome["ratio"]
+        result["copied_chars"] = outcome["copied_chars"]
+        result["samples"] = outcome["samples"]
+        if ratio is None:
+            result["reason"] = str(outcome["reason"])
+            return result
+        result["ratio"] = ratio
+        result["flags"] = originality_flags(ratio)
+        result["review"] = ratio >= REVIEW_THRESHOLD
+        result["block"] = ratio >= BLOCK_THRESHOLD
+        return result
 
     @staticmethod
     def _editorial_integrity_flags(integrity: dict[str, Any]) -> list[str]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import logging
 from typing import Optional
@@ -11,6 +12,7 @@ from toutiao_content_factory.models import CacheContext, DataReport, GeneratedCo
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.openai_service import OpenAIContentService
+from toutiao_content_factory.utils.title_utils import fit_title_to_limit
 
 
 class TitleAgent(BaseAgent):
@@ -96,6 +98,20 @@ class TitleAgent(BaseAgent):
         iteration_overrides: Optional[IterationOverrides] = None,
     ) -> None:
         super().__init__(settings, prompt_repository, openai_service, logger)
+        # 2026-09-15：标题环节可选使用独立的强模型（.env 的 OPENAI_TITLE_MODEL）。
+        # 实测依据：glm-4.6 生成的标题能通过 RULE_006/007/009 全部校验，而 glm-4-flash
+        # 生成的标题会被全部过滤（4~6 次/轮）；但 4.6 写 1750+ 字长文会反复超时。
+        # 故只让「标题」这一短输出环节走强模型，正文写作保持快模型。
+        _title_model = os.getenv("OPENAI_TITLE_MODEL", "").strip()
+        if _title_model and _title_model != openai_service.model:
+            self.openai_service = OpenAIContentService(
+                settings, logger, model_override=_title_model
+            )
+            logger.info(
+                "TitleAgent 使用独立模型: %s（正文仍用 %s）",
+                _title_model,
+                openai_service.model,
+            )
         self.iteration_overrides = iteration_overrides
         # 应用标题模板权重覆盖（为空时使用默认配置，不改变现有行为）
         self.title_template_weights = (
@@ -203,6 +219,12 @@ class TitleAgent(BaseAgent):
             playbook_context=playbook_context,
         )
         titles = self._dedupe_titles(titles + fallback_titles, cache_context)
+        if not titles:
+            # 去重池（avoid_titles / 模板词 / 语义骨架）可能把模型标题与兜底标题同时杀光，
+            # 同题反复出现时尤其容易触发。此时若返回空列表，下游拿不到标题，
+            # 审核团会以「标题信息量不足」为由把整篇判死，等于白跑一轮。
+            # 所以这里无条件保底，宁可标题普通也要留住这篇稿。
+            titles = self._emergency_titles(content, data_report)
         ranked_titles = self._rank_titles(titles, data_report, preferred_from_model)
         recommended_titles = self._pick_recommended_titles(ranked_titles, data_report)
 
@@ -225,6 +247,41 @@ class TitleAgent(BaseAgent):
             "title_b": dual["title_b"],
             "alt_title": dual["title_b"],
         }
+
+    def _emergency_titles(self, content: GeneratedContent, data_report: DataReport) -> list[str]:
+        """标题兜底地板：所有候选都被去重杀光时，至少保住一个可用标题。
+
+        只做最低限度的加工——优先用选题原标题，再退到正文首句，
+        最后退到「行业 + 主体」拼接。目标不是好标题，而是让这一轮不空手而归。
+        """
+        candidates: list[str] = []
+
+        topic = self._sanitize_title(str(getattr(data_report, "topic_title", "") or ""))
+        if topic:
+            candidates.append(topic)
+
+        company = self._primary_company(data_report)
+        label = self._primary_topic_label(data_report)
+        if company and label and f"{company}{label}" not in candidates:
+            candidates.append(self._fit_title_length(f"{company}{label}横向对比"))
+        if label:
+            candidates.append(self._fit_title_length(f"{label}热度之外，谁在拿走真正订单"))
+
+        article_first = ""
+        for line in str(getattr(content, "article", "") or "").splitlines():
+            line = self._sanitize_title(line)
+            if len(line) >= 12:
+                article_first = line
+                break
+        if article_first:
+            candidates.append(article_first)
+
+        result: list[str] = []
+        for item in candidates:
+            item = self._fit_title_length(item.strip())
+            if item and item not in result and len(item) >= 8:
+                result.append(item)
+        return result[: self.settings.title_count]
 
     def _fallback_titles(
         self,
@@ -956,22 +1013,8 @@ class TitleAgent(BaseAgent):
         max_length = max(1, int(self.settings.publishing.title_max_length))
         if len(title) <= max_length:
             return title
-
-        segments = [segment.strip() for segment in re.split(r"[：:，,；;！？!?]", title) if segment.strip()]
-        if segments:
-            candidate = segments[0]
-            if 12 <= len(candidate) <= max_length:
-                return candidate
-            combined = ""
-            for segment in segments:
-                joined = f"{combined}，{segment}" if combined else segment
-                if len(joined) > max_length:
-                    break
-                combined = joined
-            if 12 <= len(combined) <= max_length:
-                return combined
-
-        return title[:max_length].rstrip("，。！？；：:、- ")
+        # 与发布侧共用同一套语义边界回溯逻辑，避免两处行为漂移。
+        return fit_title_to_limit(title, max_length)
 
     def _primary_topic_label(self, data_report: DataReport) -> str:
         topic_label = self._topic_subject_label(data_report, fallback="")

@@ -408,6 +408,192 @@ def test_short_model_draft_uses_grouped_source_facts_to_clear_publish_floor(
     assert article.rstrip().split("\n\n")[-1].endswith("？")
 
 
+# 热点扩写：「证据充分」必须真正满足 WriterAgent 的判定——
+# 清洗后有效素材条目 ≥ 6 且字符 ≥ 320。不满足就会走「短文人工目标」分支，
+# 永远进不了有据扩写，所以这里的素材刻意给足。
+_RICH_HOT_TOPIC_FACTS = (
+    "辰星机器人在港交所上市，公开披露的业务包括并联机器人和高速工业机器人",
+    "公司2023年至2025年收入从9349万元增长到2.53亿元，两年间规模扩大接近两倍",
+    "2026年上半年收入为1.35亿元，同比增长四成多，确认口径以交付验收为准",
+    "公司毛利率从17%提升到30%左右，管理层解释为产品结构变化，仍需逐条核对",
+    "2026年上半年公司亏损2880万元，经营活动现金流流出2856万元，两者规模接近",
+    "公司产品已进入食品、日化、制药、新能源和汽车工厂等场景，复制难度存在差异",
+    "公司2026年上半年研发开支占收入接近18%，累计拥有175项专利，研发人员规模持续扩大",
+    "公司需要继续投入研发和产能建设，应收账款与存货周转仍需在后续财报中观察",
+    "公开材料提示行业竞争可能加剧，客户预算释放节奏存在不确定性",
+    "公司在公开材料中说明，收入增长主要来自并联机器人产品线的交付，单笔合同规模存在波动",
+    "客户在验收之后才会确认收入，因此交付记录与回款记录之间通常存在一段滞后期",
+)
+
+
+def _rich_hot_topic_report() -> DataReport:
+    return DataReport(
+        topic_title="某机器人公司上市后，收入能否转成现金流",
+        is_hot_topic=True,
+        content_format="quick_commentary",
+        word_target=800,
+        companies=["辰星机器人"],
+        source_facts=list(_RICH_HOT_TOPIC_FACTS),
+        growth_numbers=["2.53亿元", "1.35亿元", "30%"],
+        watch_metrics=["订单转化", "客户验收", "经营现金流"],
+        risk_flags=["盈利稳定性尚未得到连续数据证明"],
+    )
+
+
+# 扩写段落刻意不含任何数字与新公司名：`_expand_article_via_llm` 会丢弃
+# 含未披露数字或陌生主体的段落，测试要断言的是「扩写链路通」而不是「模型文笔好」。
+_RICH_EXPANSION_PARAGRAPHS = (
+    "把一次上市披露直接读成长期结论，通常是会出错的。收入、毛利率和亏损数据往往对应不同的统计范围与时间口径，把它们放进同一句话里比较，很容易得出偏乐观的推断。更稳妥的做法是先确认每个数字属于哪一张表、覆盖哪一个期间，再看它们之间的因果关系是否成立；毛利率改善究竟来自产品结构变化、规模效应，还是一次性的成本调整，指向的经营含义并不相同。只有先把来源分清，后续跟踪才有准确的起点。",
+    "现金流是另一条不能省略的线索。收入确认与现金回笼之间存在时间差，在设备类业务里，验收节点、付款安排和质保金条款都会拉长回款周期，因此当期收入增长并不等于资金已经回来。当经营现金流与利润方向不一致时，应该先保留这个差异，而不是直接用利润推断经营质量。后续期间的应收账款、存货与合同负债变化，可以帮助判断差异是在收窄还是在扩大，这比只看单一期间的数字更有意义。",
+    "还需要区分能力建设与经营结果。研发投入、人员规模和专利数量说明企业在积累技术资产，但它们本身不是订单，也不能替代客户验收。真正能说明商业化进度的是连续出现的交付记录、复购行为以及可以核对的回款数据。如果这些记录还没有出现，阶段性数据更适合被当作观察的起点，而不是已经兑现的趋势。把已知与未知分开列清楚，比给出一个确定结论更有价值，也更容易在新公告出现时更新判断。",
+    "不同指标向同一方向变化时，仍然要检查时间差。收入可能先确认，现金回收可能后置；投入可能先发生，规模效应可能需要更久才会显现。把这些指标按相同的时间口径放在一起，才能判断增长是否有经营质量支撑，而不是把不同期间的改善拼成一个结论。对读者来说，判断依据是否可复核，比结论听起来是否确定更重要。",
+    "商业化验证不是一个单点事件，而是一条连续链条：需求出现、产品交付、客户验收、收入确认和现金回收。公开材料通常只覆盖其中部分环节，因此文章应该明确哪些已经确认、哪些还没有证据，避免把前一步外推成全部结果。把结论收窄并不等于否定业务价值，它只是把可确认的阶段性进展与仍需验证的长期回报分开，后续出现新数据时可以沿着同一套口径更新判断。",
+    "把判断落在可追踪的清单上，比给出一个乐观或悲观的结论都更实用。与其争论规模何时兑现，不如列出接下来几个季度需要看到的变化：交付是否连续、验收是否完成、回款是否到位、成本是否随规模下降。这些项目每出现一项变化，都可以用来修正原来的判断。这样的跟踪方式既保留了当前材料的价值，也避免用一次公告替未来的经营结果提前背书。",
+)
+
+
+def test_hot_topic_with_rich_evidence_expands_to_auto_publish_floor_via_llm(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    """证据充分的热点必须能补到自动发布门槛。
+
+    确定性模板对短评格式刻意不做堆砌（避免把快评灌成注水稿），所以这条
+    路径依赖「有据扩写」把篇幅补足。本测试锁定该链路：扩写必须真实发生，
+    且补完之后越过 1750 字门槛——否则自动发布模式下热点永远发不出去。
+    """
+    object.__setattr__(app_settings.publishing, "enabled", True)
+    object.__setattr__(app_settings.publishing, "auto_publish", True)
+    mock_openai_service.available = True
+    mock_openai_service.create_json_completion.return_value = {
+        "paragraphs": list(_RICH_EXPANSION_PARAGRAPHS)
+    }
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    data_report = _rich_hot_topic_report()
+
+    article = agent.ensure_article_min_chars(
+        "这条机器人消息值得关注，真正要看收入能否转成现金流？",
+        data_report,
+        min_chars=1750,
+    )
+
+    article_chars = len(article.replace("\n", "").replace(" ", ""))
+    assert mock_openai_service.create_json_completion.called, "有据扩写未被触发，热点将无法达到自动发布门槛"
+    assert article_chars >= 1750, article_chars
+    assert "辰星机器人" in article
+    assert "2.53亿元" in article
+    assert "2880万元" in article
+    assert "已有材料" not in article
+    assert "后续核验" not in article
+    assert "当前分析角度" not in article
+    assert "第一股" not in article
+    assert agent._unsupported_numeric_tokens(article, data_report) == []
+
+
+def test_hot_topic_with_rich_evidence_never_pads_floor_without_llm(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    """扩写不可用时，宁可留在门槛之下，也不许用模板把短评灌到 1750。
+
+    这条是安全侧：字数不够会被自动批准门槛挡回去（转为待审），而不是
+    让一篇注水稿以「达标」的名义发出去。
+    """
+    object.__setattr__(app_settings.publishing, "enabled", True)
+    object.__setattr__(app_settings.publishing, "auto_publish", True)
+    mock_openai_service.available = False
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    data_report = _rich_hot_topic_report()
+    # 先确认这份素材确实属于「证据充分」，否则本测试退化成了无效用例。
+    assert agent._has_sufficient_hot_topic_facts(data_report) is True
+
+    article = agent.ensure_article_min_chars(
+        "这条机器人消息值得关注，真正要看收入能否转成现金流？",
+        data_report,
+        min_chars=1750,
+    )
+
+    article_chars = len(article.replace("\n", "").replace(" ", ""))
+    assert article_chars < 1750, article_chars
+    mock_openai_service.create_json_completion.assert_not_called()
+
+
+def test_hot_topic_without_rich_evidence_stays_short_and_skips_llm_expansion(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    object.__setattr__(app_settings.publishing, "enabled", True)
+    object.__setattr__(app_settings.publishing, "auto_publish", True)
+    mock_openai_service.available = True
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    data_report = DataReport(
+        topic_title="机器人热搜引发讨论",
+        is_hot_topic=True,
+        content_format="quick_commentary",
+        word_target=800,
+        source_facts=["机器人热搜引发行业讨论，但具体主体和结果尚未披露"],
+    )
+
+    article = agent.ensure_article_min_chars(
+        "机器人热搜带来的是讨论热度，不能直接写成订单或收入已经兑现。",
+        data_report,
+        min_chars=1750,
+    )
+
+    article_chars = len(article.replace("\n", "").replace(" ", ""))
+    assert article_chars < 1750
+    assert article_chars <= agent.HOT_TOPIC_MANUAL_TARGET_CHARS + 120
+    assert "订单或收入已经兑现" in article
+    mock_openai_service.create_json_completion.assert_not_called()
+
+
+def test_hot_topic_supplementation_is_idempotent_and_filters_internal_source_text(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    agent = _build_writer_agent(app_settings, mock_openai_service, logger)
+    data_report = DataReport(
+        topic_title="机器人公司业务变化",
+        is_hot_topic=True,
+        source_facts=[
+            "公开材料：机器人公司在工厂完成一项交付验证",
+            "公司收入从1亿元增长到1.4亿元，口径为年度披露",
+            "客户在物流和制造场景测试设备，具体复购仍需确认",
+            "产品支持远程运维和本地备件服务，服务成本需要观察",
+            "2026年上半年研发人员达到500人，数字对应研发团队规模",
+            "经营活动现金流仍为负，后续需要结合回款节奏核对",
+            "机器人前瞻（公众号：robot_pro）作者 | 编辑：内部流程文本",
+        ],
+        companies=["机器人公司"],
+    )
+    existing = ["机器人公司正在经历业务变化，判断不能停在热搜标题。"]
+
+    first = agent._build_supplementary_paragraphs(
+        data_report,
+        existing_paragraphs=existing,
+        target_chars=900,
+    )
+    second = agent._build_supplementary_paragraphs(
+        data_report,
+        existing_paragraphs=[*existing, *first],
+        target_chars=900,
+    )
+
+    joined = "\n".join(first)
+    assert first
+    assert not second
+    assert "已有材料" not in joined
+    assert "现有材料" not in joined
+    assert "robot_pro" not in joined
+    assert "作者" not in joined
+    assert "编辑" not in joined
+    assert len({item.strip() for item in first}) == len(first)
+
+
 def test_cautious_polish_fallback_keeps_unknown_order_claim_conditional(
     app_settings,
     mock_openai_service,

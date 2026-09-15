@@ -443,20 +443,28 @@ def test_post_polish_rebuild_stays_blocked_when_model_is_unavailable(
     assert len(buffered.replace("\n", "").replace(" ", "")) < 1750
 
 
-def test_all_rejected_titles_are_cleared_for_manual_review(
+def test_all_rejected_titles_keep_best_one_instead_of_clearing(
     workflow_service: AgentWorkflowService,
 ) -> None:
+    """全部标题不合格时保底保留问题最少的一个，而不是清空转人工。
+
+    原设计清空候选「强制进入人工审核」，但流程跑在 GitHub Actions 上没有人
+    可以接管，清空等于当天 0 产出。标题只是吸引力问题，不该让整篇稿作废。
+    """
+    title = "其他智能12.7亿：机器人如何实测"
     content = GeneratedContent(
         article="公开材料显示，优必选的机器人业务仍要看交付。",
-        titles=["其他智能12.7亿：机器人如何实测"],
-        recommended_titles=["其他智能12.7亿：机器人如何实测"],
+        titles=[title],
+        recommended_titles=[title],
     )
 
     workflow_service._filter_titles_by_quality(content)
 
-    assert content.titles == []
-    assert content.recommended_titles == []
+    assert content.titles == [title]
+    assert content.recommended_titles == [title]
+    # 风险仍要记录，方便事后回看
     assert any("其他智能" in note for note in content.validation_notes)
+    assert any("保底" in note for note in content.validation_notes)
 
 
 class TestApplyBadWordsGate:

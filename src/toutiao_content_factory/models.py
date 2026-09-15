@@ -818,7 +818,11 @@ class QualityReviewReport:
         def score_value(key: str) -> int:
             value = payload.get(key, chief.get(key, 0))
             try:
-                return int(value)
+                # 模型常把分数写成浮点或浮点字符串（82.5 / "82.5"）。
+                # 直接 int() 遇到 "82.5" 会抛 ValueError 并静默退回 0，
+                # 把一次正常评分变成「全维度 0 分」，进而触发阻断。
+                # 先转 float 再取整，对整数输入结果完全不变。
+                return int(float(value))
             except (TypeError, ValueError):
                 return 0
 
@@ -849,7 +853,26 @@ class QualityReviewReport:
             used_fallback=bool(payload.get("used_fallback", False)),
         )
 
+    def has_valid_scores(self) -> bool:
+        """五个维度分是否构成一次可信的评估。
+
+        模型偶尔会照抄提示词里的占位值，导致所有维度同时为 0。这种报告并不
+        代表真实审核结论（历史上正是它把正常成稿判成 blocked、并连带把
+        publish_readiness_score 压到 0，使自动发布整体停摆），因此必须视为
+        不可用，回落到本地规则审核。
+        """
+        dimensions = (
+            self.fact_score,
+            self.logic_score,
+            self.structure_score,
+            self.originality_score,
+            self.compliance_score,
+        )
+        return any(score > 0 for score in dimensions)
+
     def is_usable(self) -> bool:
+        if not self.has_valid_scores():
+            return False
         return bool(
             self.chief_editor_conclusion
             or self.role_reviews

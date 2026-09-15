@@ -77,6 +77,41 @@ class WriterAgent(BaseAgent):
     LOCAL_SOURCE_FACT_MIN_CHARS = 320
     LOCAL_SOURCE_FACT_LIMIT = 40
     LOCAL_SOURCE_ARTICLE_TARGET = 1800
+    HOT_TOPIC_MANUAL_MIN_CHARS = 850
+    HOT_TOPIC_MANUAL_TARGET_CHARS = 900
+    HOT_TOPIC_SOURCE_FACT_MIN_COUNT = 6
+    HOT_TOPIC_SOURCE_FACT_MIN_CHARS = 320
+    HOT_TOPIC_SOURCE_FACT_LIMIT = 24
+    HOT_TOPIC_INTERNAL_MARKERS = (
+        "manual_paste",
+        "source_document",
+        "source_material",
+        "benchmark_hotspot",
+        "evergreen_pool",
+        "evergreen://",
+        "已有材料",
+        "现有材料",
+        "原材料中出现",
+        "后续核验",
+        "后续复盘",
+        "当前分析角度",
+        "质量审核",
+        "发布就绪",
+    )
+    HOT_TOPIC_MARKETING_REWRITES = (
+        ("国内工业机器人3D视觉龙头", "国内工业机器人3D视觉企业"),
+        ("3D视觉龙头", "3D视觉企业"),
+        ("具身智能眼脑手第一股", "具身智能眼脑手相关上市案例"),
+        ("第一股", "相关上市案例"),
+        ("重磅标杆", "上市案例"),
+        ("极少数", "少数"),
+        ("三大学霸", "三位具有高校背景的创始人"),
+        ("学霸", "具有高校背景"),
+        ("顶尖", "较强"),
+        ("高度认可", "参与认购"),
+        ("成功上市", "在港交所上市"),
+        ("大概率仍然亏损", "仍可能亏损"),
+    )
     GENERIC_COMPANY_MENTION_MARKERS = (
         "这家公司",
         "这类公司",
@@ -345,6 +380,181 @@ class WriterAgent(BaseAgent):
         )
         fact_chars = sum(len(item.replace(" ", "")) for item in facts)
         return len(facts) >= self.LOCAL_SOURCE_FACT_MIN_COUNT and fact_chars >= self.LOCAL_SOURCE_FACT_MIN_CHARS
+
+    def _clean_hot_topic_source_facts(self, data_report: DataReport) -> list[str]:
+        """Return source facts that are safe to reuse in public hot-topic copy."""
+        cleaned_facts: list[str] = []
+        seen: set[str] = set()
+        incomplete_endings = re.compile(r"(?:自|的|和|与|并|为|及|或|等|是|在|将|能|因|而|由|以|至|向|对|于)$")
+        source_prefixes = (
+            "公开材料：",
+            "公开材料:",
+            "素材信息：",
+            "素材信息:",
+            "原文标题：",
+            "原文标题:",
+        )
+
+        for raw_fact in getattr(data_report, "source_facts", []) or []:
+            text = self.clean_publish_text(str(raw_fact or ""))
+            if not text:
+                continue
+            text = clean_article_text(text, min_word_count=0)
+            for block in re.split(r"\n\s*\n+", text):
+                fact = block.strip()
+                if not fact:
+                    continue
+                for prefix in source_prefixes:
+                    if fact.startswith(prefix):
+                        fact = fact[len(prefix) :].strip()
+                for source, replacement in self.HOT_TOPIC_MARKETING_REWRITES:
+                    fact = fact.replace(source, replacement)
+                fact = fact.replace("一众头部机构", "多家机构")
+                fact = fact.replace("国内首批", "国内较早")
+                fact = fact.replace("首家全程本土培育", "较早完成本土培育")
+                fact = re.sub(r"[，、]{2,}", "，", fact)
+                fact = re.sub(r"^[，、；：:\s]+|[，、；：:\s]+$", "", fact).strip()
+                if not fact:
+                    continue
+                if any(marker in fact for marker in self.HOT_TOPIC_INTERNAL_MARKERS):
+                    continue
+                if any(marker in fact for marker in ("关注我", "欢迎关注", "回复", "领取", "公众号", "微信号", "#")):
+                    continue
+                if self._looks_like_incomplete_paragraph(fact):
+                    continue
+                terminal = fact.rstrip("。！？!?；;，,：: ")
+                if incomplete_endings.search(terminal) or terminal.endswith(("公司一", "企业一", "的一")):
+                    continue
+                normalized = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9%]+", "", fact).casefold()
+                if len(normalized) < 12 or normalized in seen:
+                    continue
+                seen.add(normalized)
+                cleaned_facts.append(fact if fact.endswith(("。", "！", "？")) else f"{fact}。")
+                if len(cleaned_facts) >= self.HOT_TOPIC_SOURCE_FACT_LIMIT:
+                    return cleaned_facts
+        return cleaned_facts
+
+    def _has_sufficient_hot_topic_facts(self, data_report: DataReport) -> bool:
+        facts = self._clean_hot_topic_source_facts(data_report)
+        fact_chars = len(re.sub(r"\s+", "", "".join(facts)))
+        return (
+            len(facts) >= self.HOT_TOPIC_SOURCE_FACT_MIN_COUNT
+            and fact_chars >= self.HOT_TOPIC_SOURCE_FACT_MIN_CHARS
+        )
+
+    def _build_hot_topic_supplements(
+        self,
+        data_report: DataReport,
+        existing_paragraphs: list[str] | None = None,
+        target_chars: int | None = None,
+    ) -> list[str]:
+        """Build bounded, varied hot-topic paragraphs from cleaned evidence."""
+        existing = [str(item).strip() for item in (existing_paragraphs or []) if str(item).strip()]
+        supplements: list[str] = []
+        rich_evidence = self._has_sufficient_hot_topic_facts(data_report)
+        if target_chars is None:
+            target_chars = (
+                self.AUTO_PUBLISH_ARTICLE_TARGET
+                if self._auto_publish_mode() and rich_evidence
+                else self.HOT_TOPIC_MANUAL_MIN_CHARS
+            )
+        target = max(self.HOT_TOPIC_MANUAL_MIN_CHARS, int(target_chars or 0))
+        if not rich_evidence:
+            target = min(target, self.HOT_TOPIC_MANUAL_TARGET_CHARS)
+        # Leave a small buffer for the final sanitizer and duplicate filter.
+        generation_target = target + 120
+
+        def char_count(items: list[str]) -> int:
+            return len(re.sub(r"\s+", "", "".join(items)))
+
+        def append_if_new(text: str) -> None:
+            if len(supplements) >= self.MAX_LOCAL_SUPPLEMENTARY_PARAGRAPHS:
+                return
+            candidate = clean_article_text(str(text or ""), min_word_count=0).strip()
+            if not candidate:
+                return
+            blocks = [item.strip() for item in candidate.split("\n\n") if item.strip()]
+            for block in blocks:
+                if not block or any(marker in block for marker in self.HOT_TOPIC_INTERNAL_MARKERS):
+                    continue
+                if self._looks_like_incomplete_paragraph(block):
+                    continue
+                if self._unsupported_numeric_tokens(block, data_report):
+                    continue
+                if self._has_unknown_company_mention(block, data_report):
+                    continue
+                if self._looks_like_template_paragraph(block, data_report):
+                    continue
+                if self._is_duplicate_paragraph(block, [*existing, *supplements]):
+                    continue
+                supplements.append(block)
+
+        existing_normalized = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9%]+", "", "\n".join(existing)).casefold()
+        facts = self._clean_hot_topic_source_facts(data_report)
+        fresh_facts = [
+            fact
+            for fact in facts
+            if re.sub(r"[^\u4e00-\u9fffA-Za-z0-9%]+", "", fact).casefold() not in existing_normalized
+        ]
+
+        fact_leads = (
+            "先把能直接核对的事实摆出来：",
+            "时间和事件脉络可以这样读：",
+            "从产品与业务描述看，公开信息提到：",
+            "资本动作之外，经营层面的线索是：",
+            "场景和交付这条线还可以看到：",
+            "把这些信息放回业务过程：",
+        )
+        fact_boundaries = (
+            "这只说明披露范围，不能单独推出订单、收入或持续盈利。",
+            "它能确定事件的一个侧面，实际结果仍要看连续记录。",
+            "这类信息与客户复购、项目验收和现金回收不是同一口径。",
+            "阅读时还要保留时间、对象和统计范围，不能把不同口径拼成一个结论。",
+        )
+        fact_target = generation_target - (460 if rich_evidence else 180)
+        for index, fact in enumerate(fresh_facts[:10]):
+            append_if_new(
+                f"{fact_leads[index % len(fact_leads)]}{fact.rstrip('。！？!?')}。"
+                f"{fact_boundaries[index % len(fact_boundaries)]}"
+            )
+            if char_count([*existing, *supplements]) >= fact_target:
+                break
+
+        joined_facts = " ".join([getattr(data_report, "topic_title", ""), *facts])
+        has_capital_signal = any(token in joined_facts for token in ("上市", "认购", "融资", "募资", "发行"))
+        if rich_evidence:
+            analysis_paragraphs = [
+                (
+                    "这条消息首先是资本与舆论信号，经营结果要单独验证。"
+                    if has_capital_signal
+                    else "这条消息首先说明讨论集中，经营结果仍要单独验证。"
+                )
+                + "上市、认购、融资或热度可以解释关注从哪里来，但不能替代客户是否持续采购、项目是否完成验收以及收入是否形成回款。",
+                "如果公开披露的产品路线能够在不同现场复现，价值才可能从单次展示转成可复制交付。硬件能力、软件适配、部署周期和维护责任需要分开观察，任何一项缺口都可能拖慢商业化。",
+                "客户数量、出货数量和收入金额对应的统计口径并不相同。比较时要确认截止日期、产品范围和确认方式，避免把累计交付误读成当期销售，也不要把客户覆盖直接等同于复购。",
+                "资本事件之后，最有辨识度的变化来自连续经营记录：订单是否转成验收，验收是否转成收入，收入是否带来现金回收。只出现其中一步时，结论仍应停留在阶段性信号。",
+                "跨行业或跨场景扩展带来复制机会，也带来工艺适配和服务成本。若每个项目都需要大量定制，表面上的场景数量未必能形成相同的交付效率，规模化判断仍需逐项核对。",
+                "产品进入更多现场后，成本结构会比单次性能展示更能说明商业质量。硬件价格、软件服务、现场部署、备件维护和客户议价共同决定利润空间，材料未披露的部分不能提前补成确定结果。",
+                "因此，更稳妥的读法是把已披露事实、基于事实的推断和未知结果分开。新公告、连续交付和复购记录若出现，判断可以上调；若只剩热度而没有经营数据，结论就需要收窄。",
+                "接下来可以围绕客户复购、订单转化、交付周期、产品出货和现金回收观察变化。它们不是已经发生的结果，而是用来检验这条业务能否持续的具体指标。",
+            ]
+        else:
+            analysis_paragraphs = [
+                "热度先说明讨论集中，不等于事实已经完整。判断这类消息时，应把标题提供的线索、公开可核对的内容和基于事实的推断分开，避免一句热门表述承担过多结论。",
+                "标题可以提示一个值得追踪的方向，但不能替代时间、主体、动作和结果。只有这些要素能够相互对应，读者才知道事件究竟改变了什么。",
+                "产品或业务消息还要经过能力、场景、交付和维护几层检验。一次展示能说明某项能力被展示出来，却不能自动推导出批量采购或持续使用。",
+                "商业结果通常要沿着订单、验收、收入和回款逐步确认。中间任何一环没有公开记录，结论就应停在阶段性判断，不把可能性写成已经发生。",
+                "如果后续只有讨论热度继续上升，却没有连续动作、数据更新或明确的经营记录，原先的乐观判断就需要收窄；反过来，新增事实能够让判断逐步变得具体。",
+                "读者可以先观察事件是否出现新的主体、时间点和结果，再看产品或服务能否在相似条件下重复。这样的观察比单次传播规模更接近商业价值。",
+                "目前最稳妥的结论，是这条信息提供了一个需要继续跟踪的方向。它是否会变成订单、交付或收入，仍取决于公开记录能否把各个环节连起来。",
+            ]
+
+        for paragraph in analysis_paragraphs:
+            append_if_new(paragraph)
+            if char_count([*existing, *supplements]) >= generation_target:
+                break
+
+        return self._trim_low_confidence_paragraphs(supplements, data_report)
 
     def _is_service_robot_source(self, data_report: DataReport, facts: list[str]) -> bool:
         source_text = " ".join(
@@ -1601,9 +1811,50 @@ class WriterAgent(BaseAgent):
                 "看着提速，实则分化",
                 "数据先行，利润未满",
                 "故事不小，变量更大",
+                "热度上来，订单未到",
+                "产线很忙，回款很慢",
+                "口径变了，结论未变",
+                "预期在前，验证在后",
+                "数字好看，账还没算",
+                "场景很热，收入很薄",
             ]
         desired = 4 if paragraph_count >= 4 else 3
-        return candidates[:desired]
+        return self._rotate_headings(candidates, desired, data_report)
+
+    def _rotate_headings(
+        self,
+        candidates: list[str],
+        desired: int,
+        data_report: DataReport,
+    ) -> list[str]:
+        """按选题确定性地轮转小标题，避免每篇都从同一个模板开头。
+
+        原先固定取 candidates[:desired]，导致「XX在热，兑现偏冷」成为每篇的
+        第一个小标题，实测 43 篇雷同，账号层面会被判定同质化。这里用选题
+        标题做种子选起始位置，同题结果稳定（不破坏缓存），不同题自然分散。
+        """
+        if not candidates or desired <= 0:
+            return []
+        if len(candidates) <= desired:
+            return candidates[:]
+        seed_text = "".join(
+            str(part or "")
+            for part in (
+                getattr(data_report, "topic_title", ""),
+                getattr(data_report, "focus_industry", ""),
+                " ".join(getattr(data_report, "focus_keywords", []) or []),
+            )
+        ).strip()
+        # 有种子就用它，没有才退回随机，保证同一篇多次生成结果一致。
+        offset = (sum(ord(ch) for ch in seed_text) % len(candidates)) if seed_text else random.randrange(len(candidates))
+        rotated = candidates[offset:] + candidates[:offset]
+        # 含主体词的模板信息量更高，但只在约 1/3 的稿子里让它打头，
+        # 其余情况按轮转位置出现，避免它成为每篇的固定开头。
+        head = f"{self._primary_keyword(data_report)}在热，兑现偏冷"
+        if head in rotated and offset % 3 == 0:
+            rotated.remove(head)
+            rotated.insert(0, head)
+        return rotated[:desired]
 
     def _article_angle(self, trend_report: TrendReport, data_report: DataReport) -> str:
         content_mode = self._content_mode(data_report)
@@ -1969,6 +2220,8 @@ class WriterAgent(BaseAgent):
         return result
 
     def _expand_article_via_llm(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 1200) -> list[str]:
+        if self._content_mode(data_report) == "hot_topic" and not self._has_sufficient_hot_topic_facts(data_report):
+            return paragraphs
         if not self._has_grounded_evidence(data_report):
             return paragraphs
 
@@ -2084,8 +2337,10 @@ class WriterAgent(BaseAgent):
             else:
                 word_target = getattr(data_report, "word_target", 0) or 0
                 if content_mode == "hot_topic":
-                    # 热点快评：600~900 字即可，不强制 1500 字长文
-                    min_chars = max(600, min(int(word_target * 0.8) if word_target > 0 else 700, 900))
+                    min_chars = max(
+                        self.HOT_TOPIC_MANUAL_MIN_CHARS,
+                        min(int(word_target * 0.8) if word_target > 0 else self.HOT_TOPIC_MANUAL_TARGET_CHARS, 900),
+                    )
                 elif word_target > 0:
                     min_chars = max(1500, int(word_target * 0.8))
                 else:
@@ -2094,11 +2349,17 @@ class WriterAgent(BaseAgent):
         content_format = getattr(data_report, "content_format", "") or ""
         # Only derived defaults may use the concise quick-commentary floor.
         # An explicit 1500/1750 publish gate must remain intact.
-        if not explicit_min_chars and content_format in self.SHORT_CONTENT_FORMATS and min_chars > 900:
+        if (
+            not explicit_min_chars
+            and not self._auto_publish_mode()
+            and content_mode != "hot_topic"
+            and content_format in self.SHORT_CONTENT_FORMATS
+            and min_chars > 900
+        ):
             min_chars = 900
 
         grounded = self._has_grounded_evidence(data_report)
-        if not explicit_min_chars and not grounded:
+        if not explicit_min_chars and not self._auto_publish_mode() and not grounded:
             min_chars = min(min_chars, max(950, int((getattr(data_report, "word_target", 0) or 1200) * 0.7)))
 
         logger = logging.getLogger(__name__)
@@ -2120,7 +2381,17 @@ class WriterAgent(BaseAgent):
             WriterAgent._short_article_warned = True
 
         result = list(paragraphs)
-        supplements = self._build_supplementary_paragraphs(data_report, existing_paragraphs=result)
+        supplement_target = min_chars
+        hot_topic_rich = content_mode == "hot_topic" and self._has_sufficient_hot_topic_facts(data_report)
+        if content_mode == "hot_topic" and not hot_topic_rich:
+            # An evidence-poor hot topic may be made readable for manual
+            # review, but it must never be padded to the auto-publish floor.
+            supplement_target = min(min_chars, self.HOT_TOPIC_MANUAL_TARGET_CHARS)
+        supplements = self._build_supplementary_paragraphs(
+            data_report,
+            existing_paragraphs=result,
+            target_chars=supplement_target,
+        )
         for sup in supplements:
             result.insert(-1, sup)
             total = sum(len(p.replace("\n", "").replace(" ", "")) for p in result)
@@ -2138,7 +2409,11 @@ class WriterAgent(BaseAgent):
             len(p.replace("\n", "").replace(" ", ""))
             for p in trimmed_result
         )
-        if final_chars < min_chars and allow_llm_expansion and grounded and self.openai_service.available:
+        can_expand = (
+            (content_mode == "hot_topic" and hot_topic_rich)
+            or (content_mode != "hot_topic" and grounded)
+        )
+        if final_chars < min_chars and allow_llm_expansion and can_expand and self.openai_service.available:
             logger.info(
                 "Supplementary paragraphs brought article to %d chars, still below %d. Attempting grounded LLM expansion.",
                 final_chars,
@@ -2152,7 +2427,7 @@ class WriterAgent(BaseAgent):
             )
         elif final_chars < min_chars:
             logger.info(
-                "Skipping LLM expansion because the topic lacks grounded evidence. current=%d target=%d",
+                "Skipping LLM expansion because the topic is not eligible for grounded expansion. current=%d target=%d",
                 final_chars,
                 min_chars,
             )
@@ -2188,7 +2463,12 @@ class WriterAgent(BaseAgent):
         )
         return "\n\n".join(item.strip() for item in ensured if item.strip()).strip()
 
-    def _build_supplementary_paragraphs(self, data_report: "DataReport", existing_paragraphs: list[str] | None = None) -> list[str]:
+    def _build_supplementary_paragraphs(
+        self,
+        data_report: "DataReport",
+        existing_paragraphs: list[str] | None = None,
+        target_chars: int | None = None,
+    ) -> list[str]:
         existing_text = "\n".join(existing_paragraphs) if existing_paragraphs else ""
         existing = list(existing_paragraphs or [])
         paragraphs: list[str] = []
@@ -2248,13 +2528,11 @@ class WriterAgent(BaseAgent):
                 paragraphs.append(candidate)
 
         if self._content_mode(data_report) == "hot_topic":
-            if len(existing_text.replace("\n", "").replace(" ", "")) < 500:
-                title = self.clean_publish_text(data_report.topic_title).rstrip("。") or "这条热点"
-                append_if_new(
-                    f"{title}目前能确认的范围有限。后续判断要等相关方说明、数据更新或实际动作出现，"
-                    "在这些信息到来之前，不宜把讨论热度写成确定结论。"
-                )
-            return paragraphs
+            return self._build_hot_topic_supplements(
+                data_report,
+                existing_paragraphs=existing,
+                target_chars=target_chars,
+            )
 
         # When the model leaves a long-form draft short, prefer unused source
         # sentences over generic analysis fields. This keeps the extra length

@@ -388,6 +388,13 @@ class TopicAutomationService:
                 title_query,
             )
 
+        # 自动选题（未显式指定 --topic-rank）时，优先选带完整正文素材的行业媒体话题。
+        # 背景：热榜源（toutiao_hot / baidu_hot）只有标题摘要，素材量不足以支撑
+        # 自动发布所需的正文长度，会被字数门槛拦下并转入人工审核；
+        # 而行业媒体源（ofweek / 36kr / zhidx 等）带完整文章，可正常走完自动发布链路。
+        if rank is None:
+            available_topics = self._prioritize_evidence_rich_topics(available_topics)
+
         target_rank = rank or self.settings.automation.default_topic_rank
         if target_rank < 1:
             raise ValueError("--topic-rank must be greater than or equal to 1.")
@@ -396,6 +403,28 @@ class TopicAutomationService:
         raise ValueError(
             f"Only {len(available_topics)} unpublished topics remain, cannot select rank {target_rank}."
         )
+
+    # 仅含标题/摘要、缺少正文素材的热榜源。其余源默认视为带完整文章的行业媒体源。
+    HOT_LIST_ONLY_SOURCES = ("toutiao_hot", "baidu_hot")
+
+    def _prioritize_evidence_rich_topics(
+        self,
+        topics: list[TopicCandidate],
+    ) -> list[TopicCandidate]:
+        """把带完整正文素材的行业媒体话题排到热榜话题之前。
+
+        只做稳定分组（rich + hot_list），组内保持原热度顺序、不改动话题评分，
+        避免影响热榜话题在需要时作为兜底被选中。
+        """
+        rich: list[TopicCandidate] = []
+        hot_list: list[TopicCandidate] = []
+        for topic in topics:
+            source = str(getattr(topic, "source", "") or "").strip().lower()
+            if source in self.HOT_LIST_ONLY_SOURCES:
+                hot_list.append(topic)
+            else:
+                rich.append(topic)
+        return rich + hot_list
 
     def _build_input_text(self, topic: TopicCandidate) -> str:
         humanized_industries = self._humanize_industries(topic.matched_industries)
@@ -742,10 +771,54 @@ class TopicAutomationService:
             "```\n"
         )
         md_path.write_text(markdown, encoding="utf-8")
-        return {
+        exported: dict[str, Path] = {
             "selected_topic_json": json_path,
             "selected_topic_markdown": md_path,
         }
+        material_path = self._capture_source_material(enriched_topic)
+        if material_path is not None:
+            exported["source_material_full"] = material_path
+        return exported
+
+    def _capture_source_material(self, topic: TopicCandidate) -> Path | None:
+        """把被选中素材的原文全文落盘，作为原创查重的比对基准。
+
+        背景：头条原创库做全网比对，素材原文常已被其他账号先发。本地查重
+        原先只比自家历史发布，查不出「与素材有多像」，导致 51.5% 连续抄录
+        的稿子照发并被判不原创扣分。存下原文后，发布前即可自动量化抄录率。
+
+        只抓被选中的这一条，且全程兜底：抓不到就退回摘要，绝不阻断主流程。
+        """
+        target = self.settings.output_dir / "source_material_full.txt"
+        url = str(getattr(topic, "url", "") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            # 热榜选题没有素材源。必须清掉上一轮残留，否则归档时会把
+            # 无关的旧素材当成这一篇的比对基准，算出的抄录率毫无意义。
+            target.unlink(missing_ok=True)
+            return None
+        fallback_text = "\n".join(
+            part for part in (str(getattr(topic, "summary", "") or "").strip(),
+                              str(getattr(topic, "snippet", "") or "").strip())
+            if part
+        ).strip()
+        body = ""
+        try:
+            # 延迟导入，避免与采集模块形成循环依赖。
+            from toutiao_content_factory.services.topic_collection import TopicCollectionService
+
+            collector = TopicCollectionService(self.settings, self.logger)
+            html_text = collector._fetch_text_sync(url)
+            if html_text:
+                body = collector._extract_article_context(html_text, topic.title)
+        except Exception as exc:  # 抓全文是增强项，失败不能影响主流程
+            self.logger.warning("Source material capture failed for %s: %s", url, exc)
+
+        content = body.strip() or fallback_text
+        if not content:
+            return None
+        header = f"素材来源：{getattr(topic, 'source', '') or '未知'}\n原文标题：{topic.title}\n原文链接：{url}\n\n"
+        target.write_text(header + content, encoding="utf-8")
+        return target
 
     def _enrich_topic_revenue_metadata(self, topic: TopicCandidate) -> TopicCandidate:
         """为选题补齐收益优化所需的元数据。"""

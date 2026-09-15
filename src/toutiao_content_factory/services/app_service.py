@@ -945,6 +945,43 @@ class ContentFactoryAppService:
             raise ValueError("Daily workflow did not produce any runnable candidates.")
 
         skipped_attempts = [item for item in losing_attempts if item.get("run_dir") != best_attempt.get("run_dir")]
+
+        # 兜底发布：本流程跑在 GitHub Actions 上，没有人可以介入，直接落到
+        # review_required 等于当天颗粒无收。这里在「守得住安全底线」的前提下
+        # 放行最优的一篇——被忽略的只是模型的软指控（「可能存在……」），
+        # 确定性硬伤（污染、内部标签、抄录过高、字数不足）依然一票否决。
+        fallback_result = self._try_fallback_publish(
+            [best_attempt, *losing_attempts], dry_run=dry_run
+        )
+        if fallback_result is not None:
+            if skipped_attempts:
+                self._mark_attempts_skipped(skipped_attempts)
+            published_dir = str(fallback_result.get("run_dir", ""))
+            fallback_attempt = {
+                key: value
+                for key, value in best_attempt.items()
+                if key != "exported_files"
+            }
+            if published_dir and published_dir != best_attempt.get("run_dir"):
+                # 兜底选中的不是最优候选，用被选中的那份记录覆盖展示信息。
+                for item in losing_attempts:
+                    if item.get("run_dir") == published_dir:
+                        fallback_attempt = {
+                            key: value for key, value in item.items() if key != "exported_files"
+                        }
+                        break
+            fallback_attempt.update(fallback_result["attempt_fields"])
+            exported_files.update(dict(best_attempt.get("exported_files", {})))
+            exported_files.update(fallback_result["exports"])
+            report_exports = self._write_daily_workflow_report(
+                status="fallback_published",
+                final_attempt=fallback_attempt,
+                attempts=[*skipped_attempts, fallback_attempt],
+                supporting_exports=benchmark_refresh_exports,
+            )
+            exported_files.update(report_exports)
+            return exported_files
+
         if skipped_attempts:
             self._mark_attempts_skipped(skipped_attempts)
 
@@ -2462,11 +2499,22 @@ class ContentFactoryAppService:
         if not score_snapshot:
             return False
         article_chars = int(score_snapshot.get("article_char_count", 0))
-        if 0 < article_chars < 800:
+        is_hot_topic = bool(score_snapshot.get("is_hot_topic", 0))
+        publishing = self.settings.publishing
+        auto_publish_mode = bool(
+            getattr(publishing, "enabled", False)
+            and getattr(publishing, "auto_publish", False)
+            and not getattr(publishing, "draft_only", False)
+        )
+        minimum_article_chars = (
+            1750 if auto_publish_mode else 850 if is_hot_topic else 800
+        )
+        if article_chars < minimum_article_chars:
             self.logger.warning(
-                "Article has only %d chars, below 800-char minimum for auto-approval. "
+                "Article has only %d chars, below %d-char minimum for auto-approval. "
                 "Marking as review_required.",
                 article_chars,
+                minimum_article_chars,
             )
             return False
         if content_guard_report is not None and (
@@ -2491,8 +2539,241 @@ class ContentFactoryAppService:
             ai_risk=int(score_snapshot.get("ai_generated_risk", 100)),
             validation_score=int(score_snapshot.get("validation_score", 0)),
             publish_readiness_score=int(score_snapshot.get("publish_readiness_score", 0)),
-            is_hot_topic=bool(score_snapshot.get("is_hot_topic", 0)),
+            is_hot_topic=is_hot_topic,
         )
+
+    def _minimum_article_chars(self, run_dir: Path | None) -> int:
+        """自动发布模式下正文的最低字数（热点快评放宽）。"""
+        publishing = self.settings.publishing
+        auto_publish_mode = bool(
+            getattr(publishing, "enabled", False)
+            and getattr(publishing, "auto_publish", False)
+            and not getattr(publishing, "draft_only", False)
+        )
+        snapshot = self._load_run_score_snapshot(Path(run_dir) if run_dir else None)
+        is_hot_topic = bool(snapshot.get("is_hot_topic", 0))
+        return 1750 if auto_publish_mode else 850 if is_hot_topic else 800
+
+    def _fallback_safety_check(self, run_dir: Path | None) -> tuple[bool, list[str], list[str]]:
+        """兜底发布前的安全底线检查。
+
+        返回 (是否安全, 阻断原因, 说明)。这里**只查确定性指标**——模型那些
+        「可能存在……」的软指控不参与判断，因为兜底的意义正是绕过无证据的
+        过度拦截；但任何能被代码证实的硬伤依然一票否决。
+        """
+        if run_dir is None:
+            return False, ["缺少 run 目录"], []
+        run_dir = Path(run_dir)
+        reasons: list[str] = []
+        notes: list[str] = []
+
+        article_file = run_dir / "article.md"
+        if not article_file.exists():
+            return False, ["缺正文文件"], []
+        article = article_file.read_text(encoding="utf-8")
+        body_chars = len(re.sub(r"\s+", "", article))
+        minimum = self._minimum_article_chars(run_dir)
+        if body_chars < minimum:
+            reasons.append(f"正文 {body_chars} 字，低于自动发布下限 {minimum} 字")
+
+        # 正文硬伤：内部标签残留、序列化残留、提示词元叙述
+        from toutiao_content_factory.services.auto_repair_service import (
+            INTERNAL_LEAK_PATTERNS,
+            SEQUENCE_RESIDUE_PATTERNS,
+        )
+
+        leaks = []
+        for pattern in INTERNAL_LEAK_PATTERNS:
+            hits = pattern.findall(article)
+            if hits:
+                leaks.extend(str(h) for h in hits[:3])
+        if leaks:
+            reasons.append(f"正文含内部标签/占位符：{'、'.join(leaks[:3])}")
+        for pattern in SEQUENCE_RESIDUE_PATTERNS:
+            if pattern.search(article):
+                reasons.append("正文含 Python 序列化残留")
+                break
+        meta_narration = ("下面只按现有材料", "明确保留为推测", "只按现有材料展开")
+        if any(token in article for token in meta_narration):
+            reasons.append("正文含提示词元叙述")
+
+        # AI 生成风险：平台会直接对「疑似AI生成」降权，因此这是运营方配置的
+        # 硬性上限（非热点 40 / 热点 50），不属于「模型软指控」，兜底也必须
+        # 遵守。快照缺失时该值默认为 100（从严），避免无评分数据时放行。
+        snapshot = self._load_run_score_snapshot(run_dir)
+        is_hot_topic = bool(snapshot.get("is_hot_topic", 0))
+        review_settings = self.settings.review
+        ai_risk = int(snapshot.get("ai_generated_risk", 100) or 0)
+        ai_risk_limit = int(
+            review_settings.hot_topic_max_auto_publish_ai_risk
+            if is_hot_topic
+            else review_settings.max_auto_publish_ai_risk
+        )
+        if ai_risk > ai_risk_limit:
+            reasons.append(
+                f"AI 生成风险 {ai_risk}，高于自动发布上限 {ai_risk_limit}"
+            )
+
+        # 原创：与素材原文的连续抄录率。
+        # 兜底用 REVIEW_THRESHOLD（25%）而不是更宽的 BLOCK_THRESHOLD，
+        # 与人工审核环节保持一致——被头条判不原创要扣 5 分，且打断
+        # 「连续 10 天不扣分 +10 分」的加分节奏，代价高于少发一天。
+        #
+        # 关键：抄录率**量不出来**时不能当作「没问题」。2026-09-15 的 -5 分
+        # 事故正是抄了一篇外部稿；既然兜底的价值就是守住这条线，那么在没有
+        # 素材原文可比对时，宁可放弃当天发布，也不赌一把。
+        source_file = run_dir / "source_material_full.txt"
+        from toutiao_content_factory.services.originality_service import (
+            REVIEW_THRESHOLD,
+            source_copy_ratio,
+        )
+
+        ratio = None
+        if source_file.exists():
+            ratio = source_copy_ratio(
+                article, source_file.read_text(encoding="utf-8")
+            )["ratio"]
+        if ratio is None:
+            if is_hot_topic:
+                notes.append("热点选题无原文素材，原创风险未量化")
+            else:
+                reasons.append("原创性无法核验：素材原文缺失或过短，拒绝自动发布")
+        elif ratio >= REVIEW_THRESHOLD:
+            reasons.append(
+                f"与素材连续抄录 {ratio}%，高于 {REVIEW_THRESHOLD}% 上限"
+            )
+        else:
+            notes.append(f"与素材连续抄录 {ratio}%")
+
+        # 可用标题
+        if not self._fallback_title_for(run_dir):
+            reasons.append("没有可用标题")
+
+        return (not reasons), reasons, notes
+
+    def _fallback_title_for(self, run_dir: Path) -> str:
+        """找一个能用的标题：已选标题 → 候选标题 → 选题原标题。"""
+        status_path = run_dir / "review_status.json"
+        if status_path.exists():
+            payload = _safe_json_loads(status_path.read_text(encoding="utf-8-sig"), default={})
+            if isinstance(payload, dict):
+                selected = str(payload.get("selected_title") or "").strip()
+                if selected:
+                    return selected
+        titles_file = run_dir / "titles.txt"
+        if titles_file.exists():
+            for raw in titles_file.read_text(encoding="utf-8").splitlines():
+                line = raw.strip().lstrip("0123456789.、 ")
+                if line and not line.endswith(("：", ":")) and line not in ("全部标题", "推荐标题"):
+                    return line
+        topic_file = run_dir / "selected_topic.json"
+        if topic_file.exists():
+            payload = _safe_json_loads(topic_file.read_text(encoding="utf-8-sig"), default={})
+            if isinstance(payload, dict):
+                topic = payload.get("selected_topic") or {}
+                title = str(topic.get("title") or "").strip()
+                if title:
+                    return title
+        return ""
+
+    def _fallback_rank_key(self, attempt: dict[str, Any]) -> tuple[int, int]:
+        """兜底候选的排序依据：就绪度优先，其次总分。"""
+        snapshot = attempt.get("score_snapshot") or {}
+        return (
+            int(snapshot.get("publish_readiness_score", 0) or 0),
+            int(snapshot.get("overall_score", 0) or 0),
+        )
+
+    def _try_fallback_publish(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any] | None:
+        """所有候选都没过自动门槛时，放行一篇安全的稿子。
+
+        按「就绪度 → 总分」排序后**逐个尝试**，而不是只看最优那篇：最优的
+        那篇可能恰好抄录率超标或字数不足，但排在后面的稿子完全可用。只在
+        自动发布模式下启用；任何确定性硬伤都会跳过该候选，全部不过就宁可
+        当天不发，也不发一篇会被判不原创或含内部标签的稿子。
+        """
+        publishing = self.settings.publishing
+        auto_mode = bool(
+            getattr(publishing, "enabled", False)
+            and getattr(publishing, "auto_publish", False)
+            and not getattr(publishing, "draft_only", False)
+        )
+        if not auto_mode or not candidates:
+            return None
+
+        ranked = sorted(candidates, key=self._fallback_rank_key, reverse=True)
+        chosen: dict[str, Any] | None = None
+        run_dir: Path | None = None
+        notes: list[str] = []
+        for attempt in ranked:
+            candidate_dir = self._path_or_none(attempt.get("run_dir"))
+            safe, reasons, candidate_notes = self._fallback_safety_check(candidate_dir)
+            if not safe:
+                self.logger.warning(
+                    "Fallback publish skipped %s: %s",
+                    candidate_dir,
+                    " | ".join(reasons)[:300],
+                )
+                continue
+            chosen = attempt
+            run_dir = candidate_dir
+            notes = candidate_notes
+            break
+
+        if chosen is None or run_dir is None:
+            self.logger.warning(
+                "Fallback publish declined: none of the %d candidates passed safety checks.",
+                len(ranked),
+            )
+            return None
+
+        title = self._fallback_title_for(run_dir)
+        self.logger.info(
+            "Fallback publish engaged for %s (title=%s; notes=%s)",
+            run_dir,
+            title,
+            " | ".join(notes)[:300],
+        )
+        try:
+            approve_exports = self.approve_run(
+                str(run_dir),
+                selected_title=title,
+                selected_title_index=0,
+                review_notes=(
+                    "Fallback auto-approval: no candidate passed the strict gate, "
+                    "publishing the best one after deterministic safety checks."
+                ),
+                auto_publish=False,
+            )
+        except Exception as exc:
+            self.logger.error("Fallback approve failed for %s: %s", run_dir, exc)
+            return None
+
+        exports = {name: str(path) for name, path in approve_exports.items()}
+        platform_exports, platform_results, platform_errors = self._run_daily_platform_automation(
+            run_dir,
+            dry_run=dry_run,
+            skip_wait=False,
+        )
+        exports.update(platform_exports)
+        return {
+            "run_dir": str(run_dir),
+            "attempt_fields": {
+                "status": "fallback_published",
+                "run_dir": str(run_dir),
+                "fallback_reason": "no_candidate_passed_strict_gate",
+                "fallback_notes": notes,
+                "selected_title": title,
+                "platform_results": platform_results,
+                "platform_errors": platform_errors,
+            },
+            "exports": exports,
+        }
 
     def _load_content_guard_report(self, run_dir: Path | None) -> dict[str, Any]:
         if run_dir is None:
@@ -2705,7 +2986,13 @@ class ContentFactoryAppService:
                         )
                     # 图文发布成功后，同步发一条微头条引流（涨粉 + 图文双通道）。
                     # 微头条内容取自同一 run，可复用登录会话与内容包。
-                    if self._is_accepted_publish_status(toutiao_status) and self.settings.publishing.weitoutiao_enabled:
+                    # 微头条错峰（2026-09-04）：weitoutiao_companion_enabled=false 时不立即发，
+                    # 交给后续时段的 standalone top-up 补发，避免图文+微头条同窗口连发。
+                    if (
+                        self._is_accepted_publish_status(toutiao_status)
+                        and self.settings.publishing.weitoutiao_enabled
+                        and self.settings.publishing.weitoutiao_companion_enabled
+                    ):
                         try:
                             wtt_exports = self.publish_weitoutiao_run(str(run_dir))
                             exported_files.update(wtt_exports)

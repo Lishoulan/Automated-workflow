@@ -434,7 +434,13 @@ def test_quality_review_gate_blocks_auto_publish_until_revision(app_settings, mo
     assert any("质量审核专家团阻断" in item for item in score.publish_risk_flags)
 
 
-def test_quality_review_revision_always_blocks_auto_publish(app_settings, mock_openai_service, logger) -> None:
+def test_quality_review_revision_lowers_readiness_without_zeroing(app_settings, mock_openai_service, logger) -> None:
+    """非阻断的返工要求只降就绪度，不再一律归零。
+
+    原实现两个分支都把 readiness 置 0，导致只要审核团跑过就绪度恒为 0，
+    而自动发布要求 ≥60 —— 全自动发布在设计上就不可能通过。现在按问题
+    条数折算，风险仍写进 flags 供人工/下游判断。
+    """
     service = AgentWorkflowService(app_settings, MagicMock(), mock_openai_service, logger)
     score = ContentScore(
         publish_readiness_score=95,
@@ -448,9 +454,26 @@ def test_quality_review_revision_always_blocks_auto_publish(app_settings, mock_o
 
     service._apply_quality_review_gate(score, report)
 
+    assert score.publish_readiness_score > 0, "非阻断不应把就绪度归零"
+    assert score.publish_readiness_score < 95, "有问题就该低于原始就绪度"
+    assert score.publish_recommendation in {"manual_review", "ready_to_publish"}
+    assert any("质量审核专家团要求返工" in item for item in score.publish_risk_flags)
+
+
+def test_quality_review_blocked_still_zeroes_readiness(app_settings, mock_openai_service, logger) -> None:
+    """确有确定性硬伤时，就绪度必须归零——安全底线不能松。"""
+    service = AgentWorkflowService(app_settings, MagicMock(), mock_openai_service, logger)
+    score = ContentScore(publish_readiness_score=95, publish_recommendation="auto_publish")
+    report = QualityReviewReport(
+        overall_score=40,
+        verdict="blocked",
+        hard_blockers=["正文泄露了内部素材或流程标签，必须在发布前清除。"],
+    )
+
+    service._apply_quality_review_gate(score, report)
+
     assert score.publish_readiness_score == 0
     assert score.publish_recommendation == "revise_before_publish"
-    assert any("质量审核专家团要求返工" in item for item in score.publish_risk_flags)
 
 
 def test_quality_review_report_round_trips_in_workflow_result() -> None:
@@ -479,3 +502,31 @@ def test_quality_review_report_round_trips_in_workflow_result() -> None:
     assert result.quality_review_council is not None
     assert result.quality_review_council.verdict == "approved"
     assert result.quality_review_council.overall_score == 87
+
+
+def test_quality_review_report_parses_float_scores_without_silent_zero() -> None:
+    """模型把分数写成浮点或浮点字符串时，不能静默归零。
+
+    历史上 ``int("82.5")`` 会抛 ValueError 并退回 0，把一次正常评分变成
+    「全维度 0 分」——既让 has_valid_scores 判为无效报告，也会把合规稿
+    一路推到发布阻断。
+    """
+    report = QualityReviewReport.from_dict(
+        {
+            "verdict": "approved",
+            "overall_score": "82.5",
+            "fact_score": 80.0,
+            "logic_score": "85",
+            "structure_score": 78,
+            "originality_score": "84.0",
+            "compliance_score": 90,
+        }
+    )
+
+    assert report.overall_score == 82
+    assert report.fact_score == 80
+    assert report.logic_score == 85
+    assert report.structure_score == 78
+    assert report.originality_score == 84
+    assert report.compliance_score == 90
+    assert report.has_valid_scores() is True

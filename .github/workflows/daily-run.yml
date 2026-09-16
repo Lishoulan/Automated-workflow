@@ -450,6 +450,42 @@ jobs:
           )
           PY
 
+      - name: Probe LLM endpoint
+        # 云端最隐蔽的故障模式：接口返回 HTTP 200，但 message.content 是一张 HTML 页面，
+        # 于是每个 Agent 都静默退化成「本地兜底策略」，最终以
+        # "Daily workflow did not produce any runnable candidates" 收场——
+        # 日志里看不出是模型接口的问题。每次运行都打一次探针，把真相暴露出来。
+        continue-on-error: true
+        run: |
+          redact() {
+            sed -E 's/(sk-|Bearer )[A-Za-z0-9._-]{6,}/\1***/g; s/("(api_)?key"[[:space:]]*:[[:space:]]*")[^"]*/\1***/g'
+          }
+          echo "[llm-probe] host: $(printf '%s' "$OPENAI_BASE_URL" | sed -E 's#^(https?://[^/]+).*#\1#')"
+          echo "[llm-probe] model: $OPENAI_MODEL"
+          BODY_FILE="$(mktemp)"
+          CURL_ERR="$(mktemp)"
+          HTTP_CODE="$(curl -sS -o "$BODY_FILE" -w '%{http_code}' \
+            -X POST "${OPENAI_BASE_URL%/}/chat/completions" \
+            -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\":\"${OPENAI_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":8}" \
+            2>"$CURL_ERR" || true)"
+          echo "[llm-probe] http_status=${HTTP_CODE:-none}"
+          echo "[llm-probe] bytes=$(wc -c < "$BODY_FILE")"
+          if [ -s "$CURL_ERR" ]; then
+            echo "[llm-probe] curl stderr:"
+            head -c 300 "$CURL_ERR" | tr -d '\r' | redact | sed 's/^/    /'
+          fi
+          echo "[llm-probe] response_head:"
+          head -c 400 "$BODY_FILE" | tr -d '\r' | redact | sed 's/^/    /'
+          echo
+          if head -c 200 "$BODY_FILE" | grep -qiE '<!doctype|<html|<head|<body'; then
+            echo "[llm-probe] VERDICT: HTML page returned -- provider/relay is not answering as an OpenAI API."
+          else
+            echo "[llm-probe] VERDICT: response is not HTML (inspect the head above for API errors)."
+          fi
+          rm -f "$BODY_FILE" "$CURL_ERR"
+
       - name: Install Playwright chromium
         run: |
           playwright install chromium

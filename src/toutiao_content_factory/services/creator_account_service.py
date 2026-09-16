@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -44,9 +44,27 @@ INCOME_BOARD_JS = """
 """
 
 TOUTIAO_INDEX_URL = "https://mp.toutiao.com/profile_v4/index"
+# 收益数据页。实测：**先访问这个路由再调收益接口**才能稳定拿到汇总
+# （单独调用 `pgc/mp/income/income_statement_abstract` 会间歇性 404）。
+INCOME_OVERVIEW_URL = "https://mp.toutiao.com/profile_v4/analysis/income-overview"
 
 BENEFIT_API = "https://mp.toutiao.com/mp/agw/creator_project/get_benefit_page_info?app_id=1231"
 USER_INFO_API = "https://mp.toutiao.com/mp/agw/creator_center/user_info?app_id=1231"
+
+# 收益接口（2026-09-17 实测）。收益数据页 `/profile_v4/analysis/income-overview` 真正调的是这些，
+# 所以**不必读 DOM**：这里能拿到逐日、分作品类型、可提现、累计的全套数字。
+# （首页看板那个「累计收益」仍在用，用来兜底 + 拿粉丝/总阅读——那两个只在看板上。）
+INCOME_DETAIL_API = (
+    "https://mp.toutiao.com/mp/agw/income/overview/income/details"
+    "?start_date={start}&end_date={end}&only_mid_income=0&app_id=1231"
+)
+INCOME_ABSTRACT_API = (
+    "https://mp.toutiao.com/mp/agw/income/income_statement_abstract"
+    "?only_mid_income=false&days={days}&app_id=1231"
+)
+INCOME_WINDOW_DAYS = 30
+# 平台把未结算的当天写成这个字面量，**必须当 None（未知）而不是 0**。
+PENDING_INCOME_MARKERS = ("待更新", "更新中", "")
 
 # `status_code == 3` 表示「权益已开通」。
 # 依据不是猜的：2026-09-16 实测返回 `activated_benefit_num = 7`，
@@ -139,6 +157,180 @@ def fetch_creator_apis(ctx: Any) -> dict[str, Any]:
     return out
 
 
+def fetch_income_apis(
+    ctx: Any,
+    *,
+    days: int = INCOME_WINDOW_DAYS,
+    today: date | None = None,
+    logger: logging.Logger | None = None,
+    attempts: int = 3,
+) -> dict[str, Any]:
+    """取收益接口：逐日明细 + 汇总（累计/可提现/本月/区间）。
+
+    ⚠️ 实测这两个接口**会间歇性返回 404**（2026-09-17：单独调用
+    `income_statement_abstract` 拿到过 404，同一进程里紧接着再调就是 200，
+    与 Referer/XHR 头无关）。所以：
+    1) 必须重试，不能一次失败就放弃（否则汇总字段整批为空）；
+    2) 失败必须**说出来** —— 之前这里静默吞掉非 200，结果是
+       `daily_days_with_income` 有值、`window_income` 却是 None，很难查。
+    """
+    today = today or datetime.now().date()
+    targets = (
+        (
+            "income_overview",
+            INCOME_DETAIL_API.format(start=(today - timedelta(days=days)).isoformat(), end=today.isoformat()),
+        ),
+        ("income_abstract", INCOME_ABSTRACT_API.format(days=days)),
+    )
+    out: dict[str, Any] = {}
+    for name, url in targets:
+        last: dict[str, Any] = {"status": None, "error": "not attempted"}
+        for attempt in range(1, max(1, attempts) + 1):
+            try:
+                resp = ctx.request.get(url, timeout=30000)
+                status = int(resp.status)
+                if status == 200:
+                    try:
+                        body: Any = resp.json()
+                    except Exception:
+                        body = {"_non_json_prefix": str(resp.text())[:500]}
+                    last = {"status": status, "body": body}
+                    break
+                last = {"status": status, "body": None, "error": f"http_{status}"}
+            except Exception as exc:  # pragma: no cover - 网络/运行时相关
+                last = {"status": None, "error": str(exc)}
+            if logger is not None and attempt < attempts:
+                logger.warning(
+                    "Income API %s attempt %s/%s failed (%s); retrying.",
+                    name,
+                    attempt,
+                    attempts,
+                    last.get("error"),
+                )
+        out[name] = last
+        if logger is not None and last.get("status") != 200:
+            logger.warning("Income API %s unavailable: status=%s error=%s", name, last.get("status"), last.get("error"))
+    return out
+
+
+def _income_amount(raw: Any) -> float | None:
+    """收益金额解析：`待更新`/空串 → None（未知），**绝不返回 0**。"""
+    text = str(raw if raw is not None else "").strip()
+    if text in PENDING_INCOME_MARKERS or any(marker in text for marker in ("待更新", "更新中")):
+        return None
+    try:
+        return round(float(text.replace(",", "")), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def summarize_income(
+    income_payload: dict[str, Any],
+    *,
+    today: date | None = None,
+) -> dict[str, Any]:
+    """把两个收益接口的返回整理成可直接落盘/上报的结构。
+
+    ⚠️ `income_statement_abstract`（累计/可提现/本月/区间）**实测会间歇性 404**
+    （2026-09-17，重试 3 次仍失败过；同一进程里换个时机调用又是 200）。
+    所以区间与本月两个数**优先自己从逐日明细里加总**，不把可用性押在那个接口上；
+    abstract 只用来补「可提现」「结算构成」这类逐日明细里没有的口径，拿不到就留 None。
+    """
+    abstract_entry = income_payload.get("income_abstract") if isinstance(income_payload, dict) else None
+    abstract_body = abstract_entry.get("body") if isinstance(abstract_entry, dict) else None
+    rows = abstract_body.get("data") if isinstance(abstract_body, dict) else None
+    rows = rows if isinstance(rows, list) else []
+
+    summary: dict[str, Any] = {
+        "total": None,
+        "can_withdraw": None,
+        "month_income": None,
+        "window_days": INCOME_WINDOW_DAYS,
+        "window_income": None,
+        "yesterday_income": None,
+        "yesterday_ready": None,
+        "settle_breakdown": {},
+        "source": "mp/agw/income/income_statement_abstract",
+    }
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        kind = str(row.get("type", "")).strip()
+        if kind == "total_income":
+            summary["total"] = _income_amount(row.get("total"))
+        elif kind == "can_withdraw_amount":
+            summary["can_withdraw"] = _income_amount(row.get("total"))
+            settle = row.get("settle_info") if isinstance(row.get("settle_info"), dict) else {}
+            detail = settle.get("settle_detail") if isinstance(settle.get("settle_detail"), dict) else {}
+            summary["settle_breakdown"] = {
+                str(k): _income_amount(v) for k, v in detail.items() if str(k).strip()
+            }
+        elif kind == "monthly_income":
+            summary["month_income"] = _income_amount(row.get("total"))
+        elif kind == "period_income":
+            # 同一条里带两个数：`lastday` 是昨日，`period` 是所选区间（默认 30 天）合计。
+            summary["yesterday_income"] = _income_amount(row.get("lastday"))
+            summary["window_income"] = _income_amount(row.get("period"))
+            summary["yesterday_ready"] = bool(row.get("is_yesterday_income_ready"))
+
+    overview_entry = income_payload.get("income_overview") if isinstance(income_payload, dict) else None
+    overview_body = overview_entry.get("body") if isinstance(overview_entry, dict) else None
+    data = overview_body.get("data") if isinstance(overview_body, dict) else None
+    detail = data.get("detail") if isinstance(data, dict) else None
+
+    daily: list[dict[str, Any]] = []
+    for row in detail if isinstance(detail, list) else []:
+        if not isinstance(row, dict):
+            continue
+        columns = row.get("columns_detail") if isinstance(row.get("columns_detail"), dict) else {}
+        tuwen = columns.get("tuwen_income") if isinstance(columns.get("tuwen_income"), dict) else {}
+        composition = {
+            str(item.get("name", "")).strip(): item.get("amount")
+            for item in (tuwen.get("composition") or [])
+            if isinstance(item, dict)
+        }
+        amounts = {name: _income_amount(raw) for name, raw in composition.items()}
+        # ⚠️ 未结算的那天，行级 `total` 字面是 "0"，而 composition 写「待更新」。
+        # 直接采信 total 会把它当成"那天没赚到钱"，与"还不知道"完全不是一回事，
+        # 所以只要有任一组成待更新，就把这天整行标成未结算。
+        pending = any(
+            any(marker in str(raw) for marker in ("待更新", "更新中"))
+            for raw in composition.values()
+        ) or (not composition and not str(row.get("total", "")).strip())
+        daily.append(
+            {
+                "day": str(row.get("day", "")).strip(),
+                "pending": pending,
+                "total": None if pending else _income_amount(row.get("total")),
+                "article": None if pending else amounts.get("文章收益"),
+                "video": None if pending else amounts.get("视频收益"),
+                "weitoutiao": None if pending else amounts.get("微头条收益"),
+            }
+        )
+    summary["daily"] = daily
+    summary["daily_days_with_income"] = sum(
+        1 for item in daily if isinstance(item.get("total"), (int, float)) and float(item["total"]) > 0
+    )
+
+    # 区间/本月自己算：只算**已结算**（非 pending）的天，避免把「待更新」当 0 拉低均值。
+    settled = [
+        item
+        for item in daily
+        if not item.get("pending") and isinstance(item.get("total"), (int, float))
+    ]
+    if summary["window_income"] is None and settled:
+        summary["window_income"] = round(sum(float(item["total"]) for item in settled), 2)
+        summary["window_income_source"] = "derived_from_daily"
+    reference_day = today or datetime.now().date()
+    month_prefix = f"{reference_day.year:04d}-{reference_day.month:02d}"
+    month_rows = [item for item in settled if str(item.get("day", "")).startswith(month_prefix)]
+    if summary["month_income"] is None and month_rows:
+        summary["month_income"] = round(sum(float(item["total"]) for item in month_rows), 2)
+        summary["month_income_source"] = "derived_from_daily"
+    summary["settled_days"] = len(settled)
+    return summary
+
+
 def summarize_benefits(api_payload: dict[str, Any]) -> dict[str, Any]:
     """把 `get_benefit_page_info` 的返回整理成「哪些收益权益已开通」。"""
     entry = api_payload.get("benefit_page") if isinstance(api_payload, dict) else None
@@ -187,6 +379,7 @@ def build_account_snapshot(
     *,
     board: dict[str, list[str]] | None,
     api_payload: dict[str, Any] | None,
+    income_payload: dict[str, Any] | None = None,
     observed_at: datetime | None = None,
     errors: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -216,6 +409,7 @@ def build_account_snapshot(
     user_body = user_body if isinstance(user_body, dict) else {}
 
     benefits = summarize_benefits(api_payload) if api_payload else {}
+    income = summarize_income(income_payload) if income_payload else {}
     credit_info = {}
     benefit_entry = api_payload.get("benefit_page") if isinstance(api_payload, dict) else None
     benefit_body = benefit_entry.get("body") if isinstance(benefit_entry, dict) else None
@@ -245,12 +439,16 @@ def build_account_snapshot(
             "welcome_msg": str(user_body.get("welcome_msg", "")).strip(),
         },
         "revenue": {
-            "total": revenue_total,
+            # 累计收益优先用收益接口的总数（权威且与可提现同源）；接口拿不到才退回首页看板。
+            "total": income.get("total") if income.get("total") is not None else revenue_total,
+            "total_source": (
+                income.get("source") if income.get("total") is not None else f"{TOUTIAO_INDEX_URL} 首页看板「累计收益」"
+            ),
             "currency": "CNY",
             "yesterday_hint": yesterday_hint,
             "yesterday_delta": parse_yesterday_delta(yesterday_hint),
-            "source": f"{TOUTIAO_INDEX_URL} 首页看板「累计收益」",
             "is_total_not_daily": True,
+            "income": income,
         },
         "quality": {
             "credit_score": credit_info.get("score"),

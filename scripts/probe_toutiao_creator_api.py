@@ -22,6 +22,7 @@ import argparse
 import json
 import logging
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,25 @@ KNOWN_APIS = (
     ),
     ("draft_count", "https://mp.toutiao.com/mp/agw/creator_center/draft_count?app_id=1231"),
     ("personal_panel", "https://mp.toutiao.com/mp/agw/deliver/personal_panel?app_id=1231"),
+)
+
+# 收益接口（2026-09-17 实测）：收益数据页 `/profile_v4/analysis/income-overview` 真正调的是这些。
+# 之前以为"收益只能读 DOM（首页看板累计值）"，那是只看了首页；这里能拿到**逐日**与**分类型**收益。
+INCOME_APIS = (
+    (
+        "income_overview",
+        "https://mp.toutiao.com/mp/agw/income/overview/income/details"
+        "?start_date={start}&end_date={end}&only_mid_income=0&app_id=1231",
+    ),
+    (
+        "income_abstract",
+        "https://mp.toutiao.com/pgc/mp/income/income_statement_abstract"
+        "?only_mid_income=false&days=30&app_id=1231",
+    ),
+    (
+        "income_notice",
+        "https://mp.toutiao.com/mp/agw/statistic/v2/get_income_notice?app_id=1231",
+    ),
 )
 
 # 收益相关关键词：命中即认为该 XHR 与收益有关，重点记录。
@@ -130,7 +150,15 @@ def main() -> int:
                     print(f"[sniff] 访问失败 {url}: {exc}")
 
             # 用上下文 cookie 直连接口（context.request 自动携带 cookie 存储）
-            for name, url in KNOWN_APIS:
+            today = datetime.now().date()
+            api_targets = [
+                *KNOWN_APIS,
+                *[
+                    (name, template.format(start=(today - timedelta(days=30)).isoformat(), end=today.isoformat()))
+                    for name, template in INCOME_APIS
+                ],
+            ]
+            for name, url in api_targets:
                 try:
                     resp = ctx.request.get(url, timeout=30000)
                     body: Any

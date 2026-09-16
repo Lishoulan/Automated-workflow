@@ -2335,7 +2335,14 @@ articles:
             "revenue_delta_vs_last_observation": payload.get("revenue_delta_vs_last_observation"),
             "previous_observation_date": payload.get("previous_observation_date", ""),
             "revenue_yesterday_hint": revenue.get("yesterday_hint", ""),
-            "revenue_source": revenue.get("source", ""),
+            "revenue_source": revenue.get("total_source") or revenue.get("source", ""),
+            # 收益接口给的、看板拿不到的口径（2026-09-17 接入）
+            "income_window_days": (revenue.get("income") or {}).get("window_days"),
+            "income_window": (revenue.get("income") or {}).get("window_income"),
+            "income_month": (revenue.get("income") or {}).get("month_income"),
+            "income_can_withdraw": (revenue.get("income") or {}).get("can_withdraw"),
+            "income_daily_days_with_income": (revenue.get("income") or {}).get("daily_days_with_income"),
+            "income_settle_breakdown": (revenue.get("income") or {}).get("settle_breakdown") or {},
             "fans": account.get("fans"),
             "total_reads": account.get("total_reads"),
             "credit_score": quality.get("credit_score"),
@@ -2365,7 +2372,7 @@ articles:
             revenue_line = "- 账号累计收益：未采集到（不按 0 处理）"
         benefit = account.get("can_earn_article_revenue")
         benefit_text = "已开通" if benefit else ("未开通" if benefit is False else "未知")
-        return [
+        lines = [
             revenue_line,
             (
                 f"- 账号看板：粉丝 {account.get('fans') if account.get('fans') is not None else '未知'}"
@@ -2375,6 +2382,34 @@ articles:
             ),
             f"- 文章创作收益权益：{benefit_text}（已开通权益数 {account.get('activated_benefit_num')}）",
         ]
+        # 收益接口口径（看板没有）：这是判断"钱到底有没有在动"的真正指标。
+        window_days = account.get("income_window_days")
+        window_income = account.get("income_window")
+        month_income = account.get("income_month")
+        withdraw = account.get("income_can_withdraw")
+        if window_income is not None or month_income is not None:
+            def _money(value: object) -> str:
+                return f"{float(value):.2f} 元" if isinstance(value, (int, float)) else "未知"
+
+            lines.append(
+                f"- 收益结构：近{window_days or 30}日 {_money(window_income)}"
+                f"｜本月 {_money(month_income)}"
+                f"｜可提现 {_money(withdraw)}"
+            )
+        breakdown = account.get("income_settle_breakdown") or {}
+        if breakdown:
+            parts = "｜".join(
+                f"{name} {value}" for name, value in breakdown.items() if isinstance(value, (int, float))
+            )
+            if parts:
+                lines.append(f"- 可提现构成：{parts}")
+        days_with_income = account.get("income_daily_days_with_income")
+        if isinstance(days_with_income, int):
+            lines.append(
+                f"- 近{window_days or 30}日里有收益的天数：{days_with_income}"
+                "（配合逐日明细可判断收益是否在动；单篇归因头条不提供）"
+            )
+        return lines
 
     def _build_performance_markdown(self, payload: dict[str, Any]) -> str:
         summary = dict(payload.get("summary", {}))

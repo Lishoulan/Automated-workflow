@@ -320,10 +320,29 @@ class PerformanceService:
             errors.append(f"api:{exc}")
             self.logger.warning("Creator API collection failed (non-fatal): %s", exc)
 
+        income_payload: dict[str, Any] = {}
+        try:
+            # 先走一遍收益数据页：实测必须先访问该路由，收益接口的汇总才稳定
+            # （单独调用会间歇性 404，见 creator_account_service 里的说明）。
+            try:
+                page.goto(
+                    account_service.INCOME_OVERVIEW_URL,
+                    wait_until="domcontentloaded",
+                    timeout=timeout_ms,
+                )
+                page.wait_for_timeout(6000)
+            except Exception as exc:  # pragma: no cover - browser/runtime dependent
+                self.logger.warning("Income overview navigation failed (non-fatal): %s", exc)
+            income_payload = account_service.fetch_income_apis(context, logger=self.logger)
+        except Exception as exc:  # pragma: no cover - browser/runtime dependent
+            errors.append(f"income:{exc}")
+            self.logger.warning("Income API collection failed (non-fatal): %s", exc)
+
         snapshot = account_service.build_account_snapshot(
             self.settings,
             board=board,
             api_payload=api_payload,
+            income_payload=income_payload,
             errors=errors,
         )
         self.account_snapshot = snapshot

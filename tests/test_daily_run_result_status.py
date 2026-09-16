@@ -127,9 +127,16 @@ def test_content_guard_blocks_high_score_auto_approval(app_settings) -> None:
     }
 
     assert service._qualifies_for_auto_approval(high_score, content_guard_report={"blocked": True}) is False
+    # 内容守卫没拦、且抄录率可核验且在线下 → 放行。
+    # 注意「没拦」还不够：量不出抄录率的稿子同样不放行（见
+    # test_strict_auto_approval_blocks_unverifiable_originality）。
     assert service._qualifies_for_auto_approval(
         high_score,
-        content_guard_report={"blocked": False, "blocking_flags": []},
+        content_guard_report={
+            "blocked": False,
+            "blocking_flags": [],
+            "source_copy_ratio": 5.0,
+        },
     ) is True
 
 
@@ -284,8 +291,17 @@ def test_daily_run_tries_next_candidate_after_duplicate_title_failure(app_settin
             encoding="utf-8",
         )
         (run_dir / "workflow_result.json").write_text("{}", encoding="utf-8")
+        # 自动批准现在要求原创性「可核验且在 25% 线下」，所以合成 run 也得
+        # 带上素材原文；这里给一段与正文毫无重合的文本。
+        (run_dir / "source_material_full.txt").write_text(
+            "素材来源：测试\n原文标题：测试\n原文链接：https://example.test/s\n\n"
+            + "这一段素材原文与待发布正文完全没有重合，仅用于通过原创性核验。" * 20,
+            encoding="utf-8",
+        )
         (run_dir / "content_guard_report.json").write_text(
-            json.dumps({"blocked": False, "blocking_flags": []}),
+            json.dumps(
+                {"blocked": False, "blocking_flags": [], "source_copy_ratio": 0.0}
+            ),
             encoding="utf-8",
         )
         (run_dir / "review_status.json").write_text(
@@ -357,6 +373,84 @@ def test_daily_run_tries_next_candidate_after_duplicate_title_failure(app_settin
     report = json.loads(Path(exported["workflow_report"]).read_text(encoding="utf-8"))
     assert report["status"] == "success"
     assert report["final_attempt"]["topic_title"] == "第二候选标题"
+
+
+def test_fallback_publish_points_archive_root_at_the_published_run(
+    app_settings, tmp_path: Path
+) -> None:
+    """兜底发的是另一篇时，archive_root 必须切到「被发布的那一篇」。
+
+    否则下游（main.py 的日报摘要）会按未发布的最优候选去读
+    publish/publish_result.json，读到空的 publish_status，于是一次成功发布被
+    误报成 review_required。2026-09-16 实测：图文已经 submitted_for_review 且
+    拿到 pgc_id，摘要却写「状态: review_required / 头条: -」。
+    """
+    object.__setattr__(app_settings.publishing, "enabled", True)
+    object.__setattr__(app_settings.publishing, "auto_publish", True)
+
+    app = ContentFactoryAppService(
+        app_settings, logging.getLogger("test-fallback-archive-root")
+    )
+    run_dirs: list[Path] = []
+    for name in ("fb-run-1", "fb-run-2"):
+        run_dir = tmp_path / name
+        run_dir.mkdir(parents=True)
+        (run_dir / "article.md").write_text("兜底候选正文内容。" * 400, encoding="utf-8")
+        (run_dir / "content_score.json").write_text(
+            json.dumps(
+                {
+                    "scores": {
+                        "overall_score": 60,
+                        "ai_generated_risk": 20,
+                        "validation_score": 60,
+                        "publish_readiness_score": 40,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run_dir / "workflow_result.json").write_text("{}", encoding="utf-8")
+        (run_dir / "review_status.json").write_text(
+            json.dumps({"status": "approved", "selected_title": name}),
+            encoding="utf-8",
+        )
+        run_dirs.append(run_dir)
+
+    app.collect_topics = MagicMock(return_value={})
+    app.platform_health_service.quick_health_check = MagicMock(
+        return_value={"blocking_platforms": [], "blocking_flags": []}
+    )
+    app.platform_health_service.ensure_publish_ready = MagicMock(
+        return_value={"platform_health": "", "blocking_platforms": []}
+    )
+    app._build_daily_candidate_specs = MagicMock(
+        return_value=[
+            {"rank": 1, "title": "最优候选", "url": "https://example.test/1"},
+            {"rank": 2, "title": "次优候选", "url": "https://example.test/2"},
+        ]
+    )
+    app.auto_run = MagicMock(
+        side_effect=[
+            {"archive_root": str(run_dirs[0])},
+            {"archive_root": str(run_dirs[1])},
+        ]
+    )
+    app.review_service.mark_skipped_review = MagicMock(return_value={})
+    # 全部候选都过不了严格门，落到兜底；兜底选中排第二的那篇。
+    app._qualifies_for_auto_approval = MagicMock(return_value=False)
+    app._try_fallback_publish = MagicMock(
+        return_value={
+            "run_dir": str(run_dirs[1]),
+            "attempt_fields": {"status": "fallback_published"},
+            "exports": {},
+        }
+    )
+
+    exported = app.daily_run(skip_wait=True)
+
+    assert exported["archive_root"] == str(run_dirs[1])
+    report = json.loads(Path(exported["workflow_report"]).read_text(encoding="utf-8"))
+    assert report["status"] == "fallback_published"
 
 
 def test_mark_daily_run_running_handles_existing_status(app_settings) -> None:

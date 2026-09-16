@@ -255,3 +255,65 @@ def test_rank_key_prefers_readiness_then_overall(tmp_path: Path) -> None:
     low = {"score_snapshot": {"publish_readiness_score": 60, "overall_score": 90}}
     high = {"score_snapshot": {"publish_readiness_score": 85, "overall_score": 70}}
     assert service._fallback_rank_key(high) > service._fallback_rank_key(low)
+
+
+def test_originality_block_reason_matrix() -> None:
+    """严格门与兜底门共用的原创判定矩阵。"""
+    reason = ContentFactoryAppService._originality_block_reason
+    assert reason(None, is_hot_topic=True) == ""
+    assert "无法核验" in reason(None, is_hot_topic=False)
+    assert reason(12.0, is_hot_topic=False) == ""
+    assert "抄录" in reason(30.7, is_hot_topic=False)
+    # 热点选题放行「量不出来」，但一旦量得出来，同样守 25% 线。
+    assert "抄录" in reason(25.0, is_hot_topic=True)
+
+
+def test_strict_auto_approval_enforces_the_same_copy_line() -> None:
+    """严格门必须和兜底门用同一条 25% 抄录线。
+
+    2026-09-16 02:02 那篇抄录 30.7% 的图文被自动批准并发布，就是栽在这里：
+    content_guard 只把 ≥25% 写成 `human_review_required`，而那个字段全项目
+    没有任何地方读，于是分数够就直接从「严格」路径放行了。
+    """
+    service = _service()
+    snapshot = {
+        "overall_score": 85,
+        "publish_readiness_score": 80,
+        "ai_generated_risk": 20,
+        "validation_score": 95,
+        "article_char_count": 2000,
+    }
+    assert (
+        service._qualifies_for_auto_approval(
+            snapshot,
+            content_guard_report={"blocked": False, "source_copy_ratio": 30.7},
+        )
+        is False
+    )
+    assert service._qualifies_for_auto_approval(
+        snapshot,
+        content_guard_report={"blocked": False, "source_copy_ratio": 18.2},
+    )
+
+
+def test_strict_auto_approval_blocks_unverifiable_originality() -> None:
+    """非热点选题量不出抄录率时不放行；热点选题例外。"""
+    service = _service()
+    snapshot = {
+        "overall_score": 85,
+        "publish_readiness_score": 80,
+        "ai_generated_risk": 20,
+        "validation_score": 95,
+        "article_char_count": 2000,
+    }
+    assert (
+        service._qualifies_for_auto_approval(
+            snapshot, content_guard_report={"source_copy_ratio": None}
+        )
+        is False
+    )
+    assert service._qualifies_for_auto_approval(
+        {**snapshot, "is_hot_topic": 1},
+        content_guard_report={"source_copy_ratio": None},
+    )
+

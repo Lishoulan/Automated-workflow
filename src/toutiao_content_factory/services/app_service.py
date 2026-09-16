@@ -973,6 +973,14 @@ class ContentFactoryAppService:
             fallback_attempt.update(fallback_result["attempt_fields"])
             exported_files.update(dict(best_attempt.get("exported_files", {})))
             exported_files.update(fallback_result["exports"])
+            if published_dir:
+                # 兜底发的常常不是最优候选（最优那篇可能是抄录率超标被刷掉的）。
+                # 下游一律以 `archive_root` 解析 run_dir —— main.py 的日报摘要
+                # 就是从那里读 publish/<publish_result.json>。若 archive_root 仍
+                # 指向未发布的最优候选，publish_status 会解析成空字符串，
+                # 一次成功发布就被误报成 review_required（2026-09-16 实测：
+                # 图文已 submitted_for_review 且拿到 pgc_id，摘要却写「头条: -」）。
+                exported_files["archive_root"] = published_dir
             report_exports = self._write_daily_workflow_report(
                 status="fallback_published",
                 final_attempt=fallback_attempt,
@@ -2534,6 +2542,24 @@ class ContentFactoryAppService:
                 )[:500],
             )
             return False
+        # 原创红线：与素材原文的连续抄录率。
+        # ⚠️ 2026-09-16 发现并修的缺口：content_guard 只把 ≥25% 写成
+        # `human_review_required`，而那个字段**全项目没有任何地方读**，于是
+        # 分数够的稿子会直接从这条「严格」路径发出去——9-16 02:02 那篇
+        # 30.7% 抄录的图文就是这么发的，和 9-15 被扣 5 分的是同一个风险。
+        # 现在严格门与兜底门共用同一条线（`_originality_block_reason`），
+        # 两条路径不可能再各说各话。
+        if content_guard_report is not None:
+            originality_reason = self._originality_block_reason(
+                content_guard_report.get("source_copy_ratio"),
+                is_hot_topic=is_hot_topic,
+            )
+            if originality_reason:
+                self.logger.warning(
+                    "Originality gate blocked automatic approval: %s",
+                    originality_reason,
+                )
+                return False
         return self.settings.review.qualifies_for_auto_publish(
             overall_score=int(score_snapshot.get("overall_score", 0)),
             ai_risk=int(score_snapshot.get("ai_generated_risk", 100)),
@@ -2553,6 +2579,34 @@ class ContentFactoryAppService:
         snapshot = self._load_run_score_snapshot(Path(run_dir) if run_dir else None)
         is_hot_topic = bool(snapshot.get("is_hot_topic", 0))
         return 1750 if auto_publish_mode else 850 if is_hot_topic else 800
+
+    @staticmethod
+    def _originality_block_reason(
+        ratio: float | None, *, is_hot_topic: bool
+    ) -> str:
+        """原创红线：与素材原文的连续抄录率。严格门与兜底门共用这一条判定。
+
+        被头条判「不满足原创要求」要扣 5 分，还打断「连续 10 天不扣分 +10 分」
+        的节奏，代价高于少发一天，所以 ≥25% 直接拦。
+
+        关键：抄录率**量不出来**时不能当作「没问题」。2026-09-15 的 -5 分事故
+        正是抄了一篇外部稿，而当时本地只比对自家历史、看不见外部素材。既然这
+        条线存在的意义就是守住它，那么没有素材原文可比对时，宁可放弃当天发布。
+
+        例外只有热点选题：热榜条目本来就没有正文素材，无从比对，放行但记录风险。
+        返回空串表示放行；返回非空字符串即拦截原因。
+        """
+        from toutiao_content_factory.services.originality_service import (
+            REVIEW_THRESHOLD,
+        )
+
+        if ratio is None:
+            if is_hot_topic:
+                return ""
+            return "原创性无法核验：素材原文缺失或过短，拒绝自动发布"
+        if float(ratio) >= REVIEW_THRESHOLD:
+            return f"与素材连续抄录 {ratio}%，高于 {REVIEW_THRESHOLD}% 上限"
+        return ""
 
     def _fallback_safety_check(self, run_dir: Path | None) -> tuple[bool, list[str], list[str]]:
         """兜底发布前的安全底线检查。
@@ -2614,17 +2668,10 @@ class ContentFactoryAppService:
                 f"AI 生成风险 {ai_risk}，高于自动发布上限 {ai_risk_limit}"
             )
 
-        # 原创：与素材原文的连续抄录率。
-        # 兜底用 REVIEW_THRESHOLD（25%）而不是更宽的 BLOCK_THRESHOLD，
-        # 与人工审核环节保持一致——被头条判不原创要扣 5 分，且打断
-        # 「连续 10 天不扣分 +10 分」的加分节奏，代价高于少发一天。
-        #
-        # 关键：抄录率**量不出来**时不能当作「没问题」。2026-09-15 的 -5 分
-        # 事故正是抄了一篇外部稿；既然兜底的价值就是守住这条线，那么在没有
-        # 素材原文可比对时，宁可放弃当天发布，也不赌一把。
+        # 原创：与素材原文的连续抄录率。判定逻辑与严格自动批准门共用
+        # `_originality_block_reason`，避免两条路径各说各话。
         source_file = run_dir / "source_material_full.txt"
         from toutiao_content_factory.services.originality_service import (
-            REVIEW_THRESHOLD,
             source_copy_ratio,
         )
 
@@ -2633,15 +2680,13 @@ class ContentFactoryAppService:
             ratio = source_copy_ratio(
                 article, source_file.read_text(encoding="utf-8")
             )["ratio"]
-        if ratio is None:
-            if is_hot_topic:
-                notes.append("热点选题无原文素材，原创风险未量化")
-            else:
-                reasons.append("原创性无法核验：素材原文缺失或过短，拒绝自动发布")
-        elif ratio >= REVIEW_THRESHOLD:
-            reasons.append(
-                f"与素材连续抄录 {ratio}%，高于 {REVIEW_THRESHOLD}% 上限"
-            )
+        originality_reason = self._originality_block_reason(
+            ratio, is_hot_topic=is_hot_topic
+        )
+        if originality_reason:
+            reasons.append(originality_reason)
+        elif ratio is None:
+            notes.append("热点选题无原文素材，原创风险未量化")
         else:
             notes.append(f"与素材连续抄录 {ratio}%")
 

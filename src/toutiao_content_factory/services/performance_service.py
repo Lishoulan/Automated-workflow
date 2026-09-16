@@ -908,6 +908,23 @@ class PerformanceService:
             ".page-next",
             "li.next",
         )
+        # 头条作品管理页用的是**自定义分页控件**：既没有 `button.next`，
+        # 正文里也没有"下一页"三个字 —— 上面那串通用选择器对它**一个都命中不了**，
+        # 于是采集永远停在第一页（2026-09-16 定位；实测改按页码点击后一次拿到 97 条）。
+        toutiao_next_page_js = """
+        () => {
+          const items = [...document.querySelectorAll('[class*="fake-pagination-item"]')]
+            .filter(el => /^\\d+$/.test((el.innerText || '').trim()));
+          if (!items.length) return null;
+          const active = items.find(el => String(el.className || '').includes('active'));
+          const current = active ? Number((active.innerText || '').trim()) : 0;
+          const target = items.find(el => (el.innerText || '').trim() === String(current + 1));
+          if (!target) return null;
+          target.scrollIntoView();
+          target.click();
+          return String(current + 1);
+        }
+        """
 
         for _ in range(max_pages):
             rows = self._extract_metric_rows(page, row_selectors)
@@ -922,7 +939,20 @@ class PerformanceService:
 
             # 尝试点击下一页（主 frame 与 iframe 都试）
             clicked = False
-            for frame in (page.main_frame,) + tuple(f for f in page.frames if f != page.main_frame):
+            # 先走头条的自定义分页控件（`fake-pagination-item`）
+            try:
+                if page.evaluate(toutiao_next_page_js):
+                    clicked = True
+                    self.logger.info("Advanced to next page via Toutiao pagination control.")
+            except Exception:
+                clicked = False
+            if clicked:
+                frames_iter: tuple = ()
+            else:
+                frames_iter = (page.main_frame,) + tuple(
+                    f for f in page.frames if f != page.main_frame
+                )
+            for frame in frames_iter:
                 try:
                     next_btn = None
                     for selector in next_selectors:

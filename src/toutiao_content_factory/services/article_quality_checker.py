@@ -684,17 +684,64 @@ class ArticleQualityChecker:
         return {"issues": issues, "suggestions": suggestions}
 
     def _check_risky_words(self, content_lower: str) -> list:
-        """检查违规风险词汇"""
-        issues = []
+        """检查违规风险词汇。
+
+        2026-09-16 修掉两个会削弱这道防线的坑：
+        1. 「一定」此前没有任何限定词排除，于是「存在一定的风险」「一定程度上」
+           这类**正常表达**被误报成绝对化表述（9-16 那篇储能稿就中招：正文
+           写「也存在一定的风险」，告警却报"存在绝对化表述：'一定'"）。
+        2. 命中即 `break`，于是**排在表前面的误报会把后面真正的违规词挤掉**
+           ——「最好」「最强」「保证收益」这些反而永远报不出来。
+        现在改为：按词收集全部命中（限定语排除后），再按「长词优先」去掉被
+        包含的短词，避免同一处重复报。
+        """
+        hits: list[str] = []
 
         for word in self.RISKY_WORDS:
             if word == "\u7b2c\u4e00" and not self._contains_unqualified_first(content_lower):
                 continue
+            if word == "\u4e00\u5b9a" and not self._contains_unqualified_certainty(content_lower):
+                continue
             if word in content_lower:
-                issues.append(f"存在绝对化表述：'{word}'")
-                break
+                hits.append(word)
 
-        return issues
+        # 「绝对赚钱」命中时已隐含「绝对」，不必对同一处报两次。
+        de_duplicated = [
+            word
+            for word in hits
+            if not any(word != other and word in other for other in hits)
+        ]
+        return [f"存在绝对化表述：'{word}'" for word in de_duplicated]
+
+    # 「一定」后面跟这些词时是「某种程度」的限定语，不是绝对化断言：
+    # 「一定的风险」「一定程度上」「起一定作用」「有一定难度」。
+    _CERTAINTY_LIMITER_SUFFIXES = (
+        "\u7684", "\u5730", "\u7a0b\u5ea6", "\u4f5c\u7528", "\u6761\u4ef6",
+        "\u5f71\u54cd", "\u8303\u56f4", "\u6bd4\u4f8b", "\u65f6\u95f4", "\u89c4\u6a21",
+        "\u6570\u91cf", "\u96be\u5ea6", "\u98ce\u9669", "\u5dee\u8ddd", "\u5e2e\u52a9",
+        "\u5173\u7cfb", "\u610f\u4e49", "\u4ef7\u503c", "\u57fa\u7840", "\u9053\u7406",
+        "\u89c4\u5f8b", "\u9650\u5236", "\u8981\u6c42", "\u6807\u51c6", "\u89c4\u5219",
+        "\u7ecf\u9a8c", "\u6280\u672f", "\u5b9e\u529b", "\u8d44\u91d1", "\u7a7a\u95f4",
+        "\u4f59\u5730", "\u5f39\u6027", "\u538b\u529b", "\u6210\u672c", "\u4f18\u52bf",
+        "\u597d\u5904", "\u79ef\u6781", "\u8d1f\u9762", "\u53c2\u8003", "\u8bf4\u670d\u529b",
+    )
+
+    def _contains_unqualified_certainty(self, content_lower: str) -> bool:
+        """判断「一定」是否被用作**绝对化断言**（而非程度限定语）。
+
+        返回 True 表示存在未经限定的断言式用法（如「一定能」「一定会」），
+        应当报违规；全部命中都带限定后缀（如「一定的风险」）则返回 False。
+        """
+        marker = "\u4e00\u5b9a"
+        start = 0
+        while True:
+            index = content_lower.find(marker, start)
+            if index < 0:
+                return False
+            suffix = content_lower[index + len(marker) :]
+            if not any(suffix.startswith(item) for item in self._CERTAINTY_LIMITER_SUFFIXES):
+                return True
+            start = index + len(marker)
 
     def _contains_unqualified_first(self, content_lower: str) -> bool:
         first_marker = "\u7b2c\u4e00"

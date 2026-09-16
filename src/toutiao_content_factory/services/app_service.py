@@ -2697,7 +2697,17 @@ class ContentFactoryAppService:
         return (not reasons), reasons, notes
 
     def _fallback_title_for(self, run_dir: Path) -> str:
-        """找一个能用的标题：已选标题 → 候选标题 → 选题原标题。"""
+        """找一个能用的标题：已选标题 → **质量达标的候选** → 候选首行 → 选题原标题。
+
+        ⚠️ 2026-09-16：兜底发布是云端当前的主力路径（评审委员会几乎总给
+        `needs_revision`，于是每次都落到这里），而它此前**完全跳过标题质量门**
+        —— `select_auto_title` 那套 RULE_009 校验只在严格门路径上跑。结果被判
+        「信息密度不足」的标题照样发出去。头条实测：同一事件完整标题 1.3 万阅读、
+        简略标题仅 23 阅读，这个差距直接吃掉当天收益。
+
+        这里用**择优**而不是加门槛：候选里谁先通过标题质量门就用谁，一个都没有
+        就退回原有顺序。标题差一点也比当天不发强——这道门守的是流量，不是合规。
+        """
         status_path = run_dir / "review_status.json"
         if status_path.exists():
             payload = _safe_json_loads(status_path.read_text(encoding="utf-8-sig"), default={})
@@ -2705,20 +2715,60 @@ class ContentFactoryAppService:
                 selected = str(payload.get("selected_title") or "").strip()
                 if selected:
                     return selected
+
+        candidates = self._fallback_title_candidates(run_dir)
+        if not candidates:
+            return ""
+        return self._best_quality_title(candidates, run_dir) or candidates[0]
+
+    @staticmethod
+    def _fallback_title_candidates(run_dir: Path) -> list[str]:
+        """按兜底的历史优先级收集候选标题（去重、保持顺序）。"""
+        candidates: list[str] = []
+
+        def _add(title: object) -> None:
+            cleaned = str(title or "").strip()
+            if cleaned and cleaned not in candidates:
+                candidates.append(cleaned)
+
         titles_file = run_dir / "titles.txt"
         if titles_file.exists():
             for raw in titles_file.read_text(encoding="utf-8").splitlines():
                 line = raw.strip().lstrip("0123456789.、 ")
-                if line and not line.endswith(("：", ":")) and line not in ("全部标题", "推荐标题"):
-                    return line
+                if not line or line.endswith(("：", ":")) or line in ("全部标题", "推荐标题"):
+                    continue
+                _add(line)
+
         topic_file = run_dir / "selected_topic.json"
         if topic_file.exists():
             payload = _safe_json_loads(topic_file.read_text(encoding="utf-8-sig"), default={})
             if isinstance(payload, dict):
                 topic = payload.get("selected_topic") or {}
-                title = str(topic.get("title") or "").strip()
-                if title:
-                    return title
+                _add(topic.get("title"))
+        return candidates
+
+    def _best_quality_title(self, candidates: list[str], run_dir: Path) -> str:
+        """返回候选里第一个通过标题质量门的标题；都不达标返回空串。"""
+        try:
+            from toutiao_content_factory.services.article_quality_checker import (
+                ArticleQualityChecker,
+            )
+
+            article = ""
+            publish_dir = run_dir / self.settings.review.publish_dirname
+            for path in (publish_dir / "article.md", run_dir / "article.md"):
+                if path.exists():
+                    article = path.read_text(encoding="utf-8", errors="replace")
+                    break
+            checker = ArticleQualityChecker()
+            for candidate in candidates:
+                result = checker._check_title(candidate, article)
+                if not [item for item in result.get("issues", []) if str(item).strip()]:
+                    return candidate
+        except Exception:
+            self.logger.debug(
+                "Title quality scan failed; keeping legacy fallback order.", exc_info=True
+            )
         return ""
 
     def _fallback_rank_key(self, attempt: dict[str, Any]) -> tuple[int, int]:

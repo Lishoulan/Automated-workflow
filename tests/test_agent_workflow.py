@@ -443,6 +443,90 @@ def test_post_polish_rebuild_stays_blocked_when_model_is_unavailable(
     assert len(buffered.replace("\n", "").replace(" ", "")) < 1750
 
 
+class TestReduceSourceOverlap:
+    """去重合兜底：只在越线时出手，且只在改写确有下降时才采纳。
+
+    背景：素材原文的逐字句子会经 data_report.source_facts 进入 writer 提示词，
+    模型复述它们就会推高抄录率；云端曾两篇候选同时 32.2% 被 25% 红线拦下、
+    当天零发布。提示词约束管不住模型，所以补一道可复测的确定性兜底。
+    """
+
+    SOURCE = (
+        "人形机器人从实验室走向真实的商业场景的竞速过程中，智元机器人构建了领先的"
+        "机器人本体与AI全栈技术，并实现了模型、数据和本体部署的全栈具身智能布局。"
+        "端到端全栈协同能力使得它在真实作业场景中的落地速度具有先发优势。"
+        "在产品矩阵上，智元构建了包含远征人形、灵犀商服、精灵工业三个系列的多元化"
+        "产品体系，契合工业制造、仓储物流、商业服务等高频真实场景。"
+        "公司同时披露了海外订单与交付节奏的变化，仍需以合同和回款数据核验。"
+    )
+
+    @staticmethod
+    def _extraction(merged_text: str) -> ExtractionResult:
+        return ExtractionResult(
+            merged_text=merged_text,
+            core_data=[],
+            industry_trends=[],
+            growth_numbers=[],
+            companies=[],
+            supply_chain_keywords=[],
+            key_points=[],
+        )
+
+    def test_clean_article_is_not_rewritten(
+        self, workflow_service: AgentWorkflowService, mock_openai_service
+    ) -> None:
+        article = "另起炉灶重写的一段产业分析，讨论交付节奏与回款口径。" * 40
+        content = GeneratedContent(
+            article=article, polished_article=article, summary=article[:80]
+        )
+        workflow_service._reduce_source_overlap(
+            content, self._extraction(self.SOURCE), DataReport()
+        )
+        mock_openai_service.create_json_completion.assert_not_called()
+        assert content.article == article
+
+    def test_short_source_skips_the_check(
+        self, workflow_service: AgentWorkflowService, mock_openai_service
+    ) -> None:
+        content = GeneratedContent(
+            article=self.SOURCE, polished_article=self.SOURCE, summary="x" * 40
+        )
+        workflow_service._reduce_source_overlap(
+            content, self._extraction("素材太短"), DataReport()
+        )
+        mock_openai_service.create_json_completion.assert_not_called()
+        assert content.article == self.SOURCE
+
+    def test_overlap_triggers_attempt_but_useless_rewrite_is_rejected(
+        self, workflow_service: AgentWorkflowService, mock_openai_service
+    ) -> None:
+        # conftest 的 mock 返回 {"result": "mocked"}：既不是正文，也无法证明抄录率下降。
+        content = GeneratedContent(
+            article=self.SOURCE, polished_article=self.SOURCE, summary="x" * 40
+        )
+        workflow_service._reduce_source_overlap(
+            content, self._extraction(self.SOURCE), DataReport()
+        )
+        mock_openai_service.create_json_completion.assert_called()
+        assert content.article == self.SOURCE
+
+    def test_only_a_measured_improvement_is_accepted(
+        self, workflow_service: AgentWorkflowService, mock_openai_service
+    ) -> None:
+        rewritten = "从交付节奏看，这家公司的产品线覆盖了人形、商服与工业三类形态，" * 60
+        mock_openai_service.create_json_completion.return_value = {
+            "polished_article": rewritten
+        }
+        content = GeneratedContent(
+            article=self.SOURCE, polished_article=self.SOURCE, summary="x" * 40
+        )
+        workflow_service._reduce_source_overlap(
+            content, self._extraction(self.SOURCE), DataReport()
+        )
+        assert content.article != self.SOURCE
+        assert any("去重合改写" in note for note in content.validation_notes)
+
+
 def test_all_rejected_titles_keep_best_one_instead_of_clearing(
     workflow_service: AgentWorkflowService,
 ) -> None:

@@ -36,15 +36,22 @@ def _windows(text: str, size: int = _WINDOW) -> set[str]:
     return {t[i: i + size] for i in range(len(t) - size + 1)}
 
 
-def source_copy_ratio(article: str, source_text: str) -> dict[str, object]:
+def source_copy_ratio(
+    article: str, source_text: str, *, strip_file_header: bool = True
+) -> dict[str, object]:
     """计算生成稿相对素材原文的连续抄录情况。
 
     返回的 ``ratio`` 为 None 表示无法判断（原文缺失或过短），调用方必须显式
     处理，不能当成 0（安全）看待。
+
+    ``strip_file_header`` 默认 True，对应 ``source_material_full.txt`` 的
+    「三行文件头 + 空行 + 正文」格式。传入的是内存里的素材正文（例如
+    ``ExtractionResult.merged_text``）时必须显式置 False，否则首个空行之前
+    的正文会被误当成文件头丢掉，导致比对基准残缺、抄录率系统性偏低。
     """
     body = str(source_text or "")
     # 去掉 `source_material_full.txt` 的三行文件头
-    if "\n\n" in body:
+    if strip_file_header and "\n\n" in body:
         body = body.split("\n\n", 1)[-1]
     if len(body.strip()) < SOURCE_MATERIAL_MIN_CHARS:
         return {

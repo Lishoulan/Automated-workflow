@@ -62,6 +62,23 @@ def test_min_chars_constant_matches_threshold_behaviour() -> None:
     assert source_copy_ratio("乙" * 100, just_over)["ratio"] is not None
 
 
+def test_strip_file_header_can_be_disabled_for_in_memory_source() -> None:
+    """内存里的素材正文没有文件头，必须能关掉剥离逻辑。
+
+    ``ExtractionResult.merged_text`` 这类正文常含空行；若仍按「三行文件头」剥离，
+    首个空行之前的正文会被丢掉，比对基准残缺 → 抄录率系统性偏低 → 等于放行抄袭。
+    """
+    head = "前面这段属于素材正文，不能被当成文件头丢掉。" * 8
+    tail = "后面这段同样要参与比对。" * 20
+    source = head + "\n\n" + tail
+
+    default_result = source_copy_ratio(source, source)
+    kept_result = source_copy_ratio(source, source, strip_file_header=False)
+
+    assert kept_result["ratio"] == 100.0
+    assert int(kept_result["source_chars"]) > int(default_result["source_chars"])
+
+
 def test_flags_escalate_by_ratio() -> None:
     assert originality_flags(None, "无素材原文") == ["原创性无法判断：无素材原文，需人工核对"]
     assert originality_flags(None) == []

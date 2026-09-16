@@ -32,6 +32,11 @@ from toutiao_content_factory.services.article_sanitizer import clean_article_tex
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.letta_client import LettaClient
 from toutiao_content_factory.services.openai_service import OpenAIContentService
+from toutiao_content_factory.services.originality_service import (
+    REVIEW_THRESHOLD,
+    SOURCE_MATERIAL_MIN_CHARS,
+    source_copy_ratio,
+)
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 
 
@@ -185,6 +190,7 @@ class AgentWorkflowService:
 
             polish_pack = self.polish_agent.run(content, trend_report, data_report, style, cache_context)
             self._apply_polish_pack(content, polish_pack, data_report)
+            self._reduce_source_overlap(content, extraction, data_report)
 
             # The quality council audits the public title as well as the body.
             # Generate the title before the first audit so it never evaluates an
@@ -861,6 +867,67 @@ class AgentWorkflowService:
     def _has_source_anchor(self, article: str) -> bool:
         markers = ("据", "数据显示", "公开材料", "财报", "公告", "机构统计", "报告")
         return any(marker in article for marker in markers)
+
+    def _reduce_source_overlap(self, content, extraction, data_report) -> None:
+        """初稿若与素材原文连续重合越线，做一次**有界**的去重合改写。
+
+        为什么放在评分之前：素材原文的逐字句子会经 ``data_report.source_facts``
+        进入 writer 提示词（最多 40 句、每句最长 300 字），模型复述这些句子就会
+        推高抄录率。提示词层面的约束管不住模型，所以补一道可复测的兜底：只改写
+        重合片段，改写后复测确有下降才采纳，且整条链路只改写一次。
+
+        比对基准用 ``extraction.merged_text``（本次运行的素材正文），而不是发布时
+        那份 ``source_material_full.txt``——后者要到归档阶段才落盘。两者同源，
+        这里量出的重合度只会更严，不会更松。
+        """
+        article = str(getattr(content, "article", "") or "")
+        source_text = str(getattr(extraction, "merged_text", "") or "").strip()
+        if not article or len(source_text) < SOURCE_MATERIAL_MIN_CHARS:
+            return
+
+        before = source_copy_ratio(article, source_text, strip_file_header=False)
+        ratio = before.get("ratio")
+        if ratio is None:
+            return
+        ratio = float(ratio)
+        if ratio < REVIEW_THRESHOLD:
+            self.logger.info(
+                "素材连续抄录 %.1f%%，低于 %.0f%% 红线，无需改写", ratio, REVIEW_THRESHOLD
+            )
+            return
+
+        spans = [str(item) for item in (before.get("samples") or [])]
+        self.logger.warning(
+            "素材连续抄录 %.1f%%（≥%.0f%% 红线），触发去重合改写，重合片段 %d 处",
+            ratio,
+            REVIEW_THRESHOLD,
+            len(spans),
+        )
+        rewritten = self.polish_agent.dedup_rewrite(article, spans)
+        if not rewritten:
+            self.logger.warning("去重合改写未返回可用正文，保留原稿")
+            return
+
+        after = source_copy_ratio(rewritten, source_text, strip_file_header=False)
+        after_ratio = after.get("ratio")
+        if after_ratio is None or float(after_ratio) >= ratio:
+            self.logger.warning(
+                "去重合改写未降低抄录率（%.1f%% -> %s），保留原稿",
+                ratio,
+                after_ratio,
+            )
+            return
+
+        # 走润色回写通道，顺带把自动发布模式的字数下限再兜一次；
+        # update_validation=False 避免清掉已有的校验分。
+        self._apply_polish_pack(
+            content, {"polished_article": rewritten}, data_report, update_validation=False
+        )
+        content.validation_notes = [
+            *list(getattr(content, "validation_notes", []) or []),
+            f"已执行去重合改写：与素材连续抄录 {ratio}% -> {after_ratio}%",
+        ][:10]
+        self.logger.info("去重合改写生效：连续抄录 %.1f%% -> %.1f%%", ratio, after_ratio)
 
     def _apply_polish_pack(self, content, polish_pack, data_report, update_validation: bool = True) -> None:
         content.polished_article = str(polish_pack.get("polished_article", "")).strip()

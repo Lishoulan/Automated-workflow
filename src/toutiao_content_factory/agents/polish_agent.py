@@ -481,6 +481,78 @@ class PolishAgent(BaseAgent):
 
         return ""
 
+    # 与 originality_service 的连续抄录检测对齐：那边用 8 字滑窗拼出连续片段，
+    # 只有长度 ≥16 的片段才计入抄录率。这里把红线设在 12 字，留出安全余量，
+    # 避免「刚好卡在检测边界」的改写。
+    DEDUP_SPAN_MIN_CHARS = 12
+
+    def dedup_rewrite(self, article: str, spans: list[str]) -> str:
+        """把与素材原文连续重合的片段改写掉，返回改写后的正文（失败返回空串）。
+
+        与 `_repolish_for_rules` 同源：只做「换表达」的最小化改写——不新增素材
+        没有的事实、不改动数字与主体、不调整段落顺序和主判断。调用方负责判定
+        「确实越线」并对改写结果复测，本方法只负责改写本身。
+        """
+        targets = [
+            str(item).strip()
+            for item in (spans or [])
+            if len(str(item).strip()) >= self.DEDUP_SPAN_MIN_CHARS
+        ]
+        if not article or not targets:
+            return ""
+        # 送到模型面前的重合片段要截断：片段本身是素材原文，喂得越长，
+        # 模型照抄回来的概率越高。
+        targets = [item[:80] for item in targets[:12]]
+        listed = "\n".join(
+            f"{index}. {span}" for index, span in enumerate(targets, start=1)
+        )
+        system_prompt = (
+            "你是原创性校对编辑，只输出一个合法 JSON 对象。"
+            "你的唯一任务是降低文章与素材原文的逐字重合，不负责改写观点、事实或结构。"
+        )
+        user_prompt = (
+            "<overlap_spans>\n"
+            "下面每一行都是正文与素材原文连续重合的片段（比对时已去掉标点）：\n"
+            f"{listed}\n"
+            "</overlap_spans>\n\n"
+            "<source_document label=\"待改写正文\">\n"
+            f"{self.sanitize_source_document(article)}\n"
+            "</source_document>\n\n"
+            "改写要求：\n"
+            "1. 只改写上面所列片段所在的句子，其余句子逐字保留。\n"
+            "2. 保留全部事实、数字、公司名、时间、结论和段落顺序；不得新增素材没有的信息。\n"
+            "3. 改写后，正文与素材原文不得再出现连续 12 个以上相同汉字（数字、专有名词、直接引语除外）。\n"
+            "4. 换用不同的句式、主语和动词；只调换语序或替换个别近义词不算改写。\n"
+            "5. 段落数量、段落顺序不得变化；总字数不得少于原文的 95%。\n"
+            "6. 输出 JSON：{\"polished_article\": \"完整正文\"}。纯正文，不要出现 #、列表、编号或代码块。\n"
+        )
+        try:
+            result = self.openai_service.create_json_completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+        except Exception as exc:
+            self.logger.warning("去重合改写调用失败: %s", exc)
+            return ""
+
+        if isinstance(result, dict):
+            rewritten = str(
+                result.get("polished_article") or result.get("article") or ""
+            ).strip()
+        else:
+            rewritten = str(result or "").strip()
+        if not rewritten:
+            return ""
+        # 改写不得缩水：低于原文 95% 说明模型顺手删了内容，宁可放弃这次改写。
+        if len(rewritten) < len(article) * 0.95:
+            self.logger.warning(
+                "去重合改写后正文缩水 %d -> %d 字，放弃本次改写",
+                len(article),
+                len(rewritten),
+            )
+            return ""
+        return rewritten
+
     def _finalize_article(
         self,
         article: str,

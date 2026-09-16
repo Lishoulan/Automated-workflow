@@ -89,6 +89,10 @@ jobs:
 
       # ---- 非敏感配置（直接硬编码默认值） ----
       PYTHONUTF8: "1"
+      # 时区固定为北京时间：让 datetime.now() 的「今日」与头条后台一致。
+      # runner 默认是 UTC，会导致跨 0-8 点的时段把「今天」算成前一天
+      # （count_today_published 的每日 1 篇上限由此失效/误判）。
+      TZ: Asia/Shanghai
       TOUTIAO_ACCOUNT: default
 
       # Image generation: image2 cover first; exact statistical inserts stay local.
@@ -903,6 +907,10 @@ jobs:
 
       # ---- 非敏感配置（直接硬编码默认值） ----
       PYTHONUTF8: "1"
+      # 时区固定为北京时间：让 datetime.now() 的「今日」与头条后台一致。
+      # runner 默认是 UTC，会导致跨 0-8 点的时段把「今天」算成前一天
+      # （count_today_published 的每日 1 篇上限由此失效/误判）。
+      TZ: Asia/Shanghai
       TOUTIAO_ACCOUNT: default
 
       # Image generation: image2 cover first; exact statistical inserts stay local.
@@ -1132,6 +1140,7 @@ jobs:
 
     env:
       PYTHONUTF8: "1"
+      TZ: Asia/Shanghai
       TOUTIAO_ACCOUNT: ${{ secrets.CLOUD_DEFAULT_ACCOUNT || 'default' }}
       LOG_LEVEL: INFO
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}

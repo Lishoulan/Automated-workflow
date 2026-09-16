@@ -121,7 +121,8 @@ class TitleAgent(BaseAgent):
         )
 
     def validate_title_compliance(self, title: str, body_text: str = "") -> bool:
-        if len(title) > 30:
+        max_length = self._title_max_length()
+        if len(title) > max_length:
             return False
         for pattern in self.DISCOURAGED_TITLE_PATTERNS:
             if pattern in title:
@@ -132,10 +133,38 @@ class TitleAgent(BaseAgent):
             return False
         # 标题必须承接正文具象钩子：若正文含具体数字/场景/公司等地标元素，
         # 标题至少引用其一，避免"情绪模板+空泛主题词"的零点击标题。
-        if body_text and 10 <= len(title) <= 30:
+        if body_text and 10 <= len(title) <= max_length:
             if not self._has_concrete_hook(title, body_text):
                 return False
         return True
+
+    def _title_max_length(self) -> int:
+        """标题长度上限的唯一真相源：发布端的 `title_max_length`。
+
+        此前这里**硬编码 30**，而 `ArticleQualityChecker._check_title` 用 40、
+        发布裁剪 `_clip_title` 又读配置——三处各说各话。提示词让模型按 16-40 字
+        产出，于是偏长的候选在这一步被静默砍掉，候选池因此枯竭（2026-09-16 实测：
+        20 个候选过完只剩 1 条）。统一读配置，配置改一处即全链路生效。
+        """
+        try:
+            return max(1, int(self.settings.publishing.title_max_length))
+        except Exception:
+            return 30
+
+    @staticmethod
+    def _title_body_reference(content: GeneratedContent) -> str:
+        """标题-正文一致性校验该拿哪段文本：优先成稿正文，再退回摘要。
+
+        不要用 `summary` 当正文——摘要不含公司名，会把「标题有主体、摘要里
+        没有」误判成主体不一致，从而毙掉本可用的候选。
+        """
+        for candidate in (
+            getattr(content, "polished_article", "") or "",
+            getattr(content, "article", "") or "",
+        ):
+            if str(candidate).strip():
+                return str(candidate)
+        return str(getattr(content, "summary", "") or "")
 
     @staticmethod
     def _extract_concrete_elements(text: str) -> set[str]:
@@ -230,8 +259,16 @@ class TitleAgent(BaseAgent):
 
         dual = self._pick_dual_titles(ranked_titles, data_report, model_title_a, model_title_b, cache_context)
 
+        # ⚠️ 2026-09-16：这里原先传 `content.summary` 当「正文」去做标题-正文
+        # 一致性校验，而 summary 是摘要，**通常不含公司名**。于是
+        # `_check_title_integrity` 会把「标题提到某公司、但 summary 里没有该公司」
+        # 判成主体不一致，直接毙掉候选——可提示词恰恰要求标题必须带具体主体。
+        # 实测（9-16 储能稿的 summary + 6 个合格候选）：用 summary 误杀 3/6，
+        # 用正文全文只拒 1/6，且那 1 条是**真该拒**的（正文确实没提宁德时代）。
+        # 20 个候选过完这道错校验只剩 1 条，下游无论怎么选都挑不出好标题。
+        body_reference = self._title_body_reference(content)
         compliant_titles = [
-            t for t in ranked_titles if self.validate_title_compliance(t, content.summary)
+            t for t in ranked_titles if self.validate_title_compliance(t, body_reference)
         ]
         if compliant_titles:
             ranked_titles = compliant_titles

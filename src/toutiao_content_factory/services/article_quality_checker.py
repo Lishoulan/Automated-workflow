@@ -412,7 +412,54 @@ class ArticleQualityChecker:
         re.compile(r"利润先流向谁$"),
         re.compile(r"真正的收入来自什么$"),
         re.compile(r"^(90%|.*\d+%)背后"),
+        # 2026-09-16 新增：「…：X如何实测」这一族。三份证据都指向它是零阅读句式 ——
+        #   ① `feedback_loop_service` 的注释点名「XX亿：XX如何实测」是「0 阅读但展现 300-470」的模板；
+        #   ② 账号历史实绩：「基地10亿：机器人如何实测」10 阅读、「月之暗面等大模型1240亿：大模型如何实测」21 阅读；
+        #   ③ 这两句正是 `title_agent._fallback_fact_titles` 硬编码的兜底模板，而它被**塞在
+        #      整个候选列表最前面**，`select_auto_title` 又取「第一个通过的」→ 必然被选中。
+        #      2026-09-16 云端发布的就是它（`titles.txt` 候选 #1）。
+        # 注意：`实测` 这个词本身在 RULE_009 的动作词表里，所以这类标题以前能顺利过闸。
+        re.compile(r"如何实测$"),
+        re.compile(r"项目实测$"),
+        re.compile(r"如何验证$"),
+        re.compile(r"下一步看什么$"),
+        re.compile(r".{0,12}实测[：:].{0,12}$"),
     ]
+
+    # 2026-09-16：按实测数据排候选点击吸引力的偏好打分（不参与「是否合格」判定）。
+    #
+    # 依据（`docs/TITLE_STRATEGY_20260916.md`，94 条有效作品的 CTR 分布）：
+    # - 高 CTR 共性：**下判断 / 设问带前提 / 反直觉 / 短**，头部 15 条平均 20.1 字；
+    # - 零阅读模式：模糊主体、纯陈述、**冒号+数字堆砌**、抽象名词罗列、硬凑标题党；
+    # - 反面证据：命中「主体+数字+后果」四要素越多的组 CTR 越低
+    #   （命中 3 项 0.00% vs 0 项 0.86%），所以**不能**用要素数量当排序键。
+    # 权重刻意取得很小，只用来在**已通过闸门**的候选之间排序，不可能让不合格标题复活。
+    _TITLE_JUDGMENT_PATTERN = re.compile(
+        r"(才是|不在|不是.{1,8}而是|关键在于|先看|谁在|凭什么|够不够|能不能|卡在|落后于|[？?]$)"
+    )
+    _TITLE_FUTURE_PROMISE_PATTERN = re.compile(r"(谁将|将实现|有望|剑指|必将|一定)")
+    _TITLE_COLON_ENUM_PATTERN = re.compile(r"：.*[，,].*[，,]")
+
+    def title_click_preference(self, title: str) -> int:
+        """给出标题的「点击吸引力」相对分（越大越好），只用于候选排序。"""
+        text = (title or "").strip()
+        if not text:
+            return -99
+        score = 0
+        length = len(text)
+        if length <= 22:
+            score += 2
+        elif length > 28:
+            score -= 2
+        if self._TITLE_JUDGMENT_PATTERN.search(text):
+            score += 2
+        if self._TITLE_FUTURE_PROMISE_PATTERN.search(text):
+            score -= 1
+        if self._TITLE_COLON_ENUM_PATTERN.search(text):
+            score -= 1
+        if len(re.findall(r"\d", text)) >= 4:
+            score -= 1
+        return score
 
     # RULE_006: 具象元素检测
     _TITLE_COMPANY_PATTERN = re.compile(

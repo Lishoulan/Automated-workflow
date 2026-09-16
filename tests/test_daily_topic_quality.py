@@ -515,7 +515,12 @@ def test_project_title_fallback_uses_topic_facts_and_passes_hard_title_rules(
     title = titles[0]
     assert "26万千瓦" in title
     assert "充电站" in title
-    assert "实测" in title
+    # 2026-09-16：兜底文案原本硬编码「…如何实测／项目实测」，而这两句式
+    # 已被证实是零阅读模板（历史实绩 10–21 阅读），并且会被 RULE_007 拦下。
+    # 兜底标题必须同时满足「借用选题事实」和「不走确认过的坏句式」。
+    assert "实测" not in title
+    for skeleton in ("如何实测", "项目实测", "如何验证", "下一步看什么"):
+        assert skeleton not in title
     assert len(title) <= app_settings.publishing.title_max_length
     assert agent.validate_title_compliance(title, content.summary)
     assert ArticleQualityChecker()._check_title(title, content.article)["issues"] == []

@@ -181,6 +181,69 @@ def _render_cloud(run: dict | None, snapshot: dict, day: str) -> list[str]:
     return lines
 
 
+def _render_account_economy() -> list[str]:
+    """账号级收益与流量：回答「发的这些到底有没有在动」。
+
+    数据来自 `growth_ops/performance/account_snapshot.json`（头条首页看板 + 创作权益接口）。
+    收益是**累计值**，所以「有没有动」要看与上一次观测的差，而不是看总额。
+    """
+    path = (
+        PROJECT_ROOT
+        / "output"
+        / "accounts"
+        / ACCOUNT
+        / "growth_ops"
+        / "performance"
+        / "account_snapshot.json"
+    )
+    payload = _load_json(path)
+    if not isinstance(payload, dict) or not payload:
+        return [
+            "  尚未采集账号快照（跑 `main.py --collect-performance --account robot_notes` 生成）。"
+        ]
+
+    latest = payload.get("latest") if isinstance(payload.get("latest"), dict) else {}
+    account = latest.get("account") if isinstance(latest.get("account"), dict) else {}
+    quality = latest.get("quality") if isinstance(latest.get("quality"), dict) else {}
+    benefits = latest.get("benefits") if isinstance(latest.get("benefits"), dict) else {}
+    history = payload.get("history") if isinstance(payload.get("history"), list) else []
+
+    lines: list[str] = []
+    total = payload.get("revenue_total")
+    delta = payload.get("revenue_delta_vs_last_observation")
+    stored = payload.get("previous_observation_date") or "上次观测"
+    if isinstance(total, (int, float)):
+        if isinstance(delta, (int, float)):
+            lines.append(
+                f"  累计收益 {float(total):.2f} 元（较 {stored} "
+                f"{'+' if float(delta) >= 0 else ''}{float(delta):.2f} 元）"
+            )
+        else:
+            lines.append(f"  累计收益 {float(total):.2f} 元（还只有一个观测点，无法算增量）")
+    else:
+        lines.append("  累计收益：未采集到（不按 0 处理）")
+
+    reads = account.get("total_reads")
+    reads_delta = None
+    numeric_history = [
+        row for row in history if isinstance(row.get("total_reads"), (int, float))
+    ]
+    if len(numeric_history) >= 2 and isinstance(reads, (int, float)):
+        reads_delta = float(reads) - float(numeric_history[-2]["total_reads"])
+    if isinstance(reads, (int, float)):
+        delta_text = f"，较上次 {'+' if (reads_delta or 0) >= 0 else ''}{int(reads_delta)}" if reads_delta is not None else ""
+        lines.append(f"  总阅读(播放)量 {int(reads)}{delta_text}")
+    lines.append(
+        f"  粉丝 {account.get('fans')}｜信用分 {quality.get('credit_score')}"
+        f"｜低质量标记 {quality.get('is_low_quality')}"
+        f"｜文章创作收益权益 {'已开通' if benefits.get('can_earn_article_revenue') else '未开通/未知'}"
+    )
+    lines.append(
+        "  ⚠️ 收益是账号累计值；单篇归因金额头条未开放，报告里的「平台收益」仍是待回流。"
+    )
+    return lines
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="每日发布自检简报")
     parser.add_argument("--date", default=_today(), help="YYYYMMDD 或 YYYY-MM-DD，默认今天")
@@ -200,6 +263,9 @@ def main() -> int:
 
     print("\n[本地通道]")
     print("\n".join(_render_local(records, day)))
+
+    print("\n[账号收益与流量]")
+    print("\n".join(_render_account_economy()))
 
     if not args.local_only:
         print("\n[云端通道]")

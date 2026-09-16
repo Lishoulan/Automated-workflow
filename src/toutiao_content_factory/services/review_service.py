@@ -268,12 +268,19 @@ class ReviewWorkflowService:
         return result
 
     def select_auto_title(self, run_dir: Path) -> dict[str, object]:
-        """Choose the first title that passes the final title-level quality gate.
+        """Pick the best title that passes the final title-level quality gate.
 
         The score model ranks candidates, but it does not guarantee that the
         selected title is compliant after generation. Keep this gate next to
         title resolution so both scheduled and manual callers can inspect the
         same candidate list and diagnostics.
+
+        ⚠️ 2026-09-16：以前这里取的是**第一个**通过闸门的候选。配上
+        `title_agent` 把硬编码兜底模板**塞在候选列表最前面**，等于让模板必然胜出
+        （云端 9-16 发布的正是兜底模板「工信部推动机器人80%：具身智能如何实测」）。
+        现在改为：先按闸门筛掉不合格的（语义不变），再在**通过的**里面按
+        `title_click_preference` 选点击吸引力最高的，同分时保持原顺序。
+        排序键来自实测 CTR 分布，绝不会让不合格标题复活。
         """
         bundle, selected_topic = self._load_bundle(run_dir)
         candidates = self._title_candidates(bundle)
@@ -292,6 +299,7 @@ class ReviewWorkflowService:
                 str(getattr(selected_topic, "url", "")),
             )
 
+        passed: list[tuple[int, int, str]] = []
         for index, candidate in enumerate(candidates, start=1):
             title = self.publish_service._clip_title(
                 self._text_cleaner.strip_prompt_leakage(candidate).strip()
@@ -314,16 +322,33 @@ class ReviewWorkflowService:
             }
             evaluations.append(evaluation)
             if not issues:
-                return {
-                    "selected_title": title,
-                    "selected_title_index": index,
-                    "evaluations": evaluations,
-                }
+                passed.append((-checker.title_click_preference(title), index, title))
+
+        if passed:
+            passed.sort(key=lambda item: (item[0], item[1]))
+            best_preference, best_index, best_title = passed[0]
+            self.logger.info(
+                "Auto title selection: %d/%d candidates passed the gate; picked index=%s "
+                "(preference=%s) %s",
+                len(passed),
+                len(evaluations),
+                best_index,
+                -best_preference,
+                best_title,
+            )
+            self._log_title_skeleton_collapse(candidates)
+            return {
+                "selected_title": best_title,
+                "selected_title_index": best_index,
+                "evaluations": evaluations,
+                "passed_count": len(passed),
+            }
 
         return {
             "selected_title": "",
             "selected_title_index": 0,
             "evaluations": evaluations,
+            "passed_count": 0,
             "reason": "No candidate title passed the final title quality gate.",
         }
 
@@ -412,6 +437,38 @@ class ReviewWorkflowService:
             return self._load_workflow(run_dir)
         except FileNotFoundError:
             return None
+
+    def _log_title_skeleton_collapse(self, candidates: list[str]) -> None:
+        """记录「模型标题塌缩成同一个骨架」的情况。
+
+        2026-09-16 实测：13 个候选里 11 个都是「灵巧手产业：…」。提示词里
+        第 19 条明令禁止填空式模板，模型仍然照做 —— 这类塌缩是「标题看起来
+        有 20 个候选、实际只有一个思路」的根因，也解释了为什么排序层最后只能
+        在两个都不理想的形态里挑。这里只做**观测**（不改行为），
+        方便按真实数据迭代提示词，而不是凭感觉改。
+        """
+        if not candidates:
+            return
+        skeletons: dict[str, int] = {}
+        for title in candidates:
+            text = (title or "").strip()
+            if not text:
+                continue
+            head = text.split("：", 1)[0].split("，", 1)[0].split(",", 1)[0][:12]
+            if head:
+                skeletons[head] = skeletons.get(head, 0) + 1
+        if not skeletons:
+            return
+        head, count = max(skeletons.items(), key=lambda item: item[1])
+        if count >= 3 and count * 2 >= len(candidates):
+            self.logger.warning(
+                "Title skeleton collapse: %d/%d candidates share the leading skeleton 「%s」. "
+                "The candidate list looks diverse but carries one idea; consider tightening the "
+                "title prompt before tuning the gate.",
+                count,
+                len(candidates),
+                head,
+            )
 
     def _load_bundle(self, run_dir: Path) -> tuple[ReviewBundle, TopicCandidate | None]:
         workflow = self._load_workflow_optional(run_dir)

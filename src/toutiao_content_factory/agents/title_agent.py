@@ -428,7 +428,12 @@ class TitleAgent(BaseAgent):
 
         fact_titles = self._fallback_fact_titles(content, data_report)
         if fact_titles:
-            templates = fact_titles + templates
+            # ⚠️ 2026-09-16：这里以前是 `fact_titles + templates`（**塞到最前面**）。
+            # 配上 `select_auto_title` 取「第一个通过闸门的候选」，等于让**硬编码模板
+            # 永远压过模型产出的标题** —— 云端 9-16 发布的就是这个兜底模板
+            # （「工信部推动机器人80%：具身智能如何实测」，实测同句式历史阅读 10–21）。
+            # 兜底就该待在兜底的位置：模型候选全不可用时才轮到它。
+            templates = templates + fact_titles
 
         # A financial title must be anchored to the selected topic itself.
         # Playbook templates are useful for style, but cannot replace the
@@ -518,15 +523,15 @@ class TitleAgent(BaseAgent):
         if number:
             raw_titles.extend(
                 [
-                    f"{anchor}{number}：{detail}如何实测",
-                    f"{anchor}{number}：{detail}项目实测",
+                    f"{anchor}{number}：{detail}真实进度看交付",
+                    f"{anchor}{number}，{detail}交付进度才是关键",
                 ]
             )
         else:
             raw_titles.extend(
                 [
-                    f"{anchor}项目实测：{detail}下一步看什么",
-                    f"{anchor}项目实测：{detail}如何验证",
+                    f"{anchor}：{detail}真实进度看交付",
+                    f"{anchor}，{detail}交付进度才是关键",
                 ]
             )
 

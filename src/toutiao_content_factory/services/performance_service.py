@@ -264,11 +264,13 @@ class PerformanceService:
         for attempt in range(1, 3):
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                self._human_pause(page)
+                # 必须等内容真正渲染完再判断元素是否存在 —— 详见方法注释。
+                self._wait_for_dashboard_render(page, timeout_ms=timeout_ms)
                 if self._page_has_metric_signal(page):
                     return True
                 self.logger.warning(
-                    "%s performance page opened but target elements are still missing after attempt %s: %s. If a captcha is visible, complete it in the browser window.",
+                    "%s performance page opened but target elements are still missing after attempt %s: %s. "
+                    "页面可能仍在加载，或登录态已失效。",
                     platform,
                     attempt,
                     url,
@@ -302,6 +304,38 @@ class PerformanceService:
             except Exception:
                 continue
         return False
+
+    def _wait_for_dashboard_render(self, page: Any, *, timeout_ms: int) -> None:
+        """等创作后台把内容真正渲染出来，再判断元素是否存在。
+
+        ⚠️ 2026-09-16 定位的根因：这里此前只调用一次 `_human_pause()`（几百毫秒），
+        而头条创作中心是 **React 单页应用** —— `domcontentloaded` 触发时页面骨架
+        已就绪、数据尚未回填，此时查元素必然为空。于是每条候选 URL 都被判
+        「target elements are still missing」，日志还建议"如有验证码请手动完成"，
+        把排查方向**错误地引向登录态与风控**。
+
+        实测（**同一 profile、同样 headless**）：只要等到页面渲染完
+        - 信号元素正常：「阅读」/「展现」/「草稿箱」/「作品管理」命中数均为 1
+        - 行选择器正常：`[class*='article-card']` 命中 15 行
+        也就是说采集器本身没坏，**缺的只是等待**。这个缺失正是"表现数据在
+        2026-09-14 之后再没回流过"的直接原因。
+        """
+        budget_ms = max(2000, min(int(timeout_ms), 20000))
+        try:
+            # 首屏数据请求通常在 networkidle 附近完成；后台可能有轮询，
+            # 所以这里只作加速用，超时就继续轮询，不当失败处理。
+            page.wait_for_load_state("networkidle", timeout=min(budget_ms, 8000))
+        except Exception:
+            pass
+        waited = 0
+        step = 500
+        while waited < budget_ms:
+            if self._page_has_metric_signal(page):
+                # 骨架已在，再给列表一点落地时间，避免"框架到了、行还没来"。
+                page.wait_for_timeout(step)
+                return
+            page.wait_for_timeout(step)
+            waited += step
 
     def _enter_content_manage(self, page: Any) -> None:
         """头条创作中心：点击「作品管理」进入文章管理列表。

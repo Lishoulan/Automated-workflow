@@ -125,6 +125,7 @@ jobs:
       TOUTIAO_PUBLISH_ENABLED: "1"
       TOUTIAO_AUTO_PUBLISH: "1"
       TOUTIAO_DRAFT_ONLY: "0"
+      TOUTIAO_PUBLISH_DRAFT_ONLY: "0"
       TOUTIAO_MAX_DAILY_POSTS: "1"
       TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS: ${{ secrets.TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS || '3' }}
       TOUTIAO_AIGC_DECLARATION_ENABLED: "1"
@@ -190,8 +191,16 @@ jobs:
       TOUTIAO_SKIP_PUBLISH_REVIEW: ${{ secrets.TOUTIAO_SKIP_PUBLISH_REVIEW || '0' }}
       TOUTIAO_REVIEW_MIN_OVERALL_SCORE: ${{ secrets.TOUTIAO_REVIEW_MIN_OVERALL_SCORE || '72' }}
       TOUTIAO_REVIEW_MAX_AI_RISK: ${{ secrets.TOUTIAO_REVIEW_MAX_AI_RISK || '45' }}
-      TOUTIAO_AUTO_PUBLISH_MIN_OVERALL_SCORE: ${{ secrets.TOUTIAO_AUTO_PUBLISH_MIN_OVERALL_SCORE || '80' }}
+      # 自动发布的四个门槛必须与本地 .env 完全一致，否则云端会挑出和本地不同的稿子
+      # （历史差异：云端 overall>=80 / readiness>=70，本地是 70 / 60）。
+      # 每次运行的日志里会打印实际生效值（Report effective auto-publish gate）。
+      TOUTIAO_AUTO_PUBLISH_MIN_OVERALL_SCORE: ${{ secrets.TOUTIAO_AUTO_PUBLISH_MIN_OVERALL_SCORE || '70' }}
       TOUTIAO_AUTO_PUBLISH_MAX_AI_RISK: ${{ secrets.TOUTIAO_AUTO_PUBLISH_MAX_AI_RISK || '40' }}
+      TOUTIAO_AUTO_PUBLISH_MIN_VALIDATION_SCORE: ${{ secrets.TOUTIAO_AUTO_PUBLISH_MIN_VALIDATION_SCORE || '80' }}
+      TOUTIAO_AUTO_PUBLISH_MIN_READINESS_SCORE: ${{ secrets.TOUTIAO_AUTO_PUBLISH_MIN_READINESS_SCORE || '60' }}
+      TOUTIAO_HOT_TOPIC_MIN_AUTO_PUBLISH_OVERALL_SCORE: ${{ secrets.TOUTIAO_HOT_TOPIC_MIN_AUTO_PUBLISH_OVERALL_SCORE || '65' }}
+      TOUTIAO_HOT_TOPIC_MAX_AUTO_PUBLISH_AI_RISK: ${{ secrets.TOUTIAO_HOT_TOPIC_MAX_AUTO_PUBLISH_AI_RISK || '50' }}
+      TOUTIAO_HOT_TOPIC_MIN_AUTO_PUBLISH_READINESS_SCORE: ${{ secrets.TOUTIAO_HOT_TOPIC_MIN_AUTO_PUBLISH_READINESS_SCORE || '50' }}
       
       # ---- 洞察增强功能配置 ----
       TOUTIAO_ENHANCED_INSIGHTS_ENABLED: ${{ secrets.TOUTIAO_ENHANCED_INSIGHTS_ENABLED || '1' }}
@@ -330,7 +339,11 @@ jobs:
             echo "RUN_PUBLISH_WECHAT_VIA_135=$RUN_PUBLISH_WECHAT_VIA_135"
             echo "TOUTIAO_ACCOUNT=$RUN_ACCOUNT"
             echo "TOUTIAO_AUTO_PUBLISH=$TOUTIAO_AUTO_PUBLISH_VALUE"
+            # TOUTIAO_DRAFT_ONLY is the legacy name kept for compatibility; the
+            # settings loader only reads TOUTIAO_PUBLISH_DRAFT_ONLY. Emit both so
+            # the intended value actually reaches PublishSettings.draft_only.
             echo "TOUTIAO_DRAFT_ONLY=$TOUTIAO_DRAFT_ONLY_VALUE"
+            echo "TOUTIAO_PUBLISH_DRAFT_ONLY=$TOUTIAO_DRAFT_ONLY_VALUE"
             echo "WECHAT_ENABLED=$WECHAT_ENABLED_VALUE"
             echo "WECHAT_AUTO_PUBLISH=$WECHAT_AUTO_PUBLISH_VALUE"
             echo "RUN_TOPIC_TITLE<<__TOPIC_TITLE__"
@@ -398,6 +411,44 @@ jobs:
           echo "  runtime=$ACCOUNT_RUNTIME_DIR"
           echo "  output=$ACCOUNT_OUTPUT_DIR"
           echo "  toutiao_profile=$TOUTIAO_PROFILE_DIR"
+
+      - name: Report effective auto-publish gate
+        # 审核门槛有 env / Secret / config.yaml 三层覆盖，云端和本地最容易在这里分叉。
+        # 每次运行都把最终生效的数值打进日志，避免「云端为什么没自动发」只能靠猜。
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python - "$RUN_ACCOUNT" <<'PY'
+          import sys
+          from datetime import datetime
+          from pathlib import Path
+
+          from toutiao_content_factory.config import load_settings
+          from toutiao_content_factory.services.compliance_service import get_max_daily_posts
+
+          settings = load_settings(Path.cwd().resolve(), account_key=sys.argv[1])
+          review = settings.review
+          publishing = settings.publishing
+          now = datetime.now()
+          print(f"[auto-publish gate] clock  : now={now.isoformat(timespec='seconds')} "
+                f"today={now.strftime('%Y-%m-%d')} tz={now.astimezone().tzname()}")
+          print(
+              "[auto-publish gate] normal : "
+              f"overall>={review.min_auto_publish_overall_score} "
+              f"ai_risk<={review.max_auto_publish_ai_risk} "
+              f"validation>={review.min_auto_publish_validation_score} "
+              f"readiness>={review.min_auto_publish_readiness_score}"
+          )
+          print(
+              "[auto-publish gate] hot    : "
+              f"overall>={review.hot_topic_min_auto_publish_overall_score} "
+              f"ai_risk<={review.hot_topic_max_auto_publish_ai_risk} "
+              f"readiness>={review.hot_topic_min_auto_publish_readiness_score}"
+          )
+          print(
+              "[auto-publish gate] publish: "
+              f"enabled={publishing.enabled} auto_publish={publishing.auto_publish} "
+              f"draft_only={publishing.draft_only} max_daily={get_max_daily_posts('toutiao')}"
+          )
+          PY
 
       - name: Install Playwright chromium
         run: |
@@ -943,6 +994,7 @@ jobs:
       TOUTIAO_PUBLISH_ENABLED: "1"
       TOUTIAO_AUTO_PUBLISH: "0"
       TOUTIAO_DRAFT_ONLY: "1"
+      TOUTIAO_PUBLISH_DRAFT_ONLY: "1"
       TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS: ${{ secrets.TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS || '3' }}
       TOUTIAO_AIGC_DECLARATION_ENABLED: "1"
       TOUTIAO_PUBLISH_PLATFORM: toutiao
@@ -1007,8 +1059,16 @@ jobs:
       TOUTIAO_SKIP_PUBLISH_REVIEW: ${{ secrets.TOUTIAO_SKIP_PUBLISH_REVIEW || '0' }}
       TOUTIAO_REVIEW_MIN_OVERALL_SCORE: ${{ secrets.TOUTIAO_REVIEW_MIN_OVERALL_SCORE || '72' }}
       TOUTIAO_REVIEW_MAX_AI_RISK: ${{ secrets.TOUTIAO_REVIEW_MAX_AI_RISK || '45' }}
-      TOUTIAO_AUTO_PUBLISH_MIN_OVERALL_SCORE: ${{ secrets.TOUTIAO_AUTO_PUBLISH_MIN_OVERALL_SCORE || '80' }}
+      # 自动发布的四个门槛必须与本地 .env 完全一致，否则云端会挑出和本地不同的稿子
+      # （历史差异：云端 overall>=80 / readiness>=70，本地是 70 / 60）。
+      # 每次运行的日志里会打印实际生效值（Report effective auto-publish gate）。
+      TOUTIAO_AUTO_PUBLISH_MIN_OVERALL_SCORE: ${{ secrets.TOUTIAO_AUTO_PUBLISH_MIN_OVERALL_SCORE || '70' }}
       TOUTIAO_AUTO_PUBLISH_MAX_AI_RISK: ${{ secrets.TOUTIAO_AUTO_PUBLISH_MAX_AI_RISK || '40' }}
+      TOUTIAO_AUTO_PUBLISH_MIN_VALIDATION_SCORE: ${{ secrets.TOUTIAO_AUTO_PUBLISH_MIN_VALIDATION_SCORE || '80' }}
+      TOUTIAO_AUTO_PUBLISH_MIN_READINESS_SCORE: ${{ secrets.TOUTIAO_AUTO_PUBLISH_MIN_READINESS_SCORE || '60' }}
+      TOUTIAO_HOT_TOPIC_MIN_AUTO_PUBLISH_OVERALL_SCORE: ${{ secrets.TOUTIAO_HOT_TOPIC_MIN_AUTO_PUBLISH_OVERALL_SCORE || '65' }}
+      TOUTIAO_HOT_TOPIC_MAX_AUTO_PUBLISH_AI_RISK: ${{ secrets.TOUTIAO_HOT_TOPIC_MAX_AUTO_PUBLISH_AI_RISK || '50' }}
+      TOUTIAO_HOT_TOPIC_MIN_AUTO_PUBLISH_READINESS_SCORE: ${{ secrets.TOUTIAO_HOT_TOPIC_MIN_AUTO_PUBLISH_READINESS_SCORE || '50' }}
 
       # ---- 洞察增强功能配置 ----
       TOUTIAO_ENHANCED_INSIGHTS_ENABLED: ${{ secrets.TOUTIAO_ENHANCED_INSIGHTS_ENABLED || '1' }}

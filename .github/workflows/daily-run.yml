@@ -486,6 +486,24 @@ jobs:
           fi
           rm -f "$BODY_FILE" "$CURL_ERR"
 
+          # 用同一把 key 去问几个候选 provider「你认识它吗」，直接定位密钥属于哪家，
+          # 省掉「base_url 和 key 不匹配」这类只能靠试的排查（2026-09-16 就是这么坏的）。
+          echo "[llm-probe] key acceptance across candidate endpoints (GET {base}/models):"
+          for candidate in \
+            "$OPENAI_BASE_URL" \
+            "https://www.fhl.mom/v1" \
+            "https://open.bigmodel.cn/api/paas/v4" \
+            "https://api.siliconflow.cn/v1" \
+            "https://api.deepseek.com" ; do
+            [ -z "$candidate" ] && continue
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -m 20 \
+              -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+              "${candidate%/}/models" 2>/dev/null || echo ERR)"
+            host="$(printf '%s' "$candidate" | sed -E 's#^(https?://[^/]+).*#\1/...#')"
+            printf '    %-6s %s\n' "$code" "$host"
+          done
+          echo "    (format: <http_status> <endpoint>; 401/403 = key not accepted there, 200 = key is valid there)"
+
       - name: Install Playwright chromium
         run: |
           playwright install chromium

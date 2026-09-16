@@ -504,6 +504,20 @@ jobs:
           done
           echo "    (format: <http_status> <endpoint>; 401/403 = key not accepted there, 200 = key is valid there)"
 
+          # 再问一遍同样几个 host，但用一把假 key：只为区分「这家根本不通/被墙」
+          # 和「通了但不认这把 key」。JSON 401 = 通；HTML/超时/000 = 不通。
+          echo "[llm-probe] candidate reachability with a dummy key (JSON 401 = reachable):"
+          for candidate in \
+            "https://open.bigmodel.cn/api/paas/v4" \
+            "https://api.siliconflow.cn/v1" \
+            "https://api.deepseek.com" ; do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -m 20 \
+              -H "Authorization: Bearer sk-dummy-reachability-probe" \
+              "${candidate%/}/models" 2>/dev/null || echo ERR)"
+            host="$(printf '%s' "$candidate" | sed -E 's#^(https?://[^/]+).*#\1/...#')"
+            printf '    %-6s %s\n' "$code" "$host"
+          done
+
       - name: Install Playwright chromium
         run: |
           playwright install chromium

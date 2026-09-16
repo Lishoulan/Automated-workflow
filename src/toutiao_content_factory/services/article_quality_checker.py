@@ -440,6 +440,21 @@ class ArticleQualityChecker:
     _TITLE_FUTURE_PROMISE_PATTERN = re.compile(r"(谁将|将实现|有望|剑指|必将|一定)")
     _TITLE_COLON_ENUM_PATTERN = re.compile(r"：.*[，,].*[，,]")
 
+    def title_skeleton(self, title: str) -> str:
+        """取标题的「开头骨架」（前 12 字内、到第一个分隔符为止）。
+
+        用来识别**候选塌缩**：2026-09-16 实测一次运行 13 个候选里 11 个骨架相同
+        （全是「灵巧手产业：」），候选列表看着有 13 条、实际只有 1 个思路。
+        提示词里第 19/20 条已明令禁止，但模型会无视，所以还需要代码侧兜底。
+        """
+        text = (title or "").strip()
+        if not text:
+            return ""
+        head = text.split("：", 1)[0]
+        for separator in ("，", ",", "。", "；", ";"):
+            head = head.split(separator, 1)[0]
+        return head.strip()[:12]
+
     def title_click_preference(self, title: str) -> int:
         """给出标题的「点击吸引力」相对分（越大越好），只用于候选排序。"""
         text = (title or "").strip()

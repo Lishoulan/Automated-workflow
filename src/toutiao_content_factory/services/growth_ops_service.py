@@ -1682,6 +1682,16 @@ articles:
         return "\n".join(lines) + "\n"
 
     def _recommend_title_templates(self, track: str, keywords: list[str]) -> list[str]:
+        """按赛道返回一批「句式骨架」——⚠️ 这些是**程序手工合成的**，没有任何实测依据。
+
+        它们只是把一个固定句型里的关键词槽位填上赛道关键词，因此**不能当作
+        「好标题范例」**。历史教训（2026-09-16）：`title_prompt_v2.md` 曾把这批
+        结果标成「**可模仿标题模版**」交给模型，直接教模型套骨架 —— 一次运行
+        13 个候选里 11 个是同一骨架，最后发布的就是同族的硬编码兜底模板。
+        现在提示词已改成「禁止套用结构」，并在 `agent_workflow` 加了同骨架数量上限。
+        **若要恢复"可模仿"的定位，必须先把这里的合成句式换成真实高 CTR 样本**
+        （数据来源：`growth_ops/performance/performance_ledger.json` 里阅读量达标的作品）。
+        """
         primary = keywords[0] if keywords else "这个赛道"
         if "机器人" in track:
             return [

@@ -990,6 +990,7 @@ class AgentWorkflowService:
                 kept_titles.append(title)
 
         if kept_titles:
+            kept_titles = self._cap_title_skeleton_families(kept_titles)
             content.titles = kept_titles
             # recommended_titles 也需同步过滤，只保留通过校验的
             kept_set = set(kept_titles)
@@ -1032,6 +1033,48 @@ class AgentWorkflowService:
                 fallback_title,
                 " | ".join(rejected)[:300],
             )
+
+    MAX_TITLES_PER_SKELETON = 3
+
+    def _cap_title_skeleton_families(self, titles: list[str]) -> list[str]:
+        """限制同一「开头骨架」的候选数量，避免候选列表被一个句式垄断。
+
+        背景（2026-09-16）：提示词第 19 条已禁止填空式模板，模型仍然产出
+        「灵巧手产业：…」11 条（13 个候选里）。第 19 条不管用，所以这里加硬约束。
+        只保留每族**点击吸引力最高**的 N 条（同分保持原顺序），被砍掉的记日志。
+        注意这是**去重**不是**删优**：每族最优的一条一定活着。
+        """
+        if len(titles) <= self.MAX_TITLES_PER_SKELETON:
+            return titles
+        checker = self.quality_checker
+        families: dict[str, list[str]] = {}
+        for title in titles:
+            families.setdefault(checker.title_skeleton(title), []).append(title)
+
+        kept: list[str] = []
+        dropped: list[str] = []
+        for family in families.values():
+            if len(family) <= self.MAX_TITLES_PER_SKELETON:
+                kept.extend(family)
+                continue
+            ranked = sorted(
+                family,
+                key=lambda item: (-checker.title_click_preference(item), titles.index(item)),
+            )
+            kept.extend(ranked[: self.MAX_TITLES_PER_SKELETON])
+            dropped.extend(ranked[self.MAX_TITLES_PER_SKELETON :])
+        if dropped:
+            self.logger.warning(
+                "Title skeleton collapse capped: dropped %d/%d candidates sharing a leading skeleton "
+                "(kept at most %d per skeleton). Dropped: %s",
+                len(dropped),
+                len(titles),
+                self.MAX_TITLES_PER_SKELETON,
+                " | ".join(dropped)[:240],
+            )
+        # 保持原顺序，便于人读候选列表
+        order = {title: index for index, title in enumerate(titles)}
+        return sorted(kept, key=lambda item: order.get(item, 0))
 
     def _apply_review_pack(self, content, review_pack, cache_context) -> None:
         content.optimized_opening_lines = list(review_pack.get("optimized_opening_lines", []))

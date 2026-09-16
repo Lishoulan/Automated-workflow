@@ -148,3 +148,93 @@ def test_select_auto_title_still_reports_when_nothing_passes(app_settings, tmp_p
     assert selection["selected_title_index"] == 0
     assert selection["passed_count"] == 0
     assert "No candidate title passed" in str(selection.get("reason", ""))
+
+
+# ---------------------------------------------------------------------------
+# 上游：候选塌缩（模型把 20 个候选写成同一个骨架）—— 提示词 + 代码双保险
+# ---------------------------------------------------------------------------
+
+COLON_FAMILY = [title for title in REAL_CANDIDATES_20260916 if title.startswith("灵巧手产业：")]
+
+
+def test_title_skeleton_groups_the_real_collapsed_family() -> None:
+    checker = ArticleQualityChecker()
+    skeletons = {checker.title_skeleton(title) for title in COLON_FAMILY}
+    assert skeletons == {"灵巧手产业"}
+    # 不同开头必须落到不同骨架，否则塌缩检测会误报。
+    assert checker.title_skeleton("下降80%的增速里，具身智能先回款的是哪一环") == "下降80%的增速里"
+
+
+def test_cap_title_skeleton_families_keeps_the_best_and_drops_the_rest() -> None:
+    from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
+
+    class _Stub:
+        MAX_TITLES_PER_SKELETON = AgentWorkflowService.MAX_TITLES_PER_SKELETON
+        _cap_title_skeleton_families = AgentWorkflowService._cap_title_skeleton_families
+
+        def __init__(self) -> None:
+            self.quality_checker = ArticleQualityChecker()
+            self.logger = logging.getLogger("test")
+
+    stub = _Stub()
+    assert len(COLON_FAMILY) >= 8  # 真实数据：同一骨架 11 条
+    capped = stub._cap_title_skeleton_families(REAL_CANDIDATES_20260916)
+
+    kept_family = [title for title in capped if title.startswith("灵巧手产业：")]
+    assert len(kept_family) == AgentWorkflowService.MAX_TITLES_PER_SKELETON
+
+    checker = ArticleQualityChecker()
+    best_of_family = max(COLON_FAMILY, key=checker.title_click_preference)
+    # 去重不是删优：每族最优的一条必须活着。
+    assert best_of_family in capped
+    # 不同骨架的候选不受影响。
+    assert "下降80%的增速里，具身智能先回款的是哪一环" in capped
+    # 原顺序保持，方便人读候选清单。
+    assert capped == [title for title in REAL_CANDIDATES_20260916 if title in set(capped)]
+
+
+def test_cap_title_skeleton_families_leaves_short_lists_alone() -> None:
+    from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
+
+    class _Stub:
+        MAX_TITLES_PER_SKELETON = AgentWorkflowService.MAX_TITLES_PER_SKELETON
+        _cap_title_skeleton_families = AgentWorkflowService._cap_title_skeleton_families
+
+        def __init__(self) -> None:
+            self.quality_checker = ArticleQualityChecker()
+            self.logger = logging.getLogger("test")
+
+    titles = ["具身智能交付进度才是关键", "机器人订单先兑现"]
+    assert _Stub()._cap_title_skeleton_families(titles) == titles
+
+
+def test_title_prompt_renders_and_carries_the_anti_collapse_rule() -> None:
+    from toutiao_content_factory.services.prompt_repository import PromptRepository
+
+    repo = PromptRepository(Path(__file__).resolve().parents[1] / "prompts")
+    rendered = repo.render(
+        "title_prompt_v2.md",
+        platform="toutiao",
+        brand_name="机器人观察",
+        style_digest="S",
+        cache_note="C",
+        avoid_titles_json="[]",
+        summary="摘要",
+        article_angle="主线",
+        key_points_json="[]",
+        playbook_track="科技商业",
+        playbook_keywords_json="[]",
+        title_templates_json='["t"]',
+        topic_imitation_json="[]",
+        benchmark_titles_json="[]",
+        title_playbook_note="N",
+    )
+    # 占位符必须全部替换掉，否则模型会看到 ${...} 这种东西。
+    assert "${" not in rendered
+    # 反塌缩规则与自检清单必须在场。
+    assert "同一开头骨架" in rendered
+    assert "输出前自检" in rendered
+    # 「可模仿标题模版」这个标签本身就是在教模型套骨架，必须不再出现。
+    assert "可模仿标题模版" not in rendered
+    # 提示词里出现的花括号示例不能被渲染器吃掉（渲染器只处理 {{name}}）。
+    assert "{事件}之后/期，{主体}利润开始 X" in rendered

@@ -336,7 +336,7 @@ class ReviewWorkflowService:
                 -best_preference,
                 best_title,
             )
-            self._log_title_skeleton_collapse(candidates)
+            self._log_title_skeleton_collapse(candidates, checker)
             return {
                 "selected_title": best_title,
                 "selected_title_index": best_index,
@@ -438,23 +438,20 @@ class ReviewWorkflowService:
         except FileNotFoundError:
             return None
 
-    def _log_title_skeleton_collapse(self, candidates: list[str]) -> None:
+    def _log_title_skeleton_collapse(self, candidates: list[str], checker: ArticleQualityChecker) -> None:
         """记录「模型标题塌缩成同一个骨架」的情况。
 
-        2026-09-16 实测：13 个候选里 11 个都是「灵巧手产业：…」。提示词里
+        2026-09-16 实测：13 个候选里 11 个都是「灵巧手产业：」。提示词里
         第 19 条明令禁止填空式模板，模型仍然照做 —— 这类塌缩是「标题看起来
         有 20 个候选、实际只有一个思路」的根因，也解释了为什么排序层最后只能
-        在两个都不理想的形态里挑。这里只做**观测**（不改行为），
-        方便按真实数据迭代提示词，而不是凭感觉改。
+        在两个都不理想的形态里挑。这里只做**观测**（不改行为）；
+        真正兜底的去重由 `agent_workflow._cap_title_skeleton_families` 做。
         """
         if not candidates:
             return
         skeletons: dict[str, int] = {}
         for title in candidates:
-            text = (title or "").strip()
-            if not text:
-                continue
-            head = text.split("：", 1)[0].split("，", 1)[0].split(",", 1)[0][:12]
+            head = checker.title_skeleton(title)
             if head:
                 skeletons[head] = skeletons.get(head, 0) + 1
         if not skeletons:

@@ -7,6 +7,9 @@
 .env.local
 .venv/
 .runtime/
+# 跨通道发布状态的本地副本：权威版本在 publish-state 分支上（云端写入、本地读）。
+# 工作区里的这份是运行时产物，不入 main，避免本地开发时制造改动噪音。
+state/
 __pycache__/
 *.pyc
 *.pyo

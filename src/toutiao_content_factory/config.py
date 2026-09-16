@@ -267,6 +267,11 @@ class AutomationSettings:
     archive_outputs: bool = True
     archive_dirname: str = "runs"
     selected_topic_basename: str = "selected_topic"
+    # 本地通道「当日兜底窗口」：>=0 时，本地在当天该小时之前不做发布。
+    # 目的：让云端（生产通道）先跑完它的窗口（北京 07:00/12:30/18:00，
+    # 周末 08:00），本地只在窗口之后作为兜底补发，避免本地抢在云端前面发一篇。
+    # -1 表示不限制（云端 CI 应显式设为 -1）。
+    local_fallback_after_hour: int = -1
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "AutomationSettings":
@@ -278,6 +283,7 @@ class AutomationSettings:
             archive_outputs=bool(payload.get("archive_outputs", True)),
             archive_dirname=str(payload.get("archive_dirname", "runs")),
             selected_topic_basename=str(payload.get("selected_topic_basename", "selected_topic")),
+            local_fallback_after_hour=int(payload.get("local_fallback_after_hour", -1)),
         )
 
 
@@ -1159,6 +1165,12 @@ def _load_automation_config(merged_payload: dict[str, Any], automation_config: A
         archive_outputs=automation_config.archive_outputs,
         archive_dirname=automation_config.archive_dirname,
         selected_topic_basename=automation_config.selected_topic_basename,
+        local_fallback_after_hour=int(
+            os.getenv(
+                "TOUTIAO_LOCAL_FALLBACK_AFTER_HOUR",
+                str(automation_config.local_fallback_after_hour),
+            )
+        ),
     )
 
 

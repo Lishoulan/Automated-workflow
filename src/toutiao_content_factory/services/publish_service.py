@@ -5495,7 +5495,9 @@ class PublishService:
             blocking_flags.append("No publish diagnostics were captured from the current session.")
         elif not self._diagnostics_indicate_publish_capable_session(summary, current_url):
             blocking_flags.append("Current browser session does not appear to have an accessible Toutiao publish page.")
-        if summary.get("media_status") not in {None, 1, "1"}:
+        # media_status=4 是本账号（手蓝数据笔记，个人号）在 2026-09-15/16 多次发布的
+        # 稳定取值，属正常；此前一直报 "Unexpected media status: 4" 是纯噪音。
+        if summary.get("media_status") not in {None, 1, "1", 4, "4"}:
             warnings.append(f"Unexpected media status: {summary.get('media_status')}")
         if suspicious_flags:
             warnings.extend(f"Diagnostic flag: {item}" for item in suspicious_flags[:6])
@@ -5524,21 +5526,30 @@ class PublishService:
         return has_any_identity and page_is_publish_like
 
     def _summarize_publish_blockers(self, summary: dict[str, Any]) -> list[str]:
+        """列出值得注意的账号/草稿标记。
+
+        ⚠️ 语义修正（2026-09-16，实测依据在 `creator_account_service`）：
+        原先把 `is_creator=false` / `has_auth=false` / `ads_permission=0` / `manual_publish_ad=3`
+        当作「可疑、可能没有分成资格」，这是**误读**，已从清单移除：
+        - `creator_center/user_info.is_creator=false` 与 `auth_type=-1` 同时出现
+          → 指的是「未做兴趣认证」，不是「不是创作者」。
+        - `media/check_user_auth.has_auth=false` 与 `media/get_user_base_info.is_auth=true`
+          矛盾 → 前者是媒体资质认证，个人号本就不适用；以 `is_auth=true`（已实名）为准。
+        - `article/new.media.ads_permission=0` 与 `default_article_ad_type=3`
+          同时出现 → 它表示「不允许手动改广告位」，而文章默认**是**投放广告的。
+        - `manual_publish_ad=3` 与 `default_article_ad_type=3` 同值 → 3 是正常的广告模式。
+        权威结论应看创作权益接口：本账号 7 项权益已开通（含「文章创作收益」）。
+        保留的两项是真问题：内容来源被标成第三方同步（影响原创判定）、存在未声明原创篇数。
+        """
         blockers: list[str] = []
-        if summary.get("is_creator") is False:
-            blockers.append("creator_center/user_info.is_creator=false")
-        if summary.get("has_user_auth") is False:
-            blockers.append("media/check_user_auth.has_auth=false")
-        if summary.get("ads_permission") == 0:
-            blockers.append("article/new.media.ads_permission=0")
-        if summary.get("manual_publish_ad") not in {None, 2}:
-            blockers.append(f"article/new.media.content_cache.manual_publish_ad={summary.get('manual_publish_ad')}")
         if summary.get("content_cache_source"):
             blockers.append(f"article/new.media.content_cache.source={summary.get('content_cache_source')}")
         if summary.get("not_claim_origin_cnt"):
             blockers.append(
                 f"article/new.media.content_cache.not_claim_origin_cnt={summary.get('not_claim_origin_cnt')}"
             )
+        if summary.get("claim_origin_permission") is False:
+            blockers.append("article/new.claim_origin_permission=false")
         return blockers
 
     def _format_publish_diagnostic_blockers(self, diagnostics: dict[str, Any]) -> str:

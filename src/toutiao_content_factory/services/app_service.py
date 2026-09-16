@@ -525,6 +525,53 @@ class ContentFactoryAppService:
         )
         return any(marker in message for marker in retry_markers)
 
+    def _local_fallback_window_block(self) -> dict[str, str] | None:
+        """本地通道「当日兜底窗口」：窗口之前不做发布，把机会让给云端。
+
+        为什么需要它（2026-09-16）：两个通道的 publish_history 互不可见。共享状态
+        （`cross_channel_state`）只能让**本地看见云端已经发过**，没法让云端看见本地。
+        所以本地若在云端窗口之前抢先发布，云端当天仍可能再发一篇。
+        把本地限制到云端最后一个窗口（北京 18:00）之后，这个反向重叠就不存在了。
+
+        `local_fallback_after_hour < 0` 表示不限制（云端 CI 必须保持 -1）。
+        """
+        after_hour = int(getattr(self.settings.automation, "local_fallback_after_hour", -1))
+        if after_hour < 0:
+            return None
+        current_hour = notification_now().hour
+        if current_hour >= after_hour:
+            return None
+        self.logger.info(
+            "Local channel is inside the cloud-first window (hour=%s < %s); deferring to the cloud "
+            "channel. Set TOUTIAO_LOCAL_FALLBACK_AFTER_HOUR=-1 to disable this gate.",
+            current_hour,
+            after_hour,
+        )
+        return {
+            "status": "deferred_to_cloud",
+            "message": (
+                f"Local publish window opens at {after_hour:02d}:00; "
+                "cloud channel owns earlier slots for this account."
+            ),
+        }
+
+    def _cloud_published_today(self) -> dict[str, Any] | None:
+        """云端今天是否已发布同一平台内容（跨通道互斥）。
+
+        失败一律返回 None（视为「不知道」），退回本地自身的当日计数判断，
+        不会因为读不到共享状态就改变既有的发布行为。
+        """
+        try:
+            from toutiao_content_factory.services import cross_channel_state
+
+            return cross_channel_state.read_cloud_published_today(
+                self.settings.project_root,
+                platform=self.settings.publishing.platform,
+            )
+        except Exception as exc:
+            self.logger.warning("Cross-channel publish guard failed (non-fatal): %s", exc)
+            return None
+
     def daily_run(
         self,
         style_override: str | None = None,
@@ -570,6 +617,10 @@ class ContentFactoryAppService:
         # 注意：不依赖 auto_publish 开关——即使脚本因缺少 -EnableAutoPublish 把
         # TOUTIAO_AUTO_PUBLISH 设为 0，只要当日已发布过，生成就是纯浪费。
         if not dry_run:
+            fallback_gate = self._local_fallback_window_block()
+            if fallback_gate is not None:
+                return fallback_gate
+        if not dry_run:
             try:
                 from toutiao_content_factory.services.compliance_service import (
                     count_today_published_by_platform,
@@ -578,15 +629,25 @@ class ContentFactoryAppService:
                 # 只按「图文」平台计数判断今日图文是否已发布：
                 # 独立微头条（platform=toutiao_weitoutiao）不算图文已发布，
                 # 避免早间先发微头条导致当日图文被短路跳过。
-                if count_today_published_by_platform(
+                local_today_count = count_today_published_by_platform(
                     history_path, platform=self.settings.publishing.platform
-                ) >= 1:
-                    self.logger.info(
-                        "Daily publish limit already reached for today; skipping generation to save tokens. "
-                        "account=%s platform=%s",
-                        self.settings.account_key,
-                        self.settings.publishing.platform,
-                    )
+                )
+                cloud_record = self._cloud_published_today()
+                if local_today_count >= 1 or cloud_record is not None:
+                    if cloud_record is not None:
+                        self.logger.info(
+                            "Cross-channel guard: the cloud channel already published today; skipping local "
+                            "generation so the day does not get two articles. cloud_pgc_id=%s cloud_title=%s",
+                            cloud_record.get("pgc_id", ""),
+                            cloud_record.get("title", ""),
+                        )
+                    else:
+                        self.logger.info(
+                            "Daily publish limit already reached for today; skipping generation to save tokens. "
+                            "account=%s platform=%s",
+                            self.settings.account_key,
+                            self.settings.publishing.platform,
+                        )
                     # 微头条高频化：图文已发但微头条未达每日目标时，后续时段补发独立微头条，
                     # 仍保持生成短内容的轻量成本，不重新走图文选题/写作/评分。
                     topup_exports: dict[str, Any] = {}

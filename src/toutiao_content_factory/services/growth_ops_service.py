@@ -2193,6 +2193,7 @@ articles:
             "earnings_policy": "t_plus_1",
             "known_platform_revenue": round(known_platform_revenue, 4),
             "platform_revenue_known_count": platform_revenue_known_count,
+            "account": self._build_account_summary(),
             "attribution_count": len(with_economics),
             "averages": averages,
             "top_by_reads": [
@@ -2300,6 +2301,71 @@ articles:
             lines.append("")
         return "\n".join(lines) + "\n"
 
+    def _build_account_summary(self) -> dict[str, Any]:
+        """账号级快照：累计收益 / 粉丝 / 总阅读 / 信用分 / 收益权益是否开通。
+
+        数据来自 `creator_account_service`（头条首页看板 + 创作权益接口）。
+        以前这里恒为「待回流」，是因为作品级采集根本覆盖不到账号级收益。
+        """
+        path = self.performance_dir / "account_snapshot.json"
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        latest = payload.get("latest") if isinstance(payload.get("latest"), dict) else {}
+        account = latest.get("account") if isinstance(latest.get("account"), dict) else {}
+        quality = latest.get("quality") if isinstance(latest.get("quality"), dict) else {}
+        benefits = latest.get("benefits") if isinstance(latest.get("benefits"), dict) else {}
+        revenue = latest.get("revenue") if isinstance(latest.get("revenue"), dict) else {}
+        return {
+            "observed_date": latest.get("observed_date", ""),
+            "revenue_total": payload.get("revenue_total"),
+            "revenue_delta_vs_last_observation": payload.get("revenue_delta_vs_last_observation"),
+            "previous_observation_date": payload.get("previous_observation_date", ""),
+            "revenue_yesterday_hint": revenue.get("yesterday_hint", ""),
+            "revenue_source": revenue.get("source", ""),
+            "fans": account.get("fans"),
+            "total_reads": account.get("total_reads"),
+            "credit_score": quality.get("credit_score"),
+            "is_low_quality": quality.get("is_low_quality"),
+            "can_earn_article_revenue": benefits.get("can_earn_article_revenue"),
+            "activated_benefit_num": benefits.get("activated_benefit_num_declared"),
+            "benefit_semantics_ok": benefits.get("semantics_ok"),
+        }
+
+    def _account_markdown_lines(self, summary: dict[str, Any]) -> list[str]:
+        account = summary.get("account") if isinstance(summary.get("account"), dict) else {}
+        if not account:
+            return ["- 账号累计收益：未采集（account_snapshot.json 缺失，不按 0 处理）"]
+        total = account.get("revenue_total")
+        delta = account.get("revenue_delta_vs_last_observation")
+        previous = account.get("previous_observation_date") or "上次观测"
+        if isinstance(total, (int, float)):
+            if isinstance(delta, (int, float)):
+                delta_text = f"，较上次({previous}) {'+' if float(delta) >= 0 else ''}{float(delta):.2f} 元"
+            else:
+                delta_text = ""
+            revenue_line = (
+                f"- 账号累计收益：{float(total):.2f} CNY{delta_text}"
+                f"（来源：{account.get('revenue_source', '未知')}）"
+            )
+        else:
+            revenue_line = "- 账号累计收益：未采集到（不按 0 处理）"
+        benefit = account.get("can_earn_article_revenue")
+        benefit_text = "已开通" if benefit else ("未开通" if benefit is False else "未知")
+        return [
+            revenue_line,
+            (
+                f"- 账号看板：粉丝 {account.get('fans') if account.get('fans') is not None else '未知'}"
+                f"｜总阅读(播放) {account.get('total_reads') if account.get('total_reads') is not None else '未知'}"
+                f"｜信用分 {account.get('credit_score') if account.get('credit_score') is not None else '未知'}"
+                f"｜低质量标记 {account.get('is_low_quality')}"
+            ),
+            f"- 文章创作收益权益：{benefit_text}（已开通权益数 {account.get('activated_benefit_num')}）",
+        ]
+
     def _build_performance_markdown(self, payload: dict[str, Any]) -> str:
         summary = dict(payload.get("summary", {}))
         lines = [
@@ -2317,6 +2383,7 @@ articles:
                 if int(summary.get('platform_revenue_known_count', 0) or 0) > 0
                 else "- 平台收益：待回流（未知金额不按 0 CNY 处理）"
             ),
+            *self._account_markdown_lines(summary),
             f"- 平均阅读率：{summary.get('averages', {}).get('read_rate', 0)}%",
             f"- 平均互动率：{summary.get('averages', {}).get('interaction_rate', 0)}%",
             f"- 平均推荐占比：{summary.get('averages', {}).get('recommendation_ratio', 0)}%",

@@ -11,6 +11,7 @@ from typing import Any
 
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import ArticlePerformance, PublishRecord, WorkflowResult
+from toutiao_content_factory.services import creator_account_service
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
 from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 from toutiao_content_factory.services.t1_policy import infer_availability_status
@@ -55,9 +56,19 @@ class PerformanceService:
         "https://mp.weixin.qq.com/",
     )
 
-    def __init__(self, settings: AppSettings, logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        logger: logging.Logger,
+        *,
+        collect_account_snapshot: bool = True,
+    ) -> None:
         self.settings = settings
         self.logger = logger
+        # 账号级快照（粉丝/总阅读/累计收益/创作权益）只在头条采集的同一个浏览器
+        # 会话里顺带取一次，不额外再起一个浏览器（见 _collect_toutiao_account_snapshot）。
+        self.collect_account_snapshot = collect_account_snapshot
+        self.account_snapshot: dict[str, Any] | None = None
 
     def collect_performance_data(
         self,
@@ -130,6 +141,15 @@ class PerformanceService:
             target_publish_date=resolved_target_publish_date,
         )
         payload["reports"] = self._build_automatic_reports()
+        # 账号级快照：本次没采到就回退到上次落盘的值，避免报告里凭空消失。
+        persisted = creator_account_service.load_account_snapshot(self.settings)
+        payload["account_snapshot"] = (
+            self.account_snapshot or persisted.get("latest") or {}
+        )
+        payload["account_revenue_total"] = persisted.get("revenue_total")
+        payload["account_revenue_delta_vs_last_observation"] = persisted.get(
+            "revenue_delta_vs_last_observation"
+        )
         output_path = self._save_metrics(payload)
         payload["output_path"] = str(output_path)
         return payload
@@ -205,6 +225,10 @@ class PerformanceService:
                 try:
                     page = browser.pages[0] if browser.pages else browser.new_page()
                     page.set_default_timeout(timeout_ms)
+                    # 账号级快照必须先取：下面的 url 循环一旦拿到作品行就会 return，
+                    # 挂在循环之后会永远执行不到。
+                    if platform == "toutiao" and self.collect_account_snapshot:
+                        self._collect_toutiao_account_snapshot(page=page, context=browser, timeout_ms=timeout_ms)
                     for url in urls:
                         if not url:
                             continue
@@ -252,6 +276,63 @@ class PerformanceService:
             return metrics
 
         return run_sync_playwright_safe(_run, timeout=300)
+
+    def _collect_toutiao_account_snapshot(self, *, page: Any, context: Any, timeout_ms: int) -> None:
+        """在头条采集的同一个浏览器会话里顺带取账号级数据（收益/权益/信用分）。
+
+        为什么不放在 `TOUTIAO_URLS` 里：那个循环**拿到第一页作品行就会 return**，
+        挂在后面永远执行不到；收益也不在作品管理页，而在首页看板。
+
+        全程 non-fatal：任何一步失败都只写日志，不影响作品级采集。
+        """
+        from toutiao_content_factory.services import creator_account_service as account_service
+
+        errors: list[str] = []
+        board: dict[str, list[str]] = {}
+        api_payload: dict[str, Any] = {}
+        try:
+            page.goto(account_service.TOUTIAO_INDEX_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+            self._wait_for_dashboard_render(page, timeout_ms=timeout_ms)
+            board = account_service.extract_board_snapshot(page)
+            if not board:
+                errors.append("account_board_empty")
+                self.logger.warning(
+                    "Account board did not expose any [class*='data-board-item'] node; "
+                    "收益金额可能取不到（页面改版或登录态失效）。"
+                )
+        except Exception as exc:  # pragma: no cover - browser/runtime dependent
+            errors.append(f"board:{exc}")
+            self.logger.warning("Account board collection failed (non-fatal): %s", exc)
+
+        try:
+            api_payload = account_service.fetch_creator_apis(context)
+        except Exception as exc:  # pragma: no cover - browser/runtime dependent
+            errors.append(f"api:{exc}")
+            self.logger.warning("Creator API collection failed (non-fatal): %s", exc)
+
+        snapshot = account_service.build_account_snapshot(
+            self.settings,
+            board=board,
+            api_payload=api_payload,
+            errors=errors,
+        )
+        self.account_snapshot = snapshot
+        try:
+            account_service.save_account_snapshot(self.settings, self.logger, snapshot)
+        except Exception as exc:  # pragma: no cover - filesystem dependent
+            self.logger.warning("Account snapshot persistence failed (non-fatal): %s", exc)
+
+        revenue = snapshot.get("revenue") or {}
+        benefits = snapshot.get("benefits") or {}
+        if revenue.get("total") is None:
+            self.logger.warning("累计收益未取到（保持 unknown，不按 0 处理）。")
+        if benefits and benefits.get("semantics_ok") is False:
+            self.logger.warning(
+                "创作权益状态码语义可能已变更：declared=%s derived=%s，请复核 status_code=%s 的含义。",
+                benefits.get("activated_benefit_num_declared"),
+                benefits.get("derived_active_count"),
+                benefits.get("status_code_active"),
+            )
 
     def _open_target_with_retry(
         self,

@@ -50,7 +50,10 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  # write 是给「跨通道发布状态」用的：云端把当日发布结果提交到 publish-state
+  # 分支，本地通道才能看见「云端今天已经发过」，避免同一天各发一篇。
+  # 只往该分支写一个小 JSON，不碰 main。
+  contents: write
 
 jobs:
   daily-run:
@@ -94,6 +97,9 @@ jobs:
       # （count_today_published 的每日 1 篇上限由此失效/误判）。
       TZ: Asia/Shanghai
       TOUTIAO_ACCOUNT: default
+      # 云端是内容生产通道，必须不设「本地兜底窗口」限制。
+      # >=0 会让本地在当天该小时前不发布（见 services/cross_channel_state.py）。
+      TOUTIAO_LOCAL_FALLBACK_AFTER_HOUR: "-1"
 
       # Image generation: image2 cover first; exact statistical inserts stay local.
       IMAGE_BACKEND: ${{ secrets.IMAGE_BACKEND || 'image2' }}
@@ -939,6 +945,61 @@ jobs:
             echo "RUN_STATUS=unknown" >> "$GITHUB_ENV"
           fi
 
+      - name: Record cross-channel publish state
+        if: always()
+        shell: bash
+        run: |
+          # 把「今天发了什么」写进 state/daily_publish_state.json，供本地通道做跨通道
+          # 互斥（云端与本地 publish_history 互不可见，否则同一天会各发一篇）。
+          python scripts/record_cloud_publish_state.py \
+            --account "${RUN_ACCOUNT:-default}" \
+            --account-output-dir "${ACCOUNT_OUTPUT_DIR:-}" \
+            || echo "Cross-channel state write failed (non-fatal)"
+        continue-on-error: true
+
+      - name: Publish cross-channel state to the publish-state branch
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 只把 state/ 下这一个文件写到独立分支 publish-state，不碰 main，
+          # 也不影响本地仓库的工作区（本地读 origin/publish-state 里的同一文件）。
+          if [ ! -f state/daily_publish_state.json ]; then
+            echo "No cross-channel state file produced; skipping."
+            exit 0
+          fi
+          STATE_REF="repos/${GITHUB_REPOSITORY}/contents/state/daily_publish_state.json"
+          STATE_SHA=$(gh api "${STATE_REF}?ref=publish-state" -q .sha 2>/dev/null || echo "")
+          if [ -z "$STATE_SHA" ]; then
+            # 分支还不存在时先建出来（contents API 不会自动创建新分支）。
+            echo "Branch publish-state missing; creating it from the default branch."
+            BASE_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${GITHUB_DEFAULT_BRANCH:-main}" -q .object.sha 2>/dev/null || echo "")
+            if [ -n "$BASE_SHA" ]; then
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                -f ref="refs/heads/publish-state" -f sha="$BASE_SHA" > /dev/null 2>&1 || true
+            fi
+          fi
+          echo "Existing state sha: ${STATE_SHA:-<none, will create>}"
+          STATE_SHA="$STATE_SHA" python - <<'PY' > /tmp/state_payload.json
+          import base64, json, os
+          with open("state/daily_publish_state.json", "rb") as handle:
+              content = base64.b64encode(handle.read()).decode()
+          payload = {
+              "message": "chore(state): record daily publish state [skip ci]",
+              "content": content,
+              "branch": "publish-state",
+          }
+          sha = os.environ.get("STATE_SHA", "").strip()
+          if sha:
+              payload["sha"] = sha
+          print(json.dumps(payload))
+          PY
+          gh api -X PUT "${STATE_REF}" --input /tmp/state_payload.json > /dev/null \
+            && echo "Cross-channel state published to branch publish-state." \
+            || echo "Failed to publish cross-channel state (non-fatal)."
+        continue-on-error: true
+
       - name: Enforce publish result
         if: always()
         shell: bash
@@ -947,7 +1008,6 @@ jobs:
             echo "No automatic platform publish was requested; content-only run is allowed."
             exit 0
           fi
-
           case "${RUN_STATUS:-unknown}" in
             failed|partial_success|publish_login_required|publish_uncertain|degraded_to_draft)
               echo "::error::Automatic publish did not complete: status=${RUN_STATUS}, workflow_status=${RUN_WORKFLOW_STATUS:-unknown}"
@@ -1031,6 +1091,9 @@ jobs:
       # （count_today_published 的每日 1 篇上限由此失效/误判）。
       TZ: Asia/Shanghai
       TOUTIAO_ACCOUNT: default
+      # 云端是内容生产通道，必须不设「本地兜底窗口」限制。
+      # >=0 会让本地在当天该小时前不发布（见 services/cross_channel_state.py）。
+      TOUTIAO_LOCAL_FALLBACK_AFTER_HOUR: "-1"
 
       # Image generation: image2 cover first; exact statistical inserts stay local.
       IMAGE_BACKEND: ${{ secrets.IMAGE_BACKEND || 'image2' }}

@@ -94,6 +94,16 @@ class PerformanceService:
             ("toutiao", self._collect_toutiao_metrics),
             ("wechat", self._collect_wechat_metrics),
         ):
+            # 微信渠道已停用（135 编辑器退役，`WECHAT_ENABLED=0`），但采集仍在跑并且
+            # **每次都失败**（`wechat performance page opened but target elements are
+            # still missing`）—— 纯噪音，还白白多起一次浏览器。
+            # 让采集跟随渠道开关：渠道不用了就不采；哪天重启微信，把 WECHAT_ENABLED 打开即可。
+            if platform == "wechat" and not bool(getattr(self.settings.wechat, "enabled", False)):
+                self.logger.info(
+                    "Skipping wechat performance collection: wechat channel is disabled "
+                    "(WECHAT_ENABLED=0). Enable the channel to collect its metrics again."
+                )
+                continue
             try:
                 raw_platforms[platform] = collector(headless=headless)
             except Exception as exc:  # pragma: no cover - browser/runtime dependent

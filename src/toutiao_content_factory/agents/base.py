@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -156,7 +158,14 @@ class BaseAgent:
             return ""
 
     def read_best_practices_rules_json(self) -> dict[str, Any]:
-        """读取结构化 JSON 规则文件。失败时返回空 dict。"""
+        """读取结构化 JSON 规则文件。失败时返回空 dict。
+
+        ⚠️ 这个文件是**运行时产物**：`EvolutionAgent` 会根据表现数据改写它，
+        但它同时又**被 git 跟踪**。历史问题（2026-09-16 发现）：本地改写了却没提交，
+        云端每次从"已提交基线"重新开始 → **两个通道在用不同的标题/写作规则**，
+        而且云端的规则演化永远不持久化。这里在读取时打一条带指纹的日志，
+        让"哪一份规则在用"变成可核对的事实，而不是靠猜。
+        """
         path = self.best_practices_rule_json_path()
         if not path.exists():
             return {}
@@ -167,7 +176,55 @@ class BaseAgent:
             return {}
         if not isinstance(payload, dict) or not isinstance(payload.get("rules"), list):
             return {}
+        self._report_best_practices_rule_identity(payload)
         return payload
+
+    def _report_best_practices_rule_identity(self, payload: dict[str, Any]) -> None:
+        """记录当前生效的规则集指纹，并警告「本地未提交 ⇒ 云端仍是旧规则」。"""
+        if getattr(self, "_best_practices_identity_logged", False):
+            return
+        self._best_practices_identity_logged = True
+
+        rules = payload.get("rules") if isinstance(payload.get("rules"), list) else []
+        try:
+            raw = self.best_practices_rule_json_path().read_bytes()
+            digest = hashlib.sha256(raw).hexdigest()[:8]
+        except OSError:
+            digest = "unknown"
+        self.logger.info(
+            "Best-practices rules in effect: count=%s rule_count_field=%s generated_at=%s sha256=%s",
+            len(rules),
+            payload.get("rule_count"),
+            payload.get("generated_at", ""),
+            digest,
+        )
+
+        drift = self._best_practices_rules_drift_from_head()
+        if drift:
+            self.logger.warning(
+                "Best-practices rules differ from the committed version (%s). Local runs use the "
+                "working copy while GitHub Actions uses the committed one - the two channels are "
+                "NOT using the same title/writing rules until you commit config/best_practices_rule.json.",
+                drift,
+            )
+
+    def _best_practices_rules_drift_from_head(self) -> str:
+        """返回与 HEAD 的差异摘要（如"2 insertions(+), 3 deletions(-)"），无差异返回空串。"""
+        project_root = self.settings.project_root
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--shortstat", "HEAD", "--", "config/best_practices_rule.json"],
+                cwd=str(project_root),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if result.returncode != 0:
+            return ""
+        return result.stdout.strip()
 
     def select_top_rules(
         self,

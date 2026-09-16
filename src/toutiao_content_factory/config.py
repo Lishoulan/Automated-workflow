@@ -1334,6 +1334,32 @@ def _load_account_paths(
     }
 
 
+def _warn_legacy_draft_only_env() -> None:
+    """旧名 `TOUTIAO_DRAFT_ONLY` 对发布配置**没有作用**，只设它时要显式提醒。
+
+    2026-09-16 核实的事实（别再用"死变量"这种含糊说法）：
+    - 这里真正读取的是 `TOUTIAO_PUBLISH_DRAFT_ONLY`；
+    - `TOUTIAO_DRAFT_ONLY` 被 `scripts/cloud_daily_run.py`（降级路径设 1）与
+      `scripts/preview_fallback.py`（设 0）当作**脚本间信号量**在用，
+      workflow 里也是两个名字同时导出；
+    - 所以只有「只设旧名、没设新名」时才存在"以为开了草稿模式其实没开"的坑。
+
+    这里只打一条警告，不改变任何行为 —— 把旧名接成别名会**改变云端行为**
+    （`cloud_daily_run.py` 用 setdefault 把它默认设成 1，一旦生效云端会整体转草稿）。
+    """
+    legacy = os.getenv("TOUTIAO_DRAFT_ONLY")
+    if legacy is None or os.getenv("TOUTIAO_PUBLISH_DRAFT_ONLY") is not None:
+        return
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "TOUTIAO_DRAFT_ONLY=%s 不会生效：发布开关读的是 TOUTIAO_PUBLISH_DRAFT_ONLY。"
+        "两个名字语义不同（前者是脚本间信号量）；要真正开草稿模式请设 "
+        "TOUTIAO_PUBLISH_DRAFT_ONLY=1。",
+        legacy,
+    )
+
+
 def _load_publishing_config_final(
     merged_payload: dict[str, Any],
     account_profile: AccountProfile,
@@ -1342,6 +1368,7 @@ def _load_publishing_config_final(
     publishing_config: PublishSettings,
     paths: dict[str, Any],
 ) -> PublishSettings:
+    _warn_legacy_draft_only_env()
     return PublishSettings(
         enabled=_env_flag("TOUTIAO_PUBLISH_ENABLED", publishing_config.enabled),
         auto_publish=_env_flag("TOUTIAO_AUTO_PUBLISH", publishing_config.auto_publish),

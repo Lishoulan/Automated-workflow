@@ -324,3 +324,72 @@ def test_daily_run_impl_does_not_defer_inside_the_window(app_settings, monkeypat
 def test_local_fallback_gate_disabled_by_default(app_settings) -> None:
     assert app_settings.automation.local_fallback_after_hour == -1
     assert _guard_stub(app_settings)._local_fallback_window_block() is None
+
+
+# ---------------------------------------------------------------------------
+# 微头条也要跨通道互斥（2026-09-16 补：原先只查图文平台）
+# ---------------------------------------------------------------------------
+
+
+def _weitoutiao_stub(app_settings, cloud_record):
+    publishing = dataclasses.replace(
+        app_settings.publishing,
+        weitoutiao_enabled=True,
+        weitoutiao_standalone_enabled=True,
+    )
+    settings = dataclasses.replace(app_settings, publishing=publishing)
+    calls: list[object] = []
+
+    class _Stub:
+        _top_up_standalone_weitoutiao = ContentFactoryAppService._top_up_standalone_weitoutiao
+
+        def __init__(self) -> None:
+            self.settings = settings
+            self.logger = logging.getLogger("test")
+
+        def _cloud_published_today(self, platform=None):
+            calls.append(platform)
+            return cloud_record
+
+    return _Stub(), calls
+
+
+def test_weitoutiao_topup_skips_when_cloud_already_published_one(app_settings) -> None:
+    """9-16 实况：图文收口了，但微头条两边各补一条（本地 1 + 云端 1）。"""
+    stub, calls = _weitoutiao_stub(app_settings, {"title": "PS5模拟器突破！", "status": "submitted_for_review"})
+
+    result = stub._top_up_standalone_weitoutiao(max_count=1)
+
+    assert result["standalone_topup_status"] == "skipped_cloud_already_published"
+    assert "PS5模拟器突破！" in result["standalone_topup_summary"]
+    # 查的是微头条平台，而不是图文平台。
+    assert calls == ["toutiao_weitoutiao"]
+
+
+def test_weitoutiao_topup_still_runs_when_cloud_has_not_published(app_settings) -> None:
+    stub, calls = _weitoutiao_stub(app_settings, None)
+    # 云端没发过时不能短路；真实生成器在这里会因为缺依赖失败，所以只断言它确实往下走了。
+    try:
+        result = stub._top_up_standalone_weitoutiao(max_count=0)
+    except Exception as exc:  # pragma: no cover - 依赖真实生成器
+        assert calls == ["toutiao_weitoutiao"]
+        return
+    assert result.get("standalone_topup_status") != "skipped_cloud_already_published"
+    assert calls == ["toutiao_weitoutiao"]
+
+
+def test_cloud_guard_forwards_explicit_platform(app_settings, monkeypatch) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(
+        xstate,
+        "read_remote_state",
+        lambda *a, **k: _state_for(date.today().isoformat(), platform="toutiao_weitoutiao"),
+    )
+    monkeypatch.setattr(
+        xstate,
+        "read_cloud_published_today",
+        lambda root, platform="toutiao", today=None, refresh=True: seen.append(platform) or None,
+    )
+    stub = _guard_stub(app_settings)
+    stub._cloud_published_today(platform="toutiao_weitoutiao")
+    assert seen == ["toutiao_weitoutiao"]

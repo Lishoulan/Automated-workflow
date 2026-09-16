@@ -24,6 +24,9 @@ from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import LowQualityAbortException, PlatformAuthError
 from toutiao_content_factory.models import DailyTopicsReport, TopicCandidate
 from toutiao_content_factory.services.automation import TopicAutomationService
+from toutiao_content_factory.services.cross_channel_state import (
+    PLATFORM_KEY_WEITOUTIAO as CLOUD_WEITOUTIAO_PLATFORM_KEY,
+)
 from toutiao_content_factory.services.pipeline import ContentFactoryPipeline
 from toutiao_content_factory.services.review_service import ReviewWorkflowService
 from toutiao_content_factory.services.topic_collection import TopicCollectionService
@@ -555,8 +558,11 @@ class ContentFactoryAppService:
             ),
         }
 
-    def _cloud_published_today(self) -> dict[str, Any] | None:
-        """云端今天是否已发布同一平台内容（跨通道互斥）。
+    def _cloud_published_today(self, platform: str | None = None) -> dict[str, Any] | None:
+        """云端今天是否已发布指定平台内容（跨通道互斥）。
+
+        `platform` 默认取 `settings.publishing.platform`（图文），微头条补发时显式传
+        `cross_channel_state.PLATFORM_KEY_WEITOUTIAO`。
 
         失败一律返回 None（视为「不知道」），退回本地自身的当日计数判断，
         不会因为读不到共享状态就改变既有的发布行为。
@@ -564,9 +570,10 @@ class ContentFactoryAppService:
         try:
             from toutiao_content_factory.services import cross_channel_state
 
+            target = str(platform or self.settings.publishing.platform).strip()
             return cross_channel_state.read_cloud_published_today(
                 self.settings.project_root,
-                platform=self.settings.publishing.platform,
+                platform=target,
             )
         except Exception as exc:
             self.logger.warning("Cross-channel publish guard failed (non-fatal): %s", exc)
@@ -1205,6 +1212,24 @@ class ContentFactoryAppService:
         publishing = self.settings.publishing
         if not publishing.weitoutiao_enabled or not publishing.weitoutiao_standalone_enabled:
             return {"standalone_topup_status": "disabled"}
+
+        # 跨通道互斥（2026-09-16 补）：跨通道守卫原先只查 `publishing.platform`（= 图文），
+        # 微头条有独立计数，于是两个通道同一天各补发一条（9-16 实况：本地 1 条 + 云端 1 条）。
+        # 微头条同样要「每日一篇」，所以这里也读一次共享状态。
+        cloud_weitoutiao = self._cloud_published_today(platform=CLOUD_WEITOUTIAO_PLATFORM_KEY)
+        if cloud_weitoutiao is not None:
+            self.logger.info(
+                "Cross-channel guard: the cloud channel already published a WeiToutiao today; "
+                "skipping the local top-up. cloud_title=%s",
+                cloud_weitoutiao.get("title", ""),
+            )
+            return {
+                "standalone_topup_status": "skipped_cloud_already_published",
+                "standalone_topup_summary": (
+                    f"status=skipped_cloud_already_published title={cloud_weitoutiao.get('title', '')}"
+                ),
+            }
+
         generator = WeiToutiaoStandaloneGenerator(self.settings, self.logger)
         remaining = generator.remaining_for_target()
         count = min(remaining, max(0, int(max_count)))

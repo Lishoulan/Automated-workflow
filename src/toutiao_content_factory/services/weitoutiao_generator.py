@@ -196,7 +196,13 @@ class WeiToutiaoStandaloneGenerator:
         if len(ranked) < count:
             try:
                 fallback_report = self.topic_automation.topic_pool_service.build_fallback_report()
+                # ⚠️ 2026-09-16 修：兜底池以前只做「今日已用去重」，**漏了账号边界过滤**
+                # （主池走的是 `_available_topics` → `filter_topics_for_account`）。
+                # 于是常青/话题池里跟账号定位无关的题会被发出去 —— 实测：机器人号
+                # 发了一条「PS5模拟器突破！KytyPS5可运行《宇宙机器人》」，而同一个题
+                # 刚被主流程以 insufficient_source_facts 跳过。
                 fallback_available = self.topic_automation._available_topics(fallback_report.topics)
+                fallback_available = self.topic_automation.filter_topics_for_account(fallback_available)
                 fallback_ranked = self._rank_topics(fallback_available)
                 # 与当日池候选去重（按 title/url 归一化）
                 seen_keys = {
@@ -211,7 +217,8 @@ class WeiToutiaoStandaloneGenerator:
                     if len(ranked) >= count:
                         break
                 self.logger.info(
-                    "WeiToutiao standalone fallback pool used: fallback_available=%d total=%d requested=%d",
+                    "WeiToutiao standalone fallback pool used: fallback_available=%d "
+                    "(after account-boundary filter) total=%d requested=%d",
                     len(fallback_ranked),
                     len(ranked),
                     count,

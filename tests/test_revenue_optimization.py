@@ -766,6 +766,9 @@ def test_performance_collection_defaults_to_publishing_headless(app_settings, mo
     settings = replace(
         app_settings,
         publishing=replace(app_settings.publishing, headless=True),
+        # 2026-09-16：微信采集改为**跟随渠道开关**（135 退役后微信一直采集失败，
+        # 纯噪音）。要断言"两个平台都采"，就得把渠道打开。
+        wechat=replace(app_settings.wechat, enabled=True),
     )
     service = PerformanceService(settings, logging.getLogger("test"))
     observed: list[tuple[str, bool]] = []
@@ -787,3 +790,25 @@ def test_performance_collection_defaults_to_publishing_headless(app_settings, mo
     service.collect_performance_data()
 
     assert observed == [("toutiao", True), ("wechat", True)]
+
+
+def test_performance_collection_skips_wechat_when_the_channel_is_disabled(
+    app_settings, monkeypatch, tmp_path
+) -> None:
+    """微信渠道停用后不该再起浏览器去采（它每次都会失败，是纯噪音）。"""
+    settings = replace(
+        app_settings,
+        wechat=replace(app_settings.wechat, enabled=False),
+    )
+    service = PerformanceService(settings, logging.getLogger("test"))
+    observed: list[str] = []
+
+    monkeypatch.setattr(service, "_collect_toutiao_metrics", lambda *, headless: observed.append("toutiao") or [])
+    monkeypatch.setattr(service, "_collect_wechat_metrics", lambda *, headless: observed.append("wechat") or [])
+    monkeypatch.setattr(service, "_sync_attribution_snapshots", lambda *args, **kwargs: {})
+    monkeypatch.setattr(service, "_build_automatic_reports", lambda: {})
+    monkeypatch.setattr(service, "_save_metrics", lambda payload: tmp_path / "performance.json")
+
+    service.collect_performance_data()
+
+    assert observed == ["toutiao"]

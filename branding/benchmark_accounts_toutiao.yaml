@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-05-22"
+updated_at: "2026-09-17"
 platform: toutiao
 accounts:
   - key: toutiao_36kr
@@ -116,6 +116,171 @@ accounts:
       - published_at: "近期"
         title: "机器人集体爆火之后，市场开始重估哪些环节先赚钱"
         keywords: ["机器人", "赚钱", "环节", "重估"]
+
+  # ── AI机器人 赛道 ──────────────────────────────────────────────────────
+  # 2026-09-17 补：此前 toutiao 专属文件只有 科技商业/国际热点/体育赛事，
+  # 导致 BenchmarkHotspotService.collect(track="AI机器人") 过滤后为空、直接抛错，
+  # 机器人号的热点支路长期空转（9-16 报同样错误，9-17 因此当天无选题可用）。
+  # 下面 source_feeds 的可用性均在 2026-09-17 实测过（HTTP 200 + 能解析出条目）。
+  - key: toutiao_qbitai_robot
+    name: "量子位（机器人）"
+    platform: toutiao
+    track: "AI机器人"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 10
+    positioning: "机器人与具身智能热点响应最快的样本之一，适合学习热点首发角度与产业落地叙事。"
+    content_pillars:
+      - "人形机器人"
+      - "具身智能"
+      - "AI硬件"
+    notes: "AI机器人赛道首选热点源；实测 RSS 稳定返回条目，含机器人进厂/具身智能类选题。"
+    source_feeds:
+      - label: "量子位 RSS"
+        type: rss
+        urls:
+          - "https://www.qbitai.com/feed"
+    observation_articles:
+      - published_at: "近期"
+        title: "西门子不造机器人，为什么机器人进厂的故事里总有它？"
+        keywords: ["机器人", "进厂", "产业", "具身智能"]
+      - published_at: "近期"
+        title: "具身智能进入交付验证期，真正要看的是订单与场景复制"
+        keywords: ["具身智能", "交付", "订单", "场景"]
+
+  - key: toutiao_zhidx_robot
+    name: "智东西（机器人）"
+    platform: toutiao
+    track: "AI机器人"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 9
+    positioning: "机器人、智能装备垂类媒体，适合补足具身智能与工业自动化的产业细节。"
+    content_pillars:
+      - "人形机器人"
+      - "智能装备"
+      - "工业自动化"
+    notes: "垂类补充源，用于补足器件、产线与落地场景的细节。"
+    source_feeds:
+      - label: "智东西机器人频道"
+        type: html
+        urls:
+          - "https://www.zhidx.com/p/category/%E6%9C%BA%E5%99%A8%E4%BA%BA%E6%97%A0%E4%BA%BA%E6%9C%BA"
+      - label: "智东西人工智能频道"
+        type: html
+        urls:
+          - "https://www.zhidx.com/p/category/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD"
+    observation_articles:
+      - published_at: "近期"
+        title: "机器人从样机走到量产，卡点通常在上游器件和良率"
+        keywords: ["机器人", "量产", "器件", "良率"]
+      - published_at: "近期"
+        title: "智能装备订单回暖时，先受益的往往是核心零部件"
+        keywords: ["智能装备", "订单", "零部件"]
+
+  - key: toutiao_ithome_robot
+    name: "IT之家（科技）"
+    platform: toutiao
+    track: "AI机器人"
+    stage: core
+    monitor_enabled: true
+    monitor_priority: 8
+    positioning: "科技快讯密度高，适合补充机器人、AI硬件与产业链上游的即时线索。"
+    content_pillars:
+      - "AI硬件"
+      - "算力"
+      - "产业链"
+    notes: "实测 RSS 单次返回约 60 条，适合做机器人赛道的线索雷达层。"
+    source_feeds:
+      - label: "IT之家 RSS"
+        type: rss
+        urls:
+          - "https://www.ithome.com/rss/"
+    observation_articles:
+      - published_at: "近期"
+        title: "AI硬件热度上来后，利润开始往上游器件集中"
+        keywords: ["AI硬件", "利润", "上游", "器件"]
+      - published_at: "近期"
+        title: "算力投入加码之后，真正被验证的是交付节奏"
+        keywords: ["算力", "交付", "节奏"]
+
+  - key: toutiao_solidot_robot
+    name: "Solidot 奇客"
+    platform: toutiao
+    track: "AI机器人"
+    stage: core
+    monitor_enabled: true
+    monitor_priority: 7
+    positioning: "偏技术与社会视角的科技资讯，适合补充研究进展与硬件类线索。"
+    content_pillars:
+      - "技术研究"
+      - "算力"
+      - "工业自动化"
+    notes: "实测 RSS 稳定返回约 20 条；作为技术视角的补充源。"
+    source_feeds:
+      - label: "Solidot RSS"
+        type: rss
+        urls:
+          - "https://www.solidot.org/index.rss"
+    observation_articles:
+      - published_at: "近期"
+        title: "研究进展发布之后，离量产还有几道工程门槛"
+        keywords: ["研究", "量产", "工程"]
+      - published_at: "近期"
+        title: "技术突破被报道时，产业链位置决定了谁先受益"
+        keywords: ["技术", "产业链", "受益"]
+
+  - key: toutiao_leiphone_robot
+    name: "雷锋网（AI机器人）"
+    platform: toutiao
+    track: "AI机器人"
+    stage: head
+    monitor_enabled: true
+    monitor_priority: 9
+    positioning: "AI 与机器人产业报道密度高，适合补充技术路线、产业落地与公司动作的细节。"
+    content_pillars:
+      - "人形机器人"
+      - "具身智能"
+      - "工业自动化"
+    notes: "实测 RSS 单次返回约 100 条、机器人相关命中率高，是 AI机器人 赛道素材最厚的源。"
+    source_feeds:
+      - label: "雷锋网 RSS"
+        type: rss
+        urls:
+          - "https://www.leiphone.com/feed"
+    observation_articles:
+      - published_at: "近期"
+        title: "机器人进厂之后，真正被考核的是节拍和良率"
+        keywords: ["机器人", "进厂", "良率", "节拍"]
+      - published_at: "近期"
+        title: "具身智能融资动作背后，交付能力才是估值锚点"
+        keywords: ["具身智能", "融资", "交付"]
+
+  - key: toutiao_tmtpost_robot
+    name: "钛媒体（科技）"
+    platform: toutiao
+    track: "AI机器人"
+    stage: core
+    monitor_enabled: true
+    monitor_priority: 8
+    positioning: "商业视角的科技报道，适合学习把技术进展换算成订单与利润的语言。"
+    content_pillars:
+      - "产业链"
+      - "AI硬件"
+      - "智能装备"
+    notes: "实测 RSS 稳定返回约 18 条，用于补充商业与产业链角度。"
+    source_feeds:
+      - label: "钛媒体 RSS"
+        type: rss
+        urls:
+          - "https://www.tmtpost.com/rss"
+    observation_articles:
+      - published_at: "近期"
+        title: "技术热度退潮后，订单结构决定谁能留在牌桌上"
+        keywords: ["订单", "结构", "技术"]
+      - published_at: "近期"
+        title: "产业链位置不同，同一波热度带来的利润差异很大"
+        keywords: ["产业链", "利润", "热度"]
 
   - key: toutiao_observer_world
     name: "观察者网国际"

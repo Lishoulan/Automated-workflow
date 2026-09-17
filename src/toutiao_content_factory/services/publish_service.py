@@ -1102,10 +1102,16 @@ class PublishService:
                                 "Three-image cover requested but <3 images available; "
                                 "falling back to single-image cover."
                             )
-                            self._apply_cover_image(page, cover_path, notes)
-                            cover_mode = "single"
+                            if self._apply_cover_image(page, cover_path, notes):
+                                cover_mode = "single"
+                            else:
+                                cover_mode = "none"
                     elif cover_mode == "single" and cover_path is not None:
-                        self._apply_cover_image(page, cover_path, notes)
+                        if not self._apply_cover_image(page, cover_path, notes):
+                            notes.append(
+                                "Cover upload did not stick; publishing without a cover."
+                            )
+                            cover_mode = "none"
                     else:
                         self._ensure_no_cover_mode(page, notes)
                     media_state = self._verify_publish_media_state(
@@ -3693,21 +3699,55 @@ class PublishService:
         except Exception:
             return False
 
-    def _apply_cover_image(self, page, cover_path: Path, notes: list[str]) -> None:
+    def _apply_cover_image(self, page, cover_path: Path, notes: list[str]) -> bool:
+        """上传单图封面，返回**页面实际**是否有了封面。
+
+        `_upload_cover_via_*` 返回的只是「这条策略自己认为成功了」，它曾在页面上什么
+        都没有时也返回 True（2026-09-17 云端：编辑器里「已上传 0 张图片」、封面区还是
+        空的 `+`，却没有任何一条策略报失败，日志里连 "All cover upload strategies
+        failed" 都没出现）。所以这里不信策略的自述 —— **每条策略跑完都用
+        `_is_cover_applied()` 复核页面实际状态**，把 claimed 与 actual 的对照写进日志与
+        notes，并只在页面确实有封面时才判定成功。
+        """
         self._dismiss_ai_assistant_drawer(page, notes)
         self._hide_ai_drawer_mask_css(page, notes)
         self._ensure_single_cover_mode(page)
         self._clear_existing_cover(page, notes)
 
-        cover_applied = self._upload_cover_via_file_chooser(page, cover_path, notes)
-        if not cover_applied:
-            cover_applied = self._upload_cover_via_direct_input(page, cover_path, notes)
-        if not cover_applied:
-            self.logger.warning("All cover upload strategies failed. Falling back to no-cover mode.")
-            self._ensure_no_cover_mode(page, notes)
-            return
+        strategies = (
+            ("file_chooser", self._upload_cover_via_file_chooser),
+            ("direct_input", self._upload_cover_via_direct_input),
+        )
+        for name, strategy in strategies:
+            claimed = False
+            try:
+                claimed = bool(strategy(page, cover_path, notes))
+            except Exception as exc:
+                self.logger.warning("Cover upload strategy %s raised: %s", name, exc)
+                notes.append(f"Cover upload strategy {name} raised: {exc}")
 
-        notes.append(f"Applied cover image: {cover_path.name}")
+            actual = self._is_cover_applied(page)
+            self.logger.info(
+                "Cover upload strategy %s: claimed=%s page_has_cover=%s",
+                name,
+                claimed,
+                actual,
+            )
+            notes.append(
+                f"Cover upload strategy {name}: claimed={claimed} page_has_cover={actual}"
+            )
+            if actual:
+                if not claimed:
+                    notes.append(
+                        f"Strategy {name} reported failure but the page does have a cover."
+                    )
+                notes.append(f"Applied cover image: {cover_path.name}")
+                return True
+
+        self.logger.warning("All cover upload strategies failed. Falling back to no-cover mode.")
+        notes.append("All cover upload strategies failed; falling back to no-cover mode.")
+        self._ensure_no_cover_mode(page, notes)
+        return False
 
     def _apply_three_cover(self, page, cover_paths: list[Path], notes: list[str]) -> None:
         """以三图封面模式向头条发布页上传三张图片。
@@ -4045,15 +4085,17 @@ class PublishService:
             return True
         try:
             has_img = page.evaluate("""() => {
-                const coverImg = document.querySelector('.article-cover-img-wrap img');
-                if (coverImg) return true;
                 const coverArea = document.querySelector('.article-cover');
-                if (coverArea) {
-                    const imgs = coverArea.querySelectorAll('img');
-                    for (const img of imgs) {
-                        const rect = img.getBoundingClientRect();
-                        if (rect.width > 10 && rect.height > 10) return true;
-                    }
+                if (!coverArea) return false;
+                const coverImg = coverArea.querySelector('.article-cover-img-wrap img');
+                if (coverImg) {
+                    const r = coverImg.getBoundingClientRect();
+                    if (r.width > 10 && r.height > 10) return true;
+                }
+                const imgs = coverArea.querySelectorAll('img');
+                for (const img of imgs) {
+                    const rect = img.getBoundingClientRect();
+                    if (rect.width > 10 && rect.height > 10) return true;
                 }
                 return false;
             }""")
@@ -4224,32 +4266,28 @@ class PublishService:
             return True
 
     def _is_cover_applied(self, page) -> bool:
+        """封面区是否真的已经有一张可见的图。
+
+        只认硬证据：`.article-cover` 区域里存在**可见**的 `img`。判定标准必须与
+        `_verify_publish_media_state()` 一致，否则会出现「上传环节以为成功、发布校验
+        却等不到封面」的死局 —— 2026-09-17 云端就是这样连续 3 次卡满重试的。
+
+        这里原先还有三条**间接证据**分支，已全部移除：
+        - `+` 按钮（`.article-cover-add`）不可见 → 页面没渲染完/被遮挡时同样成立；
+        - 预览按钮（`.article-cover-preview .show-dialog-btn`）可见 → 没有封面时该按钮
+          也在，只是 disabled，`is_visible()` 依旧返回 True；
+        - `.byte-spin img`（加载动画）可见 → 转圈不等于有封面。
+        """
         for selector in [
             ".article-cover img",
             ".article-cover-images img",
-            ".article-cover .byte-spin img",
             ".article-cover .article-cover-img-wrap img",
         ]:
             try:
-                locator = page.locator(selector).first
-                if locator.is_visible(timeout=500):
+                if page.locator(selector).first.is_visible(timeout=500):
                     return True
             except Exception:
                 continue
-
-        try:
-            add_button = page.locator(".article-cover-add").first
-            if add_button.count() and not add_button.is_visible(timeout=500):
-                return True
-        except Exception:
-            pass
-
-        try:
-            preview_button = page.locator(".article-cover-preview .show-dialog-btn").first
-            if preview_button.is_visible(timeout=500):
-                return True
-        except Exception:
-            pass
 
         return False
 

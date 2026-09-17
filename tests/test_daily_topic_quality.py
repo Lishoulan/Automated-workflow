@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 
 from toutiao_content_factory.agents.data_agent import DataAgent
 from toutiao_content_factory.agents.title_agent import TitleAgent
@@ -14,6 +16,7 @@ from toutiao_content_factory.models import (
     TrendReport,
 )
 from toutiao_content_factory.services.benchmark_hotspot_service import BenchmarkHotspotService
+from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 from toutiao_content_factory.services.extractor import SignalExtractor
 from toutiao_content_factory.services.prompt_repository import PromptRepository
@@ -613,3 +616,119 @@ def test_title_primary_company_uses_shared_company_validation(
     report = DataReport(focus_companies=["重点看电池", "比亚迪"])
 
     assert agent._primary_company(report) == "比亚迪"
+
+
+def _benchmark_account(track: str) -> dict[str, object]:
+    return {
+        "key": f"test_{track}",
+        "name": f"测试账号-{track}",
+        "platform": "toutiao",
+        "track": track,
+        "monitor_enabled": True,
+        "monitor_priority": 5,
+        "source_feeds": [
+            {"label": "测试源", "type": "rss", "urls": ["https://example.test/feed.xml"]}
+        ],
+    }
+
+
+def _fake_benchmark_report() -> MagicMock:
+    topic = MagicMock()
+    topic.source = "benchmark_test_1"
+    topic.title = "测试机器人热点"
+    topic.url = "https://example.test/topic"
+    topic.published_at = "2026-09-17T09:00:00"
+    topic.summary = "摘要"
+    topic.snippet = "片段"
+    topic.title_playbook_track = "AI机器人"
+    topic.matched_industries = ["humanoid_robot"]
+    topic.matched_keywords = ["机器人"]
+    topic.extracted_numbers = []
+    topic.topic_type = "industry"
+    topic.topic_type_label = "产业"
+    topic.title_potential_reasons = []
+    topic.quality_flags = []
+    topic.recommended_format = "analysis"
+    topic.recommended_format_label = "分析"
+    for name in (
+        "heat_score",
+        "read_score",
+        "save_score",
+        "discussion_score",
+        "quality_score",
+        "title_potential_score",
+        "total_score",
+    ):
+        setattr(topic, name, 1)
+
+    report = MagicMock()
+    report.topics = [topic]
+    report.source_stats = {"benchmark_test_1": {"raw_count": 3, "status": "ok"}}
+    report.failed_sources = []
+    report.total_selected_items = 1
+    return report
+
+
+def test_benchmark_collect_falls_back_when_track_has_no_accounts(
+    app_settings, logger, monkeypatch
+) -> None:
+    """赛道没配对标账号时要降级为「不过滤」而不是抛错。
+
+    2026-09-17 事故：toutiao 专属对标库里没有 AI机器人 赛道，
+    collect() 直接抛 ValueError 并被上层吞成 WARNING，
+    当天选题池因此为空、全部候选被判素材不足，整条链路当天颗粒无收。
+    """
+
+    monkeypatch.setattr(
+        GrowthOpsService,
+        "load_benchmark_accounts",
+        lambda self, platform=None: [
+            _benchmark_account("科技商业"),
+            _benchmark_account("国际热点"),
+        ],
+    )
+    monkeypatch.setattr(TopicCollectionService, "collect_sync", lambda self: _fake_benchmark_report())
+    service = BenchmarkHotspotService(app_settings, logger)
+
+    exports = service.collect(platform="toutiao", track="AI机器人", limit=5)
+
+    payload = json.loads(Path(exports["benchmark_hot_topics_json"]).read_text(encoding="utf-8"))
+    assert payload["track_filter_fallback"] is True
+    assert payload["resolved_track"] == "AI机器人"
+    # 降级后借用了其它赛道的两个账号，而不是抛错收场
+    assert payload["account_count"] == 2
+    assert payload["topics"]
+
+
+def test_benchmark_collect_keeps_track_filter_when_accounts_exist(
+    app_settings, logger, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        GrowthOpsService,
+        "load_benchmark_accounts",
+        lambda self, platform=None: [
+            _benchmark_account("科技商业"),
+            _benchmark_account("AI机器人"),
+        ],
+    )
+    monkeypatch.setattr(TopicCollectionService, "collect_sync", lambda self: _fake_benchmark_report())
+    service = BenchmarkHotspotService(app_settings, logger)
+
+    exports = service.collect(platform="toutiao", track="AI机器人", limit=5)
+
+    payload = json.loads(Path(exports["benchmark_hot_topics_json"]).read_text(encoding="utf-8"))
+    assert payload["track_filter_fallback"] is False
+    assert payload["account_count"] == 1
+
+
+def test_robot_track_industries_stay_robot_specific() -> None:
+    """AI机器人 不该把 ai_hardware 当自家题材。
+
+    2026-09-17 实测：把 ai_hardware 算进机器人赛道后，
+    雷锋网 feed 最前的几条芯片/光学稿被当成机器人热点选题选出来。
+    """
+
+    industries = BenchmarkHotspotService.TRACK_INDUSTRY_MAP["AI机器人"]
+
+    assert "humanoid_robot" in industries
+    assert "ai_hardware" not in industries

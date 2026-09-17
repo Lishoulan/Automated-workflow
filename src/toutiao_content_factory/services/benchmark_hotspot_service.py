@@ -15,7 +15,11 @@ from toutiao_content_factory.services.topic_collection import TopicCollectionSer
 
 class BenchmarkHotspotService:
     TRACK_INDUSTRY_MAP = {
-        "AI机器人": ["humanoid_robot", "ai_hardware", "industrial_automation"],
+        # ai_hardware（芯片/算力/服务器/GPU）刻意不放进 AI机器人：
+        # 那几个词会把半导体、光学器件类稿件整片吸进机器人赛道。
+        # 2026-09-17 实测：雷锋网 feed 排在最前的几条芯片稿被当成机器人热点选题。
+        # 机器人号真正要的是 humanoid_robot + industrial_automation 两个行业。
+        "AI机器人": ["humanoid_robot", "industrial_automation"],
         "新能源储能": ["energy_storage", "new_energy"],
         "国际热点": ["international"],
         "体育赛事": ["sports"],
@@ -106,10 +110,30 @@ class BenchmarkHotspotService:
             ),
             reverse=True,
         )
+        track_filter_fallback = False
         if normalized_track:
-            accounts = [
+            track_accounts = [
                 item for item in accounts if str(item.get("track", "")).strip() == normalized_track
             ]
+            if track_accounts:
+                accounts = track_accounts
+            else:
+                # 赛道还没配对标账号时不要打穿整条链路：降级为「不过滤赛道」继续采集。
+                # 这里抛错会让上层把整次热点刷新跳过，当天可能一个选题都拿不到
+                # （2026-09-17 事故：AI机器人 赛道无对标账号 → 选题池为空 → 全部候选被拒）。
+                # 行业维度仍由 _resolve_focus_industries 按 normalized_track 收窄，不会跑题，
+                # 只是热点源换成了其它赛道的账号。真正的修法是给该赛道补 source_feeds。
+                track_filter_fallback = True
+                self.logger.warning(
+                    "No monitorable benchmark accounts for track=%s on platform=%s; "
+                    "falling back to all tracked accounts (%s). "
+                    "该赛道需要补 source_feeds，否则只能借用其它赛道的热点源。",
+                    normalized_track,
+                    platform_key,
+                    ", ".join(
+                        sorted({str(item.get("track", "")).strip() for item in accounts})
+                    ),
+                )
         if not accounts:
             raise ValueError(
                 f"No monitorable benchmark accounts found for platform={platform_key}"
@@ -223,6 +247,7 @@ class BenchmarkHotspotService:
             "platform": platform_key,
             "requested_track": requested_track,
             "resolved_track": normalized_track,
+            "track_filter_fallback": track_filter_fallback,
             "account_count": len(accounts),
             "source_count": len(source_configs),
             "fallback_used": fallback_used,

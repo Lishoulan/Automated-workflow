@@ -60,7 +60,11 @@ def _from_dict(cls, payload: dict):
 REASON_TEXT = {
     "title_too_long": "超长",
     "unsupported_financial_link": "无依据的财务因果",
-    "editorial_integrity": "编辑一致性",
+    # Blocker 2（2026-09-17）：标题层的拒绝原因改叫「标题与正文不一致」。
+    # 旧的 `editorial_integrity` 是**跨层合并**的判定（正文自身的问题也算到标题头上），
+    # 保留文案只是为了还能读旧诊断 JSON。
+    "title_body_inconsistency": "标题与正文不一致",
+    "editorial_integrity": "编辑一致性(旧·含跨层)",
     "missing_concrete_hook": "缺正文具象钩子",
 }
 
@@ -69,8 +73,15 @@ def _compliance_breakdown(agent: TitleAgent, title: str, body_text: str) -> list
     """逐条复算 `validate_title_compliance` 的各道子闸，返回**稳定的 reason_code**。
 
     用 code 而不是人读文案，是为了能直接做计数统计
-    （`{"missing_concrete_hook": 30, "editorial_integrity": 8}`），
+    （`{"missing_concrete_hook": 30, "title_body_inconsistency": 8}`），
     这也是 D2 要求「上层能够知道为什么一个都没通过」在诊断侧的对应物。
+
+    ⚠️ 2026-09-17（Blocker 2）：这里原先调 `check_editorial_integrity()`，而那个函数会
+    把 `_check_body_integrity(整篇正文)` 合并进 issues —— 于是本工具复算出来的
+    「编辑一致性」失败数**并不是标题的原因**，是**正文**的原因被乘上了候选数。
+    实测某选题 39/39 全灭就是这样来的。现在改用与 `validate_title_compliance` 一致的
+    分层入口 `check_title_body_consistency()`；正文层的问题另由
+    `_body_integrity_summary()` 单独统计，不再冒充标题的拒绝原因。
     """
     from src.toutiao_content_factory.services.article_quality_checker import (
         ArticleQualityChecker,
@@ -86,11 +97,25 @@ def _compliance_breakdown(agent: TitleAgent, title: str, body_text: str) -> list
             break
     if any(p.search(title) for p in agent.UNSUPPORTED_FINANCIAL_LINK_PATTERNS):
         reasons.append("unsupported_financial_link")
-    if ArticleQualityChecker().check_editorial_integrity(title, body_text).get("issues"):
-        reasons.append("editorial_integrity")
+    if ArticleQualityChecker().check_title_body_consistency(title, body_text).issues:
+        reasons.append("title_body_inconsistency")
     if body_text and 10 <= len(title) <= max_length and not agent._has_concrete_hook(title, body_text):
         reasons.append("missing_concrete_hook")
     return reasons
+
+
+def _body_integrity_summary(body_text: str) -> dict[str, object]:
+    """正文层自身的硬伤（HTML 泄漏 / 占位 / 残句）。**与标题无关**，单独统计。"""
+    from src.toutiao_content_factory.services.article_quality_checker import (
+        ArticleQualityChecker,
+    )
+
+    result = ArticleQualityChecker().check_body_integrity(body_text)
+    return {
+        "passed": result.passed,
+        "issues": result.issues,
+        "matched_fragments": result.matched_fragments,
+    }
 
 
 def _reason_label(code: str) -> str:
@@ -260,7 +285,20 @@ def main() -> int:
     print(f"\n=== 合规校验（共 {len(compliance_calls)} 次调用）===")
     print(f"  带正文（模型候选）: {len(model_side)} 次，通过 {sum(1 for c in model_side if c['ok'])}")
     print(f"  不带正文（兜底）  : {len(fallback_side)} 次，通过 {sum(1 for c in fallback_side if c['ok'])}")
-    print("  ⚠️ 兜底不过「正文具象钩子」与「编辑一致性」两道闸 —— 结构性不对称")
+    print("  ⚠️ 兜底不过「正文具象钩子」两道闸 —— 结构性不对称（D3 尚未修复）")
+
+    # Blocker 2：正文层自身的硬伤单独报告，且**不再**计入任何标题的拒绝原因。
+    body_summary = _body_integrity_summary(body_reference)
+    print("\n=== 正文层自身完整性（与标题无关，不否决标题）===")
+    print(f"  正文层判定: {'PASS' if body_summary['passed'] else 'FAIL'}")
+    for issue in body_summary["issues"]:
+        print(f"    - {issue}")
+    if body_summary["matched_fragments"]:
+        print(f"    命中片段: {body_summary['matched_fragments']}")
+    print(
+        "  → 该结果只用于「整篇稿子」的闸门；标题层已改用 check_title_body_consistency()，"
+        "正文的问题不会再乘到每条标题头上。"
+    )
 
     fallback_titles = fallback_calls[0] if fallback_calls else []
     emergency_titles = emergency_calls[0] if emergency_calls else []
@@ -357,6 +395,7 @@ def main() -> int:
             "compliance_fallback_side": fallback_side,
             "per_source": per_source,
             "reason_summary": reason_counter,
+            "body_integrity": body_summary,
             "final_titles": result["titles"],
             "recommended": result["recommended_titles"],
         }

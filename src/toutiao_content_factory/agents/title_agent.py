@@ -147,7 +147,14 @@ class TitleAgent(BaseAgent):
                 return False
         if any(pattern.search(title) for pattern in self.UNSUPPORTED_FINANCIAL_LINK_PATTERNS):
             return False
-        if ArticleQualityChecker().check_editorial_integrity(title, body_text).get("issues"):
+        # ⚠️ 2026-09-17：这里原先调 `check_editorial_integrity(title, body_text)`，
+        # 而那个函数会把 **`_check_body_integrity(整篇正文)`** 也合并进 issues ——
+        # 于是「正文自己的问题」被算到「每一条标题」头上。实测：某篇正文被
+        # `_BODY_FRAGMENT_PATTERN` 误判为残句（命中片段是正常的「、并且」），
+        # 该选题 39/39 条标题候选全部因「编辑一致性」被拒。
+        # 标题层只该问「标题与正文是否一致」，所以改用分层后的 entrypoint。
+        consistency = ArticleQualityChecker().check_title_body_consistency(title, body_text)
+        if consistency.issues:
             return False
         # 标题必须承接正文具象钩子：若正文含具体数字/场景/公司等地标元素，
         # 标题至少引用其一，避免"情绪模板+空泛主题词"的零点击标题。

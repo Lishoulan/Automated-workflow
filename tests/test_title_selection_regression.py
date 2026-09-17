@@ -302,3 +302,64 @@ def test_company_and_year_still_count_as_concrete_hooks() -> None:
     assert "30%" in elements
     assert TitleAgent._has_concrete_hook("舜宇光学科技拿到订单，真正的变化在哪", body) is True
     assert TitleAgent._has_concrete_hook("行业订单回暖，真正的变化在哪", body) is False
+
+
+# ---------------------------------------------------------------------------
+# Blocker 2（2026-09-17）：正文层的问题不许否决标题
+#
+# `TitleAgent.validate_title_compliance(title, body)` 原先调
+# `check_editorial_integrity(title, body)`，而后者的 issues 里**合并了
+# `_check_body_integrity(整篇正文)`**。于是一篇正文命中悬空残句规则时，
+# 该选题的**全部**标题候选（实测 39/39）都会因为「编辑一致性」被拒。
+# 更糟的是那条残句规则本身精度为 0（真实语料 457 篇里命中 101 篇，全部是正常中文）。
+# ---------------------------------------------------------------------------
+
+
+def _title_agent(app_settings, mock_openai_service, logger) -> TitleAgent:
+    from toutiao_content_factory.services.prompt_repository import PromptRepository
+
+    return TitleAgent(
+        app_settings,
+        PromptRepository(app_settings),
+        mock_openai_service,
+        logger,
+    )
+
+
+def test_body_fragment_no_longer_rejects_every_title(
+    app_settings, mock_openai_service, logger
+) -> None:
+    """正文有悬空残句（本文档自身的硬伤）→ 标题只要与正文一致就该放行。"""
+    agent = _title_agent(app_settings, mock_openai_service, logger)
+    # 正文里带了 `、为` 残句 + HTML 泄漏：两层问题都压在**正文**头上。
+    body = "<!doctype html>优必选、为最主要的增长驱动力出现在现有材料中，公开材料显示交付仍是关键。"
+
+    # 标题承接了正文主体与具象钩子，标题自己没有任何问题。
+    assert agent.validate_title_compliance("优必选交付节奏观察，真正的变量在哪", body) is True
+
+
+def test_title_inconsistent_with_body_is_still_rejected(
+    app_settings, mock_openai_service, logger
+) -> None:
+    """分层不等于放水：标题自己与正文不一致时仍必须被拒。"""
+    agent = _title_agent(app_settings, mock_openai_service, logger)
+    body = "公开材料显示，优必选的相关业务仍要看交付，2026年目标是放量。"
+
+    # 「模糊主体」：材料已点名优必选，标题却用「其他智能公司」替代。
+    assert agent.validate_title_compliance("其他智能公司的交付观察", body) is False
+
+
+def test_body_fragment_is_still_reported_on_the_body_layer(
+    app_settings, mock_openai_service, logger
+) -> None:
+    """正文层仍然如实记录残句 —— 分层是「各归其位」，不是「把问题藏起来」。"""
+    body = "优必选、为最主要的增长驱动力出现在现有材料中。"
+
+    body_result = ArticleQualityChecker().check_body_integrity(body)
+    merged = ArticleQualityChecker().check_editorial_integrity("优必选业务观察", body)
+
+    assert body_result.passed is False
+    assert body_result.matched_fragments
+    assert merged["title_issues"] == []
+    assert any("残句" in issue for issue in merged["body_issues"])
+

@@ -25,6 +25,34 @@ class QualityCheckResult:
     engagement_attractiveness_score: int = 0
 
 
+@dataclass
+class BodyIntegrityResult:
+    """**正文自身**的完整性结论，与标题无关。
+
+    ⚠️ 2026-09-17：这三类问题原本混在 `check_editorial_integrity()` 的返回值里，
+    而该函数的调用方之一是 `TitleAgent.validate_title_compliance(title, body)` ——
+    于是**正文自己的问题被算到每一条标题头上**。实测：某篇正文命中
+    `_BODY_FRAGMENT_PATTERN`（误报），结果该选题 39/39 条标题候选全部因
+    「编辑一致性」被拒。正文有问题是**这篇稿子**的问题，不是标题的问题。
+    """
+
+    passed: bool
+    issues: list[str]
+    matched_fragments: list[str]
+
+
+@dataclass
+class TitleBodyConsistencyResult:
+    """**标题与正文之间**的一致性结论，只看标题自己有没有问题。
+
+    输入标题 + 正文，只回答：标题提到的主体是否在正文里、标题数字是否有正文依据。
+    绝不因为「正文自身存在 fragment / 占位 / HTML 泄漏」而判失败。
+    """
+
+    passed: bool
+    issues: list[str]
+
+
 class ArticleQualityChecker:
     """文章质量预检器"""
 
@@ -503,8 +531,31 @@ class ArticleQualityChecker:
         r"(?i)(?:\b(?:todo|tbd|placeholder)\b|占位符|占位文本|待补充(?:数据|来源|内容)?|"
         r"请补充(?:数据|来源|内容)?|此处(?:补充|填写))"
     )
+    # ⚠️ 2026-09-17（Blocker 2）：旧规则是
+    #   `[\u4e00-\u9fffA-Za-z0-9]{2,24}、(?:为|是|在|与|和|并|但|或)`
+    # 在 457 篇去重后的真实正文上实测：**命中 101 篇（22.10%）、114 次，
+    # 且逐条看上下文后**全部是正常中文**（精度 0）。主因不是「顿号后接词」这件事，
+    # 而是单字连接词会命中**更长的词内部**：
+    #   - 178 次 `、并` 中绝大多数是 `订单、并网、交付`（`并` 是「并网」首字）；
+    #   - 32 次 `、和`、8 次 `、与`、16 次 `、在` 全是并列项连接词
+    #     （`在手订单规模`、`验证进度、与主流厂商`）；
+    #   - 24 次 `、是` 里绝大多数是 `、是否完成客户验收`（`是` 是「是否」首字）。
+    # 又经 `check_editorial_integrity` 的跨层泄漏，这 101 篇的**全部标题候选**都会被否掉。
+    #
+    # 收窄为两条**结构上成立**的信号（顿号不可能引出谓语；句子不可能以连接词收尾）：
+    #   ① `、` + 系动词（为/是），但排除 `、是否`（正常并列疑问项）；
+    #   ② 以连接词/介词收尾、且后面没有任何终句标点（正文/段落的悬空尾巴）。
+    # 同一 457 篇语料上：**只剩 2 篇命中（0.44%），2 次全部是真残句**
+    #   （`…智能机器人、为最主要的增长驱动力。`、`…提到小鹏、是因为以前那些机器人`）。
+    # 既有回归夹具 `优必选、为最主要的增长驱动力…` 依然被 ① 捕获。
+    # 已放弃的候选（噪声过大，数据留档在 docs/TITLE_GATE_BLOCKER_REANALYSIS_20260917.md）：
+    #   「段落无终句标点」120/243、「。，标点错接」52/243、「悬空从句开头词」64/243、
+    #   「、并（排除并网）」2/2 仍全是误报、「、为是」全量 26 次而其中 24 次是 `、是否`。
     _BODY_FRAGMENT_PATTERN = re.compile(
-        r"[\u4e00-\u9fffA-Za-z0-9]{2,24}、(?:为|是|在|与|和|并|但|或)"
+        r"、[为是](?!否)"
+        r"|(?:并且|而且|同时|因此|所以|以及|或者|但是|不过|因为|如果|由于|虽然|即使|"
+        r"只要|随着|并|但|或|与|和|是|为|在)[ \t]*"
+        r"(?:\r?\n[ \t]*\r?\n|[ \t]*\Z)"
     )
 
     @classmethod
@@ -599,21 +650,45 @@ class ArticleQualityChecker:
         return list(dict.fromkeys(issues))
 
     @classmethod
-    def _check_body_integrity(cls, content: str) -> list[str]:
+    def check_body_integrity(cls, content: str) -> BodyIntegrityResult:
+        """只看**正文自身**是否有硬伤（HTML 泄漏 / 占位文本 / 悬空残句）。"""
         article = str(content or "").strip()
         if not article:
-            return []
+            return BodyIntegrityResult(passed=True, issues=[], matched_fragments=[])
 
         issues: list[str] = []
+        matched_fragments: list[str] = []
         if cls._BODY_HTML_LEAK_PATTERN.search(article):
             issues.append("正文疑似泄露HTML标签或网页模板，必须清除后再发布。")
         if cls._BODY_TEMPLATE_LEAK_PATTERN.search(article):
             issues.append("正文疑似泄露模板占位语法，必须补全真实内容后再发布。")
         if cls._BODY_PLACEHOLDER_PATTERN.search(article):
             issues.append("正文仍包含待补充或占位文本，不能作为成稿发布。")
-        if cls._BODY_FRAGMENT_PATTERN.search(article):
-            issues.append("正文存在明显残句或标点错接（如“主体、为……”），请重写完整句子。")
-        return list(dict.fromkeys(issues))
+        matched_fragments = [
+            match.group(0) for match in cls._BODY_FRAGMENT_PATTERN.finditer(article)
+        ]
+        if matched_fragments:
+            issues.append("正文存在悬空残句（以连接词收尾且无终句标点），请重写完整句子。")
+        issues = list(dict.fromkeys(issues))
+        return BodyIntegrityResult(
+            passed=not issues, issues=issues, matched_fragments=matched_fragments
+        )
+
+    @classmethod
+    def _check_body_integrity(cls, content: str) -> list[str]:
+        """向后兼容的薄封装：只返回 issues 文案。"""
+        return cls.check_body_integrity(content).issues
+
+    @classmethod
+    def check_title_body_consistency(
+        cls,
+        title: str,
+        content: str,
+        expected_companies: Iterable[object] | None = None,
+    ) -> TitleBodyConsistencyResult:
+        """只看**标题与正文之间**的一致性，不掺入正文自身的完整性问题。"""
+        issues = cls._check_title_integrity(title, str(content or ""), expected_companies)
+        return TitleBodyConsistencyResult(passed=not issues, issues=issues)
 
     def check_editorial_integrity(
         self,
@@ -622,10 +697,23 @@ class ArticleQualityChecker:
         expected_companies: Iterable[object] | None = None,
         require_body: bool = False,
     ) -> dict[str, list[str]]:
-        """Return deterministic hard-quality findings shared by publish gates."""
+        """Return deterministic hard-quality findings shared by publish gates.
 
-        title_issues = self._check_title_integrity(title, content, expected_companies)
-        body_issues = self._check_body_integrity(content)
+        ⚠️ 返回的 `issues` 是**两层合并**的结果（正文层 + 标题层），这是给「整篇稿子」
+        用的闸门（发布前、内容守卫）看的。**标题层的调用方不要用它** ——
+        正文自己的问题会污染标题判定。标题层请用
+        `check_title_body_consistency()`。
+
+        2026-09-17 之前，`TitleAgent.validate_title_compliance` 正是误用了这个合并结果，
+        导致一篇正文触发悬空残句规则时，该选题 39/39 条标题候选全部被拒。
+        现在返回值里额外带上 `body_integrity` / `title_body_consistency` 两个分层结果，
+        便于调用方各取所需（对外键名保持不变）。
+        """
+
+        consistency = self.check_title_body_consistency(title, content, expected_companies)
+        body_integrity = self.check_body_integrity(content)
+        title_issues = consistency.issues
+        body_issues = body_integrity.issues
         hard_blockers = [*title_issues, *body_issues]
         if require_body and not str(content or "").strip():
             hard_blockers.insert(0, "正文为空，不能进入发布流程。")
@@ -635,6 +723,15 @@ class ArticleQualityChecker:
             "hard_blockers": hard_blockers,
             "title_issues": title_issues,
             "body_issues": body_issues,
+            "body_integrity": {
+                "passed": body_integrity.passed,
+                "issues": body_integrity.issues,
+                "matched_fragments": body_integrity.matched_fragments,
+            },
+            "title_body_consistency": {
+                "passed": consistency.passed,
+                "issues": consistency.issues,
+            },
         }
 
     def _check_title(self, title: str, content: str = "") -> dict:

@@ -5,7 +5,9 @@ import pytest
 
 from toutiao_content_factory.services.article_quality_checker import (
     ArticleQualityChecker,
+    BodyIntegrityResult,
     QualityCheckResult,
+    TitleBodyConsistencyResult,
 )
 
 
@@ -291,3 +293,133 @@ class TestRiskyWordOrdinalHandling:
         text = "\u7b2c\u4e00\u6761\u5efa\u8bae\u5df2\u5b8c\u6210\uff0c\u4f46\u8fd9\u662f\u7b2c\u4e00\u3002"
 
         assert self.checker._contains_unqualified_first(text.lower()) is True
+
+
+class TestBlocker2LayeredIntegrity:
+    """Blocker 2：正文层的硬伤不得污染标题层判定（跨层泄漏回归）。
+
+    背景：`check_editorial_integrity()` 曾把「正文自身」的问题和「标题自身」的问题
+    合并进同一个 `issues`，而 `TitleAgent.validate_title_compliance` 又误用了这个合并结果。
+    真实数据里一篇正文命中 `_BODY_FRAGMENT_PATTERN` 就会让该选题 **39/39 条标题候选全灭**。
+    """
+
+    def setup_method(self) -> None:
+        self.checker = ArticleQualityChecker()
+
+    # ---------- Case A：正常中文里的「、并且」不是残句 ----------
+    @pytest.mark.parametrize(
+        "article",
+        [
+            "真正该看的，是后续有没有订单、并且能否如期交付。",
+            "真正该看的，是后续有没有订单、并网、交付或毛利数据继续兑现。",
+            "关键还是订单转化率、在手订单规模和客户复购节奏。",
+            "接下来该跟踪样机验证进度、与主流硬件厂商的联合开发节点。",
+            "机器人训练数据、是否完成客户验收，决定了后续放量节奏。",
+            "要看的是设备交付、并网验证、系统集成和后端运维能否闭环。",
+        ],
+    )
+    def test_case_a_normal_clauses_are_not_flagged_as_fragments(self, article: str) -> None:
+        body = self.checker.check_body_integrity(article)
+
+        assert isinstance(body, BodyIntegrityResult)
+        assert body.passed is True
+        assert body.matched_fragments == []
+        assert not any("残句" in issue for issue in body.issues)
+
+    def test_case_a_normal_body_does_not_pollute_the_title_gate(self) -> None:
+        """正文正常时，任何标题都不该因为「正文残句」被拒。"""
+        body_text = "真正该看的，是后续有没有订单、并且能否如期交付，还要看交付节奏。"
+
+        merged = self.checker.check_editorial_integrity("优必选订单节奏观察", body_text)
+
+        assert merged["body_integrity"]["passed"] is True
+        assert not any("残句" in issue for issue in merged["issues"])
+
+    # ---------- Case B：真正明显截断的残句仍然能被识别 ----------
+    @pytest.mark.parametrize(
+        "article",
+        [
+            # 项目既有夹具（RULE 早已认定这是残句），必须继续被捕获：
+            "<!doctype html>优必选、为最主要的增长驱动力出现在现有材料中。",
+            "公开信息提到小鹏、是因为以前那些机器人。",
+            "这批订单能否兑现，最终还是要看交付节奏并",
+            "样品验证结果决定了后续能否放量以及",
+        ],
+    )
+    def test_case_b_truly_truncated_text_is_still_detected(self, article: str) -> None:
+        body = self.checker.check_body_integrity(article)
+
+        assert body.passed is False
+        assert any("残句" in issue for issue in body.issues)
+        # 必须给出命中的片段，人工复核时才知道是哪一句有问题。
+        assert body.matched_fragments
+
+    def test_case_b_truncated_body_is_surfaced_in_the_merged_view(self) -> None:
+        body_text = "优必选、为最主要的增长驱动力出现在现有材料中。"
+
+        merged = self.checker.check_editorial_integrity("优必选业务观察", body_text)
+
+        assert merged["body_integrity"]["passed"] is False
+        assert any("残句" in issue for issue in merged["body_issues"])
+        # 合并视图（给整篇稿子的闸门）仍要能看到这条问题。
+        assert any("残句" in issue for issue in merged["issues"])
+
+    def test_non_terminal_paragraph_tail_is_detected(self) -> None:
+        """段落以连接词收尾（后面是空行）同样属于悬空残句。"""
+        article = "先说结论：这轮行情的关键变量是订单兑现。\n\n接下来真正要看的是交付节奏并\n\n以上。"
+
+        body = self.checker.check_body_integrity(article)
+
+        assert body.passed is False
+        assert body.matched_fragments
+
+    # ---------- Case C：正文层 fail / 标题层 pass 必须可区分 ----------
+    def test_case_c_body_failure_and_title_consistency_are_distinguishable(self) -> None:
+        """正文有硬伤，但标题本身与正文主体一致 —— 两层结论必须分开。"""
+        body_text = "<!doctype html>优必选、为最主要的增长驱动力出现在现有材料中。"
+        title = "优必选业务观察"
+
+        body = self.checker.check_body_integrity(body_text)
+        consistency = self.checker.check_title_body_consistency(title, body_text)
+
+        assert body.passed is False                      # 正文层：不合格
+        assert isinstance(consistency, TitleBodyConsistencyResult)
+        assert consistency.passed is True                 # 标题层：标题本身没问题
+        assert consistency.issues == []
+
+    def test_case_c_merged_view_keeps_the_two_layers_apart(self) -> None:
+        body_text = "<!doctype html>优必选、为最主要的增长驱动力出现在现有材料中。"
+        title = "优必选业务观察"
+
+        merged = self.checker.check_editorial_integrity(title, body_text)
+
+        assert merged["body_integrity"]["passed"] is False
+        assert merged["title_body_consistency"]["passed"] is True
+        # 正文层的问题只出现在 body_issues，不得混进 title_issues。
+        assert any("HTML" in issue for issue in merged["body_issues"])
+        assert all("HTML" not in issue for issue in merged["title_issues"])
+        assert merged["title_issues"] == []
+
+    def test_case_c_title_side_problems_still_reported_separately(self) -> None:
+        """反过来：标题自己有问题时，title_body_consistency 必须报出来。"""
+        body_text = "公开材料显示，优必选的相关业务仍要看交付。"
+        title = "其他智能公司的机器人业务观察"
+
+        consistency = self.checker.check_title_body_consistency(title, body_text)
+
+        assert consistency.passed is False
+        assert consistency.issues
+
+    def test_body_fragment_rule_does_not_match_the_common_comma_plus_conjunction(self) -> None:
+        """回归：旧规则在真实语料上的主误报来源（`、并`/`、是否`）必须不再命中。"""
+        pattern = ArticleQualityChecker._BODY_FRAGMENT_PATTERN
+
+        for text in [
+            "是后续有没有订单、并网、交付或毛利数据",
+            "订单转化率、在手订单规模和客户复购节奏",
+            "项目持续了多久、是否完成客户验收",
+            "验证进度、与主流人形机器人硬件厂商的联合开发",
+            "订单金额、在手订单和新增客户数量",
+        ]:
+            assert pattern.search(text) is None, text
+

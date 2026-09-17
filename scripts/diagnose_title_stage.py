@@ -99,9 +99,22 @@ def _compliance_breakdown(agent: TitleAgent, title: str, body_text: str) -> list
         reasons.append("unsupported_financial_link")
     if ArticleQualityChecker().check_title_body_consistency(title, body_text).issues:
         reasons.append("title_body_inconsistency")
-    if body_text and 10 <= len(title) <= max_length and not agent._has_concrete_hook(title, body_text):
-        reasons.append("missing_concrete_hook")
+    # 三态：只有 FAIL 才算这条标题的拒绝原因；UNAVAILABLE 是**正文级**的状态，
+    # 由 `_anchor_summary()` 单独报告，不能乘到每条标题头上（否则又变成 Blocker 2 那种错）。
+    if body_text and 10 <= len(title) <= max_length:
+        status, _anchor = agent.concrete_hook_status(title, body_text)
+        if status == "FAIL":
+            reasons.append("missing_concrete_hook")
     return reasons
+
+
+def _anchor_summary(body_text: str) -> dict[str, object]:
+    """正文的具象锚点摘要（公司名 / 完整量化值 / 年份 + 三态判定）。"""
+    from src.toutiao_content_factory.services.concrete_anchors import (
+        concrete_anchor_summary,
+    )
+
+    return concrete_anchor_summary(body_text)
 
 
 def _body_integrity_summary(body_text: str) -> dict[str, object]:
@@ -140,6 +153,19 @@ def main() -> int:
     cache_dir = PROJECT_ROOT / "cache"
     if args.cache:
         cache_path = Path(args.cache)
+    elif args.replay:
+        # ⚠️ 2026-09-17：`--replay` 原本仍会去挑「最近修改的缓存」，于是很容易
+        # 把 A 选题的正文配 B 选题的候选标题 —— 复算出来的「标题与正文不一致」
+        # 全是错配造成的，属于**仪器本身的归因错误**。既然回放 JSON 里记了
+        # `cache_file`，就按它还原同一次运行。
+        blob = json.loads(Path(args.replay).read_text(encoding="utf-8"))
+        recorded = str(blob.get("cache_file") or "")
+        candidate = cache_dir / recorded
+        if recorded and candidate.exists():
+            cache_path = candidate
+        else:
+            print(f"回放 JSON 里的 cache_file={recorded!r} 不存在，请用 --cache 指定")
+            return 1
     else:
         # index.json 等台账文件不是运行缓存，只挑「有 data_report + 有正文」的字典型缓存
         usable: list[Path] = []
@@ -300,6 +326,19 @@ def main() -> int:
         "正文的问题不会再乘到每条标题头上。"
     )
 
+    # Blocker 1：具象锚点（公司名 / 完整量化值 / 年份）+ 三态。
+    anchor_info = _anchor_summary(body_reference)
+    print("\n=== 正文具象锚点（标题必须承接其一，除非 UNAVAILABLE）===")
+    print(
+        f"  锚点总数: {anchor_info['anchor_count']}；"
+        f"高置信度: {anchor_info['high_confidence_anchor_count']}"
+    )
+    for item in anchor_info["anchors"][:20]:
+        print(
+            f"    - {item['text']:16s} {item['kind']:9s} conf={item['confidence']}"
+        )
+    print(f"  → 闸门预期状态（若标题一个都不承接）: {anchor_info['status_if_no_match']}")
+
     fallback_titles = fallback_calls[0] if fallback_calls else []
     emergency_titles = emergency_calls[0] if emergency_calls else []
 
@@ -396,6 +435,7 @@ def main() -> int:
             "per_source": per_source,
             "reason_summary": reason_counter,
             "body_integrity": body_summary,
+            "concrete_anchors": anchor_info,
             "final_titles": result["titles"],
             "recommended": result["recommended_titles"],
         }

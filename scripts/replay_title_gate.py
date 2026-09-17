@@ -33,6 +33,11 @@ from src.toutiao_content_factory.config import load_settings  # noqa: E402
 from src.toutiao_content_factory.services.article_quality_checker import (  # noqa: E402
     ArticleQualityChecker,
 )
+from src.toutiao_content_factory.services.concrete_anchors import (  # noqa: E402
+    GATE_MIN_ANCHORS,
+    extract_concrete_anchors,
+    high_confidence_anchors,
+)
 from src.toutiao_content_factory.services.openai_service import (  # noqa: E402
     OpenAIContentService,
 )
@@ -86,6 +91,11 @@ def evaluate_run(agent: TitleAgent, body: str, titles: list[str]) -> dict:
     max_length = agent._title_max_length()
     body_integrity = checker.check_body_integrity(body)
 
+    # 具象锚点闸门是**正文级**的开关：正文锚点不够时整道闸记 UNAVAILABLE，
+    # 此时它不该否决任何标题（旧实现是静默放行，我们改成如实留痕）。
+    gate_anchors = high_confidence_anchors(body)
+    hook_gate_active = len(gate_anchors) >= GATE_MIN_ANCHORS
+
     reasons: Counter[str] = Counter()
     passed: list[str] = []
     seen: set[str] = set()
@@ -110,12 +120,9 @@ def evaluate_run(agent: TitleAgent, body: str, titles: list[str]) -> dict:
         # ⚠️ 标题层只用分层后的入口：正文自身的问题不算标题的问题（Blocker 2）。
         if checker.check_title_body_consistency(title, body).issues:
             title_reasons.append("title_body_inconsistency")
-        if body and 10 <= len(title) <= max_length:
-            status, matched = concrete_hook_status(agent, title, body)
-            if status == "FAIL":
+        if hook_gate_active and 10 <= len(title) <= max_length:
+            if not any(anchor.matches(title) for anchor in gate_anchors):
                 title_reasons.append("missing_concrete_hook")
-            elif status == "UNAVAILABLE":
-                title_reasons.append("concrete_hook_unavailable")
 
         if title_reasons:
             for code in title_reasons:
@@ -123,36 +130,22 @@ def evaluate_run(agent: TitleAgent, body: str, titles: list[str]) -> dict:
         else:
             passed.append(title)
 
+    if not hook_gate_active:
+        reasons["concrete_hook_unavailable"] += len(seen)
+
     return {
         "body_len": len(body),
         "candidates": len(seen),
         "passed": len(passed),
         "zero_pass": not passed,
+        "hook_gate_active": hook_gate_active,
+        "anchor_count": len(extract_concrete_anchors(body)),
+        "high_confidence_anchor_count": len(gate_anchors),
         "reason_summary": dict(reasons),
         "body_integrity_passed": body_integrity.passed,
         "body_integrity_fragments": body_integrity.matched_fragments,
         "top_passed": passed[:3],
     }
-
-
-def concrete_hook_status(agent: TitleAgent, title: str, body: str) -> tuple[str, str | None]:
-    """具象钩子的**三态**结论。
-
-    PASS        —— 命中了正文里一个高置信度锚点
-    FAIL        —— 正文**有**可用锚点，但这条标题一个都没承接
-    UNAVAILABLE —— 正文根本提不出可用锚点（此时不该判标题有罪）
-
-    真实实现由 TitleAgent 提供；这里做一层兼容，便于在 V2 落地前后都能回放。
-    """
-    probe = getattr(agent, "concrete_hook_status", None)
-    if callable(probe):
-        return probe(title, body)
-    # 旧实现：只有布尔值，且「提不出元素」会被误判成 FAIL。
-    has = agent._has_concrete_hook(title, body)
-    elements = agent._extract_concrete_elements(body)
-    if not elements:
-        return ("PASS" if has else "UNAVAILABLE", None)
-    return ("PASS" if has else "FAIL", None)
 
 
 def main() -> int:
@@ -182,6 +175,7 @@ def main() -> int:
 
     zero_pass = sum(1 for r in runs if r["zero_pass"])
     body_fail = sum(1 for r in runs if not r["body_integrity_passed"])
+    hook_off = sum(1 for r in runs if not r["hook_gate_active"])
     reason_totals: Counter[str] = Counter()
     for run in runs:
         reason_totals.update(run["reason_summary"])
@@ -189,9 +183,40 @@ def main() -> int:
     print(f"=== 回放 run 数: {total} ===")
     print(f"  候选过闸 = 0 的 run : {zero_pass}/{total}（{zero_pass / total * 100:.1f}%）")
     print(f"  正文层不合格 run    : {body_fail}/{total}（{body_fail / total * 100:.1f}%）")
+    print(
+        f"  具象锚点闸 UNAVAILABLE run: {hook_off}/{total}"
+        f"（{hook_off / total * 100:.1f}%，根因在正文太薄，不是标题）"
+    )
+    anchor_counts = sorted(r["high_confidence_anchor_count"] for r in runs)
+    if anchor_counts:
+        mid = anchor_counts[len(anchor_counts) // 2]
+        print(
+            f"  高置信度锚点数 median={mid} min={anchor_counts[0]} max={anchor_counts[-1]}"
+        )
     print("\n=== 拒绝原因汇总（按候选计）===")
     for code, count in reason_totals.most_common():
         print(f"  {code:32s} {count}")
+
+    # 按「高置信度锚点数」分桶，看闸门在不同正文丰度下的表现 —— 这是
+    # GATE_MIN_ANCHORS 取值的依据。
+    print("\n=== 按高置信度锚点数分桶 ===")
+    buckets: dict[str, list[dict]] = {}
+    for run in runs:
+        count = run["high_confidence_anchor_count"]
+        key = "0" if count == 0 else ("1" if count == 1 else "2-3" if count <= 3 else "4+")
+        buckets.setdefault(key, []).append(run)
+    for key in ("0", "1", "2-3", "4+"):
+        group = buckets.get(key) or []
+        if not group:
+            continue
+        z = sum(1 for r in group if r["zero_pass"])
+        candidates = sum(r["candidates"] for r in group)
+        passed = sum(r["passed"] for r in group)
+        rate = f"{passed / candidates * 100:.1f}%" if candidates else "n/a"
+        print(
+            f"  锚点 {key:4s}: run={len(group):3d}  零通过={z:3d}"
+            f"（{z / len(group) * 100:5.1f}%）  候选通过率={rate}"
+        )
 
     if args.json:
         out = {

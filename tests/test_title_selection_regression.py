@@ -363,3 +363,51 @@ def test_body_fragment_is_still_reported_on_the_body_layer(
     assert merged["title_issues"] == []
     assert any("残句" in issue for issue in merged["body_issues"])
 
+
+# ---------------------------------------------------------------------------
+# Blocker 1（2026-09-17）：具象锚点闸门改成三态
+#
+# 旧实现是布尔值，且「正文提不出元素」时 `return True` —— 既不报错也不留痕。
+# 现在 FAIL 才拒绝；UNAVAILABLE 放行但必须写一条 WARNING（根因在正文太薄）。
+# ---------------------------------------------------------------------------
+
+
+def test_thin_body_records_unavailable_instead_of_failing_every_title(
+    app_settings, mock_openai_service, logger
+) -> None:
+    agent = _title_agent(app_settings, mock_openai_service, logger)
+    # 正文里的具象信息只有 `18个月` 这一个弱锚点，凑不满闸门门槛。
+    thin_body = (
+        "从客户验证角度看，从样机到小批量交付通常需要12到18个月，这个爬坡期是判断量产兑现的"
+        "关键窗口。产业链利润分配并非静态格局，关键在于识别哪些环节能率先完成从量到价的切换。"
+    )
+
+    assert agent.concrete_hook_status("产业链利润分配正在重排，谁先兑现", thin_body)[0] == (
+        "UNAVAILABLE"
+    )
+    # 放行，而不是像旧实现那样「静默放行」——所以要能观察到 UNAVAILABLE 发生。
+    assert agent.validate_title_compliance("产业链利润分配正在重排，谁先兑现", thin_body) is True
+    assert agent._concrete_hook_unavailable_logged is True
+
+
+def test_rich_body_still_rejects_a_template_title(
+    app_settings, mock_openai_service, logger
+) -> None:
+    agent = _title_agent(app_settings, mock_openai_service, logger)
+    rich_body = "公开材料显示，比亚迪提出460万台目标，同比增长30%，交付节奏仍是关键。"
+
+    assert agent.validate_title_compliance("人形机器人利润流向，正从整机转零部件", rich_body) is False
+    assert agent.validate_title_compliance("比亚迪定下460万台目标，交付才是关键", rich_body) is True
+
+
+def test_company_name_in_suffix_route_is_usable_as_a_hook(
+    app_settings, mock_openai_service, logger
+) -> None:
+    """词典里没有的公司（石头科技 / 趋境科技）也要能当锚点，否则正确标题被误杀。"""
+    agent = _title_agent(app_settings, mock_openai_service, logger)
+    body = "36氪：趋境科技完成数亿元Pre-A轮融资，石头科技也在同步扩产，交付节奏仍是关键。"
+
+    assert agent.concrete_hook_status("趋境科技拿到融资，算力基建兑现才是关键", body)[0] == "PASS"
+    assert agent.concrete_hook_status("产业链利润重新分配，谁先兑现", body)[0] == "FAIL"
+
+

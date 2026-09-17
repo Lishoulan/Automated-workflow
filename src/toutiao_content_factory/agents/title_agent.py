@@ -10,6 +10,15 @@ from toutiao_content_factory.agents.base import BaseAgent
 from toutiao_content_factory.config import AppSettings, IterationOverrides, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, TrendReport
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
+from toutiao_content_factory.services.concrete_anchors import (
+    GATE_MIN_ANCHORS,
+    STATUS_FAIL,
+    STATUS_UNAVAILABLE,
+    ConcreteAnchor,
+    concrete_hook_status,
+    extract_concrete_anchors,
+    quantity_token,
+)
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.utils.title_utils import fit_title_to_limit
@@ -82,23 +91,10 @@ class TitleAgent(BaseAgent):
         ("利润", "转移"),
     )
 
-    # 只有带这些单位的数字才算「有量化语义」的具体信息。
-    # 详见 `_extract_concrete_elements()`：单字数字（1/2/5/9）是噪声——
-    # 它们在正文里到处都是，任何标题都能「命中」，反而让 concrete hook 失去区分度。
-    # 按长度倒序，保证 `_is_quantified_number()` 做的是**最长匹配**
-    # （`亿元` 不会被切成 `亿`），不依赖人工排列表顺序。
-    NUMERIC_UNITS = tuple(
-        sorted(
-            (
-                "%", "％", "倍", "亿", "万", "千", "元", "美元", "亿元", "万元", "亿美元",
-                "万美元", "千瓦", "兆瓦", "吨", "台", "辆", "款", "条", "家", "个", "名",
-                "次", "轮", "度", "米", "公里", "平方米", "年", "月", "日", "天", "周",
-                "小时", "分钟", "秒",
-            ),
-            key=len,
-            reverse=True,
-        )
-    )
+    # 量化单位表已搬到 `services/concrete_anchors.QUANTITY_UNITS`（唯一真相源）。
+    # 2026-09-17（Blocker 1）：这里曾经有一份 `NUMERIC_UNITS`，与提取逻辑各说各话，
+    # 缺 `个月` 与量纲组合，于是 `18个月`→`18个`、`460万台`→`460万`。
+    # 不要再在这里重建第二份单位表。
 
     # 语义骨架提取用的替换词（标题去重时忽略这些词的具体差异）
     SKELETON_FILLERS = (
@@ -156,12 +152,38 @@ class TitleAgent(BaseAgent):
         consistency = ArticleQualityChecker().check_title_body_consistency(title, body_text)
         if consistency.issues:
             return False
-        # 标题必须承接正文具象钩子：若正文含具体数字/场景/公司等地标元素，
+        # 标题必须承接正文具象锚点：若正文含具体数字/公司/年份等锚点，
         # 标题至少引用其一，避免"情绪模板+空泛主题词"的零点击标题。
+        # 2026-09-17（Blocker 1）：改成**三态**，不再用「无元素就静默放行」的布尔值。
+        # FAIL 才拒绝；UNAVAILABLE 不判标题有罪，但必须留痕（暴露的是正文太薄）。
         if body_text and 10 <= len(title) <= max_length:
-            if not self._has_concrete_hook(title, body_text):
+            status, _anchor = self.concrete_hook_status(title, body_text)
+            if status == STATUS_FAIL:
                 return False
+            if status == STATUS_UNAVAILABLE:
+                self._note_concrete_hook_unavailable(body_text)
         return True
+
+    def _note_concrete_hook_unavailable(self, body_text: str) -> None:
+        """正文锚点不足时记一条 WARNING（每个 run 只报一次）。
+
+        这是「记录而不是绕过」：旧实现直接 `return True`，我们既不知道闸门没生效，
+        也不知道根因在正文。这条日志把根因指向**正文**，供后续换选题 / 重写正文。
+        """
+        if getattr(self, "_concrete_hook_unavailable_logged", False):
+            return
+        self._concrete_hook_unavailable_logged = True
+        anchors = self.extract_concrete_anchors(body_text)
+        credible = [a for a in anchors if a.is_high_confidence]
+        self.logger.warning(
+            "标题具象锚点闸门本次 UNAVAILABLE：正文只有 %d 个锚点（其中高置信度 %d 个，"
+            "阈值 %d）⇒ 无法要求标题承接具象信息。根因在**正文**（内容太薄），"
+            "不是标题。锚点样本: %s",
+            len(anchors),
+            len(credible),
+            GATE_MIN_ANCHORS,
+            [(a.text, a.kind) for a in anchors[:6]],
+        )
 
     def _title_max_length(self) -> int:
         """标题长度上限的唯一真相源：发布端的 `title_max_length`。
@@ -193,57 +215,56 @@ class TitleAgent(BaseAgent):
 
     @classmethod
     def _is_quantified_number(cls, number: str, tail: str) -> str:
-        """判断一个数字串是否带量化语义，返回它应记入的元素（不含则返回空串）。
+        """一个数字串是否带量化语义，是则返回它应记入的**完整** token。
 
-        判定原则是**「长度」与「单位/语义」分开看**，不是简单把 `\\d+` 改成 `\\d{2,}`：
+        量化提取的唯一实现在 `services/concrete_anchors.quantity_token()`，
+        这里只是保持旧签名（供既有回归测试与调用方使用）。
 
-        - `5万` / `3亿元` / `7%` / `2倍` / `5000台` 这类**带单位**的数，长度再短也有信息量；
-        - `2026` 这类**四位数年份**本身就构成时间锚点；
-        - 单独一个数字字符（`1` / `2` / `5` / `9`）**不算** —— 正文里遍地都是，
-          任何标题都能命中，只会让 concrete hook 失去区分度。
-
-        2026-09-17 实测（`scripts/diagnose_title_stage.py`）：旧实现用 `\\d+%?`
-        把单字数字也收进元素集合，导致 45/45 条模型候选全部判为「缺正文具象钩子」。
+        2026-09-17（Blocker 1）修掉的两个截断 bug：
+        - `18个月` 曾被切成 `18个`（单位表里没有 `个月`）；
+        - `460万台` 曾被切成 `460万`（单位表里没有量纲组合，先匹到 `万` 就返回了）。
+        两者都会让「标题写了 460万台目标」这种**正确承接**被判成没承接。
         """
-        # 四位年份优先按**裸数字**记：标题里常写「2027 年量产」或「2027 量产」，
+        token, _confidence = quantity_token(number, tail)
+        if token:
+            return token
+        # 四位年份按**裸数字**记：标题里常写「2027 年量产」或「2027 量产」，
         # 记成「2027年」会让后者匹配不上。
         if len(number) == 4 and number.startswith(("19", "20")):
             return number
-        for unit in cls.NUMERIC_UNITS:
-            if tail.startswith(unit):
-                # 单位最长匹配：NUMERIC_UNITS 已按长度倒序，`亿元` 不会被切成 `亿`
-                return f"{number}{unit}"
         return ""
 
     @classmethod
+    def extract_concrete_anchors(cls, text: str) -> list[ConcreteAnchor]:
+        """正文里的具象锚点（公司名 / 量化值 / 年份），带类型、置信度与出处区间。"""
+        return extract_concrete_anchors(text)
+
+    @staticmethod
+    def concrete_hook_status(title: str, body_text: str) -> tuple[str, ConcreteAnchor | None]:
+        """标题与正文锚点的**三态**关系：PASS / FAIL / UNAVAILABLE。
+
+        与 `_has_concrete_hook()` 的区别：后者只回答「标题有没有碰到任何一个具象元素」，
+        前者是**闸门**语义 —— 正文锚点不足时返回 UNAVAILABLE（不判标题有罪，但如实留痕），
+        且只认高置信度锚点。详见 `services/concrete_anchors.py` 的模块说明。
+        """
+        return concrete_hook_status(title, body_text)
+
+    @classmethod
     def _extract_concrete_elements(cls, text: str) -> set[str]:
-        """从正文/摘要中提取具象地标元素：数字、特定公司/地名/场景、具体量化短语。"""
-        elements: set[str] = set()
-        # 数量/金额/比例/时间（如 300%、6.2亿元、10倍、2.3%、5000台、2026）
-        for match in re.finditer(r"\d+(?:\.\d+)?", text):
-            token = cls._is_quantified_number(
-                match.group(0), text[match.end() : match.end() + 4]
-            )
-            if token and 2 <= len(token) <= 10:
-                elements.add(token)
-        # 公司/机构名（含常见后缀）
-        for match in re.finditer(r"[\u4e00-\u9fa5A-Za-z]{2,}(?:公司|集团|科技|证券|银行|研究院|工厂|基地|机场|园区|实验室)", text):
-            token = match.group(0).strip()
-            if 2 <= len(token) <= 14:
-                elements.add(token)
-        # 具体地名（省/市/县/高新区等 + 常见后缀）
-        for match in re.finditer(r"[\u4e00-\u9fa5]{2,6}(?:省|市|县|区|高新区|经开区|国家的|地区)", text):
-            token = match.group(0).strip()
-            if 2 <= len(token) <= 10:
-                elements.add(token)
-        return elements
+        """具象地标元素的**字面集合**（公司名/量化值/年份，不过滤置信度）。
+
+        保留这个入口是为了兼容既有回归测试与「有没有碰到具象信息」的粗判；
+        闸门语义请用 `concrete_hook_status()`。
+        """
+        return {anchor.text for anchor in extract_concrete_anchors(text)}
 
     @classmethod
     def _has_concrete_hook(cls, title: str, body_text: str) -> bool:
-        """标题是否包含正文中至少一个具象地标元素。
+        """标题是否碰到正文里**至少一个**具象元素（不做置信度/数量门槛）。
 
-        用于强制标题承接正文具体意象（数字/场景/公司/地名），
-        避免全盘空洞的泛化标题。正文无任何具象元素时不强制。
+        注意这里与旧实现的语义差别：旧实现在正文提不出任何元素时返回 True
+        （静默放行）；新实现同样放行，但**闸门路径已改用 `concrete_hook_status()`**，
+        会把这种情况记成 `UNAVAILABLE` 而不是悄悄通过。
         """
         body_elements = cls._extract_concrete_elements(body_text)
         if not body_elements:

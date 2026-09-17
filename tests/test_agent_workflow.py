@@ -527,13 +527,26 @@ class TestReduceSourceOverlap:
         assert any("去重合改写" in note for note in content.validation_notes)
 
 
-def test_all_rejected_titles_keep_best_one_instead_of_clearing(
+def test_all_rejected_titles_clear_the_pool_instead_of_keeping_the_least_bad(
     workflow_service: AgentWorkflowService,
 ) -> None:
-    """全部标题不合格时保底保留问题最少的一个，而不是清空转人工。
+    """全部标题不合格时**清空候选**，不再保底放行「问题最少」的那一条。
 
-    原设计清空候选「强制进入人工审核」，但流程跑在 GitHub Actions 上没有人
-    可以接管，清空等于当天 0 产出。标题只是吸引力问题，不该让整篇稿作废。
+    ⚠️ 2026-09-17（D2）：本用例的旧版本名为
+    `test_all_rejected_titles_keep_best_one_instead_of_clearing`，断言的是
+    「保底保留问题最少的一个」。**旧行为是错的**，理由有三条：
+
+    1. **它把闸门变成了排序器。** 闸门的定义是「不合格的不许流出」；当全部候选都不
+       合格时，「问题最少的那一个」按定义仍然不合格 —— 该分支保证了一条不合格标题
+       一定会流出，闸门在最需要它生效的时候恰好失效。
+    2. **它让故障不可观测。** 下游拿到的 `titles` 永远非空，于是没有任何地方能发现
+       「这次一条合格标题都没有」，也就永远不会有人去修上游。
+    3. **它送出去的正是自己点名的反例。** `其他智能12.7亿：机器人如何实测` 就是
+       `_check_title()` 注释里写的「数字让一个模糊主体看起来很具体」的样本，却被这条
+       保底逻辑一路送进了发布链路。
+
+    现在改为清空 + 记录 `status=all_rejected` + 交回 topic attempt loop 换下一个选题
+    （`app_service` 会在 `selected_title` 为空时把 `qualifies` 置 False 并继续下一轮）。
     """
     title = "其他智能12.7亿：机器人如何实测"
     content = GeneratedContent(
@@ -544,11 +557,16 @@ def test_all_rejected_titles_keep_best_one_instead_of_clearing(
 
     workflow_service._filter_titles_by_quality(content)
 
-    assert content.titles == [title]
-    assert content.recommended_titles == [title]
+    assert content.titles == []
+    assert content.recommended_titles == []
+    # 失败必须是**可观测的**：status + 原因都要留下来。
+    assert content.title_validation.get("status") == "all_rejected"
+    assert content.title_validation.get("pass_count") == 0
+    assert content.title_validation.get("reject_count") == 1
+    assert content.title_validation.get("top_reasons")
     # 风险仍要记录，方便事后回看
     assert any("其他智能" in note for note in content.validation_notes)
-    assert any("保底" in note for note in content.validation_notes)
+    assert any("不再保底放行" in note for note in content.validation_notes)
 
 
 class TestApplyBadWordsGate:

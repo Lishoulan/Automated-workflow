@@ -300,6 +300,7 @@ class ReviewWorkflowService:
             )
 
         passed: list[tuple[int, int, str]] = []
+        reason_summary: dict[str, int] = {}
         for index, candidate in enumerate(candidates, start=1):
             title = self.publish_service._clip_title(
                 self._text_cleaner.strip_prompt_leakage(candidate).strip()
@@ -313,6 +314,9 @@ class ReviewWorkflowService:
                     issues.append("标题与近7天已发布文章标题重复或高度相似")
                 if self.publish_service._blocked_by_template_dedup(title):
                     issues.append("标题复用了近7天已发布的高频模板")
+            for issue in issues:
+                code = self._title_issue_code(issue)
+                reason_summary[code] = reason_summary.get(code, 0) + 1
             evaluation = {
                 "index": index,
                 "title": title,
@@ -323,6 +327,17 @@ class ReviewWorkflowService:
             evaluations.append(evaluation)
             if not issues:
                 passed.append((-checker.title_click_preference(title), index, title))
+
+        # D2：`status` 让上层能区分「通过」「部分通过」「一个都没有」。
+        # 尤其是 all_rejected —— 它必须是**可观测的失败**，而不是静默跳过闸门。
+        status = (
+            "passed"
+            if passed and not reason_summary
+            else "partial"
+            if passed
+            else "all_rejected"
+        )
+        top_reasons = sorted(reason_summary.items(), key=lambda kv: -kv[1])[:5]
 
         if passed:
             passed.sort(key=lambda item: (item[0], item[1]))
@@ -342,15 +357,54 @@ class ReviewWorkflowService:
                 "selected_title_index": best_index,
                 "evaluations": evaluations,
                 "passed_count": len(passed),
+                "candidate_count": len(evaluations),
+                "reject_count": len(evaluations) - len(passed),
+                "unavailable_count": 0,
+                "status": status,
+                "reason_summary": reason_summary,
+                "top_reasons": top_reasons,
             }
 
+        self.logger.warning(
+            "Auto title selection failed: 0/%d candidates passed the gate (status=all_rejected); "
+            "top_reasons=%s",
+            len(evaluations),
+            top_reasons,
+        )
         return {
             "selected_title": "",
             "selected_title_index": 0,
             "evaluations": evaluations,
             "passed_count": 0,
+            "candidate_count": len(evaluations),
+            "reject_count": len(evaluations),
+            "unavailable_count": 0,
+            "status": "all_rejected",
+            "reason_summary": reason_summary,
+            "top_reasons": top_reasons,
             "reason": "No candidate title passed the final title quality gate.",
         }
+
+    @staticmethod
+    def _title_issue_code(issue: str) -> str:
+        """把中文 issue 文案压成稳定的 reason code（便于跨 run 统计）。"""
+        for token, code in (
+            ("RULE_007", "rule_007_template_abuse"),
+            ("RULE_006", "rule_006_abstract_subject"),
+            ("RULE_009", "rule_009_low_information"),
+            ("标题过长", "title_too_long"),
+            ("标题过短", "title_too_short"),
+            ("标题党", "clickbait"),
+            ("与数据报告确认主体", "title_body_inconsistency"),
+            ("但正文未出现", "subject_not_in_body"),
+            ("选题与近7天", "topic_duplicate"),
+            ("标题与近7天已发布文章标题", "title_duplicate"),
+            ("高频模板", "template_duplicate"),
+            ("财务指标", "unsupported_financial_link"),
+        ):
+            if token in issue:
+                return code
+        return "other"
 
     def reject_review(self, run_dir: Path, reviewer_notes: str | None = None) -> dict[str, Path]:
         bundle, _selected_topic = self._load_bundle(run_dir)

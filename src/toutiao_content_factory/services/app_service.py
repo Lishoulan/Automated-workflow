@@ -2819,7 +2819,7 @@ class ContentFactoryAppService:
         return (not reasons), reasons, notes
 
     def _fallback_title_for(self, run_dir: Path) -> str:
-        """找一个能用的标题：已选标题 → **质量达标的候选** → 候选首行 → 选题原标题。
+        """找一个能用的标题：已选标题 → **质量达标的候选**；一个都没有则返回空串。
 
         ⚠️ 2026-09-16：兜底发布是云端当前的主力路径（评审委员会几乎总给
         `needs_revision`，于是每次都落到这里），而它此前**完全跳过标题质量门**
@@ -2827,8 +2827,12 @@ class ContentFactoryAppService:
         「信息密度不足」的标题照样发出去。头条实测：同一事件完整标题 1.3 万阅读、
         简略标题仅 23 阅读，这个差距直接吃掉当天收益。
 
-        这里用**择优**而不是加门槛：候选里谁先通过标题质量门就用谁，一个都没有
-        就退回原有顺序。标题差一点也比当天不发强——这道门守的是流量，不是合规。
+        这里用**择优**而不是加门槛：候选里谁先通过标题质量门就用谁。
+        2026-09-17（D2）：末尾那句 `or candidates[0]` 已经删掉 —— 那是整个链路里
+        最后一处「全灭时仍然放行未校验标题」的兜底。它和 `_filter_titles_by_quality`
+        的保底分支是同一个缺陷的两层：只要存在一个「实在不行就用第一个」的出口，
+        「闸门」就退化成「排序器」。现在一个都不达标就返回空串，
+        `_try_fallback_publish` 据此跳过该候选；全部候选都不过就宁可当天不发。
         """
         status_path = run_dir / "review_status.json"
         if status_path.exists():
@@ -2841,7 +2845,7 @@ class ContentFactoryAppService:
         candidates = self._fallback_title_candidates(run_dir)
         if not candidates:
             return ""
-        return self._best_quality_title(candidates, run_dir) or candidates[0]
+        return self._best_quality_title(candidates, run_dir)
 
     @staticmethod
     def _fallback_title_candidates(run_dir: Path) -> list[str]:

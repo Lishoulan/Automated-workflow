@@ -81,12 +81,21 @@ UNRELATED_SOURCE = "完全不相干的素材内容，讲的是另一件事，与
 def _make_run(
     tmp_path: Path,
     article: str = CLEAN_ARTICLE,
-    titles: str = "推荐标题：\n1. 测试标题\n",
+    titles: str = "推荐标题：\n1. 优必选柳州工厂投产，万台级量产能不能变成订单\n",
     *,
     source: str | None = UNRELATED_SOURCE,
     ai_risk: int = 18,
     hot_topic: bool = False,
 ) -> Path:
+    """构造一个 run 目录。
+
+    ⚠️ 2026-09-17（D2）：这里原先的默认标题是 `测试标题`（4 个字）。它会被
+    `_check_title()` 判「标题过短，信息量不足」，于是 `_fallback_title_for()` 返回空 ——
+    在**删掉** `_fallback_title_for` 末尾那句 `or candidates[0]` 的保底之前，
+    这些用例是靠那个保底才通过的。也就是说，本文件里「抄录率 / AI 风险是否放行」
+    这几条用例其实一直在悄悄依赖「标题校验可以被绕过」这个缺陷。
+    现在换成一个真正合格的标题，让每条用例只考察它自己声称考察的那个维度。
+    """
     run_dir = tmp_path / "20260915-120000_测试选题"
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "article.md").write_text(article, encoding="utf-8")

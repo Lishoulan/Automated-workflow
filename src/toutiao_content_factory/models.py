@@ -233,6 +233,11 @@ class GeneratedContent:
     validation_score: int = 0
     content_format: str = ""
     content_format_label: str = ""
+    # 2026-09-17（D1/D2）：最终标题来自哪一层池（model / fallback / emergency），
+    # 以及那次标题选择的**结构化**校验结果（status / pass_count / reason_summary …）。
+    # 只加这两个字段，不再另建一套平行的统计结构。
+    selected_title_source: str = ""
+    title_validation: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "GeneratedContent":
@@ -257,6 +262,8 @@ class GeneratedContent:
             validation_score=int(payload.get("validation_score", 0)),
             content_format=str(payload.get("content_format", "")),
             content_format_label=str(payload.get("content_format_label", "")),
+            selected_title_source=str(payload.get("selected_title_source", "") or ""),
+            title_validation=dict(payload.get("title_validation") or {}),
         )
 
 

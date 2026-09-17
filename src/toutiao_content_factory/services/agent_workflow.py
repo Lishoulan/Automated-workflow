@@ -963,12 +963,30 @@ class AgentWorkflowService:
     def _apply_title_pack(self, content, title_pack) -> None:
         content.titles = title_pack["titles"]
         content.recommended_titles = title_pack["recommended_titles"]
+        # 2026-09-17（D1/D2）：来源与校验结果是**选择的一部分**，必须跟着候选一起落到
+        # content 上，否则事后无法回答「这篇用的到底是模型标题还是兜底标题」，
+        # 也无法回答「一个标题都没有时，是因为什么」。
+        if "selected_title_source" in title_pack:
+            content.selected_title_source = str(title_pack.get("selected_title_source") or "")
+        if "title_validation" in title_pack:
+            content.title_validation = dict(title_pack.get("title_validation") or {})
 
     def _filter_titles_by_quality(self, content) -> None:
-        """标题质量硬过滤（RULE_006/007 落地）
+        """标题质量二次校验（RULE_006/007，兜住历史 run 与旁路调用）。
 
-        在 TitleAgent 生成候选后，剔除模板滥用、纯抽象、标题-正文不一致的标题。
-        若全部被过滤，清空候选并保留拒绝原因，强制进入人工审核。
+        ⚠️ 2026-09-17（D2）：这里以前在**全部候选都不合格**时，会把「问题最少」的那一条
+        塞回 `content.titles` 当作保底。那是本链路最实质的一处**静默绕过**：
+        闸门的定义就是「不合格的不许流出」，而该分支恰恰保证了「总有一条不合格的流出」，
+        于是下游任何地方都观察不到「这次没有一个标题合格」——闸门失效却无人知晓。
+        实测样例 `其他智能12.7亿：机器人如何实测` 正是代码里另一处注释点名的反例
+        （数字让一个模糊主体看起来很具体），却被这条保底逻辑一路送进了发布链路。
+
+        现在改成：全灭就是全灭 —— 清空候选、把 status 与原因写进 `validation_notes`，
+        由 topic attempt loop 换下一个选题。绝不把未经校验的标题放行。
+
+        注意：`TitleAgent.run()` 已把同一套校验（含本函数的 RULE_006/007/009 闸门）
+        前置到生成侧，所以正常路径下这里应当出现 0 个拒绝 —— 它现在的职责是
+        **兜住旁路调用与历史产物**，而不是决定发什么。
         """
         article_text = content.article or ""
         original_titles = list(content.titles or [])
@@ -978,14 +996,12 @@ class AgentWorkflowService:
 
         kept_titles: list[str] = []
         rejected: list[str] = []
-        scored: list[tuple[int, str]] = []
         for title in original_titles:
             result = self.quality_checker._check_title(title, article_text)
             issues = result.get("issues", []) if isinstance(result, dict) else []
             # 只拦截 RULE_006/007/一致性问题（issues 中的硬性问题），suggestions 不拦截
-            scored.append((len(issues), title))
             if issues:
-                rejected.append(f"{title} -> {'; '.join(issues)}")
+                rejected.append(f"{title} -> {'; '.join(str(item) for item in issues)}")
             else:
                 kept_titles.append(title)
 
@@ -1005,34 +1021,45 @@ class AgentWorkflowService:
                     len(rejected),
                     " | ".join(rejected),
                 )
-        else:
-            # 全部不合格时，保底留下「问题最少」的一个，而不是清空。
-            # 本流程跑在 GitHub Actions 上，「转人工审核」等于当天 0 产出；
-            # 标题再好也只是吸引力问题，不该让整篇稿子作废。风险仍记进
-            # validation_notes，方便事后回看。
-            scored.sort(key=lambda item: item[0])
-            fallback_title = scored[0][1] if scored else ""
-            rejection_notes = [f"标题质量硬过滤：{item}" for item in rejected]
-            if fallback_title:
-                content.titles = [fallback_title]
-                content.recommended_titles = [fallback_title]
-                rejection_notes.insert(
-                    0,
-                    f"标题质量硬过滤：全部候选均未通过校验，已保底选用问题最少的「{fallback_title}」。",
-                )
-            else:
-                content.titles = []
-                content.recommended_titles = []
-            content.validation_notes = self._unique(
-                [*content.validation_notes, *rejection_notes[:6]]
-            )[:8]
-            self.logger.warning(
-                "标题质量硬过滤：全部 %d 个候选标题均未通过 RULE_006/007 校验，"
-                "已保底保留「%s」。明细：%s",
-                len(original_titles),
-                fallback_title,
-                " | ".join(rejected)[:300],
-            )
+            return
+
+        # 全部不合格 —— **清空**，不保底。
+        content.titles = []
+        content.recommended_titles = []
+        reason_summary: dict[str, int] = {}
+        for item in rejected:
+            code = "rule_gate_rejected"
+            for token in ("RULE_007", "RULE_006", "RULE_009"):
+                if token in item:
+                    code = token.lower()
+                    break
+            reason_summary[code] = reason_summary.get(code, 0) + 1
+        validation = dict(content.title_validation or {})
+        validation.update(
+            {
+                "status": "all_rejected",
+                "source": content.selected_title_source or validation.get("source", ""),
+                "candidate_count": len(original_titles),
+                "pass_count": 0,
+                "reject_count": len(rejected),
+                "top_reasons": sorted(reason_summary.items(), key=lambda kv: -kv[1])[:5],
+            }
+        )
+        content.title_validation = validation
+        content.validation_notes = self._unique(
+            [
+                *content.validation_notes,
+                "标题质量硬过滤：全部候选均未通过校验，已清空候选并交由下一个选题重试"
+                "（不再保底放行未校验标题）。",
+                *[f"标题质量硬过滤：{item}" for item in rejected[:5]],
+            ]
+        )[:8]
+        self.logger.warning(
+            "标题质量硬过滤全灭：%d 个候选标题均未通过校验，已清空候选"
+            "（status=all_rejected）。明细：%s",
+            len(original_titles),
+            " | ".join(rejected)[:300],
+        )
 
     MAX_TITLES_PER_SKELETON = 3
 

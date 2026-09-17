@@ -35,8 +35,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.toutiao_content_factory.agents.title_agent import TitleAgent  # noqa: E402
+from src.toutiao_content_factory.agents.title_agent import (  # noqa: E402
+    REASON_VALIDATION_CONTEXT_UNAVAILABLE,
+    TitleAgent,
+)
 from src.toutiao_content_factory.config import load_settings  # noqa: E402
+from src.toutiao_content_factory.models import (  # noqa: E402
+    CacheContext,
+    DataReport,
+    GeneratedContent,
+    TrendReport,
+)
 from src.toutiao_content_factory.services.article_quality_checker import (  # noqa: E402
     ArticleQualityChecker,
 )
@@ -76,7 +85,7 @@ def _build_agent() -> TitleAgent:
 
 
 def _iter_run_caches(cache_dir: Path):
-    """产出 (path, body, titles) —— 只保留有正文且有候选标题的运行缓存。"""
+    """产出 (path, body, titles, content, data_report, trend_report, style_key)。"""
     for path in sorted(cache_dir.glob("*.json")):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -84,35 +93,108 @@ def _iter_run_caches(cache_dir: Path):
             continue
         if not isinstance(payload, dict):
             continue
-        content = payload.get("content")
-        if not isinstance(content, dict):
+        content_payload = payload.get("content")
+        if not isinstance(content_payload, dict):
             continue
-        body = content.get("article") or content.get("polished_article") or ""
+        body = content_payload.get("article") or content_payload.get("polished_article") or ""
         if not isinstance(body, str) or len(body.strip()) < 200:
             continue
         titles = [
             str(t).strip()
-            for t in (content.get("titles") or [])
+            for t in (content_payload.get("titles") or [])
             if str(t).strip()
         ]
         if not titles:
             continue
-        yield path, body, titles
+        yield (
+            path,
+            body,
+            titles,
+            GeneratedContent.from_dict(content_payload),
+            DataReport.from_dict(payload.get("data_report") or {}),
+            TrendReport.from_dict(payload.get("trend_report") or {}),
+            str(payload.get("style_key") or ""),
+        )
 
 
-def evaluate_run(agent: TitleAgent, body: str, titles: list[str]) -> dict:
-    """对一个 run 的候选池做一次闸门回放。"""
+def _split_cached_pool(
+    agent: TitleAgent,
+    titles: list[str],
+    content: GeneratedContent,
+    trend: TrendReport,
+    data_report: DataReport,
+) -> tuple[list[str], list[str]]:
+    """把缓存里合并落盘的候选拆回「模型池 / 兜底池」。
+
+    缓存只存了**合并后**的 `content.titles`，没有分开存。但兜底是**纯规则生成**
+    （同样的正文 + 同样的 data_report ⇒ 同样的兜底集合），所以可以离线把它重新算一遍：
+
+        model_pool   = 合并池 − 兜底集合        （还原出模型当时给的候选）
+        fallback_pool = **重新生成的完整兜底集合**
+
+    注意救援池用的是「重新生成的完整集合」，而不是「合并池 ∩ 兜底集合」：
+    后者只包含**当时活下来**的那几条，而线上在模型池全灭时是拿完整兜底集合去过的，
+    用交集会把救援能力系统性低估。
+
+    误差只有一处：若模型恰好写出一条与兜底**字面完全相同**的标题，会被算进兜底侧。
+    """
+    style_key = getattr(agent.settings, "default_style", "")
+    style = (agent.settings.style_profiles or {}).get(style_key)
+    if style is None:
+        print(f"[warn] 找不到 style_profile({style_key!r})，兜底池无法还原", file=sys.stderr)
+        return list(titles), []
+    try:
+        playbook = agent._build_title_playbook_context(data_report)
+    except Exception as exc:
+        print(f"[warn] playbook 上下文构建失败，按空处理: {exc!r}", file=sys.stderr)
+        playbook = None
+    try:
+        fallback = agent._fallback_titles(
+            content, trend, data_report, style, CacheContext(), playbook_context=playbook
+        )
+    except Exception as exc:
+        # ⚠️ 这里**不能**只 `return list(titles), []` —— 第一次写这个函数时
+        # `CacheContext` 忘了 import，NameError 被这个 except 静静吃掉，
+        # 于是「兜底池永远为空」看起来像「兜底本来就生成不出东西」。
+        # 静默的宽 except 会把编码错误伪装成业务事实。
+        print(f"[warn] 兜底集合还原失败，本次按空处理: {exc!r}", file=sys.stderr)
+        return list(titles), []
+    fallback_set = set(fallback)
+    model_pool = [t for t in titles if t not in fallback_set]
+    return model_pool, list(fallback)
+
+
+def evaluate_run(
+    agent: TitleAgent,
+    body: str,
+    titles: list[str],
+    content: GeneratedContent | None = None,
+    data_report: DataReport | None = None,
+    style_key: str = "",
+    trend: TrendReport | None = None,
+) -> dict:
+    """对一个 run 做一次**完整的三层池**回放（零 LLM）。
+
+    与线上 `TitleAgent.run()` 同序：模型池 → （模型池 0 合格才）兜底池 →
+    （前两层都 0 合格才）应急池；三池都不混池排名，且都过同一个校验入口。
+
+    同时给出 BEFORE（Phase 1B 口径：只有标题闸门）用于对照 —— 两组判定吃同一份
+    正文、同一份候选，差异只来自「规则闸门 + 全灭即失败」这两处改动。
+    """
+    report = data_report if data_report is not None else DataReport()
+    trend_report = trend if trend is not None else TrendReport()
     checker = ArticleQualityChecker()
-    max_length = agent._title_max_length()
     body_integrity = checker.check_body_integrity(body)
 
-    # 具象锚点闸门是**正文级**的开关：正文锚点不够时整道闸记 UNAVAILABLE，
-    # 此时它不该否决任何标题（旧实现是静默放行，我们改成如实留痕）。
     gate_anchors = high_confidence_anchors(body)
     hook_gate_active = len(gate_anchors) >= GATE_MIN_ANCHORS
 
     reasons: Counter[str] = Counter()
+    before_reasons: Counter[str] = Counter()
     passed: list[str] = []
+    before_passed: list[str] = []
+    unavailable: list[str] = []
+    rejected_outcomes: list = []
     seen: set[str] = set()
     for raw in titles:
         title = agent._sanitize_title(raw)
@@ -123,40 +205,120 @@ def evaluate_run(agent: TitleAgent, body: str, titles: list[str]) -> dict:
             continue
         seen.add(normalized)
 
-        title_reasons: list[str] = []
-        if len(title) > max_length:
-            title_reasons.append("title_too_long")
-        for pattern in agent.DISCOURAGED_TITLE_PATTERNS:
-            if pattern in title:
-                title_reasons.append(f"discouraged_pattern:{pattern}")
-                break
-        if any(p.search(title) for p in agent.UNSUPPORTED_FINANCIAL_LINK_PATTERNS):
-            title_reasons.append("unsupported_financial_link")
-        # ⚠️ 标题层只用分层后的入口：正文自身的问题不算标题的问题（Blocker 2）。
-        if checker.check_title_body_consistency(title, body).issues:
-            title_reasons.append("title_body_inconsistency")
-        if hook_gate_active and 10 <= len(title) <= max_length:
-            if not any(anchor.matches(title) for anchor in gate_anchors):
-                title_reasons.append("missing_concrete_hook")
-
-        if title_reasons:
-            for code in title_reasons:
-                reasons[code] += 1
+        # ── BEFORE（Phase 1B）：仅标题闸门 ──────────────────────────────────
+        before_codes, _hook = agent._title_gate_reasons(title, body)
+        if before_codes:
+            for code in before_codes:
+                before_reasons[code] += 1
         else:
+            before_passed.append(title)
+
+        # ── AFTER（Phase 1）：标题闸门 ∪ 规则闸门（与线上同一个入口）──────
+        outcome = agent.validate_title_candidate(title, body)
+        substantive = tuple(
+            code for code in outcome.reason_codes if code != REASON_VALIDATION_CONTEXT_UNAVAILABLE
+        )
+        if outcome.passed:
             passed.append(title)
+        elif substantive:
+            for code in substantive:
+                reasons[code] += 1
+            rejected_outcomes.append(outcome)
+        else:
+            unavailable.append(title)
 
     if not hook_gate_active:
         reasons["concrete_hook_unavailable"] += len(seen)
+        before_reasons["concrete_hook_unavailable"] += len(seen)
+    if unavailable:
+        reasons[REASON_VALIDATION_CONTEXT_UNAVAILABLE] += len(unavailable)
+
+    # ── 三层池（还原缓存里看不出来的模型/兜底划分）─────────────────────────
+    model_pool_titles: list[str] = list(seen)
+    fallback_pool_titles: list[str] = []
+    if content is not None and data_report is not None:
+        model_pool_titles, fallback_pool_titles = _split_cached_pool(
+            agent, list(seen), content, trend_report, report
+        )
+
+    model_pool = agent._build_title_pool("model", model_pool_titles, body, report, [])
+    fallback_pool = None
+    emergency_pool = None
+    if not model_pool.valid_titles:
+        fallback_pool = agent._build_title_pool(
+            "fallback", fallback_pool_titles, body, report, []
+        )
+    if not model_pool.valid_titles and not (fallback_pool and fallback_pool.valid_titles):
+        emergency_titles: list[str] = []
+        if content is not None and data_report is not None:
+            try:
+                emergency_titles = agent._emergency_titles(content, report)
+            except Exception:
+                emergency_titles = []
+        emergency_pool = agent._build_title_pool("emergency", emergency_titles, body, report, [])
+
+    chosen = (
+        model_pool
+        if model_pool.valid_titles
+        else fallback_pool
+        if fallback_pool and fallback_pool.valid_titles
+        else emergency_pool
+    )
+    selected = ""
+    selected_source = ""
+    if chosen and chosen.valid_titles:
+        selected = max(
+            chosen.valid_titles,
+            key=lambda t: ArticleQualityChecker().title_click_preference(t),
+        )
+        selected_source = chosen.source
+
+    selected_anchor = ""
+    if selected:
+        for anchor in gate_anchors:
+            if anchor.matches(selected):
+                selected_anchor = f"{anchor.kind}:{anchor.text}"
+                break
 
     return {
         "body_len": len(body),
+        "style_key": style_key,
         "candidates": len(seen),
         "passed": len(passed),
+        "before_passed": len(before_passed),
+        "rejected": len(seen) - len(passed) - len(unavailable),
+        "unavailable": len(unavailable),
         "zero_pass": not passed,
+        "before_zero_pass": not before_passed,
+        "final_zero_pass": not selected,
+        "status": (
+            "passed" if passed and not reasons
+            else "partial" if passed
+            else "all_rejected"
+        ),
+        # ── §38 要求的逐层统计 ─────────────────────────────────────────────
+        "model_generated": model_pool.to_dict()["generated_count"],
+        "model_valid": model_pool.to_dict()["passed_count"],
+        "model_rejected": model_pool.to_dict()["reject_count"],
+        "fallback_generated": (fallback_pool.to_dict()["generated_count"] if fallback_pool else 0),
+        "fallback_valid": (fallback_pool.to_dict()["passed_count"] if fallback_pool else 0),
+        "fallback_rejected": (fallback_pool.to_dict()["reject_count"] if fallback_pool else 0),
+        "emergency_generated": (emergency_pool.to_dict()["generated_count"] if emergency_pool else 0),
+        "emergency_valid": (emergency_pool.to_dict()["passed_count"] if emergency_pool else 0),
+        "selected_title": selected,
+        "selected_title_source": selected_source,
+        "selected_title_anchor": selected_anchor,
+        "all_rejected_count": (chosen.reject_count if chosen else 0),
+        "unavailable_count": (chosen.unavailable_count if chosen else len(unavailable)),
+        "rejected_samples": [
+            {"title": item.title, "reason_codes": list(item.reason_codes)}
+            for item in rejected_outcomes[:5]
+        ],
         "hook_gate_active": hook_gate_active,
         "anchor_count": len(extract_concrete_anchors(body)),
         "high_confidence_anchor_count": len(gate_anchors),
         "reason_summary": dict(reasons),
+        "before_reason_summary": dict(before_reasons),
         "body_integrity_passed": body_integrity.passed,
         "body_integrity_fragments": body_integrity.matched_fragments,
         "top_passed": passed[:3],
@@ -283,10 +445,12 @@ def main() -> int:
     agent = _build_agent()
 
     runs: list[dict] = []
-    for path, body, titles in _iter_run_caches(cache_dir):
+    # 只跑应急池（`_emergency_titles`）与三个池的校验，不生成兜底句式，
+    # 所以不需要把 style 切来切去 —— 也就不去动 agent.settings。
+    for path, body, titles, content, data_report, trend, style_key in _iter_run_caches(cache_dir):
         if args.limit and len(runs) >= args.limit:
             break
-        stats = evaluate_run(agent, body, titles)
+        stats = evaluate_run(agent, body, titles, content, data_report, style_key, trend)
         stats["cache_file"] = path.name
         runs.append(stats)
 
@@ -296,15 +460,81 @@ def main() -> int:
         return 1
 
     zero_pass = sum(1 for r in runs if r["zero_pass"])
+    before_zero_pass = sum(1 for r in runs if r["before_zero_pass"])
+    final_zero_pass = sum(1 for r in runs if r["final_zero_pass"])
+    selected_from: Counter[str] = Counter(
+        r["selected_title_source"] or "(无)" for r in runs
+    )
+    totals: Counter[str] = Counter()
+    for run in runs:
+        for key in (
+            "model_generated", "model_valid", "model_rejected",
+            "fallback_generated", "fallback_valid", "fallback_rejected",
+            "emergency_generated", "emergency_valid",
+            "all_rejected_count", "unavailable_count",
+        ):
+            totals[key] += int(run.get(key) or 0)
     body_fail = sum(1 for r in runs if not r["body_integrity_passed"])
     hook_off = sum(1 for r in runs if not r["hook_gate_active"])
     reason_totals: Counter[str] = Counter()
+    before_reason_totals: Counter[str] = Counter()
     for run in runs:
         reason_totals.update(run["reason_summary"])
+        before_reason_totals.update(run["before_reason_summary"])
+
+    total_candidates = sum(r["candidates"] for r in runs)
+    total_passed = sum(r["passed"] for r in runs)
+    total_before_passed = sum(r["before_passed"] for r in runs)
+    total_rejected = sum(r["rejected"] for r in runs)
+    total_unavailable = sum(r["unavailable"] for r in runs)
+    status_totals: Counter[str] = Counter(r["status"] for r in runs)
 
     print(f"=== 回放 run 数: {total} ===")
-    print(f"  候选过闸 = 0 的 run : {zero_pass}/{total}（{zero_pass / total * 100:.1f}%）")
-    print(f"  正文层不合格 run    : {body_fail}/{total}（{body_fail / total * 100:.1f}%）")
+    print(f"  候选总数            : {total_candidates}")
+    print(
+        f"  候选通过  BEFORE={total_before_passed}"
+        f"（{total_before_passed / max(total_candidates, 1) * 100:.1f}%）"
+        f"  →  AFTER={total_passed}"
+        f"（{total_passed / max(total_candidates, 1) * 100:.1f}%）"
+    )
+    print(f"  候选被拒 AFTER      : {total_rejected}")
+    print(f"  候选无正文 AFTER    : {total_unavailable}")
+    print(
+        f"  候选过闸 = 0 的 run : BEFORE={before_zero_pass}/{total}"
+        f"（{before_zero_pass / total * 100:.1f}%）"
+        f"  →  AFTER={zero_pass}/{total}（{zero_pass / total * 100:.1f}%）"
+    )
+    print(
+        "  run 状态分布        : "
+        + "  ".join(f"{k}={v}" for k, v in sorted(status_totals.items()))
+    )
+    print("\n=== 三层池逐层统计（§38）===")
+    print(
+        f"  模型池   生成 {totals['model_generated']:5d}  合格 {totals['model_valid']:5d}"
+        f"  拒绝 {totals['model_rejected']:5d}"
+    )
+    print(
+        f"  兜底池   生成 {totals['fallback_generated']:5d}  合格 {totals['fallback_valid']:5d}"
+        f"  拒绝 {totals['fallback_rejected']:5d}"
+        f"    （仅在模型池 0 合格时才构建：{sum(1 for r in runs if r['fallback_generated'])} 个 run）"
+    )
+    print(
+        f"  应急池   生成 {totals['emergency_generated']:5d}  合格 {totals['emergency_valid']:5d}"
+        f"    （仅在前两层都 0 合格时才构建：{sum(1 for r in runs if r['emergency_generated'])} 个 run）"
+    )
+    print(
+        "  最终标题来源        : "
+        + "  ".join(f"{k}={v}" for k, v in sorted(selected_from.items(), key=lambda kv: -kv[1]))
+    )
+    print(f"  all_rejected 计数    : {totals['all_rejected_count']}")
+    print(f"  unavailable 计数     : {totals['unavailable_count']}")
+    print(
+        f"  ★ 三层全灭（真正发不出去）: {final_zero_pass}/{total}"
+        f"（{final_zero_pass / total * 100:.1f}%）"
+    )
+    print(
+        f"  正文层不合格 run    : {body_fail}/{total}（{body_fail / total * 100:.1f}%）"
+    )
     print(
         f"  具象锚点闸 UNAVAILABLE run: {hook_off}/{total}"
         f"（{hook_off / total * 100:.1f}%，根因在正文太薄，不是标题）"
@@ -315,9 +545,12 @@ def main() -> int:
         print(
             f"  高置信度锚点数 median={mid} min={anchor_counts[0]} max={anchor_counts[-1]}"
         )
-    print("\n=== 拒绝原因汇总（按候选计）===")
+    print("\n=== 拒绝原因汇总（AFTER，按候选计）===")
     for code, count in reason_totals.most_common():
-        print(f"  {code:32s} {count}")
+        print(f"  {code:36s} {count}")
+    print("\n=== 拒绝原因汇总（BEFORE / Phase 1B 口径）===")
+    for code, count in before_reason_totals.most_common():
+        print(f"  {code:36s} {count}")
 
     # 按「高置信度锚点数」分桶，看闸门在不同正文丰度下的表现 —— 这是
     # GATE_MIN_ANCHORS 取值的依据。
@@ -344,8 +577,19 @@ def main() -> int:
         out = {
             "runs": total,
             "zero_pass_runs": zero_pass,
+            "before_zero_pass_runs": before_zero_pass,
+            "final_zero_pass_runs": final_zero_pass,
+            "selected_from": dict(selected_from),
+            "layer_totals": dict(totals),
+            "candidate_total": total_candidates,
+            "candidate_passed": total_passed,
+            "candidate_before_passed": total_before_passed,
+            "candidate_rejected": total_rejected,
+            "candidate_unavailable": total_unavailable,
+            "status_totals": dict(status_totals),
             "body_integrity_fail_runs": body_fail,
             "reason_totals": dict(reason_totals),
+            "before_reason_totals": dict(before_reason_totals),
             "per_run": runs,
         }
         Path(args.json).write_text(

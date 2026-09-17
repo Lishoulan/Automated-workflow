@@ -4,6 +4,7 @@ import json
 import os
 import re
 import logging
+from dataclasses import dataclass, field
 from typing import Optional
 
 from toutiao_content_factory.agents.base import BaseAgent
@@ -22,6 +23,97 @@ from toutiao_content_factory.services.concrete_anchors import (
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.utils.title_utils import fit_title_to_limit
+
+
+#: 标题来源的三种池（D1）。三者**互不混池排名**，按优先级递补：
+#: PRIMARY=model → RESCUE=fallback → LAST_RESORT=emergency。
+TITLE_SOURCE_MODEL = "model"
+TITLE_SOURCE_FALLBACK = "fallback"
+TITLE_SOURCE_EMERGENCY = "emergency"
+
+#: 一次标题校验的汇总状态（D2，对外字段名见 `TitleAgent.run()` 的返回值）。
+TITLE_STATUS_PASSED = "passed"           # 有合格候选，且没有候选被拒
+TITLE_STATUS_PARTIAL = "partial"         # 有合格候选，同时也有被拒的
+TITLE_STATUS_ALL_REJECTED = "all_rejected"   # 一个都没过 —— **不是**「放行原文」，是真失败
+
+#: 正文不可用时（`_title_body_reference()` 拿不到任何文本）记录的 reason code。
+REASON_VALIDATION_CONTEXT_UNAVAILABLE = "validation_context_unavailable"
+
+
+@dataclass(frozen=True)
+class TitleValidation:
+    """一条标题的**硬校验**结果（model / fallback / emergency 共用同一入口）。"""
+
+    title: str
+    passed: bool
+    reason_codes: tuple[str, ...] = ()
+    concrete_hook_status: str = STATUS_UNAVAILABLE
+    validation_context: str = "body"       # "body" | "unavailable"
+    rejected_by: str = ""                  # 失败时：哪一层判的（title_gate / rule_gate）
+
+    @property
+    def body_aware(self) -> bool:
+        return self.validation_context == "body"
+
+
+@dataclass
+class TitlePool:
+    """一个来源池的生成/校验结果。`valid_titles` 是**已排序**的合格候选。"""
+
+    source: str
+    generated: list[str] = field(default_factory=list)
+    valid_titles: list[str] = field(default_factory=list)
+    rejected: list[TitleValidation] = field(default_factory=list)
+    unavailable: list[TitleValidation] = field(default_factory=list)
+
+    @property
+    def status(self) -> str:
+        if self.valid_titles:
+            return TITLE_STATUS_PASSED if not self.rejected else TITLE_STATUS_PARTIAL
+        return TITLE_STATUS_ALL_REJECTED
+
+    @property
+    def generated_count(self) -> int:
+        return len(self.generated)
+
+    @property
+    def passed_count(self) -> int:
+        return len(self.valid_titles)
+
+    @property
+    def reject_count(self) -> int:
+        return len(self.rejected)
+
+    @property
+    def unavailable_count(self) -> int:
+        return len(self.unavailable)
+
+    def reason_summary(self) -> dict[str, int]:
+        summary: dict[str, int] = {}
+        for item in self.rejected:
+            for code in item.reason_codes or ("unspecified",):
+                summary[code] = summary.get(code, 0) + 1
+        for item in self.unavailable:
+            code = REASON_VALIDATION_CONTEXT_UNAVAILABLE
+            summary[code] = summary.get(code, 0) + 1
+        return dict(sorted(summary.items(), key=lambda kv: -kv[1]))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "source": self.source,
+            "status": self.status,
+            "generated_count": self.generated_count,
+            # 字段名与 `review_service.select_auto_title()` 的返回保持一致
+            # （`passed_count` / `reject_count` / `unavailable_count`），
+            # 避免同一件事在两层叫两个名字。
+            "passed_count": self.passed_count,
+            "reject_count": self.reject_count,
+            "unavailable_count": self.unavailable_count,
+            "reason_summary": self.reason_summary(),
+            "top_reasons": sorted(
+                self.reason_summary().items(), key=lambda kv: -kv[1]
+            )[:5],
+        }
 
 
 class TitleAgent(BaseAgent):
@@ -68,6 +160,23 @@ class TitleAgent(BaseAgent):
         "不敢相信", "看哭了", "太可怕了", "细思极恐",
         # 已验证零点击的同质骨架（历史重复发布主因），从标题生成源头硬拦截
         "重排利润", "先流向谁", "改写座次", "利润先流向",
+    )
+
+    #: **内部流程指令**泄漏到标题里的特征词。
+    #:
+    #: 实测来源（`.runtime/sample_phase1.json`，随机 30 条最终选中标题里命中 3 条）：
+    #: 选题元数据的「体裁要求：适合写成人形机器人项目或订单拆解稿…」有一截
+    #: （`适合写成人形机器人`）被当成关键词收进了 `focus_keywords`，于是
+    #: `_primary_topic_label()` 把它当作赛道主体，拼出了
+    #: **「适合写成人形机器人入场，AI谁最紧张」** —— 一条把生产指令当标题的候选，
+    #: 而且它能通过 RULE_006（含「人形机器人」）与 RULE_009（含「入场」动作词）。
+    #: 模型侧同样会照抄（模板被塞进 prompt），所以这是**所有来源共有**的泄漏。
+    #: 与 `RULE_007` 不同，这不是「模板用太多」，而是标题里出现了不该给读者看的词。
+    INSTRUCTION_LEAK_TOKENS = (
+        "适合写成", "重点写", "拆解稿", "体裁要求", "固定写法", "写作要求",
+        "段落要求", "跟踪变量", "入选理由", "推荐主结论", "请围绕", "请重点分析",
+        "证据强度", "选题质量分", "标题潜力分", "标题打法赛道", "标题抓手",
+        "质量标记", "建议字数", "素材摘要", "补充片段", "对标账号", "本稿",
     )
 
     CURIOSITY_TOKENS = ("不是", "而是", "背后", "真正", "为什么", "谁在", "谁能", "谁会", "到底", "竟然", "难道", "居然", "反常", "意外", "颠覆", "反转", "没想到", "想不到", "秘密", "真相")
@@ -134,35 +243,149 @@ class TitleAgent(BaseAgent):
             else {}
         )
 
-    def validate_title_compliance(self, title: str, body_text: str = "") -> bool:
+    def _gate_concrete_hook(self, title: str, body: str, body_available: bool) -> tuple[list[str], str]:
+        """具象锚点三态：FAIL 才拒绝；UNAVAILABLE 不判标题有罪，但必须留痕。"""
+        max_length = self._title_max_length()
+        if not (body_available and 10 <= len(title) <= max_length):
+            return [], STATUS_UNAVAILABLE
+        hook_status, _anchor = self.concrete_hook_status(title, body)
+        if hook_status == STATUS_FAIL:
+            return ["missing_concrete_hook"], hook_status
+        if hook_status == STATUS_UNAVAILABLE:
+            self._note_concrete_hook_unavailable(body)
+        return [], hook_status
+
+    def _title_gate_reasons(self, title: str, body: str) -> tuple[list[str], str]:
+        """**标题闸门**（与正文无关的那部分 + 需要正文的那部分），返回 reason codes。
+
+        这是 `validate_title_compliance()` 与 `validate_title_candidate()` 共用的底层，
+        保证两个入口不会各自漂移出一份判定。
+        """
+        body_available = bool(body.strip())
+        reason_codes: list[str] = []
         max_length = self._title_max_length()
         if len(title) > max_length:
-            return False
+            reason_codes.append("title_too_long")
         for pattern in self.DISCOURAGED_TITLE_PATTERNS:
             if pattern in title:
-                return False
+                reason_codes.append("discouraged_pattern")
+                break
         if any(pattern.search(title) for pattern in self.UNSUPPORTED_FINANCIAL_LINK_PATTERNS):
-            return False
-        # ⚠️ 2026-09-17：这里原先调 `check_editorial_integrity(title, body_text)`，
-        # 而那个函数会把 **`_check_body_integrity(整篇正文)`** 也合并进 issues ——
-        # 于是「正文自己的问题」被算到「每一条标题」头上。实测：某篇正文被
-        # `_BODY_FRAGMENT_PATTERN` 误判为残句（命中片段是正常的「、并且」），
-        # 该选题 39/39 条标题候选全部因「编辑一致性」被拒。
-        # 标题层只该问「标题与正文是否一致」，所以改用分层后的 entrypoint。
-        consistency = ArticleQualityChecker().check_title_body_consistency(title, body_text)
+            reason_codes.append("unsupported_financial_link")
+        # 内部流程指令泄漏（「适合写成人形机器人入场，AI谁最紧张」）。
+        for token in self.INSTRUCTION_LEAK_TOKENS:
+            if token in title:
+                reason_codes.append("internal_instruction_leak")
+                break
+
+        # ⚠️ 2026-09-17（Blocker 2）：标题层只问「标题与正文是否一致」，
+        # 不碰 `check_editorial_integrity()`（它把正文自身的问题也合并进来了）。
+        consistency = ArticleQualityChecker().check_title_body_consistency(title, body)
         if consistency.issues:
-            return False
-        # 标题必须承接正文具象锚点：若正文含具体数字/公司/年份等锚点，
-        # 标题至少引用其一，避免"情绪模板+空泛主题词"的零点击标题。
-        # 2026-09-17（Blocker 1）：改成**三态**，不再用「无元素就静默放行」的布尔值。
-        # FAIL 才拒绝；UNAVAILABLE 不判标题有罪，但必须留痕（暴露的是正文太薄）。
-        if body_text and 10 <= len(title) <= max_length:
-            status, _anchor = self.concrete_hook_status(title, body_text)
-            if status == STATUS_FAIL:
-                return False
-            if status == STATUS_UNAVAILABLE:
-                self._note_concrete_hook_unavailable(body_text)
-        return True
+            reason_codes.append("title_body_inconsistency")
+
+        hook_reasons, hook_status = self._gate_concrete_hook(title, body, body_available)
+        reason_codes.extend(hook_reasons)
+        return reason_codes, hook_status
+
+    def validate_title_candidate(self, title: str, body_text: str = "") -> TitleValidation:
+        """**唯一**的标题硬校验入口（D3）——三池（model / fallback / emergency）共用。
+
+        此前 `_fallback_fact_titles()` 调的是不带正文的
+        `validate_title_compliance(title)`，于是兜底标题**跳过了**「标题与正文一致性」
+        与「具象锚点承接」两道检查 —— 同一个标题走模型路径会被拒、走兜底路径能活。
+        那是校验不对称，不是风格差异。
+
+        一次校验同时跑两层，两层都必须过：
+
+        1. **标题闸门**（本类）：长度 / 禁用句式 / 财务因果越界 / 标题-正文一致性 /
+           具象锚点三态。
+        2. **规则闸门**（`ArticleQualityChecker._check_title`）：RULE_006 具象化、
+           RULE_007 模板滥用、RULE_009 信息密度、标题主体是否在正文出现。
+
+        第 2 层原本只在 `agent_workflow._filter_titles_by_quality()` 里**事后**跑，
+        于是 `TitleAgent` 报出的「合格候选」不等于「能发出去的候选」，而 D1 的分池
+        判断（「模型池有没有合格标题」）正建立在这个集合上。合并到这里之后，
+        `TitlePool.valid_titles` 才真正等于可发布集合。
+        """
+        body = str(body_text or "")
+        body_available = bool(body.strip())
+        validation_context = "body" if body_available else "unavailable"
+
+        reason_codes, hook_status = self._title_gate_reasons(title, body)
+        rule_issues = self._rule_gate_issues(title, body)
+        reason_codes.extend(rule_issues)
+
+        if not body_available:
+            # 不偷偷放行：正文缺失意味着整条 body-aware 闸门这次**无法生效**，
+            # 必须留下一个可统计的标记（下游据此知道这条标题只是「过了无正文版校验」）。
+            reason_codes.append(REASON_VALIDATION_CONTEXT_UNAVAILABLE)
+            self._note_validation_context_unavailable()
+
+        deduped = tuple(dict.fromkeys(reason_codes))
+        rejected_by = ""
+        if deduped:
+            rejected_by = "rule_gate" if rule_issues else "title_gate"
+        return TitleValidation(
+            title=title,
+            passed=not deduped,
+            reason_codes=deduped,
+            concrete_hook_status=hook_status,
+            validation_context=validation_context,
+            rejected_by=rejected_by,
+        )
+
+    def validate_title_compliance(self, title: str, body_text: str = "") -> bool:
+        """**标题闸门**的布尔入口（保持原有语义，供既有调用方与回归测试使用）。
+
+        注意它**不含** RULE_006/007/009 —— 那部分由发布前的
+        `agent_workflow._filter_titles_by_quality()` 与
+        `review_service.select_auto_title()` 施加。需要「一次问清能不能发」时请用
+        `validate_title_candidate()`。
+        """
+        reason_codes, _hook = self._title_gate_reasons(title, str(body_text or ""))
+        return not reason_codes
+
+    def _rule_gate_issues(self, title: str, body_text: str) -> list[str]:
+        """RULE_006/007/009 那条闸门的 reason codes（与标题闸门同一入口内执行）。"""
+        try:
+            result = ArticleQualityChecker()._check_title(title, body_text)
+        except Exception as exc:  # pragma: no cover - 规则闸门不应把标题链路带崩
+            self.logger.warning("标题规则闸门执行失败，本次按未通过记录: %s", exc)
+            return [f"rule_gate_error:{type(exc).__name__}"]
+        codes: list[str] = []
+        for issue in result.get("issues", []):
+            text = str(issue)
+            if not text.strip():
+                continue
+            if "RULE_007" in text:
+                codes.append("rule_007_template_abuse")
+            elif "RULE_006" in text:
+                codes.append("rule_006_abstract_subject")
+            elif "RULE_009" in text:
+                codes.append("rule_009_low_information")
+            elif "标题过长" in text or "标题过短" in text:
+                codes.append("rule_length")
+            elif "标题党" in text:
+                codes.append("rule_clickbait")
+            elif "未出现" in text:
+                codes.append("rule_subject_not_in_body")
+            elif "财务指标" in text:
+                codes.append("rule_financial_link")
+            else:
+                codes.append("rule_other")
+        return list(dict.fromkeys(codes))
+
+    def _note_validation_context_unavailable(self) -> None:
+        """正文不可用时留一条 WARNING（每个 run 一次）。"""
+        if getattr(self, "_validation_context_unavailable_logged", False):
+            return
+        self._validation_context_unavailable_logged = True
+        self.logger.warning(
+            "标题校验缺少正文：本次所有候选只通过「无正文版」校验，"
+            "标题-正文一致性与具象锚点闸门**无法生效**（已标记 %s）。",
+            REASON_VALIDATION_CONTEXT_UNAVAILABLE,
+        )
 
     def _note_concrete_hook_unavailable(self, body_text: str) -> None:
         """正文锚点不足时记一条 WARNING（每个 run 只报一次）。
@@ -271,6 +494,42 @@ class TitleAgent(BaseAgent):
             return True
         return any(elem in title for elem in body_elements)
 
+    def _build_title_pool(
+        self,
+        source: str,
+        titles: list[str],
+        body_text: str,
+        data_report: DataReport,
+        preferred_titles: list[str] | None = None,
+    ) -> TitlePool:
+        """把一个来源的候选变成**经过同一个校验入口**的池（D1/D3）。
+
+        `valid_titles` 只在**该池内部**按 `_title_score` 排序 —— 三个池之间不做
+        任何混合排名，这是 D1 的核心：兜底候选数量（22~25）远多于模型（20），
+        一旦同池竞争，兜底靠数量和权重就能抢掉模型候选。
+        """
+        pool = TitlePool(source=source, generated=list(titles))
+        if not titles:
+            return pool
+        valid: list[str] = []
+        for title in titles:
+            outcome = self.validate_title_candidate(title, body_text)
+            substantive = tuple(
+                code
+                for code in outcome.reason_codes
+                if code != REASON_VALIDATION_CONTEXT_UNAVAILABLE
+            )
+            if outcome.passed:
+                valid.append(title)
+            elif substantive:
+                pool.rejected.append(outcome)
+            else:
+                # 唯一的问题是「没有正文可校验」——记在 unavailable 里，
+                # 与「被判不合格」区分开，不然统计上会把两者混成同一件事。
+                pool.unavailable.append(outcome)
+        pool.valid_titles = self._rank_titles(valid, data_report, list(preferred_titles or []))
+        return pool
+
     def run(
         self,
         content: GeneratedContent,
@@ -306,34 +565,13 @@ class TitleAgent(BaseAgent):
         raw_model_titles = payload.get("titles") if isinstance(payload, dict) else None
         model_raw_count = len(raw_model_titles) if isinstance(raw_model_titles, list) else 0
         if payload:
-            titles = self._dedupe_titles(payload.get("titles"), cache_context)
+            model_titles = self._dedupe_titles(payload.get("titles"), cache_context)
             preferred_from_model = self._dedupe_titles(payload.get("recommended_titles"), cache_context)
             model_title_a = str(payload.get("title_a", "") or "").strip()
             model_title_b = str(payload.get("title_b", "") or "").strip()
         else:
-            titles = []
-        model_deduped_count = len(titles)
-
-        fallback_titles = self._fallback_titles(
-            content,
-            trend_report,
-            data_report,
-            style,
-            cache_context,
-            playbook_context=playbook_context,
-        )
-        titles = self._dedupe_titles(titles + fallback_titles, cache_context)
-        merged_count = len(titles)
-        if not titles:
-            # 去重池（avoid_titles / 模板词 / 语义骨架）可能把模型标题与兜底标题同时杀光，
-            # 同题反复出现时尤其容易触发。此时若返回空列表，下游拿不到标题，
-            # 审核团会以「标题信息量不足」为由把整篇判死，等于白跑一轮。
-            # 所以这里无条件保底，宁可标题普通也要留住这篇稿。
-            titles = self._emergency_titles(content, data_report)
-        ranked_titles = self._rank_titles(titles, data_report, preferred_from_model)
-        recommended_titles = self._pick_recommended_titles(ranked_titles, data_report)
-
-        dual = self._pick_dual_titles(ranked_titles, data_report, model_title_a, model_title_b, cache_context)
+            model_titles = []
+        model_deduped_count = len(model_titles)
 
         # ⚠️ 2026-09-16：这里原先传 `content.summary` 当「正文」去做标题-正文
         # 一致性校验，而 summary 是摘要，**通常不含公司名**。于是
@@ -343,37 +581,91 @@ class TitleAgent(BaseAgent):
         # 用正文全文只拒 1/6，且那 1 条是**真该拒**的（正文确实没提宁德时代）。
         # 20 个候选过完这道错校验只剩 1 条，下游无论怎么选都挑不出好标题。
         body_reference = self._title_body_reference(content)
-        compliant_titles = [
-            t for t in ranked_titles if self.validate_title_compliance(t, body_reference)
-        ]
-        if compliant_titles:
-            ranked_titles = compliant_titles
-            compliant_set = set(compliant_titles)
-            recommended_titles = [title for title in recommended_titles if title in compliant_set]
-            if not recommended_titles:
-                recommended_titles = ranked_titles[: self.settings.recommended_title_count]
 
-        # ⚠️ 2026-09-17：此前这三段计数只存在于产物里能看到的最终结果中，中间每一步丢了多少
-        # 完全不可观测（`.runtime/diag/run_35190054551` 的产物里只有最终候选）。
-        # 归因诊断（scripts/diagnose_title_stage.py）复现出的事实是：模型其实**给满了 20 条**、
-        # 去重杀掉 0 条，而兜底另外产出了 22~25 条；合规闸则 42/42、45/45 全灭 ——
-        # 按下面的 `if compliant_titles:` 分支，全灭时整道闸会被静默跳过。
-        # 没有日志就没人能发现这一点，所以把每一步的条数固定打出来。
+        # ── D1：三层池，按优先级递补，**池间不混合排名** ─────────────────────
+        # PRIMARY：模型候选。只要有 ≥1 条合格，本次就只用模型池。
+        model_pool = self._build_title_pool(
+            TITLE_SOURCE_MODEL, model_titles, body_reference, data_report, preferred_from_model
+        )
+        chosen = model_pool
+        fallback_pool: TitlePool | None = None
+        emergency_pool: TitlePool | None = None
+        fallback_generated = 0
+        if not chosen.valid_titles:
+            # RESCUE：模型池全灭时才启用兜底（兜底有 22~25 条，绝不允许它参与正常竞争）。
+            fallback_titles = self._fallback_titles(
+                content,
+                trend_report,
+                data_report,
+                style,
+                cache_context,
+                playbook_context=playbook_context,
+            )
+            fallback_generated = len(fallback_titles)
+            fallback_pool = self._build_title_pool(
+                TITLE_SOURCE_FALLBACK, fallback_titles, body_reference, data_report, []
+            )
+            chosen = fallback_pool
+        if not chosen.valid_titles:
+            # LAST RESORT：前两层都提不出合格标题，才轮到应急池。同样要过正式校验，
+            # 不做「无校验放行」。
+            emergency_pool = self._build_title_pool(
+                TITLE_SOURCE_EMERGENCY,
+                self._emergency_titles(content, data_report),
+                body_reference,
+                data_report,
+                [],
+            )
+            chosen = emergency_pool
+
+        ranked_titles = list(chosen.valid_titles)
+
+        if ranked_titles:
+            recommended_titles = self._pick_recommended_titles(ranked_titles, data_report)
+            dual = self._pick_dual_titles(
+                ranked_titles, data_report, model_title_a, model_title_b, cache_context
+            )
+        else:
+            # D2：**一个合格标题都没有**就是真失败。这里既不清空后再偷偷塞回原始候选，
+            # 也不把不合格的标题当保底发出去 —— 交给 topic attempt loop 换下一个选题。
+            recommended_titles = []
+            dual = {"title_a": "", "title_b": ""}
+
         final_titles = ranked_titles[: self.settings.title_count]
+        validation_payload = chosen.to_dict()
+        validation_payload["pools"] = {
+            "model": model_pool.to_dict(),
+            "fallback": fallback_pool.to_dict() if fallback_pool else None,
+            "emergency": emergency_pool.to_dict() if emergency_pool else None,
+        }
+        validation_payload["validation_context"] = (
+            "body" if str(body_reference or "").strip() else "unavailable"
+        )
+
         self.logger.info(
-            "TitleAgent 候选统计: 模型原始 %d → 去重后 %d；兜底 %d；合并 %d；合规通过 %d；输出 %d",
+            "TitleAgent 候选统计: 模型原始 %d → 去重后 %d；兜底 %d；"
+            "选中池=%s；生成 %d → 合格 %d（拒 %d / 无正文 %d）；输出 %d",
             model_raw_count,
             model_deduped_count,
-            len(fallback_titles),
-            merged_count,
-            len(compliant_titles),
+            fallback_generated,
+            chosen.source,
+            len(chosen.generated),
+            len(chosen.valid_titles),
+            len(chosen.rejected),
+            len(chosen.unavailable),
             len(final_titles),
         )
-        if ranked_titles and not compliant_titles:
+        if not ranked_titles and chosen.generated:
+            # 旧实现：`if compliant_titles: ...` 否则**保留全部未过滤候选**，
+            # 等于「全灭时整道闸静默失效」。现在全灭就是全灭，并给出可观测的
+            # status + reason 汇总，让上层知道「为什么一个标题都没有」。
             self.logger.warning(
-                "TitleAgent 标题合规闸全灭：%d 条候选无一通过（长度/禁用词/正文一致性），"
-                "按设计本轮不过滤 ⇒ 该闸在本次运行中等于未生效。",
-                len(ranked_titles),
+                "TitleAgent 标题选择失败 status=%s：来源池=%s，%d 条候选无一通过校验。"
+                "top_reasons=%s",
+                chosen.status,
+                chosen.source,
+                len(chosen.generated),
+                chosen.reason_summary(),
             )
 
         return {
@@ -382,6 +674,10 @@ class TitleAgent(BaseAgent):
             "title_a": dual["title_a"],
             "title_b": dual["title_b"],
             "alt_title": dual["title_b"],
+            # 只有真的选出标题时才报来源；全灭时留空，避免把「最后试过的池」
+            # 误读成「这篇用的是 emergency 标题」。
+            "selected_title_source": chosen.source if chosen.valid_titles else "",
+            "title_validation": validation_payload,
         }
 
     def _emergency_titles(self, content: GeneratedContent, data_report: DataReport) -> list[str]:
@@ -655,7 +951,14 @@ class TitleAgent(BaseAgent):
         result: list[str] = []
         for raw_title in raw_titles:
             title = self._sanitize_title(raw_title)
-            if title and self.validate_title_compliance(title) and title not in result:
+            # ⚠️ 2026-09-17（D3）：这里以前是
+            # `self.validate_title_compliance(title)` —— **不带正文**。
+            # 于是兜底标题只过了「长度/禁用词」这几条与正文无关的检查，
+            # 「标题与正文一致性」和「具象锚点承接」两道闸门对它是**失效**的：
+            # 同一个标题走模型路径会被拒、走兜底路径能活。
+            # 现在这里只做**格式清洗**，校验统一交给 `_build_title_pool()` 的
+            # `validate_title_candidate(title, body_text)`。
+            if title and title not in result:
                 result.append(title)
         return result
 

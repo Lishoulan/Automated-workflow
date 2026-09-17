@@ -482,6 +482,16 @@ class ContentFactoryAppService:
             topic_url=selection.topic.url,
         )
         if bool(guard_result.get("blocked")):
+            # ⚠️ 报错必须说清楚是**哪一种**拦截。2026-09-17 这里对任何 blocked 都报
+            # 「too similar to a recent published run … similarity=0.0」，而实际原因
+            # 是标题命中本地敏感词（「押注」），把我带偏了一整轮排查。
+            if guard_result.get("bad_words_blocked"):
+                matched_words = guard_result.get("matched_bad_words") or []
+                raise ValueError(
+                    "Selected topic was rejected by the local bad-word guard. "
+                    f"Matched bad words: {', '.join(str(w) for w in matched_words)} "
+                    "(bad_words_blocked=True)."
+                )
             raise ValueError(
                 "Selected topic is too similar to a recent published run. "
                 f"Matched: {guard_result.get('matched_title', '')} "
@@ -818,6 +828,32 @@ class ContentFactoryAppService:
                         "score_snapshot": {},
                         "qualified_for_auto_approval": False,
                         "status": "low_quality_skipped",
+                        "skip_reason": str(exc),
+                    }
+                )
+                continue
+            except ValueError as exc:
+                # ⚠️ 单个候选被选题闸门否决（如标题命中本地敏感词）**不应该否决今天**。
+                # 2026-09-17 12:30 的云端运行选中「…百亿叉车龙头，押注机器人」，仅因标题含
+                # 「押注」（bad_words.txt 赌博词段）就抛出 ValueError 冒泡到 main.py，
+                # 整条流水线 4 分钟就失败、0 产出。候选列表本来就有多条，这里改为记一笔、
+                # 换下一个候选。若全部候选都被否决，循环结束后仍会按原有逻辑报错。
+                self.logger.warning(
+                    "Daily workflow attempt %s/%s was rejected, trying the next candidate: %s",
+                    attempt_index,
+                    len(candidate_specs),
+                    exc,
+                )
+                losing_attempts.append(
+                    {
+                        "attempt_index": attempt_index,
+                        "candidate_rank": int(candidate["rank"]),
+                        "topic_title": str(candidate["title"]),
+                        "topic_url": str(candidate["url"]),
+                        "run_dir": "",
+                        "score_snapshot": {},
+                        "qualified_for_auto_approval": False,
+                        "status": "candidate_rejected_before_generation",
                         "skip_reason": str(exc),
                     }
                 )

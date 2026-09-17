@@ -7,6 +7,7 @@ from pathlib import Path
 from toutiao_content_factory.agents.data_agent import DataAgent
 from toutiao_content_factory.agents.title_agent import TitleAgent
 from toutiao_content_factory.models import (
+    CacheContext,
     DailyTopicsReport,
     DataReport,
     ExtractionResult,
@@ -732,3 +733,55 @@ def test_robot_track_industries_stay_robot_specific() -> None:
 
     assert "humanoid_robot" in industries
     assert "ai_hardware" not in industries
+
+
+def test_fallback_titles_never_repeat_the_same_anchor(
+    app_settings,
+    mock_openai_service,
+    logger,
+) -> None:
+    """兜底句式是锚定词字符串拼接出来的，主体相同时不得拼出「X 的 X 生意」这类病句。
+
+    实测来源：`cache/b4cc878dbe9eb9c9`（比亚迪跨界人形机器人）。该选题里
+    `_primary_topic_label` 回落到公司名，于是兜底拼出了两条会进入候选池、
+    并被 `select_auto_title` 当正常候选择优的病句：
+
+        「比亚迪的比亚迪生意，真正的收入来自什么」
+        「比亚迪460万台：比亚迪真实进度看交付」
+
+    这两条在生成侧就拦掉，不能指望下游认出来。
+    """
+
+    agent = TitleAgent(
+        app_settings,
+        PromptRepository(app_settings),
+        mock_openai_service,
+        logger,
+    )
+    report = DataReport(
+        topic_title="比亚迪玩跨界？进军人形机器人，代号尧舜禹",
+        focus_industry="AI机器人",
+        focus_keywords=["比亚迪", "人形机器人"],
+        supply_chain_keywords=["比亚迪", "人形机器人"],
+        growth_numbers=["460万台"],
+        companies=["比亚迪"],
+        focus_companies=["比亚迪"],
+        core_data=["比亚迪定下460万台目标"],
+        evidence_notes=["公开材料：比亚迪进军人形机器人"],
+    )
+    content = GeneratedContent(
+        article="比亚迪宣布进军人形机器人赛道，并定下万台级目标。",
+        summary="比亚迪宣布进军人形机器人赛道。",
+    )
+    style = app_settings.style_profiles[app_settings.default_style]
+
+    titles = agent._fallback_titles(content, TrendReport(), report, style, CacheContext())
+
+    assert titles, "守卫不该把兜底标题清空"
+    repeated = [title for title in titles if title.count("比亚迪") >= 2]
+    assert repeated == [], f"兜底标题重复了锚定主体: {repeated}"
+
+    # 守卫本身：两个字符以上的锚定词出现两次即判定为拼接病句
+    assert TitleAgent._has_repeated_anchor("比亚迪的比亚迪生意，真正的收入来自什么", ["比亚迪"])
+    assert TitleAgent._has_repeated_anchor("比亚迪460万台：比亚迪真实进度看交付", ["比亚迪"])
+    assert not TitleAgent._has_repeated_anchor("比亚迪热度之外，谁在拿走真正订单", ["比亚迪"])

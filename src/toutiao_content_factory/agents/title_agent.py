@@ -231,6 +231,8 @@ class TitleAgent(BaseAgent):
         model_title_b = ""
         system_prompt = f"你是 TitleAgent，只输出 JSON。{self.best_practices_instruction()}"
         payload = self.request_json(system_prompt, prompt)
+        raw_model_titles = payload.get("titles") if isinstance(payload, dict) else None
+        model_raw_count = len(raw_model_titles) if isinstance(raw_model_titles, list) else 0
         if payload:
             titles = self._dedupe_titles(payload.get("titles"), cache_context)
             preferred_from_model = self._dedupe_titles(payload.get("recommended_titles"), cache_context)
@@ -238,6 +240,7 @@ class TitleAgent(BaseAgent):
             model_title_b = str(payload.get("title_b", "") or "").strip()
         else:
             titles = []
+        model_deduped_count = len(titles)
 
         fallback_titles = self._fallback_titles(
             content,
@@ -248,6 +251,7 @@ class TitleAgent(BaseAgent):
             playbook_context=playbook_context,
         )
         titles = self._dedupe_titles(titles + fallback_titles, cache_context)
+        merged_count = len(titles)
         if not titles:
             # 去重池（avoid_titles / 模板词 / 语义骨架）可能把模型标题与兜底标题同时杀光，
             # 同题反复出现时尤其容易触发。此时若返回空列表，下游拿不到标题，
@@ -277,8 +281,31 @@ class TitleAgent(BaseAgent):
             if not recommended_titles:
                 recommended_titles = ranked_titles[: self.settings.recommended_title_count]
 
+        # ⚠️ 2026-09-17：此前这三段计数只存在于产物里能看到的最终结果中，中间每一步丢了多少
+        # 完全不可观测（`.runtime/diag/run_35190054551` 的产物里只有最终候选）。
+        # 归因诊断（scripts/diagnose_title_stage.py）复现出的事实是：模型其实**给满了 20 条**、
+        # 去重杀掉 0 条，而兜底另外产出了 22~25 条；合规闸则 42/42、45/45 全灭 ——
+        # 按下面的 `if compliant_titles:` 分支，全灭时整道闸会被静默跳过。
+        # 没有日志就没人能发现这一点，所以把每一步的条数固定打出来。
+        final_titles = ranked_titles[: self.settings.title_count]
+        self.logger.info(
+            "TitleAgent 候选统计: 模型原始 %d → 去重后 %d；兜底 %d；合并 %d；合规通过 %d；输出 %d",
+            model_raw_count,
+            model_deduped_count,
+            len(fallback_titles),
+            merged_count,
+            len(compliant_titles),
+            len(final_titles),
+        )
+        if ranked_titles and not compliant_titles:
+            self.logger.warning(
+                "TitleAgent 标题合规闸全灭：%d 条候选无一通过（长度/禁用词/正文一致性），"
+                "按设计本轮不过滤 ⇒ 该闸在本次运行中等于未生效。",
+                len(ranked_titles),
+            )
+
         return {
-            "titles": ranked_titles[: self.settings.title_count],
+            "titles": final_titles,
             "recommended_titles": recommended_titles[: self.settings.recommended_title_count],
             "title_a": dual["title_a"],
             "title_b": dual["title_b"],
@@ -442,7 +469,25 @@ class TitleAgent(BaseAgent):
         if evidence_titles:
             templates = evidence_titles + templates
 
+        # ⚠️ 2026-09-17：兜底句式是**用锚定词做字符串拼接**出来的，当两个锚定词指向
+        # 同一主体时会拼出病句。实测（cache/b4cc878dbe9eb9c9，比亚迪跨界人形机器人）：
+        #   「比亚迪的比亚迪生意，真正的收入来自什么」  ← company == keyword
+        #   「比亚迪460万台：比亚迪真实进度看交付」      ← anchor == detail
+        # 这两条都会进入候选池、并被 `select_auto_title` 当成正常候选参与择优，
+        # 所以在**生成侧**就要拦掉，不能指望下游认出来。
+        anchors = [company, keyword, secondary, self._topic_subject_label(data_report, fallback="")]
+        templates = [t for t in templates if not self._has_repeated_anchor(t, anchors)]
+
         return self._dedupe_titles(templates, cache_context)
+
+    @staticmethod
+    def _has_repeated_anchor(title: str, anchors: list[str]) -> bool:
+        """兜底标题里同一个锚定主体出现两次以上，说明是拼接产生的病句。"""
+        for anchor in anchors:
+            anchor = str(anchor or "").strip()
+            if len(anchor) >= 2 and title.count(anchor) >= 2:
+                return True
+        return False
 
     def _fallback_fact_titles(
         self,

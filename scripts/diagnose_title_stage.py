@@ -57,8 +57,21 @@ def _from_dict(cls, payload: dict):
     return cls(**{k: v for k, v in payload.items() if k in known})
 
 
+REASON_TEXT = {
+    "title_too_long": "超长",
+    "unsupported_financial_link": "无依据的财务因果",
+    "editorial_integrity": "编辑一致性",
+    "missing_concrete_hook": "缺正文具象钩子",
+}
+
+
 def _compliance_breakdown(agent: TitleAgent, title: str, body_text: str) -> list[str]:
-    """逐条复算 `validate_title_compliance` 的各道子闸，指出是被哪一条杀掉的。"""
+    """逐条复算 `validate_title_compliance` 的各道子闸，返回**稳定的 reason_code**。
+
+    用 code 而不是人读文案，是为了能直接做计数统计
+    （`{"missing_concrete_hook": 30, "editorial_integrity": 8}`），
+    这也是 D2 要求「上层能够知道为什么一个都没通过」在诊断侧的对应物。
+    """
     from src.toutiao_content_factory.services.article_quality_checker import (
         ArticleQualityChecker,
     )
@@ -66,24 +79,37 @@ def _compliance_breakdown(agent: TitleAgent, title: str, body_text: str) -> list
     reasons: list[str] = []
     max_length = agent._title_max_length()
     if len(title) > max_length:
-        reasons.append(f"超长({len(title)}>{max_length})")
+        reasons.append("title_too_long")
     for pattern in agent.DISCOURAGED_TITLE_PATTERNS:
         if pattern in title:
-            reasons.append(f"禁用词:{pattern}")
+            reasons.append(f"discouraged_pattern:{pattern}")
             break
     if any(p.search(title) for p in agent.UNSUPPORTED_FINANCIAL_LINK_PATTERNS):
-        reasons.append("无依据的财务因果")
+        reasons.append("unsupported_financial_link")
     if ArticleQualityChecker().check_editorial_integrity(title, body_text).get("issues"):
-        reasons.append("编辑一致性")
+        reasons.append("editorial_integrity")
     if body_text and 10 <= len(title) <= max_length and not agent._has_concrete_hook(title, body_text):
-        reasons.append("缺正文具象钩子")
+        reasons.append("missing_concrete_hook")
     return reasons
+
+
+def _reason_label(code: str) -> str:
+    if code in REASON_TEXT:
+        return REASON_TEXT[code]
+    if code.startswith("discouraged_pattern:"):
+        return f"禁用词:{code.split(':', 1)[1]}"
+    return code
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="标题阶段归因诊断")
     parser.add_argument("--cache", default="", help="指定缓存文件；默认取最近修改的一个")
     parser.add_argument("--json", default="", help="把结构化结果写到该路径")
+    parser.add_argument(
+        "--replay",
+        default="",
+        help="复用某次诊断 JSON 里的 raw_model_titles 重跑，不调用 LLM（做 BEFORE/AFTER 对比用）",
+    )
     args = parser.parse_args()
 
     cache_dir = PROJECT_ROOT / "cache"
@@ -158,9 +184,25 @@ def main() -> int:
     original_dedupe = agent._dedupe_titles
     original_validate = agent.validate_title_compliance
     original_fallback = agent._fallback_titles
+    original_emergency = agent._emergency_titles
+    emergency_calls: list[list[str]] = []
+
+    replay_payload = None
+    if args.replay:
+        # `--replay`：复用上一次诊断存下的模型原始输出，**不再调用 LLM**。
+        # 这是做 BEFORE/AFTER 对比的正确姿势——否则两次生成的候选不同，
+        # 你无法判断差异是「闸门变了」还是「模型这次说了别的」。
+        replay_blob = json.loads(Path(args.replay).read_text(encoding="utf-8"))
+        replay_payload = {
+            "titles": replay_blob.get("raw_model_titles") or [],
+            "recommended_titles": replay_blob.get("raw_recommended_titles") or [],
+        }
+        print(f"重放模式：复用 {args.replay} 里的 {len(replay_payload['titles'])} 条模型原始标题（不调用 LLM）")
 
     def spy_request_json(system_prompt: str, user_prompt: str):
-        result = original_request_json(system_prompt, user_prompt)
+        result = replay_payload if replay_payload is not None else original_request_json(
+            system_prompt, user_prompt
+        )
         captured["payload"] = result
         return result
 
@@ -187,10 +229,16 @@ def main() -> int:
         fallback_calls.append(list(out))
         return out
 
+    def spy_emergency(*a, **kw):
+        out = original_emergency(*a, **kw)
+        emergency_calls.append(list(out))
+        return out
+
     agent.request_json = spy_request_json  # type: ignore[method-assign]
     agent._dedupe_titles = spy_dedupe  # type: ignore[method-assign]
     agent.validate_title_compliance = spy_validate  # type: ignore[method-assign]
     agent._fallback_titles = spy_fallback  # type: ignore[method-assign]
+    agent._emergency_titles = spy_emergency  # type: ignore[method-assign]
 
     result = agent.run(content, trend_report, data_report, style, CacheContext())
 
@@ -214,12 +262,80 @@ def main() -> int:
     print(f"  不带正文（兜底）  : {len(fallback_side)} 次，通过 {sum(1 for c in fallback_side if c['ok'])}")
     print("  ⚠️ 兜底不过「正文具象钩子」与「编辑一致性」两道闸 —— 结构性不对称")
 
-    print("\n=== 模型候选被杀原因 ===")
-    for title in raw_model:
-        cleaned = agent._sanitize_title(str(title).strip())
-        reasons = _compliance_breakdown(agent, cleaned, body_reference)
-        status = "PASS" if not reasons else "FAIL " + "/".join(reasons)
-        print(f"  [{status}] {cleaned}")
+    fallback_titles = fallback_calls[0] if fallback_calls else []
+    emergency_titles = emergency_calls[0] if emergency_calls else []
+
+    # 按「候选来源」归类通过/拒绝，而不是按「有没有传正文」——
+    # D3 修好后兜底也会带正文，那个判据就失效了。
+    normalized_fallback = {agent.normalize_title(t) for t in fallback_titles}
+    normalized_emergency = {agent.normalize_title(t) for t in emergency_titles}
+
+    def source_of(title: str) -> str:
+        normalized = agent.normalize_title(title)
+        if normalized in normalized_emergency:
+            return "emergency"
+        if normalized in normalized_fallback:
+            return "fallback"
+        return "model"
+
+    # 只统计**带正文的池子过滤那一趟**（body_len>0），并且按标题去重：
+    # `_fallback_fact_titles` 内部还会用空正文自查一次，那一趟不进来源统计
+    # （否则会把「兜底自查通过」误记成「模型候选通过」）。
+    verdicts: dict[tuple[str, str], bool] = {}
+    for call in compliance_calls:
+        if call["body_len"] <= 0:
+            continue
+        verdicts[(source_of(call["title"]), agent.normalize_title(call["title"]))] = call["ok"]
+
+    per_source: dict[str, dict[str, int]] = {}
+    for (source, _title), ok in verdicts.items():
+        bucket = per_source.setdefault(source, {"valid": 0, "rejected": 0})
+        bucket["valid" if ok else "rejected"] += 1
+
+    print("\n=== 逐条候选与拒绝原因（reason_code）===")
+    reason_counter: dict[str, int] = {}
+    pass_counter: dict[str, int] = {}
+    for source, titles in (
+        ("MODEL", raw_model),
+        ("FALLBACK", fallback_titles),
+        ("EMERGENCY", emergency_titles),
+    ):
+        if not titles:
+            print(f"  --- {source}: generated=0")
+            continue
+        print(f"  --- {source}")
+        listed: set[str] = set()
+        for title in titles:
+            cleaned = agent._sanitize_title(str(title).strip())
+            if not cleaned or cleaned in listed:
+                continue
+            listed.add(cleaned)
+            reasons = _compliance_breakdown(agent, cleaned, body_reference)
+            if reasons:
+                for code in reasons:
+                    reason_counter[code] = reason_counter.get(code, 0) + 1
+            else:
+                pass_counter[source] = pass_counter.get(source, 0) + 1
+            status = "PASS" if not reasons else "FAIL " + "/".join(_reason_label(c) for c in reasons)
+            print(f"    [{status}] {cleaned}")
+
+    print("\n=== 按来源统计（generated / valid / rejected）===")
+    for source, generated in (
+        ("model", len(raw_model)),
+        ("fallback", len(fallback_titles)),
+        ("emergency", len(emergency_titles)),
+    ):
+        stats = per_source.get(source, {"valid": 0, "rejected": 0})
+        print(
+            f"  {source:9s} generated={generated:3d}  valid={stats['valid']:3d}  rejected={stats['rejected']:3d}"
+        )
+
+    print("\n=== 拒绝原因汇总 ===")
+    if reason_counter:
+        for code, count in sorted(reason_counter.items(), key=lambda kv: -kv[1]):
+            print(f"  {_reason_label(code):16s} {count}")
+    else:
+        print("  （模型候选无拒绝）")
 
     print("\n=== 最终结果 ===")
     print(f"  titles            : {len(result['titles'])}")
@@ -232,10 +348,15 @@ def main() -> int:
             "cache_file": cache_path.name,
             "topic": data_report.topic_title,
             "raw_model_titles": raw_model,
+            "raw_recommended_titles": raw_recommended,
             "dedupe_calls": dedupe_calls,
-            "fallback_titles": fallback_calls[0] if fallback_calls else [],
+            "fallback_titles": fallback_titles,
+            "emergency_titles": emergency_titles,
+            "compliance_calls": compliance_calls,
             "compliance_model_side": model_side,
             "compliance_fallback_side": fallback_side,
+            "per_source": per_source,
+            "reason_summary": reason_counter,
             "final_titles": result["titles"],
             "recommended": result["recommended_titles"],
         }

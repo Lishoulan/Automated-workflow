@@ -82,6 +82,24 @@ class TitleAgent(BaseAgent):
         ("利润", "转移"),
     )
 
+    # 只有带这些单位的数字才算「有量化语义」的具体信息。
+    # 详见 `_extract_concrete_elements()`：单字数字（1/2/5/9）是噪声——
+    # 它们在正文里到处都是，任何标题都能「命中」，反而让 concrete hook 失去区分度。
+    # 按长度倒序，保证 `_is_quantified_number()` 做的是**最长匹配**
+    # （`亿元` 不会被切成 `亿`），不依赖人工排列表顺序。
+    NUMERIC_UNITS = tuple(
+        sorted(
+            (
+                "%", "％", "倍", "亿", "万", "千", "元", "美元", "亿元", "万元", "亿美元",
+                "万美元", "千瓦", "兆瓦", "吨", "台", "辆", "款", "条", "家", "个", "名",
+                "次", "轮", "度", "米", "公里", "平方米", "年", "月", "日", "天", "周",
+                "小时", "分钟", "秒",
+            ),
+            key=len,
+            reverse=True,
+        )
+    )
+
     # 语义骨架提取用的替换词（标题去重时忽略这些词的具体差异）
     SKELETON_FILLERS = (
         "人形机器人", "机器人", "AI芯片", "芯片", "半导体", "储能", "光伏",
@@ -166,14 +184,40 @@ class TitleAgent(BaseAgent):
                 return str(candidate)
         return str(getattr(content, "summary", "") or "")
 
-    @staticmethod
-    def _extract_concrete_elements(text: str) -> set[str]:
+    @classmethod
+    def _is_quantified_number(cls, number: str, tail: str) -> str:
+        """判断一个数字串是否带量化语义，返回它应记入的元素（不含则返回空串）。
+
+        判定原则是**「长度」与「单位/语义」分开看**，不是简单把 `\\d+` 改成 `\\d{2,}`：
+
+        - `5万` / `3亿元` / `7%` / `2倍` / `5000台` 这类**带单位**的数，长度再短也有信息量；
+        - `2026` 这类**四位数年份**本身就构成时间锚点；
+        - 单独一个数字字符（`1` / `2` / `5` / `9`）**不算** —— 正文里遍地都是，
+          任何标题都能命中，只会让 concrete hook 失去区分度。
+
+        2026-09-17 实测（`scripts/diagnose_title_stage.py`）：旧实现用 `\\d+%?`
+        把单字数字也收进元素集合，导致 45/45 条模型候选全部判为「缺正文具象钩子」。
+        """
+        # 四位年份优先按**裸数字**记：标题里常写「2027 年量产」或「2027 量产」，
+        # 记成「2027年」会让后者匹配不上。
+        if len(number) == 4 and number.startswith(("19", "20")):
+            return number
+        for unit in cls.NUMERIC_UNITS:
+            if tail.startswith(unit):
+                # 单位最长匹配：NUMERIC_UNITS 已按长度倒序，`亿元` 不会被切成 `亿`
+                return f"{number}{unit}"
+        return ""
+
+    @classmethod
+    def _extract_concrete_elements(cls, text: str) -> set[str]:
         """从正文/摘要中提取具象地标元素：数字、特定公司/地名/场景、具体量化短语。"""
         elements: set[str] = set()
-        # 数字与量化短语（如 300%、6.2亿元、10倍、2.3%）
-        for match in re.finditer(r"\d+(?:\.\d+)?\s*%?|\d+(?:\.\d+)?\s*(?:亿|万|倍|个|家|款|台|条)", text):
-            token = match.group(0).strip()
-            if 1 <= len(token) <= 8:
+        # 数量/金额/比例/时间（如 300%、6.2亿元、10倍、2.3%、5000台、2026）
+        for match in re.finditer(r"\d+(?:\.\d+)?", text):
+            token = cls._is_quantified_number(
+                match.group(0), text[match.end() : match.end() + 4]
+            )
+            if token and 2 <= len(token) <= 10:
                 elements.add(token)
         # 公司/机构名（含常见后缀）
         for match in re.finditer(r"[\u4e00-\u9fa5A-Za-z]{2,}(?:公司|集团|科技|证券|银行|研究院|工厂|基地|机场|园区|实验室)", text):

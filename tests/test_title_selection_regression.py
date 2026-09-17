@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from toutiao_content_factory.agents.title_agent import TitleAgent
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 from toutiao_content_factory.services.review_service import ReviewWorkflowService
 
@@ -238,3 +239,66 @@ def test_title_prompt_renders_and_carries_the_anti_collapse_rule() -> None:
     assert "可模仿标题模版" not in rendered
     # 提示词里出现的花括号示例不能被渲染器吃掉（渲染器只处理 {{name}}）。
     assert "{事件}之后/期，{主体}利润开始 X" in rendered
+
+
+# --- D4：concrete hook 的数字判定（2026-09-17） ---------------------------------
+#
+# 归因诊断（scripts/diagnose_title_stage.py）实测：两个独立选题下，模型候选
+# 42/42、45/45 全部判为「缺正文具象钩子」。旧实现用 `\d+%?` 提取数字，
+# 把单字数字（1/2/5/9）也收进元素集合，于是任何含有一个数字的标题都能命中，
+# 或者反过来——正文里的裸数字遍地都是，标题几乎不可能同时命中它们全部。
+# 修法是**把「数字长度」与「单位/语义」分开判断**，不是把 `\d+` 改成 `\d{2,}`。
+
+
+@pytest.mark.parametrize("bare", ["1", "2", "5", "9", "32", "300"])
+def test_bare_digits_are_not_concrete_elements(bare: str) -> None:
+    """单独一个数字（无单位、非四位年份）不构成具象元素。"""
+    assert TitleAgent._extract_concrete_elements(f"规模达到{bare}") == set()
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("今年产量10万", "10万"),
+        ("营收5亿元", "5亿元"),
+        ("同比增长30%", "30%"),
+        ("产能2.5万", "2.5万"),
+        ("签约3家", "3家"),
+        ("出货5000台", "5000台"),
+        ("提高2倍", "2倍"),
+        ("计划2026量产", "2026"),
+        # 四位年份按**裸数字**记，这样标题写「2025年交付」或「2025目标」都能匹配上
+        ("2025年交付", "2025"),
+    ],
+)
+def test_quantified_numbers_are_concrete_elements(text: str, expected: str) -> None:
+    """带单位/比例/金额/数量后缀的数字，以及四位年份，仍然算具象信息。"""
+    assert expected in TitleAgent._extract_concrete_elements(text)
+
+
+def test_bare_digit_in_body_no_longer_lets_an_unrelated_title_pass() -> None:
+    """旧实现在这里会放行：正文里的裸数字 `32` 也进了元素集合，
+    于是任何含「32」的标题都能命中 hook，哪怕它和正文的具象事实无关。
+    """
+    body = "试验完成后，机器人跑出9秒32的最好成绩。"
+
+    elements = TitleAgent._extract_concrete_elements(body)
+    assert elements == {"9秒"}  # 裸的 32 不再入集合
+
+    # 旧实现：elements 含 "32" → 该标题命中 → 放行。新实现：必须拒绝。
+    assert TitleAgent._has_concrete_hook("机器人跑了32秒之后，行业变了吗", body) is False
+    # 真正承接了正文的具象事实 → 放行
+    assert TitleAgent._has_concrete_hook("跑出9秒32之后，机器人行业变了吗", body) is True
+
+
+def test_company_and_year_still_count_as_concrete_hooks() -> None:
+    """修数字不得破坏其他元素的提取（公司名 / 年份 / 比例）。"""
+    body = "舜宇光学科技在半年报中提到，光学模组出货量同比增长30%，并计划2027年扩产。"
+
+    elements = TitleAgent._extract_concrete_elements(body)
+
+    assert "舜宇光学科技" in elements
+    assert "2027" in elements
+    assert "30%" in elements
+    assert TitleAgent._has_concrete_hook("舜宇光学科技拿到订单，真正的变化在哪", body) is True
+    assert TitleAgent._has_concrete_hook("行业订单回暖，真正的变化在哪", body) is False

@@ -1,0 +1,31 @@
+{
+  "golden_id": "golden_success_20260917",
+  "purpose": "2026-09-17 13:05 成功发布的云端运行，作为「标题塌缩」的真实基线样本。",
+  "source": {
+    "type": "GitHub Actions artifact",
+    "workflow_run_id": "35183027828",
+    "artifact": "daily-output-486",
+    "run_dir": "output/accounts/robot-notes/runs/20260917-125613_深度丨国产撕开缺口-工业机器人四大-老钱家族-的壁垒生变",
+    "local_cache": ".runtime/diag/run_35183027828"
+  },
+  "title_model": {
+    "value": "glm-4-flash",
+    "how_known": "该 run 时云端 workflow 未设置 OPENAI_TITLE_MODEL，title_agent 沿用正文模型。",
+    "note": "这正是 Phase 0.5 对照实验要改变的唯一变量。"
+  },
+  "attempts": 3,
+  "candidate_counts": [8, 3, 3],
+  "selected_title": "埃斯顿出货量创新高，机器人市场进入新阶段",
+  "publish_status": "submitted_for_review",
+  "published_at": "2026-09-17T13:05:15",
+  "files": {
+    "titles.txt": "全部标题（8 条）+ 推荐标题（2 条）",
+    "article.md": "正文（2045 字），供标题-正文一致性检查使用",
+    "content_guard_report.json": "文章级闸门报告（blocked=false）"
+  },
+  "known_issues": [
+    "8 条候选里 6 条为「埃斯顿出货量…机器人市场…」同构；",
+    "候选 #4/#5 是硬编码兜底骨架（…真实进度看交付 / …交付进度才是关键）；",
+    "推荐标题是纯陈述句，属 CTR 实证中的零阅读形态。"
+  ]
+}

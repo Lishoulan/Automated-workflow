@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-09-17T12:34:51",
+  "mode": "topic_candidate",
+  "blocked": true,
+  "similarity": 0.0,
+  "threshold": 0.0,
+  "simhash_hamming_distance": 64,
+  "simhash_hamming_threshold": 3,
+  "matched_run_dir": "",
+  "matched_title": "",
+  "warnings": [
+    "红线警告：命中本地敏感词/违禁词 -> 押注"
+  ],
+  "ai_risk_score": 0.0,
+  "ai_risk_level": "low",
+  "human_review_required": true,
+  "recommendations": [],
+  "bad_words_blocked": true,
+  "matched_bad_words": [
+    "押注"
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "generated_at": "2026-09-17T13:03:10",
+  "mode": "run",
+  "blocked": false,
+  "similarity": 0.0,
+  "threshold": 0.76,
+  "simhash_hamming_distance": 64,
+  "simhash_hamming_threshold": 3,
+  "matched_run_dir": "",
+  "matched_title": "",
+  "run_dir": "/home/runner/work/Automated-workflow/Automated-workflow/output/accounts/robot-notes/runs/20260917-125613_深度丨国产撕开缺口-工业机器人四大-老钱家族-的壁垒生变",
+  "warnings": [
+    "质量检查：存在绝对化表述：'首次'"
+  ],
+  "ai_risk_score": 0.3411,
+  "ai_risk_level": "low",
+  "human_review_required": false,
+  "recommendations": [],
+  "bad_words_blocked": false,
+  "matched_bad_words": [],
+  "writing_integrity": {
+    "issues": [],
+    "hard_blockers": [],
+    "title_issues": [],
+    "body_issues": []
+  },
+  "blocking_flags": [],
+  "source_copy_ratio": 13.9,
+  "source_copy_chars": 242,
+  "source_copy_reason": "",
+  "source_copy_samples": [
+    "同时汇川同期市场份额达到92排名第三本土品牌第二其SCARA机器人份",
+    "的正是这碗时间饭发那科拥有CNC伺服机器人形成的技术闭环安川的根扎",
+    "96中国区收入已占库卡集团整体的三成左右发那科2025财年营收约5",
+    "23亿美元占集团总收入7低于集团核心板块1618的水平它",
+    "57亿美元同比增长76创历史新高营业利润率2"
+  ],
+  "review_status_override": {},
+  "quality_check": {
+    "is_passed": true,
+    "total_score": 100,
+    "compliance_score": 50,
+    "originality_score": 25,
+    "readability_score": 30,
+    "depth_score": 15,
+    "issues": [
+      "存在绝对化表述：'首次'"
+    ],
+    "suggestions": [
+      "存在少量模板化表达，可以适当优化",
+      "标题中可以使用数字吸引点击（如'3大趋势'）"
+    ]
+  }
+}

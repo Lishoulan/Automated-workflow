@@ -76,6 +76,12 @@ jobs:
       OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
       OPENAI_MODEL: ${{ secrets.OPENAI_BASE_URL && secrets.OPENAI_MODEL || '' }}
       OPENAI_TEMPERATURE: ${{ secrets.OPENAI_TEMPERATURE || '0.7' }}
+      # 标题环节单独使用强模型（title_agent.py 读该变量；为空则沿用正文模型）。
+      # 2026-09-15 本地实测：glm-4.6 的标题能过 RULE_006/007/009，glm-4-flash 常被全过滤。
+      # 2026-09-17 起云端也启用，配合 TITLE_MODEL_EXPERIMENT 做一次对照实验。
+      OPENAI_TITLE_MODEL: ${{ secrets.OPENAI_TITLE_MODEL || 'glm-4.6' }}
+      # 纯标记，不参与业务逻辑，仅用于区分实验前后的运行。
+      TITLE_MODEL_EXPERIMENT: glm-4.6-20260917
 
       IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY || secrets.OPENAI_API_KEY }}
       IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL || secrets.OPENAI_BASE_URL }}
@@ -468,6 +474,8 @@ jobs:
           }
           echo "[llm-probe] host: $(printf '%s' "$OPENAI_BASE_URL" | sed -E 's#^(https?://[^/]+).*#\1#')"
           echo "[llm-probe] model: $OPENAI_MODEL"
+          echo "[llm-probe] title_model: ${OPENAI_TITLE_MODEL:-<unset>}"
+          echo "[llm-probe] title_model_experiment: ${TITLE_MODEL_EXPERIMENT:-<unset>}"
           BODY_FILE="$(mktemp)"
           CURL_ERR="$(mktemp)"
           HTTP_CODE="$(curl -sS -o "$BODY_FILE" -w '%{http_code}' \
@@ -1070,6 +1078,9 @@ jobs:
       OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
       OPENAI_MODEL: ${{ secrets.OPENAI_BASE_URL && secrets.OPENAI_MODEL || '' }}
       OPENAI_TEMPERATURE: ${{ secrets.OPENAI_TEMPERATURE || '0.7' }}
+      # 与主 job 保持一致：标题环节使用强模型（见主 job 同名变量说明）。
+      OPENAI_TITLE_MODEL: ${{ secrets.OPENAI_TITLE_MODEL || 'glm-4.6' }}
+      TITLE_MODEL_EXPERIMENT: glm-4.6-20260917
 
       IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY || secrets.OPENAI_API_KEY }}
       IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL || secrets.OPENAI_BASE_URL }}

@@ -1,0 +1,23 @@
+{
+  "golden_id": "golden_title_policy_block",
+  "purpose": "真实敏感词拦截样本：标题含「押注」必须被 policy gate 拦下。",
+  "source": {
+    "type": "GitHub Actions artifact",
+    "workflow_run_id": "35182207971",
+    "artifact": "daily-output-485",
+    "report_path": "output/accounts/robot-notes/automation/content_guard_report.json",
+    "local_cache": ".runtime/diag/run_35182207971"
+  },
+  "blocked_topic": "拟斥资23个亿！市值百亿叉车龙头，押注机器人",
+  "matched_bad_words": ["押注"],
+  "matched_rule": "config/bad_words.txt（赌博毒品词段，第 119 行）",
+  "why_it_matters": [
+    "2026-09-17 12:30 该 run 因此题抛出 ValueError 冒泡到 main.py，当天 0 产出（已由 d411955 修复为换下一题）。",
+    "历史 bug：当时的报错文本写的是「too similar to a recent published run (similarity=0.0)」，",
+    "与真因（敏感词）完全无关，导致排查方向被带偏。本 golden 同时钉住：",
+    "matched_title 为空 + similarity=0.0 时**不是**相似度拦截。"
+  ],
+  "files": {
+    "content_guard_report.json": "topic_candidate 级闸门报告（blocked=true, bad_words_blocked=true）"
+  }
+}

@@ -1,0 +1,444 @@
+{
+  "generated_at": "2026-09-18T00:01:31",
+  "account": "robot_notes",
+  "source_file": "output\\accounts\\robot-notes\\performance_metrics.json",
+  "sample_size": 20,
+  "raw_observation_count": 41,
+  "unique_content_count": 20,
+  "deduplication_note": "sample_size 是去重后的独立内容数；raw_observation_count 是采集层原始行数。统计一律基于 sample_size，重复观测只在 jsonl 里保留（is_representative_observation=false）。",
+  "fields_completeness": {
+    "content_id": 85.0,
+    "title": 100.0,
+    "topic": 85.0,
+    "publish_time": 100.0,
+    "impressions": 100.0,
+    "reads": 100.0,
+    "ctr_raw": 90.0,
+    "likes": 100.0,
+    "comments": 100.0,
+    "shares": 100.0,
+    "revenue": 0.0,
+    "title_type": 100.0,
+    "topic_bucket": 100.0
+  },
+  "ctr_definition_check": {
+    "compared": 38,
+    "mismatch_gt_0_01": 0,
+    "max_abs_delta": 0.0047,
+    "conclusion": "platform ctr == reads/impressions*100"
+  },
+  "overall": {
+    "impressions": {
+      "n": 20,
+      "mean": 579.25,
+      "median": 483.5,
+      "p25": 322.0,
+      "p75": 885.25,
+      "min": 0.0,
+      "max": 1919.0,
+      "insufficient_sample": false
+    },
+    "reads": {
+      "n": 20,
+      "mean": 11.9,
+      "median": 3.0,
+      "p25": 0.0,
+      "p75": 15.5,
+      "min": 0.0,
+      "max": 81.0,
+      "insufficient_sample": false
+    },
+    "ctr_raw": {
+      "n": 18,
+      "mean": 1.3417,
+      "median": 0.5749,
+      "p25": 0.0,
+      "p75": 1.9462,
+      "min": 0.0,
+      "max": 5.6818,
+      "insufficient_sample": false
+    }
+  },
+  "by_title_type": {
+    "CONTRARIAN": {
+      "impressions": {
+        "n": 1,
+        "mean": 456.0,
+        "median": 456.0,
+        "p25": null,
+        "p75": null,
+        "min": 456.0,
+        "max": 456.0,
+        "insufficient_sample": true
+      },
+      "reads": {
+        "n": 1,
+        "mean": 3.0,
+        "median": 3.0,
+        "p25": null,
+        "p75": null,
+        "min": 3.0,
+        "max": 3.0,
+        "insufficient_sample": true
+      },
+      "ctr_raw": {
+        "n": 1,
+        "mean": 0.6579,
+        "median": 0.6579,
+        "p25": null,
+        "p75": null,
+        "min": 0.6579,
+        "max": 0.6579,
+        "insufficient_sample": true
+      },
+      "title_length": {
+        "n": 1,
+        "mean": 20.0,
+        "median": 20.0,
+        "p25": null,
+        "p75": null,
+        "min": 20.0,
+        "max": 20.0,
+        "insufficient_sample": true
+      }
+    },
+    "EVENT": {
+      "impressions": {
+        "n": 1,
+        "mean": 1120.0,
+        "median": 1120.0,
+        "p25": null,
+        "p75": null,
+        "min": 1120.0,
+        "max": 1120.0,
+        "insufficient_sample": true
+      },
+      "reads": {
+        "n": 1,
+        "mean": 4.0,
+        "median": 4.0,
+        "p25": null,
+        "p75": null,
+        "min": 4.0,
+        "max": 4.0,
+        "insufficient_sample": true
+      },
+      "ctr_raw": {
+        "n": 1,
+        "mean": 0.3571,
+        "median": 0.3571,
+        "p25": null,
+        "p75": null,
+        "min": 0.3571,
+        "max": 0.3571,
+        "insufficient_sample": true
+      },
+      "title_length": {
+        "n": 1,
+        "mean": 18.0,
+        "median": 18.0,
+        "p25": null,
+        "p75": null,
+        "min": 18.0,
+        "max": 18.0,
+        "insufficient_sample": true
+      }
+    },
+    "JUDGMENT": {
+      "impressions": {
+        "n": 2,
+        "mean": 757.0,
+        "median": 757.0,
+        "p25": null,
+        "p75": null,
+        "min": 610.0,
+        "max": 904.0,
+        "insufficient_sample": true
+      },
+      "reads": {
+        "n": 2,
+        "mean": 8.5,
+        "median": 8.5,
+        "p25": null,
+        "p75": null,
+        "min": 3.0,
+        "max": 14.0,
+        "insufficient_sample": true
+      },
+      "ctr_raw": {
+        "n": 2,
+        "mean": 1.0202,
+        "median": 1.0202,
+        "p25": null,
+        "p75": null,
+        "min": 0.4918,
+        "max": 1.5487,
+        "insufficient_sample": true
+      },
+      "title_length": {
+        "n": 2,
+        "mean": 23.5,
+        "median": 23.5,
+        "p25": null,
+        "p75": null,
+        "min": 22.0,
+        "max": 25.0,
+        "insufficient_sample": true
+      }
+    },
+    "QUESTION": {
+      "impressions": {
+        "n": 16,
+        "mean": 530.9375,
+        "median": 454.0,
+        "p25": 280.0,
+        "p75": 647.25,
+        "min": 0.0,
+        "max": 1919.0,
+        "insufficient_sample": false
+      },
+      "reads": {
+        "n": 16,
+        "mean": 13.375,
+        "median": 0.5,
+        "p25": 0.0,
+        "p75": 20.25,
+        "min": 0.0,
+        "max": 81.0,
+        "insufficient_sample": false
+      },
+      "ctr_raw": {
+        "n": 14,
+        "mean": 1.5068,
+        "median": 0.5155,
+        "p25": 0.0,
+        "p75": 2.2944,
+        "min": 0.0,
+        "max": 5.6818,
+        "insufficient_sample": false
+      },
+      "title_length": {
+        "n": 16,
+        "mean": 18.3125,
+        "median": 17.0,
+        "p25": 16.0,
+        "p75": 20.25,
+        "min": 13.0,
+        "max": 24.0,
+        "insufficient_sample": false
+      }
+    }
+  },
+  "by_topic_bucket": {
+    "技术": {
+      "impressions": {
+        "n": 1,
+        "mean": 879.0,
+        "median": 879.0,
+        "p25": null,
+        "p75": null,
+        "min": 879.0,
+        "max": 879.0,
+        "insufficient_sample": true
+      },
+      "reads": {
+        "n": 1,
+        "mean": 21.0,
+        "median": 21.0,
+        "p25": null,
+        "p75": null,
+        "min": 21.0,
+        "max": 21.0,
+        "insufficient_sample": true
+      },
+      "ctr_raw": {
+        "n": 1,
+        "mean": 2.3891,
+        "median": 2.3891,
+        "p25": null,
+        "p75": null,
+        "min": 2.3891,
+        "max": 2.3891,
+        "insufficient_sample": true
+      }
+    },
+    "机器人": {
+      "impressions": {
+        "n": 19,
+        "mean": 563.4737,
+        "median": 469.0,
+        "p25": 322.0,
+        "p75": 757.0,
+        "min": 0.0,
+        "max": 1919.0,
+        "insufficient_sample": false
+      },
+      "reads": {
+        "n": 19,
+        "mean": 11.4211,
+        "median": 3.0,
+        "p25": 0.0,
+        "p75": 12.0,
+        "min": 0.0,
+        "max": 81.0,
+        "insufficient_sample": false
+      },
+      "ctr_raw": {
+        "n": 17,
+        "mean": 1.2801,
+        "median": 0.4918,
+        "p25": 0.0,
+        "p75": 1.7544,
+        "min": 0.0,
+        "max": 5.6818,
+        "insufficient_sample": false
+      }
+    }
+  },
+  "by_content_type": {
+    "头条": {
+      "impressions": {
+        "n": 20,
+        "mean": 579.25,
+        "median": 483.5,
+        "p25": 322.0,
+        "p75": 885.25,
+        "min": 0.0,
+        "max": 1919.0,
+        "insufficient_sample": false
+      },
+      "reads": {
+        "n": 20,
+        "mean": 11.9,
+        "median": 3.0,
+        "p25": 0.0,
+        "p75": 15.5,
+        "min": 0.0,
+        "max": 81.0,
+        "insufficient_sample": false
+      },
+      "ctr_raw": {
+        "n": 18,
+        "mean": 1.3417,
+        "median": 0.5749,
+        "p25": 0.0,
+        "p75": 1.9462,
+        "min": 0.0,
+        "max": 5.6818,
+        "insufficient_sample": false
+      }
+    }
+  },
+  "by_title_length_bucket": {
+    "19-24": {
+      "impressions": {
+        "n": 9,
+        "mean": 612.4444,
+        "median": 549.0,
+        "p25": 439.0,
+        "p75": 904.0,
+        "min": 0.0,
+        "max": 995.0,
+        "insufficient_sample": false
+      },
+      "reads": {
+        "n": 9,
+        "mean": 15.1111,
+        "median": 14.0,
+        "p25": 1.0,
+        "p75": 21.0,
+        "min": 0.0,
+        "max": 55.0,
+        "insufficient_sample": false
+      },
+      "ctr_raw": {
+        "n": 8,
+        "mean": 2.0653,
+        "median": 1.7794,
+        "p25": 0.5504,
+        "p75": 2.7936,
+        "min": 0.0,
+        "max": 5.6818,
+        "insufficient_sample": false
+      }
+    },
+    "25-30": {
+      "impressions": {
+        "n": 1,
+        "mean": 610.0,
+        "median": 610.0,
+        "p25": null,
+        "p75": null,
+        "min": 610.0,
+        "max": 610.0,
+        "insufficient_sample": true
+      },
+      "reads": {
+        "n": 1,
+        "mean": 3.0,
+        "median": 3.0,
+        "p25": null,
+        "p75": null,
+        "min": 3.0,
+        "max": 3.0,
+        "insufficient_sample": true
+      },
+      "ctr_raw": {
+        "n": 1,
+        "mean": 0.4918,
+        "median": 0.4918,
+        "p25": null,
+        "p75": null,
+        "min": 0.4918,
+        "max": 0.4918,
+        "insufficient_sample": true
+      }
+    },
+    "<=18": {
+      "impressions": {
+        "n": 10,
+        "mean": 546.3,
+        "median": 435.0,
+        "p25": 196.0,
+        "p75": 552.0,
+        "min": 0.0,
+        "max": 1919.0,
+        "insufficient_sample": false
+      },
+      "reads": {
+        "n": 10,
+        "mean": 9.9,
+        "median": 0.0,
+        "p25": 0.0,
+        "p75": 4.0,
+        "min": 0.0,
+        "max": 81.0,
+        "insufficient_sample": false
+      },
+      "ctr_raw": {
+        "n": 9,
+        "mean": 0.7928,
+        "median": 0.0,
+        "p25": 0.0,
+        "p75": 0.8032,
+        "min": 0.0,
+        "max": 4.2209,
+        "insufficient_sample": false
+      }
+    }
+  },
+  "revenue_status_counts": {
+    "NOT_QUERIED": 1,
+    "PENDING": 2,
+    "UNKNOWN": 17
+  },
+  "data_quality": {
+    "rows_without_content_id": 3,
+    "rows_unmatched_to_local_record": 3,
+    "rows_impressions_missing": 2,
+    "rows_reads_missing": 0,
+    "rows_zero_reads": 8,
+    "duplicate_observations_dropped": 21,
+    "contents_with_multiple_observations": 11
+  }
+}

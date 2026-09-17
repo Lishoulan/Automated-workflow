@@ -1,0 +1,86 @@
+{
+  "version": "1.0",
+  "created_at": "2026-09-17",
+  "phase": "Phase 2 — CTR 实验基线",
+  "status": "planned",
+  "scope_note": "本文件只定义实验，不改变生产。任何实验落地前必须先让 sample_size 达标，否则结论不可用。",
+  "baseline_reference": {
+    "sample_size": 20,
+    "independent_contents": 20,
+    "raw_observations": 41,
+    "date_range": "2026-08-26 ~ 2026-09-16",
+    "ctr_median_percent": 0.5749,
+    "ctr_mean_percent": 1.3417,
+    "impressions_median": 483.5,
+    "reads_median": 3.0,
+    "zero_read_ratio": 0.4,
+    "source": "data/analytics/ctr_baseline.json"
+  },
+  "minimum_sample_size_policy": {
+    "value": null,
+    "why_null": "无法合理计算。CTR 分布严重右偏（均值 1.34% vs 中位 0.57%，最大 5.68%，40% 内容为 0 阅读），方差随样本增减剧烈波动，t 检验/比例检验的正态与方差齐性假设均不成立；且分组后每组实际只有 1–14 条，用当前数据反推样本量会把噪声当成效应量。",
+    "empirical_gate": "经验门槛：每个 arm 至少 30 条**独立内容**（非重复观测）。这是惯例值，不是统计计算值，达到后才允许做组间比较。",
+    "blocking_prerequisite": "先修复采集重复（41 行观测里只有 20 条独立内容）与微头条 0 采集，否则再多实验也拿不到干净样本。",
+    "strongest_current_signal": {
+      "observation": "标题模板骨架（含「如何实测」）占去重后内容的 55%（11/20），该组展现中位 401、阅读中位 0、CTR 中位 0.000%、零阅读 64%；非模板组 n=9 展现中位 904、阅读中位 4、CTR 中位 1.176%、零阅读 11%。",
+      "confounder": "时间分布不均：模板组 11 条里 10 条在 09-02 之后，非模板组 5 条集中在 08-26~09-01。但 9 月的非模板内容同样出现过 968 展现/55 阅读（CTR 5.68%），所以差异不能完全归因于时间。",
+      "verdict": "效应大但不能定因果，列为 H1，必须先于 CTR-A~D 处理：在模板骨架仍占一半的情况下做标题实验，测到的是模板而不是结构。",
+      "sample_size": {"template_group": 11, "non_template_group": 9}
+    }
+  },
+  "experiments": [
+    {
+      "id": "CTR-A",
+      "hypothesis": "判断型标题（下结论/给判断）比纯事实陈述型标题获得更高点击率",
+      "control": "FACT",
+      "treatment": "JUDGMENT",
+      "primary_metric": "ctr_raw",
+      "secondary_metrics": ["reads", "impressions", "revenue"],
+      "minimum_sample_size": null,
+      "status": "planned",
+      "current_evidence": "不可用：FACT n=0（去重后没有纯事实型标题），JUDGMENT n=2。当前样本无法比较。",
+      "confounders": ["标题模板族混杂：'X如何实测' 骨架占大头，会同时污染两臂"]
+    },
+    {
+      "id": "CTR-B",
+      "hypothesis": "带前提的设问（'如果…最先受益的是谁'）比裸设问（'机器人如何实测'）获得更高点击率",
+      "control": "QUESTION_NAKED",
+      "treatment": "QUESTION_PREMISED",
+      "primary_metric": "ctr_raw",
+      "secondary_metrics": ["reads", "impressions"],
+      "minimum_sample_size": null,
+      "status": "planned",
+      "current_evidence": "方向上可疑但不可信：QUESTION 组 n=14 中位 0.52%，其中 10 条以上是'X如何实测'这一**单一骨架**的重复变体，测的是模板不是设问结构。",
+      "confounders": ["模板骨架", "数字堆砌（'1240亿'、'1.91万台'）"]
+    },
+    {
+      "id": "CTR-C",
+      "hypothesis": "冲突/对抗型标题比中性事实标题获得更高点击率",
+      "control": "FACT",
+      "treatment": "CONFLICT",
+      "primary_metric": "ctr_raw",
+      "secondary_metrics": ["reads", "impressions", "comments"],
+      "minimum_sample_size": null,
+      "status": "planned",
+      "current_evidence": "不可用：CONFLICT 去重后 n=0（去重前 2 条，CTR 均为 0）。",
+      "confounders": ["敏感词表拦截（'押注' 已在赌博段），冲突词需先过合规层"]
+    },
+    {
+      "id": "CTR-D",
+      "hypothesis": "19–24 字标题的点击率高于 ≤18 字标题（更长≠更差，存在一个信息量饱和区间）",
+      "control": "TITLE_LEN_LE_18",
+      "treatment": "TITLE_LEN_19_24",
+      "primary_metric": "ctr_raw",
+      "secondary_metrics": ["reads", "impressions"],
+      "minimum_sample_size": null,
+      "status": "planned",
+      "current_evidence": "初步差异存在但不能采信：19–24 字 n=8 中位 1.78%，≤18 字 n=9 中位 0.00%。两组都混入了同一批模板骨架（'X如何实测'多为 19–24 字，'X：机器人如何实测'的短变体落在 ≤18），测到的很可能是模板效应而非长度效应。",
+      "confounders": ["模板骨架与长度强相关", "展现量差异未控制"]
+    }
+  ],
+  "not_tested_this_phase": [
+    "选题类型差异：机器人占 17/20（85%），其他类别各 0–1 条，无法构造对照组",
+    "内容类型差异：微头条已发布 21 条但采集到 0 条指标，头条 vs 微头条无法比较",
+    "单篇收益：平台未提供单篇收益接口（见报告第 3 节），收益相关指标本阶段一律不可测"
+  ]
+}

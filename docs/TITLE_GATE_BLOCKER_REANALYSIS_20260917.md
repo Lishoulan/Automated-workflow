@@ -28,6 +28,7 @@
 | 正文层被误判的 run | **48/108（44.4%）** | **0/108（0%）** |
 | 候选通过数 / 总候选 | 103 / 2079 | **969 / 2079** |
 | 具象锚点闸 UNAVAILABLE 的 run | 0（静默当成通过） | 50/108（46.3%，**如实留痕**） |
+| 正文被残句正则误判（全量 249 run） | 18/249（7.2%） | **3/249（1.2%，3 条全真）** |
 | 全量测试 | 634 passed | **700 passed** |
 
 > BEFORE 列的复算方式：对同一批 run 用**修改前**的判定重跑一遍 ——
@@ -121,6 +122,35 @@ _BODY_FRAGMENT_PATTERN = re.compile(
 > ⚠️ 修仪器：`scripts/diagnose_title_stage.py --replay` 原先仍会去挑「最近修改的缓存」，
 > 于是可能把 A 选题的正文配 B 选题的候选标题，复算出的「标题与正文不一致」全是**错配**造成的。
 > 现在按回放 JSON 里的 `cache_file` 还原同一次运行。
+
+### 1.5 全量历史正文语料（不只 `cache/`）
+
+`cache/` 只有 108 个带候选池的运行，样本偏小。残句层与锚点层**只需要正文**，
+所以可以扩到**全部历史 run**（`scripts/replay_title_gate.py --corpus runs`）：
+
+```bash
+.venv/Scripts/python.exe scripts/replay_title_gate.py --corpus runs \
+    --json .runtime/replay_body_corpus.json
+```
+
+**249 个 run（去重 237 篇正文）**：
+
+| 指标 | BEFORE | AFTER |
+|---|---|---|
+| 正文被残句正则标记 | **18/249（7.2%）** | **3/249（1.2%）** |
+| 具象锚点闸 ACTIVE（≥2 高置信锚点） | — | 130/249（52.2%） |
+| 锚点 UNAVAILABLE | — | 119/249（47.8%） |
+| 锚点分桶 0 / 1 / 2–3 / 4+ | — | 66 / 53 / 41 / 89 |
+
+AFTER 剩下的 3 篇**逐条读过正文上下文，全部是真残句**：
+
+- `优必选、其他行业定制智能机器人及智能机器人、**为**最主要的增长驱动力。`（`、为`）
+- `公开信息提到小鹏、**是**因为以前那些机器人，但这不等于它们已经获得订单`（`、是`）
+- 第 3 篇不是残句命中，而是**正文自述「只有字段说明和未填充的占位符」**
+  —— 这是真的不可发布正文，被占位符规则正确拦下。
+
+（在更宽的 457 篇正文抽样上，旧正则的误报率是 **101/457 = 22.1%**，收窄后 **2/457 = 0.44%**。
+两处口径不同——**语料不同**，不是矛盾。）
 
 ---
 
@@ -227,6 +257,10 @@ _BODY_FRAGMENT_PATTERN = re.compile(
 ```bash
 # 全量回放（108 个真实 run，输出分桶与拒绝原因汇总）
 .venv/Scripts/python.exe scripts/replay_title_gate.py --json .runtime/replay_after_b1.json
+
+# 全量**历史正文**语料（249 个 run：残句层 BEFORE/AFTER + 锚点层分桶，无需候选池）
+.venv/Scripts/python.exe scripts/replay_title_gate.py --corpus runs \
+    --json .runtime/replay_body_corpus.json
 
 # 两个选题的单点归因（BEFORE/AFTER 必须用 --replay 复用同一次模型输出）
 .venv/Scripts/python.exe scripts/diagnose_title_stage.py --replay .runtime/title_stage_diagnose.json

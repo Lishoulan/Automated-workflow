@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-09-16T22:47:41",
+  "updated_at": "2026-09-17T13:12:37",
   "entries": {
     "2026-09-16": {
       "toutiao": {
@@ -18,6 +18,24 @@
         "title": "PS5模拟器突破！KytyPS5可运行《宇宙机器人》",
         "publish_url": "",
         "recorded_at": "2026-09-16T22:47:41"
+      }
+    },
+    "2026-09-17": {
+      "toutiao": {
+        "channel": "cloud",
+        "status": "submitted_for_review",
+        "pgc_id": "",
+        "title": "埃斯顿出货量创新高，机器人市场进入新阶段",
+        "publish_url": "",
+        "recorded_at": "2026-09-17T13:12:37"
+      },
+      "toutiao_weitoutiao": {
+        "channel": "cloud",
+        "status": "submitted_for_review",
+        "pgc_id": "",
+        "title": "杭叉集团23亿押宝机器人，叉车巨头转身AI，市场前景几何？",
+        "publish_url": "",
+        "recorded_at": "2026-09-17T13:12:37"
       }
     }
   }

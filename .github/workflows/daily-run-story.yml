@@ -1,22 +1,33 @@
 name: Daily Run (story_notes)
 
 on:
-  schedule:
-    # ⚠️ 与 daily-run.yml（robot_notes）的 cron **错开 1 小时**，理由有两个：
-    #   1. 两个账号各自有「每日图文上限 1 篇」的判断，撞在同一小时容易互相干扰；
-    #   2. 错开后跑失败时更容易判断是哪个账号的问题。
-    # robot_notes 是 Beijing 07:00 / 12:30 / 18:00，这里是 08:00 / 13:30 / 19:00。
-    #
-    # 工作日早间 Beijing 08:00 (周一-周五) = UTC 00:00
-    - cron: '0 0 * * 1-5'
-    # 工作日午间 Beijing 13:30 (周一-周五) = UTC 05:30
-    - cron: '30 5 * * 1-5'
-    # 工作日傍晚 Beijing 19:00 (周一-周五) = UTC 11:00
-    - cron: '0 11 * * 1-5'
-    # 周末早间 Beijing 09:00 (周六-周日) = UTC 01:00
-    - cron: '0 1 * * 0,6'
-    # 每日统一发送通知汇总 Beijing 22:30 = UTC 14:30
-    - cron: '30 14 * * *'
+  # ⛔ 定时**暂时停用**（2026-09-18）。原因：
+  #
+  # story_notes 这个头条账号还没建立完成 —— 浏览器登录态（cookie）尚未产出，
+  # 账号本身也可能还没注册。此时如果让 cron 跑起来，会出现两种坏情况：
+  #   1. 找不到账号专属 cookie 资产 → 回落到 legacy 的 exported_cookies.json，
+  #      而那个文件里是 **robot_notes 的登录态**，等于拿 A 账号的身份去发 B 账号的内容；
+  #   2. 或者直接发布失败，每天白白消耗 Actions 额度。
+  #
+  # 所以现在只保留 workflow_dispatch（手动触发）用于联调。
+  # 账号就绪、专属 cookie 上传到 Release 之后，把下面 5 条 cron 取消注释即可启用：
+  #
+  # schedule:
+  #   # 与 daily-run.yml（robot_notes）的 cron 错开 1 小时，理由有两个：
+  #   #   1. 两个账号各自有「每日图文上限 1 篇」的判断，撞在同一小时容易互相干扰；
+  #   #   2. 错开后跑失败时更容易判断是哪个账号的问题。
+  #   # robot_notes 是 Beijing 07:00 / 12:30 / 18:00，这里是 08:00 / 13:30 / 19:00。
+  #   #
+  #   # 工作日早间 Beijing 08:00 (周一-周五) = UTC 00:00
+  #   - cron: '0 0 * * 1-5'
+  #   # 工作日午间 Beijing 13:30 (周一-周五) = UTC 05:30
+  #   - cron: '30 5 * * 1-5'
+  #   # 工作日傍晚 Beijing 19:00 (周一-周五) = UTC 11:00
+  #   - cron: '0 11 * * 1-5'
+  #   # 周末早间 Beijing 09:00 (周六-周日) = UTC 01:00
+  #   - cron: '0 1 * * 0,6'
+  #   # 每日统一发送通知汇总 Beijing 22:30 = UTC 14:30
+  #   - cron: '30 14 * * *'
   workflow_dispatch:
     inputs:
       account:

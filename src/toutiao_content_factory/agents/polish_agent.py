@@ -690,7 +690,10 @@ class PolishAgent(BaseAgent):
             notes.append("正文主体感仍偏弱，建议明确公司、客户、订单方或交付项目。")
 
         keyword_hits = self._count_hits(article_lower, data_report.supply_chain_keywords[:5])
-        if content_mode == "sports":
+        if content_mode == "social_story":
+            score += 8
+            notes.append("正文已经把事情的来龙去脉和当事人的处境讲清楚。")
+        elif content_mode == "sports":
             score += 8
             notes.append("正文已经围绕产业走势、技术路线和后续变量展开。")
         elif content_mode == "international":
@@ -874,6 +877,22 @@ class PolishAgent(BaseAgent):
 
     def _rebuild_cautious_article(self, data_report: DataReport, trend_report: TrendReport) -> str:
         content_mode = self._content_mode(data_report)
+        if content_mode == "social_story":
+            # 故事体裁不走「产业链位置」式重建 —— 那套骨架会把社会新闻写成产业分析。
+            # 这里只用素材事实做朴素重建：事情本身 + 当事人处境 + 给读者的提醒。
+            subject = self._topic_subject_label(data_report, fallback="这件事")
+            source_anchor = self._build_source_anchor(data_report)
+            core_items = self.clean_publish_list(data_report.core_data, limit=3)
+            core_data = "；".join(core_items)
+            parts = [
+                f"{source_anchor}{core_data}".strip() or f"关于{subject}，目前公开信息有限。",
+                "这件事的关键不在于行业走势，而在于当事人当时的处境："
+                "面对同样的情况，能做的选择其实不多，而不同选择的结果差别很大。",
+                "对普通读者来说，更实际的是把可核验的部分记下来——"
+                "时间、地点、涉及的人和结果，以及处理过程中留下了哪些书面凭证。",
+                "同类事情再发生时，先固定证据、再找对应渠道处理，往往比事后争论更有效。",
+            ]
+            return "\n\n".join(part for part in parts if part.strip())
         if content_mode == "sports":
             return self._rebuild_cautious_sports_article(data_report, trend_report)
         if content_mode == "international":
@@ -937,6 +956,8 @@ class PolishAgent(BaseAgent):
     def _build_closing_question(self, data_report: DataReport) -> str:
         content_mode = self._content_mode(data_report)
         primary = self._topic_subject_label(data_report, fallback="这个方向")
+        if content_mode == "social_story":
+            return "换成是你遇到这种情况，会怎么处理？"
         if content_mode == "sports":
             return "你觉得这条消息最可能改变产业格局、技术路线还是舆论预期？"
         if content_mode == "international":

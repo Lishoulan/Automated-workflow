@@ -2766,7 +2766,14 @@ class ContentFactoryAppService:
         )
 
     def _minimum_article_chars(self, run_dir: Path | None) -> int:
-        """自动发布模式下正文的最低字数（热点快评放宽）。"""
+        """自动发布模式下正文的最低字数（热点快评与故事体裁放宽）。
+
+        ⚠️ 2026-09-18：原来只有 `1750 if 自动发布 else 850/800` 一条硬线。
+        社会故事类账号写不出 1750 字 —— 实测 glm-4-flash 在人情故事题材上稳定产出
+        1202 字，而这条下限把稿子直接拦在发布之外（dry-run 实测：
+        「正文 1202 字，低于自动发布下限 1750 字」→ 永远发不出去）。
+        故事体裁的叙事写法 1000 字左右就能把事情讲完整，所以按写作领域放宽。
+        """
         publishing = self.settings.publishing
         auto_publish_mode = bool(
             getattr(publishing, "enabled", False)
@@ -2775,7 +2782,27 @@ class ContentFactoryAppService:
         )
         snapshot = self._load_run_score_snapshot(Path(run_dir) if run_dir else None)
         is_hot_topic = bool(snapshot.get("is_hot_topic", 0))
-        return 1750 if auto_publish_mode else 850 if is_hot_topic else 800
+        if not auto_publish_mode:
+            return 850 if is_hot_topic else 800
+        if self._run_uses_narrative_domain(snapshot):
+            # 故事体裁：正文 1000 字即可把事件、处境、提醒讲完整
+            return 950
+        return 1750
+
+    def _run_uses_narrative_domain(self, snapshot: dict[str, object]) -> bool:
+        """这次运行是否用了叙事类写作领域（content_domain == narrative）。
+
+        优先看运行快照里记的 style_key；快照缺失时退回账号当前默认风格。
+        """
+        style_key = str(snapshot.get("style_key", "") or "").strip()
+        try:
+            if not style_key:
+                style_key = str(self.settings.default_style or "").strip()
+            if not style_key:
+                return False
+            return str(self.settings.get_style(style_key).content_domain).strip().lower() == "narrative"
+        except Exception:
+            return False
 
     @staticmethod
     def _originality_block_reason(

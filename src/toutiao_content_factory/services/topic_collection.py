@@ -1331,6 +1331,23 @@ class TopicCollectionService:
             sentence = re.split(r"[。！？!?；;\n]", cleaned_snippet)[0].strip()
             if sentence and not self._is_unusable_topic_snippet(sentence):
                 return sentence[:self.MAX_SUMMARY_LENGTH]
+        # ⚠️ 2026-09-18：社会故事赛道要单独出摘要文案。
+        # 原来的兜底句是「{标题}，重点看{X}对应的项目落地和订单节奏」—— 这句会进入
+        # 「素材摘要」，而 writer 是把它当**素材事实**读的，于是
+        # 「男子高空作业绳子被2楼老人剪断」的摘要里写着「重点看老人对应的项目落地和订单节奏」，
+        # 正文跟着就写成订单与毛利分析。领域不同，摘要措辞必须跟着换。
+        social_story = "social_story" in {
+            str(item).strip() for item in self.topic_settings.focus_industries
+        }
+        if social_story:
+            if topic.matched_keywords:
+                return (
+                    f"{topic.title}，这件事的关键在于当事人的处境和后续处理结果，"
+                    f"重点看{'、'.join(topic.matched_keywords[:2])}这条线上的实际情况。"
+                )
+            if topic.extracted_numbers:
+                return f"{topic.title}，可核对的事实是{'、'.join(topic.extracted_numbers[:2])}。"
+            return topic.title
         if topic.extracted_numbers and topic.matched_keywords:
             return (
                 f"{topic.title}，当前可跟踪的信号包括"

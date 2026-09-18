@@ -148,6 +148,8 @@ class WriterAgent(BaseAgent):
         style: StyleProfile,
         cache_context: CacheContext,
     ) -> GeneratedContent:
+        # 记录本次的写作领域，供字数要求与自动发布指令分支使用
+        self._current_content_domain = getattr(style, "content_domain", "industry")
         benchmark_track = self.clean_publish_text(data_report.focus_industry).strip() or self.infer_benchmark_track(
             data_report.topic_title,
             data_report.focus_keywords,
@@ -239,6 +241,8 @@ class WriterAgent(BaseAgent):
         style: StyleProfile,
         cache_context: CacheContext,
     ) -> GeneratedContent:
+        # 记录本次的写作领域，供字数要求与自动发布指令分支使用
+        self._current_content_domain = getattr(style, "content_domain", "industry")
         benchmark_track = self.clean_publish_text(data_report.focus_industry).strip() or self.infer_benchmark_track(
             data_report.topic_title,
             data_report.focus_keywords,
@@ -591,9 +595,27 @@ class WriterAgent(BaseAgent):
             and not getattr(publishing, "draft_only", False)
         )
 
+    def _is_narrative_run(self) -> bool:
+        """本次运行是否用叙事类写作领域（社会故事等）。
+
+        ⚠️ 2026-09-18：字数要求原来一律是「目标 1800 / 最低 1750 字」，这对
+        社会故事体裁是错的 —— 实测 glm-4-flash 在人情故事题材上稳定产出 1202 字，
+        而 1750 的硬线把稿子永远拦在发布之外。叙事写法 1000 字左右就能把事情
+        讲完整，所以按领域取不同的字数要求。
+        """
+        return str(getattr(self, "_current_content_domain", "industry")).strip().lower() == "narrative"
+
     def _auto_publish_directive(self) -> str:
         if not self._auto_publish_mode():
             return ""
+        if self._is_narrative_run():
+            return (
+                "当前是自动发布候选：正文目标约1100字，最低950字。"
+                "写成人情故事观察稿——把这件事讲清楚、把当事人的处境和选择讲透、"
+                "结尾给读者一句具体可用的提醒，不要拆产业链、不要写订单毛利、不做行业判断。"
+                "只能用输入材料里的事实，缺的地方留白；严禁编造当事人姓名、身份、对话、"
+                "心理活动或现场细节，严禁写成第一人称亲历。证据不足时收窄结论，不得套话凑字数。"
+            )
         return (
             "当前是自动发布候选：正文目标约1800字，最低1750字。即使数据路由标记为快讯点评，也必须写成完整的可审计分析稿；"
             "只能用输入材料中的事实做机制拆解、影响分析和风险边界，证据不足时收窄结论，不得重复套话凑字数。"
@@ -604,6 +626,9 @@ class WriterAgent(BaseAgent):
     def _article_word_target_for_prompt(self, data_report: DataReport) -> str:
         target = int(getattr(data_report, "word_target", 0) or self.settings.article_word_target or 0)
         if self._auto_publish_mode():
+            if self._is_narrative_run():
+                # 故事体裁：目标 1100 字（对比产业分析稿的 1800）
+                return "1100"
             target = max(self.AUTO_PUBLISH_ARTICLE_TARGET, target)
         return str(target)
 
@@ -1394,10 +1419,11 @@ class WriterAgent(BaseAgent):
     def _min_word_target_for(self, data_report: DataReport) -> str:
         """根据内容体裁计算提示词中的最低字数要求。
 
-        热点快评 / 快讯点评：600~900 字；其余体裁维持 1500 字长文标准。
+        热点快评 / 快讯点评：600~900 字；叙事类（社会故事）：950 字；
+        其余体裁维持 1500 字长文标准。
         """
         if self._auto_publish_mode():
-            return str(self.AUTO_PUBLISH_ARTICLE_TARGET)
+            return "950" if self._is_narrative_run() else str(self.AUTO_PUBLISH_ARTICLE_TARGET)
         content_format = str(getattr(data_report, "content_format", "") or "")
         word_target = int(getattr(data_report, "word_target", 0) or 0)
         if self._content_mode(data_report) == "hot_topic":

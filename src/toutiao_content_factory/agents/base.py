@@ -591,6 +591,22 @@ class BaseAgent:
     def _content_mode(self, data_report):
         if data_report is None:
             return "generic"
+        # ⚠️ 2026-09-18：社会故事赛道必须**最先**判定，排在 is_hot_topic 之前。
+        # 原因：社会故事号的内容全部来自热榜（热榜题 is_hot_topic 恒为 True），
+        # 如果先返回 hot_topic，下面那个 social_story 分支就永远走不到 ——
+        # polish/review/publish_review 会按「热点快评」那套给建议和结尾，
+        # 例如把结尾写成「您更看重X后续先落地订单、交付，还是毛利率改善？」。
+        text_early = " ".join(
+            str(item)
+            for item in (
+                data_report.focus_industry,
+                data_report.topic_title,
+                data_report.selection_reason,
+            )
+            if str(item).strip()
+        ).lower()
+        if "social_story" in text_early or "社会故事" in text_early:
+            return "social_story"
         # The explicit route flag is authoritative.  A title-only hot topic
         # may not carry the words used by the text heuristic, especially after
         # the data agent has normalized its title and angle.

@@ -44,8 +44,11 @@ def _humanize_source(raw_source: str | None) -> str:
 class TopicSelectionResult:
     report: DailyTopicsReport
     topic: TopicCandidate
+    #: 会被 document_loader 当作素材解析的文本（**不含**写作指令）
     input_text: str
     exported_files: dict[str, Path]
+    #: 含写作指令的完整文本；仅用于排查，不可当素材喂给 loader
+    prompt_text: str = ""
 
 
 class TopicAutomationService:
@@ -280,14 +283,43 @@ class TopicAutomationService:
             self.logger.warning("Auto topic selection failed: no eligible topics found.")
             return None
         input_text = self._build_input_text(topic)
-        exported_files = self._write_selection_snapshot(topic, report, input_text)
+        # ⚠️ 2026-09-18：`input_text` 末尾挂着一段写给模型的写作指令（closing_instruction），
+        # 而这份文本正是 document_loader 当作 **paste 素材**解析的东西 ——
+        # 于是「请围绕这件真实发生的事，写一篇给普通读者看的人情故事观察稿」
+        # 「不要拆产业链、不要写订单与产能」这些**指令本身**被当成素材事实，
+        # 模型又原样复述进了正文（实测正文里出现「公开信息还提到：请围绕这件真实发生的事…」）。
+        # 所以：写给 writer 的完整文本保留指令，但**存进快照、会被当素材解析的那份必须剥掉指令**。
+        trace_text = self._strip_prompt_instructions(input_text)
+        exported_files = self._write_selection_snapshot(topic, report, trace_text)
         self.logger.info("Auto topic selection complete: rank=%s title=%s", topic.rank, topic.title)
         return TopicSelectionResult(
             report=report,
             topic=topic,
-            input_text=input_text,
+            input_text=trace_text,
+            prompt_text=input_text,
             exported_files=exported_files,
         )
+
+    #: 写作指令段落的分隔标记：`_build_input_text` 用空行把它与素材字段隔开
+    _INSTRUCTION_SENTINEL = "请围绕"
+
+    def _strip_prompt_instructions(self, input_text: str) -> str:
+        """剥掉素材文本末尾的写作指令段落，避免它被当成素材事实。
+
+        指令段落由 `_build_closing_instruction` 生成，特征是：与素材字段之间隔一个空行，
+        且以「请围绕」开头（各分支的文案都以它起句）。这里按「最后一个空行块且以指令起句」
+        来切，切不掉时原样返回（宁可保留也不能误删素材）。
+        """
+        text = str(input_text or "")
+        marker = f"\n\n{self._INSTRUCTION_SENTINEL}"
+        idx = text.find(marker)
+        if idx <= 0:
+            return text
+        body = text[:idx].rstrip()
+        # 安全阀：剥完不能把素材削得太短，否则说明切错了
+        if len(body) < 200:
+            return text
+        return body
 
     def archive_run(
         self,
@@ -562,6 +594,16 @@ class TopicAutomationService:
         return any(marker in candidate for marker in wrong_markers)
 
     def _topic_mode(self, topic: TopicCandidate) -> str:
+        """这条选题属于哪种「写法模式」。
+
+        ⚠️ 2026-09-18 新增 social_story：账号换成社会故事赛道后，这里也必须跟着分模式。
+        否则所有「角度 / 入选理由 / 跟踪变量 / 写法要求 / 结尾」都走产业分析那套默认文案，
+        实测后果是把「男子高空作业绳子被2楼老人剪断」写成
+        「重点看老人对应的项目落地和订单节奏」「毛利率可能会先承压」——
+        writer 是忠实照抄这些上游字段的，口吻跑偏的根因就在这里，不在 writer。
+        """
+        if self._is_social_story_topic(topic):
+            return "social_story"
         if self._is_sports_topic(topic):
             return "sports"
         if self._is_international_topic(topic):
@@ -569,6 +611,24 @@ class TopicAutomationService:
         if topic.source_type in {"hot_board", "baidu_hot"} and "hot_topic" in (topic.matched_industries or []):
             return "hot_topic"
         return "generic"
+
+    def _is_social_story_topic(self, topic: TopicCandidate) -> bool:
+        """账号是否在做社会故事赛道，且这条题确实通过了社会故事判据。
+
+        判据与 topic_collection 共用同一份实现（那里是 classmethod），避免两处漂移。
+        """
+        focus = {
+            str(item).strip()
+            for item in self.settings.topic_collection.focus_industries
+            if str(item).strip()
+        }
+        if "social_story" not in focus:
+            return False
+        from toutiao_content_factory.services.topic_collection import (
+            TopicCollectionService,
+        )
+
+        return TopicCollectionService._has_social_story_signal(topic)
 
     def _resolve_prompt_track(self, topic: TopicCandidate, primary_industry: str) -> str:
         mode = self._topic_mode(topic)
@@ -585,6 +645,20 @@ class TopicAutomationService:
         topic_mode: str,
         primary_industry: str,
     ) -> str:
+        if topic_mode == "social_story":
+            return (
+                "请围绕这件真实发生的事，写一篇给普通读者看的人情故事观察稿。"
+                "写作要求："
+                "1. 只写素材里明确有的事实，缺的地方就留白；"
+                "严禁编造当事人姓名、身份、对话、心理活动或现场细节；"
+                "严禁写成第一人称亲历，也不要编「我认识的人」的故事。"
+                "2. 把当事人的处境讲清楚：他当时在什么位置上、面对什么约束、能怎么做、结果如何，"
+                "让读者能代入。"
+                "3. 不要拆产业链、不要写订单与产能、不要做行业趋势或投资判断、不要出现毛利率这类词。"
+                "4. 结尾给读者一句具体可用的提醒（涉及钱、合同、赡养、就医时该留什么证据、找谁、走什么流程），"
+                "不要写成空泛的「引人深思」。"
+                "5. 全文600到1000字，4到6个短段，每段2到3句，不要用 #、## 小标题。"
+            )
         if topic_mode == "sports":
             return (
                 "请先准确理解并消化素材里的英文信息，再写成自然中文深度分析稿。"
@@ -615,6 +689,12 @@ class TopicAutomationService:
                 "3. 只能基于常识和公开背景做有限推断，明确区分事实与推测，禁止编造具体数字、人名、时间、公司或细节。"
                 "4. 结尾留一个具体的开放式互动问题，引导评论区表达立场。"
                 "5. 全文600到900字，5到7个短段，不要使用 #、## 小标题，不要写成行业研报。"
+            )
+        if topic_mode == "social_story":
+            return (
+                "请围绕这件真实发生的事，写清楚：发生了什么、涉及谁、结果如何；"
+                "当事人当时面临什么处境和选择；这件事对读者有什么具体可用的提醒。"
+                "只写素材里有的事实，不要编造人物、对话、心理活动或现场细节，不要写成第一人称亲历。"
             )
         return (
             "请围绕这条产业线索，重点分析："
@@ -974,10 +1054,14 @@ class TopicAutomationService:
                 reasons.append(f"与{primary_keywords.split('、')[0]}这类体育话题直接相关")
             elif topic_mode == "international":
                 reasons.append(f"与{primary_keywords.split('、')[0]}这类国际议题直接相关")
+            elif topic_mode == "social_story":
+                reasons.append(f"围绕{primary_keywords.split('、')[0]}这个生活场景，读者容易有话可说")
             else:
                 reasons.append(f"与{primary_industry}里的{primary_keywords.split('、')[0]}环节相关")
         if not reasons:
-            if topic_mode == "sports":
+            if topic_mode == "social_story":
+                reasons.append("是普通人能代入的生活处境，适合讲成有人情味的观察稿")
+            elif topic_mode == "sports":
                 reasons.append("题材处在趋势预期、事后复盘或争议扩散的高关注区间")
             elif topic_mode == "international":
                 reasons.append("题材处在国际博弈和市场预期变化的高关注区间")
@@ -994,6 +1078,12 @@ class TopicAutomationService:
     ) -> str:
         topic_mode = self._topic_mode(topic)
         primary_keyword = primary_keywords.split("、")[0] if primary_keywords and primary_keywords != "关键词待补充" else primary_industry
+        if topic_mode == "social_story":
+            return (
+                f"这件事真正值得写的，不是复述新闻，而是把{primary_keyword}这个处境讲清楚："
+                "当事人当时能怎么选、哪一步本可以不一样、结果给普通人什么提醒。"
+                "读者关心的是「换成我遇到这种情况该怎么办」，不是行业趋势。"
+            )
         if topic_mode == "sports":
             return (
                 f"这条体育热点真正值得写的，不是把新闻复述一遍，而是解释{primary_keyword}背后的胜负手、争议点和后续走势。"
@@ -1034,6 +1124,8 @@ class TopicAutomationService:
     ) -> str:
         topic_mode = self._topic_mode(topic)
         title_text = f"{topic.title} {topic.summary} {topic.snippet}"
+        if topic_mode == "social_story":
+            return "事情后续是否有了处理结果、当事人的处境有没有变化、同类情况是否还在发生"
         if topic_mode == "sports":
             return "技术路线变化、市场份额变化、关键企业动态、舆论争议是否继续发酵"
         if topic_mode == "international":
@@ -1050,6 +1142,12 @@ class TopicAutomationService:
 
     def _build_writing_brief(self, topic: TopicCandidate, primary_industry: str) -> str:
         topic_mode = self._topic_mode(topic)
+        if topic_mode == "social_story":
+            return (
+                "写成人情故事观察稿：先把事情本身讲清楚，再讲当事人的处境和选择，"
+                "最后给读者一句具体可用的提醒。不要拆产业链、不要写订单毛利、不要做行业判断，"
+                "也不要编造人物对话或写成第一人称亲历。"
+            )
         if topic_mode == "sports":
             return (
                 "写成体育解读稿：先点出判断，再解释关键人物、关键节点和争议点，"
@@ -1082,6 +1180,8 @@ class TopicAutomationService:
 
     def _build_content_format_brief(self, topic: TopicCandidate, primary_industry: str) -> str:
         topic_mode = self._topic_mode(topic)
+        if topic_mode == "social_story":
+            return "适合写成人情故事观察稿：把事情讲明白、把处境讲透、给读者一句实在提醒，篇幅中等即可。"
         if topic_mode == "hot_topic":
             return "适合写成热点快评：有观点、有信息量、适合移动端快速阅读，不要强行拉成长篇行业分析。"
         if topic_mode == "sports":
@@ -1098,6 +1198,8 @@ class TopicAutomationService:
 
     def _build_paragraph_instruction(self, topic: TopicCandidate) -> str:
         topic_mode = self._topic_mode(topic)
+        if topic_mode == "social_story":
+            return "4到6段，每段2到4句，首段先把事情说清楚，中段讲处境，结尾给提醒并留一个具体的互动问题。"
         if topic_mode == "hot_topic":
             return "5到7段，每段2到3句，首段直接给判断，结尾只留一个互动问题，段落短平快。"
         if topic_mode == "sports":
@@ -1114,6 +1216,11 @@ class TopicAutomationService:
 
     def _build_word_target(self, topic: TopicCandidate) -> int:
         topic_mode = self._topic_mode(topic)
+        if topic_mode == "social_story":
+            # 故事体裁写不到 1800 字。实测 glm-4-flash 在人情故事题材上稳定产出
+            # 1000-1300 字，硬要 1750 会把模型逼向注水或编造细节，而自动发布的
+            # 字数下限是 1750 —— 结果是永远发不出去（dry-run 实测正文 1202 字被拦）。
+            return max(1000, 800)
         if topic_mode == "hot_topic":
             return max(800, 600)
         if topic_mode == "sports":

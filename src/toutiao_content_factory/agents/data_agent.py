@@ -756,6 +756,10 @@ class DataAgent(BaseAgent):
         content_mode: str = "generic",
         auto_publish: bool = False,
     ) -> str:
+        if content_mode == "social_story":
+            # 故事体裁不要求 1800 字长文；实测 glm-4-flash 稳定产出 1000-1300 字，
+            # 硬压 1800 会把它逼向注水或编造细节。
+            return "4到6段，每段2到4句，首段先把事情说清楚，中段讲当事人的处境和选择，结尾给一句具体提醒并留一个互动问题。"
         if auto_publish:
             if content_format in self.SHORT_CONTENT_FORMATS:
                 return "7到10段，每段1到3句，先判断，再写事实和机制，最后保留风险边界与一个具体问题；全文至少1800字。"
@@ -779,6 +783,8 @@ class DataAgent(BaseAgent):
         content_mode: str = "generic",
         auto_publish: bool = False,
     ) -> str:
+        if content_mode == "social_story":
+            return "适合写成人情故事观察稿：把事情讲明白、把处境讲透、给读者一句实在提醒，篇幅中等即可。"
         if auto_publish and content_format in self.SHORT_CONTENT_FORMATS:
             return "写成可自动发布的完整产业分析稿，围绕事实、机制、影响和风险边界展开，不得把快讯压缩成短评。"
         if content_mode == "sports":
@@ -1269,6 +1275,12 @@ class DataAgent(BaseAgent):
             )
             if item
         ).lower()
+        # ⚠️ 2026-09-18：社会故事赛道必须在体育/国际之前判定，否则它会掉进下面
+        # 的产业默认分支，产出「拆订单、交付、毛利和产业链分化」这类写法要求，
+        # writer 照抄后就把社会新闻写成了产业分析。
+        # `focus_industry` 里会带上 social_story（来自账号的 focus_industries）。
+        if "social_story" in text or "社会故事" in text:
+            return "social_story"
         if any(token in text for token in self.SPORTS_TOKENS):
             return "sports"
         tech_tokens = ["机器人", "芯片", "半导体", "储能", "光伏", "锂电", "电池", "ai", "大模型", "智能制造", "工业自动化"]

@@ -25,7 +25,7 @@ from toutiao_content_factory.services.weitoutiao_generator import PERSONA_TEMPLA
 def clean_persona_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "TOUTIAO_WEITOUTIAO_PERSONAS",
-        "TOUTIAO_WEITOUTIAO_PERSONAS__STORY_NOTES",
+        "TOUTIAO_WEITOUTIAO_PERSONAS__ROBOT_NOTES",
         "TOUTIAO_WEITOUTIAO_PERSONAS__ROBOT_NOTES",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -77,7 +77,7 @@ def test_existing_personas_are_untouched() -> None:
 
 
 def test_story_account_uses_the_story_persona(clean_persona_env: None) -> None:
-    settings = load_settings(Path.cwd(), account_key="story_notes")
+    settings = load_settings(Path.cwd(), account_key="robot_notes")
 
     assert settings.publishing.weitoutiao_personas == ["story_comment"]
 
@@ -99,9 +99,9 @@ def test_two_accounts_do_not_share_personas(clean_persona_env: None) -> None:
 def test_scoped_env_var_overrides_personas(
     clean_persona_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("TOUTIAO_WEITOUTIAO_PERSONAS__STORY_NOTES", "warm,story_comment")
+    monkeypatch.setenv("TOUTIAO_WEITOUTIAO_PERSONAS__ROBOT_NOTES", "warm,story_comment")
 
-    settings = load_settings(Path.cwd(), account_key="story_notes")
+    settings = load_settings(Path.cwd(), account_key="robot_notes")
 
     assert settings.publishing.weitoutiao_personas == ["warm", "story_comment"]
 
@@ -110,9 +110,9 @@ def test_blank_scoped_env_var_falls_through_to_config(
     clean_persona_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """空字符串不能被当成有效覆盖，否则会把人设清空。"""
-    monkeypatch.setenv("TOUTIAO_WEITOUTIAO_PERSONAS__STORY_NOTES", "   ")
+    monkeypatch.setenv("TOUTIAO_WEITOUTIAO_PERSONAS__ROBOT_NOTES", "   ")
 
-    settings = load_settings(Path.cwd(), account_key="story_notes")
+    settings = load_settings(Path.cwd(), account_key="robot_notes")
 
     assert settings.publishing.weitoutiao_personas == ["story_comment"]
 

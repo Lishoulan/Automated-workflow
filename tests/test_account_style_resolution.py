@@ -28,7 +28,6 @@ def clean_style_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "DEFAULT_STYLE",
         "DEFAULT_STYLE__ROBOT_NOTES",
-        "DEFAULT_STYLE__STORY_NOTES",
         "DEFAULT_STYLE__SPORTS_NOTES",
     ):
         monkeypatch.delenv(name, raising=False)

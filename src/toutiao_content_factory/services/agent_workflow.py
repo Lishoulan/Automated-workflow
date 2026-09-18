@@ -516,8 +516,32 @@ class AgentWorkflowService:
             and getattr(publishing, "auto_publish", False)
             and not getattr(publishing, "draft_only", False)
         )
-        if "insufficient_source_facts" in quality_flags and (
-            toutiao_auto_publish or not (is_hot_topic or is_title_only)
+        # 证据门槛豁免。
+        #
+        # 既有语义（由 tests/test_agent_workflow.py 的两条断言共同定义，是**有意策略**，
+        # 不是笔误，改动前务必先读它们）：
+        #   - 未开自动发布 + 热榜/标题型热点 -> 放行（留人工复核）；
+        #   - 开了自动发布                    -> **照拦**（无人值守时不冒险发证据不足的稿）；
+        #   - 非热点且非标题型                -> 照拦。
+        #
+        # ⚠️ 2026-09-18：这条「开了自动发布就拦」的策略对社会故事类账号走不通。
+        # 热榜类社会新闻（如「男子高空作业绳子被2楼老人剪断」）在采集时**只有标题、
+        # 没有正文**，永远满足不了「≥6 条事实且 ≥320 字」，而这些账号恰恰是开着
+        # 自动发布的，于是每个候选都被拦，日更直接报
+        # 「Daily workflow did not produce any runnable candidates」。实测 4 个候选全被跳过。
+        #
+        # 因此加了一个**强力覆盖开关** `hot_topic_evidence_exempt`：
+        #   - 默认 False -> 上面三条既有语义**一字不变**，其他账号完全不受影响；
+        #   - 置 True   -> 热榜/标题型热点直接豁免，不受 auto_publish 影响。
+        # 由账号配置显式打开（社会故事类账号已打开），而不是放宽全局默认值。
+        evidence_exempt = bool(
+            getattr(self.settings, "hot_topic_evidence_exempt", False)
+            and (is_hot_topic or is_title_only)
+        )
+        if (
+            "insufficient_source_facts" in quality_flags
+            and not evidence_exempt
+            and (toutiao_auto_publish or not (is_hot_topic or is_title_only))
         ):
             title = data_report.topic_title.strip() or extraction.topic_title.strip() or "untitled-topic"
             raise LowQualityAbortException(

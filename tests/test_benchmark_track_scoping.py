@@ -62,7 +62,7 @@ def _service(account_key: str) -> ContentFactoryAppService:
 
 def test_social_story_account_gets_no_benchmark_track() -> None:
     """社会故事类没有对标账号，必须解析为 None（而不是借用科技商业）。"""
-    assert _service("story_notes")._resolve_benchmark_track_for_account() is None
+    assert _service("robot_notes")._resolve_benchmark_track_for_account() is None
 
 
 @pytest.mark.parametrize(
@@ -145,7 +145,7 @@ def test_collect_topics_skips_benchmark_entirely_without_a_track(monkeypatch) ->
     Agent 会把 None 当成「不限制赛道」，采集全部对标号 —— 这正是科技热点
     漏进社会故事选题池的直接原因。
     """
-    service = _service("story_notes")
+    service = _service("robot_notes")
     called: list[dict] = []
     monkeypatch.setattr(
         service, "collect_benchmark_hot_topics", lambda **kw: called.append(kw) or {}

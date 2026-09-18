@@ -833,6 +833,23 @@ class AppSettings:
     skip_image_generation: bool = False
     skip_review_agent: bool = False
     skip_publish_review: bool = False
+    # 热榜/标题型热点是否豁免「素材事实不足」门槛。
+    #
+    # ⚠️ 2026-09-18：默认 False = **保持既有严格行为**（开自动发布时，即使
+    # is_hot_topic=True 也拦）。这一点在 tests/test_agent_workflow.py 的
+    # `test_abort_rejects_insufficient_hot_topic_for_auto_publish` 里被显式断言过，
+    # 说明是**有意的策略**而不是笔误，所以不能直接放宽。
+    #
+    # 但这条策略对社会故事类账号是走不通的：热榜类社会新闻（例如
+    # 「男子高空作业绳子被2楼老人剪断」）在采集时**只有标题、没有正文**，
+    # 永远不可能满足「≥6 条事实且 ≥320 字」，于是每个候选都被拦，
+    # 日更直接报「Daily workflow did not produce any runnable candidates」。
+    # 实测：换赛道后 4 个候选全部以 insufficient_source_facts 被跳过。
+    #
+    # 所以做成显式开关：默认不动任何既有账号；社会故事类账号在账号配置里
+    # 打开它（`hot_topic_evidence_exempt: true`），把「热点二创不受证据门槛限制」
+    # 这条已有注释里的意图真正生效。
+    hot_topic_evidence_exempt: bool = False
     enhanced_insights_enabled: bool = False
     enhanced_insights_use_multi_source: bool = False
     enhanced_insights_use_historical: bool = False
@@ -1084,6 +1101,12 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         skip_image_generation=_env_flag("TOUTIAO_SKIP_IMAGE_GENERATION", False),
         skip_review_agent=_env_flag("TOUTIAO_SKIP_REVIEW_AGENT", False),
         skip_publish_review=_env_flag("TOUTIAO_SKIP_PUBLISH_REVIEW", False),
+        # 账号级开关（也为环境变量留了口子）。默认 False，既有账号行为不变。
+        hot_topic_evidence_exempt=_env_flag_scoped(
+            "TOUTIAO_HOT_TOPIC_EVIDENCE_EXEMPT",
+            account_profile.key,
+            bool(account_profile.overrides.get("hot_topic_evidence_exempt", False)),
+        ),
         enhanced_insights_enabled=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_ENABLED", bool(merged_payload.get("enhanced_insights", {}).get("enabled", False))),
         enhanced_insights_use_multi_source=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_MULTI_SOURCE", bool(merged_payload.get("enhanced_insights", {}).get("multi_source", False))),
         enhanced_insights_use_historical=_env_flag("TOUTIAO_ENHANCED_INSIGHTS_USE_HISTORICAL", bool(merged_payload.get("enhanced_insights", {}).get("historical", False))),

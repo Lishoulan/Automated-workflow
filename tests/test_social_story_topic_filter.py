@@ -72,21 +72,21 @@ def test_behavior_verbs_count_as_a_social_signal(collector) -> None:
     assert collector._has_social_story_signal(_topic("男子冒充房东骗取押金")) is True
 
 
-def test_story_notes_must_not_enable_hot_topic() -> None:
-    """story_notes 不能启用 hot_topic 赛道。
+def test_story_account_must_not_enable_hot_topic() -> None:
+    """社会故事账号不能启用 hot_topic 赛道。
 
     `_passes_topic_focus` 里 hot_topic 那个分支在热度达标时**直接 return True**，
-    排在任何领域判据之前。一旦 story_notes 同时启用 hot_topic，
+    排在任何领域判据之前。一旦社会故事账号同时启用 hot_topic，
     `_has_social_story_signal` 就永远不会执行，篮球、时政、财报都会漏进选题池。
     """
-    settings = load_settings(__import__("pathlib").Path.cwd(), account_key="story_notes")
+    settings = load_settings(__import__("pathlib").Path.cwd(), account_key="robot_notes")
 
     assert "social_story" in settings.topic_collection.focus_industries
     assert "hot_topic" not in settings.topic_collection.focus_industries
 
 
-def test_story_notes_declares_the_social_story_industry(collector) -> None:
+def test_story_account_declares_the_social_story_industry(collector) -> None:
     """判据只有在账号真的启用 social_story 赛道时才会被调用。"""
-    settings = load_settings(__import__("pathlib").Path.cwd(), account_key="story_notes")
+    settings = load_settings(__import__("pathlib").Path.cwd(), account_key="robot_notes")
 
     assert settings.topic_collection.focus_industries == ["social_story"]

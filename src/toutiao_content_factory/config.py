@@ -597,6 +597,20 @@ class StyleProfile(BaseModel):
     title_instruction: str
     image_instruction: str
     opening_instruction: str
+    # 内容领域。决定 WriterAgent 用哪一套写作机制与读者框架。
+    #
+    # ⚠️ 2026-09-18：新增字段，默认 "industry"，既有 4 个风格因此**行为完全不变**。
+    #
+    # 为什么需要它：`_writer_system_prompt` 与 `article_prompt_v2.md` 里写死了
+    # 「中文科技产业文章」「产业链拆解」「3 个数据锚点」「时间线锚定」这类要求。
+    # style 只能调语气和节奏，改不了领域 —— 于是社会故事类账号会被写成
+    # 「产业分析腔的家庭故事」。这个字段就是用来切换那一层的。
+    #
+    # 取值：
+    #   - "industry"（默认）：科技/产业分析写法，即现有全部风格。
+    #   - "narrative"：人间故事写法。事实边界、反虚构、改写距离这些**安全约束一律保留**，
+    #     只把「产业链/数据密度」换成「人物处境/选择与后果」。
+    content_domain: str = "industry"
 
     @classmethod
     def from_dict(cls, key: str, payload: dict[str, Any]) -> "StyleProfile":
@@ -608,6 +622,7 @@ class StyleProfile(BaseModel):
             title_instruction=str(payload.get("title_instruction", "")),
             image_instruction=str(payload.get("image_instruction", "")),
             opening_instruction=str(payload.get("opening_instruction", "")),
+            content_domain=str(payload.get("content_domain", "industry") or "industry"),
         )
 
 
@@ -2091,6 +2106,7 @@ def _default_style_payloads() -> dict[str, dict[str, str]]:
         # docs/ 下社会故事赛道的合规说明。
         "family_story": {
             "label": "人间故事观察风",
+            "content_domain": "narrative",
             "tone": "讲人话、有生活细节、有共情但不煽情，像一位见多识广的长者在慢慢说事。",
             "article_instruction": (
                 "从真实事件里的具体人物处境切入，还原事实、补充背景，再给出对读者的"

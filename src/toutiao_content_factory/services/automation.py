@@ -282,6 +282,8 @@ class TopicAutomationService:
         if topic is None:
             self.logger.warning("Auto topic selection failed: no eligible topics found.")
             return None
+        # 热榜类选题只有标题、没有正文，必须先补真实素材。
+        self._hydrate_topic_material(topic)
         input_text = self._build_input_text(topic)
         # ⚠️ 2026-09-18：`input_text` 末尾挂着一段写给模型的写作指令（closing_instruction），
         # 而这份文本正是 document_loader 当作 **paste 素材**解析的东西 ——
@@ -302,6 +304,81 @@ class TopicAutomationService:
 
     #: 写作指令段落的分隔标记：`_build_input_text` 用空行把它与素材字段隔开
     _INSTRUCTION_SENTINEL = "请围绕"
+
+    def _hydrate_topic_material(self, topic: TopicCandidate) -> bool:
+        """为「只有标题」的选题补上真实报道正文。
+
+        为什么必须补：热榜类选题（百度热搜 / 头条热榜）采集时只有标题，实测 snippet
+        长度全部为 0、多数连原文链接都没有。让模型用 28 个字的标题写 1100 字文章，
+        它只能靠行业套话填空并复述提示词 —— 实测正文里出现「订单、验收、回款、
+        利润率承压」这类与社会新闻毫无关系的内容。
+
+        素材来源：`material_search_service`（Bing 搜索 → 抓真实报道 → 抽正文）。
+        拿不到素材时**不阻断流程**，但会留下明确日志，便于判断当天为什么写不好。
+
+        返回是否补上了素材。
+        """
+        title = str(topic.title or "").strip()
+        if not title:
+            return False
+        existing = str(topic.snippet or "").strip()
+        if len(existing) >= self.MATERIAL_MIN_CHARS:
+            return True
+        try:
+            from toutiao_content_factory.services.material_search_service import (
+                collect_material,
+            )
+
+            bundle = collect_material(
+                title,
+                max_sources=self.MATERIAL_MAX_SOURCES,
+                min_body_chars=self.MATERIAL_MIN_BODY_CHARS,
+            )
+        except Exception as exc:
+            self.logger.warning("选题素材抓取失败（非阻断）: %s | %s", title, exc)
+            return False
+        if not bundle.usable:
+            self.logger.warning(
+                "[素材] 未能为选题抓到正文，写作将缺少事实支撑: %s（尝试 %d 个来源）",
+                title,
+                len(bundle.sources),
+            )
+            return False
+        body = bundle.combined_text.strip()
+        topic.snippet = body
+        # 摘要直接取自素材正文的首段（`_summarize_topic` 属于 TopicCollectionService，
+        # 本类没有该方法；而且这里已经有真实正文，用正文开头的句子比模板句更贴题）。
+        topic.summary = self._material_lead_sentence(body) or topic.summary
+        self.logger.info(
+            "[素材] 已为选题补齐正文：%s | 来源 %d 个 | 共 %d 字",
+            title,
+            len(bundle.usable),
+            bundle.total_chars,
+        )
+        return True
+
+    #: 素材补齐的门槛与上限
+    MATERIAL_MIN_CHARS = 600
+    MATERIAL_MIN_BODY_CHARS = 400
+    MATERIAL_MAX_SOURCES = 3
+    MATERIAL_LEAD_MAX = 160
+
+    def _material_lead_sentence(self, material: str, max_len: int | None = None) -> str:
+        """从抓来的素材里取一句「导语」，用作选题摘要。
+
+        跳过【来源：…】标记行与过短的行，取第一句像正文的话。
+        """
+        limit = max_len or self.MATERIAL_LEAD_MAX
+        for raw_line in str(material or "").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("【来源"):
+                continue
+            if len(line) < 20:
+                continue
+            sentence = re.split(r"[。！？；]", line)[0].strip()
+            if len(sentence) >= 15:
+                return sentence[:limit]
+        return ""
 
     def _strip_prompt_instructions(self, input_text: str) -> str:
         """剥掉素材文本末尾的写作指令段落，避免它被当成素材事实。

@@ -185,7 +185,10 @@ def main():
     )
     parser.add_argument(
         "--output", default="",
-        help="输出文件路径。默认: .runtime/automation/exported_cookies.json",
+        help=(
+            "输出文件路径。默认: <账号运行时目录>/automation/exported_cookies_<slug>.json"
+            "（非 default 账号带 slug 后缀，以便直接上传成账号专属 Release 资产）"
+        ),
     )
     parser.add_argument("--headless", action="store_true", default=False)
     parser.add_argument("--account", default="default")
@@ -205,7 +208,23 @@ def main():
     if args.output:
         output_path = Path(args.output)
     else:
-        output_path = settings.account_runtime_dir / "automation" / "exported_cookies.json"
+        # ⚠️ 2026-09-18：默认文件名原来对所有账号都是 exported_cookies.json。
+        # 多账号时这个文件被上传到 Release 会**覆盖**另一个账号的登录态资产，
+        # 云端随后可能拿 A 的 cookie 去发 B 的内容。
+        # 非 default 账号因此默认带 slug 后缀，与 scripts/resolve_cookie_asset.py
+        # 的资产命名规则对齐。
+        #
+        # default 账号刻意保留不带后缀的老文件名：它是历史资产名
+        # （browser-profiles-v1 Release 里的 exported_cookies.json），
+        # 改了会让既有流程找不到文件。
+        if settings.account_slug == "default":
+            output_path = settings.account_runtime_dir / "automation" / "exported_cookies.json"
+        else:
+            output_path = (
+                settings.account_runtime_dir
+                / "automation"
+                / f"exported_cookies_{settings.account_slug}.json"
+            )
 
     result = export_cookies(settings, platforms, output_path, headless=args.headless)
 

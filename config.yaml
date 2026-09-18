@@ -898,7 +898,6 @@
             "same_domain_only": true,
             "urls": [
               "https://news.sina.com.cn/society/",
-              "https://news.sina.com.cn/s/",
               "https://www.thepaper.cn/"
             ]
           }

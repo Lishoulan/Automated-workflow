@@ -96,34 +96,48 @@ class ContentFactoryAppService:
         exported: dict[str, str] = {}
         benchmark_platform = self._resolve_benchmark_platform_for_workflow()
         benchmark_track = self._resolve_benchmark_track_for_account()
-        try:
-            benchmark_exports = self.collect_benchmark_hot_topics(
-                platform=benchmark_platform,
-                track=benchmark_track,
-                limit=max(8, min(20, int(self.settings.topic_collection.max_export_topics) * 2)),
-            )
-            exported.update(benchmark_exports)
-            benchmark_json_raw = str(benchmark_exports.get("benchmark_hot_topics_json", "")).strip()
-            if benchmark_json_raw:
-                benchmark_json_path = Path(benchmark_json_raw)
-            else:
-                benchmark_json_path = None
-            if benchmark_json_path is not None and benchmark_json_path.exists():
-                topic_report, merge_summary_path = self._merge_benchmark_topics_into_daily_report(
-                    topic_report,
-                    benchmark_json_path,
-                    topic_collector,
+        # ⚠️ 2026-09-18：`benchmark_track is None` 时必须**整段跳过**对标采集，
+        # 不能把 None 传下去。BenchmarkMonitorAgent 把 track=None 解释为
+        # 「不限制赛道」，于是会采集全部 16 个对标号（科技商业 + AI机器人 +
+        # 国际热点 + 体育赛事），再把它们的热点合并进选题池。
+        # 实测：story_notes（社会故事类）因此拿到「千寻智能人形机器人」
+        # 「钙钛矿光伏 I-V 测试」「Anthropic 算力」三条科技选题。
+        # 对一个没有对标账号的赛道，正确行为是不对标，而不是对标所有赛道。
+        if benchmark_track:
+            try:
+                benchmark_exports = self.collect_benchmark_hot_topics(
                     platform=benchmark_platform,
                     track=benchmark_track,
+                    limit=max(8, min(20, int(self.settings.topic_collection.max_export_topics) * 2)),
                 )
-                exported["benchmark_topic_merge"] = str(merge_summary_path)
-        except Exception as exc:
-            self.logger.warning(
-                "Benchmark hotspot refresh skipped for account=%s platform=%s track=%s: %s",
+                exported.update(benchmark_exports)
+                benchmark_json_raw = str(benchmark_exports.get("benchmark_hot_topics_json", "")).strip()
+                if benchmark_json_raw:
+                    benchmark_json_path = Path(benchmark_json_raw)
+                else:
+                    benchmark_json_path = None
+                if benchmark_json_path is not None and benchmark_json_path.exists():
+                    topic_report, merge_summary_path = self._merge_benchmark_topics_into_daily_report(
+                        topic_report,
+                        benchmark_json_path,
+                        topic_collector,
+                        platform=benchmark_platform,
+                        track=benchmark_track,
+                    )
+                    exported["benchmark_topic_merge"] = str(merge_summary_path)
+            except Exception as exc:
+                self.logger.warning(
+                    "Benchmark hotspot refresh skipped for account=%s platform=%s track=%s: %s",
+                    self.settings.account_key,
+                    benchmark_platform,
+                    benchmark_track,
+                    exc,
+                )
+        else:
+            self.logger.info(
+                "No benchmark track for account=%s; skipping benchmark hotspot collection "
+                "entirely (a null track would otherwise mean 'every track').",
                 self.settings.account_key,
-                benchmark_platform,
-                benchmark_track or "all",
-                exc,
             )
         filtered_topics = self.topic_automation.filter_topics_for_account(topic_report.topics)
         if len(filtered_topics) != len(topic_report.topics):
@@ -169,35 +183,48 @@ class ContentFactoryAppService:
         return "toutiao"
 
     def _resolve_benchmark_track_for_account(self) -> str | None:
-        clean_focus_industries = {
-            str(item).strip() for item in self.settings.topic_collection.focus_industries if str(item).strip()
+        """这个账号该用哪个赛道的对标账号。
+
+        所有返回路径都过 `_drop_unconfigured_benchmark_track`：没有配对标账号的
+        赛道一律不做对标，避免借用别的赛道的账号（见该方法的说明）。
+        """
+        focus_industries = {
+            str(item).strip()
+            for item in self.settings.topic_collection.focus_industries
+            if str(item).strip()
         }
         if self.settings.account_key == "default":
             return None
-        if clean_focus_industries and clean_focus_industries.issubset({"humanoid_robot", "ai_hardware", "industrial_automation"}):
-            return "AI机器人"
-        if clean_focus_industries and clean_focus_industries.issubset({"energy_storage", "new_energy"}):
-            return "新能源储能"
-        if clean_focus_industries and clean_focus_industries.issubset({"international"}):
-            return "国际热点"
-        if clean_focus_industries and clean_focus_industries.issubset({"sports"}):
-            return "体育赛事"
-        focus_industries = {str(item).strip() for item in self.settings.topic_collection.focus_industries if str(item).strip()}
-        robot_industries = {"humanoid_robot", "ai_hardware", "industrial_automation"}
-        energy_industries = {"energy_storage", "new_energy"}
-        international_industries = {"international"}
-        sports_industries = {"sports"}
 
-        if self.settings.account_key == "default":
+        # 行业集合 -> 赛道。注意 focus_industries 里常带 hot_topic，所以用
+        # 「去掉 hot_topic 后是否恰好等于某个赛道」来判断，而不是直接 issubset。
+        track_industries = (
+            ({"humanoid_robot", "ai_hardware", "industrial_automation"}, "AI机器人"),
+            ({"energy_storage", "new_energy"}, "新能源储能"),
+            ({"international"}, "国际热点"),
+            ({"sports"}, "体育赛事"),
+        )
+        industries_without_hot = focus_industries - {"hot_topic"}
+        for industries, track in track_industries:
+            if industries_without_hot and industries_without_hot.issubset(industries):
+                return self._drop_unconfigured_benchmark_track(track)
+
+        # 社会故事类：branding/benchmark_accounts_toutiao.yaml 里**没有**这个赛道的
+        # 对标账号，所以必须在这里就返回 None，不能落到下面的推断。
+        #
+        # 原因：`infer_title_playbook_track` 认不出时兜底返回「科技商业」，而
+        # 「科技商业」在 yaml 里**确实配了账号**（36氪/虎嗅/智东西/量子位），
+        # 所以 `_drop_unconfigured_benchmark_track` 拦不住它 —— 实测 story_notes
+        # 的选题池混进了「千寻智能人形机器人」「钙钛矿光伏 I-V 测试」
+        # 「Anthropic 算力」三条科技热点，全被当成对标高热素材。
+        # 社会故事账号宁可不对标，也不能拿科技号当对标。
+        if industries_without_hot == {"social_story"}:
+            self.logger.info(
+                "Account %s is a social-story account; no benchmark accounts exist for "
+                "this track yet, so benchmark hotspot collection is skipped entirely.",
+                self.settings.account_key,
+            )
             return None
-        if focus_industries and focus_industries.issubset(robot_industries):
-            return "AI机器人"
-        if focus_industries and focus_industries.issubset(energy_industries):
-            return "新能源储能"
-        if focus_industries and focus_industries.issubset(international_industries):
-            return "国际热点"
-        if focus_industries and focus_industries.issubset(sports_industries):
-            return "体育赛事"
 
         inferred = self.growth_ops_service.infer_title_playbook_track(
             " ".join(
@@ -211,7 +238,52 @@ class ContentFactoryAppService:
                 if item
             )
         )
-        return inferred or None
+        return self._drop_unconfigured_benchmark_track(inferred or None)
+
+    def _drop_unconfigured_benchmark_track(self, track: str | None) -> str | None:
+        """只返回**真的配了对标账号**的赛道，否则返回 None。
+
+        ⚠️ 2026-09-18：`infer_title_playbook_track` 认不出时会兜底返回「科技商业」，
+        而这个兜底对「没有对标账号的赛道」是有害的，不是中性的：
+
+        story_notes（社会故事类）的 focus_industries 里没有任何科技词，于是推断出
+        「科技商业」，对标采集就去抓 36氪/虎嗅/量子位/智东西 的科技热点，再合并进
+        它的选题池。实测 story_notes 第一次采集回来的 5 条里，3 条是
+        「千寻智能人形机器人」「钙钛矿光伏 I-V 测试」「Anthropic 算力」——
+        跟中老年社会故事毫无关系，却被当成对标高热素材。
+
+        branding/benchmark_accounts_toutiao.yaml 目前只配了 4 个赛道
+        （科技商业 / AI机器人 / 国际热点 / 体育赛事）。没有对标账号的赛道
+        就应该**不做对标**，而不是借用科技商业的账号。
+        """
+        clean_track = str(track or "").strip()
+        if not clean_track:
+            return None
+        try:
+            accounts = self.growth_ops_service.load_benchmark_accounts(
+                self.settings.publishing.platform
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Benchmark account lookup failed; keeping track %r: %s", clean_track, exc
+            )
+            return clean_track
+        configured = {
+            str(item.get("track", "")).strip()
+            for item in accounts
+            if isinstance(item, dict) and str(item.get("track", "")).strip()
+        }
+        if clean_track in configured:
+            return clean_track
+        self.logger.info(
+            "No benchmark accounts configured for track %r (account=%s); "
+            "skipping benchmark hotspot merge so unrelated tracks do not leak in. "
+            "Configured tracks: %s",
+            clean_track,
+            self.settings.account_key,
+            ", ".join(sorted(configured)) or "<none>",
+        )
+        return None
 
     def _merge_benchmark_topics_into_daily_report(
         self,

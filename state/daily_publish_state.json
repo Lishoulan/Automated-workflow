@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-09-17T22:53:47",
+  "updated_at": "2026-09-18T09:19:28",
   "entries": {
     "2026-09-16": {
       "toutiao": {
@@ -36,6 +36,16 @@
         "title": "杭叉集团23亿押宝机器人，叉车巨头转身AI，市场前景几何？",
         "publish_url": "",
         "recorded_at": "2026-09-17T22:53:47"
+      }
+    },
+    "2026-09-18": {
+      "toutiao": {
+        "channel": "cloud",
+        "status": "submitted_for_review",
+        "pgc_id": "",
+        "title": "年全球出货预判仅2万台，优必选万台工厂赌对了吗",
+        "publish_url": "",
+        "recorded_at": "2026-09-18T09:19:28"
       }
     }
   }

@@ -83,23 +83,57 @@ def read_remote_state(
     return payload if isinstance(payload, dict) else {}
 
 
-def published_on(state: dict[str, Any], day: date_cls | str, platform: str = PLATFORM_KEY_MAIN) -> dict[str, Any] | None:
-    """返回指定日期/平台上已记录的发布条目；没有则 None。"""
+def _entry_key(day: date_cls | str, account: str | None = None) -> str:
+    """状态条目的键。
+
+    ⚠️ 2026-09-18：这里原来**只有日期**（`2026-09-18`），没有账号维度。
+    单账号时没问题，但第二个头条账号上线后，两个账号会往同一个
+    `entries["2026-09-18"]["toutiao"]` 里互相覆盖，而且跨通道互斥会串号：
+    story_notes 发过之后，robot_notes 的本地兜底会以为「云端今天已经发过」，
+    于是整天不发——收益直接损失，且没有任何报错。
+
+    现在带上账号：`2026-09-18::story-notes`。
+    不带账号时仍然用旧键，保证既有调用方与已写入的线上状态继续可读。
+    """
     key = day.isoformat() if isinstance(day, date_cls) else str(day).strip()
+    account_key = str(account or "").strip()
+    return f"{key}::{account_key}" if account_key else key
+
+
+def published_on(
+    state: dict[str, Any],
+    day: date_cls | str,
+    platform: str = PLATFORM_KEY_MAIN,
+    *,
+    account: str | None = None,
+) -> dict[str, Any] | None:
+    """返回指定日期/平台/账号上已记录的发布条目；没有则 None。
+
+    `account` 为空时只读旧的无账号键（保持既有语义不变）。
+    指定账号时先读账号键，读不到再回落到旧键 —— 旧键里的记录是这次改造之前
+    写下的，无法事后判定属于哪个账号，宁可当作「两个账号都可能已发」，
+    也不要因为读不到而重复发布。
+    """
     entries = state.get("entries") if isinstance(state, dict) else None
     if not isinstance(entries, dict):
         return None
-    day_entry = entries.get(key)
-    if not isinstance(day_entry, dict):
-        return None
-    record = day_entry.get(platform)
-    if not isinstance(record, dict):
-        return None
-    # 只有真正提交成功的状态才算「已发」，避免把 failed / draft 当成当天名额已用。
-    status = str(record.get("status", "")).strip().lower()
-    if status not in {"submitted_for_review", "published", "success"}:
-        return None
-    return record
+    candidates: list[str] = []
+    if str(account or "").strip():
+        candidates.append(_entry_key(day, account))
+    candidates.append(_entry_key(day))
+    for key in candidates:
+        day_entry = entries.get(key)
+        if not isinstance(day_entry, dict):
+            continue
+        record = day_entry.get(platform)
+        if not isinstance(record, dict):
+            continue
+        # 只有真正提交成功的状态才算「已发」，避免把 failed / draft 当成当天名额已用。
+        status = str(record.get("status", "")).strip().lower()
+        if status not in {"submitted_for_review", "published", "success"}:
+            continue
+        return record
+    return None
 
 
 def read_cloud_published_today(
@@ -108,12 +142,15 @@ def read_cloud_published_today(
     platform: str = PLATFORM_KEY_MAIN,
     today: date_cls | None = None,
     refresh: bool = True,
+    account: str | None = None,
 ) -> dict[str, Any] | None:
-    """本地预检用：云端今天是否已发布指定平台内容。"""
+    """本地预检用：云端今天是否已发布指定平台内容（可按账号区分）。"""
     state = read_remote_state(project_root, refresh=refresh)
     if not state:
         return None
-    return published_on(state, today or date_cls.today(), platform=platform)
+    return published_on(
+        state, today or date_cls.today(), platform=platform, account=account
+    )
 
 
 def merge_entry(
@@ -123,9 +160,10 @@ def merge_entry(
     platform: str,
     record: dict[str, Any],
     updated_at: str,
+    account: str | None = None,
 ) -> dict[str, Any]:
-    """把一条发布记录并入状态（同日同平台覆盖），返回新状态。"""
-    key = day.isoformat() if isinstance(day, date_cls) else str(day).strip()
+    """把一条发布记录并入状态（同日同平台同账号覆盖），返回新状态。"""
+    key = _entry_key(day, account)
     payload = dict(state) if isinstance(state, dict) else {}
     payload["schema"] = STATE_SCHEMA
     payload["updated_at"] = updated_at

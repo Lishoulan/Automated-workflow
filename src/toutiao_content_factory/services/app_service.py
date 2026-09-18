@@ -581,9 +581,12 @@ class ContentFactoryAppService:
             from toutiao_content_factory.services import cross_channel_state
 
             target = str(platform or self.settings.publishing.platform).strip()
+            # 带上账号 slug：共享状态文件是**所有账号共写一份**的，
+            # 不带账号就会把别的账号「今天发过了」当成自己也发过了，从而整天不发。
             return cross_channel_state.read_cloud_published_today(
                 self.settings.project_root,
                 platform=target,
+                account=self.settings.account_slug,
             )
         except Exception as exc:
             self.logger.warning("Cross-channel publish guard failed (non-fatal): %s", exc)

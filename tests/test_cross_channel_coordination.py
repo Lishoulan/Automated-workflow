@@ -258,6 +258,88 @@ def test_read_remote_state_degrades_to_empty(app_settings, monkeypatch) -> None:
     assert xstate.read_remote_state(app_settings.project_root) == {}
 
 
+# ---------------------------------------------------------------------------
+# 3b. 多账号不得串号（2026-09-18）
+# ---------------------------------------------------------------------------
+
+
+def test_two_accounts_do_not_overwrite_each_other() -> None:
+    """同一天、同平台、不同账号必须各占一条，不能互相覆盖。
+
+    修复前 entries 只按日期索引，第二个账号写进去会把第一个账号的记录顶掉；
+    反过来，第一个账号「今天发过了」又会让第二个账号的本地兜底整天不发。
+    """
+    state = xstate.merge_entry(
+        None,
+        day="2026-09-18",
+        platform="toutiao",
+        record={"status": "submitted_for_review", "title": "机器人稿"},
+        updated_at="t1",
+        account="robot-notes",
+    )
+    state = xstate.merge_entry(
+        state,
+        day="2026-09-18",
+        platform="toutiao",
+        record={"status": "submitted_for_review", "title": "养老稿"},
+        updated_at="t2",
+        account="story-notes",
+    )
+
+    robot = xstate.published_on(state, "2026-09-18", account="robot-notes")
+    story = xstate.published_on(state, "2026-09-18", account="story-notes")
+    assert robot is not None and robot["title"] == "机器人稿"
+    assert story is not None and story["title"] == "养老稿"
+
+
+def test_one_account_publishing_does_not_mark_another_as_published() -> None:
+    """这是最要命的那种失败：A 发过 → B 以为自己也发过 → B 整天不发。"""
+    state = xstate.merge_entry(
+        None,
+        day="2026-09-18",
+        platform="toutiao",
+        record={"status": "submitted_for_review", "title": "机器人稿"},
+        updated_at="t1",
+        account="robot-notes",
+    )
+
+    assert xstate.published_on(state, "2026-09-18", account="story-notes") is None
+
+
+def test_account_scoped_read_falls_back_to_the_legacy_key() -> None:
+    """改造前写入的旧键（无账号）仍然要读得到，避免重复发布。"""
+    legacy = xstate.merge_entry(
+        None,
+        day="2026-09-18",
+        platform="toutiao",
+        record={"status": "submitted_for_review", "title": "旧记录"},
+        updated_at="t1",
+    )
+    assert "2026-09-18" in legacy["entries"]
+
+    record = xstate.published_on(legacy, "2026-09-18", account="story-notes")
+    assert record is not None and record["title"] == "旧记录"
+
+
+def test_unscoped_read_still_matches_the_legacy_key() -> None:
+    """不传 account 的既有调用方语义不变。"""
+    state = _state_for("2026-09-18")
+    assert xstate.published_on(state, "2026-09-18") is not None
+
+
+def test_unscoped_read_ignores_account_scoped_entries() -> None:
+    """不传 account 时只读旧键，不会被某个账号的专属记录误伤。"""
+    state = xstate.merge_entry(
+        None,
+        day="2026-09-18",
+        platform="toutiao",
+        record={"status": "submitted_for_review"},
+        updated_at="t1",
+        account="story-notes",
+    )
+    assert xstate.published_on(state, "2026-09-18") is None
+
+
 def _guard_stub(app_settings, extra_settings=None):
     settings = app_settings
     if extra_settings is not None:
@@ -388,7 +470,9 @@ def test_cloud_guard_forwards_explicit_platform(app_settings, monkeypatch) -> No
     monkeypatch.setattr(
         xstate,
         "read_cloud_published_today",
-        lambda root, platform="toutiao", today=None, refresh=True: seen.append(platform) or None,
+        lambda root, platform="toutiao", today=None, refresh=True, account=None: (
+            seen.append(platform) or None
+        ),
     )
     stub = _guard_stub(app_settings)
     stub._cloud_published_today(platform="toutiao_weitoutiao")

@@ -127,6 +127,9 @@ def main() -> int:
                 "recorded_at": datetime.now().isoformat(timespec="seconds"),
             },
             updated_at=datetime.now().isoformat(timespec="seconds"),
+            # 带上账号，否则两个账号会覆盖同一条 entries[日期][平台]，
+            # 跨通道互斥会串号（A 发过导致 B 整天不发）。
+            account=resolve_account_slug(args.account, ROOT / "output"),
         )
         changed = True
         logger.info("Recorded %s publish: %s", platform, record.get("title", ""))

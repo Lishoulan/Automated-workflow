@@ -243,6 +243,9 @@ def build_rows(
         rows.append(
             {
                 "content_id": content_id,
+                "content_id_reliable": bool(content_id) and False,
+                "platform_item_id": _item_id_from_url(str(item.get("url") or "")),
+                "article_url": str(item.get("url") or "").strip() or None,
                 "account": account_key,
                 "platform": platform,
                 "content_type": "微头条" if "weitoutiao" in platform else "头条",
@@ -277,21 +280,33 @@ def build_rows(
     return rows
 
 
+def _item_id_from_url(url: str) -> str | None:
+    """从文章链接里取平台侧的文章 id —— 这才是平台的唯一键。"""
+    match = re.search(r"/item/(\d+)", str(url or ""))
+    if match:
+        return match.group(1)
+    match = re.search(r"[?&](?:item_id|group_id)=(\d+)", str(url or ""))
+    return match.group(1) if match else None
+
+
 def mark_representative(rows: list[dict[str, Any]]) -> int:
-    """标出每条内容的「代表观测」。
+    """标出每条内容的「代表观测」，去重只去掉**采集层重复**。
 
-    ⚠️ 为什么必须有这一步（2026-09-17 实测发现）：
-    采集层把**同一次发布**抓成了多条观测（例如 `ci_ad68a725f5954c83` 一次发布留下 6 行，
-    展现 0/583/874/960/1203/1919 各不相同，`publish_time` 与 `run_dir` 完全一致）。
-    直接把这 6 行当成 6 个独立样本统计，会让样本量虚增、CTR 分布被重复观测扭曲 ——
-    实测去重前 QUESTION 组 n=11，其中 10 条其实是**同一个标题的重复观测**。
+    ⚠️ 2026-09-18 修正：第一版按 `content_id` 去重，把**同一标题的多次真实发布**
+    误当成重复观测删掉了（41 行被压成 20 行）。回原始数据核对后发现不对：
 
-    代表观测取 **impressions 最大**的那条：展现是累积量，最大观测最接近最终状态，
-    也顺带避开展现=0 的坏观测。这是分析层决策，不回写生产。
+        「机器人热度之外，谁在拿走真正订单」在同一份数据里有 11 行，
+        publish_date 分别是 08-28 / 08-31 / 09-02 / 09-10 / 09-11，
+        且 11 个 url 互不相同 ⇒ 那是 **11 次真实发布**，不是一次发布被抓 11 遍。
+
+    正确口径：
+    - 平台侧唯一键 = 文章 url（item_id）。只有 url 完全相同才是采集重复（实测仅 2 条）。
+    - **content_id 反而不可靠**：`_match_metrics_to_local_records` 用标题相似度
+      匹配本地记录，多篇同名文章会被指到同一个 run_dir ⇒ content_id 多对一。
     """
     groups: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        key = row["content_id"] or f"__no_cid__{row['title']}|{row['publish_date']}"
+        key = row["platform_item_id"] or f"__no_url__{row['title']}|{row['publish_date']}"
         groups.setdefault(key, []).append(row)
     for group in groups.values():
         best = max(group, key=lambda item: (item["impressions"] or -1, item["reads"] or -1))
@@ -299,6 +314,31 @@ def mark_representative(rows: list[dict[str, Any]]) -> int:
             row["is_representative_observation"] = row is best
             row["observation_count_for_content"] = len(group)
     return len(groups)
+
+
+def annotate_title_and_id_reuse(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """标出「同一标题被发了多少次」以及 content_id 是否可信。
+
+    content_id 由 `account|platform|run_dir` 哈希而来，而 local_record 是靠标题相似度
+    匹配的 —— 多篇同名文章会撞到同一条 run_dir ⇒ 同一个 content_id 下挂着多篇真实文章。
+    这时 content_id **不能当唯一键**，必须标出来。
+    """
+    by_title: dict[str, int] = {}
+    for row in rows:
+        title = row.get("title") or ""
+        by_title[title] = by_title.get(title, 0) + 1
+    by_cid: dict[str, set[str]] = {}
+    for row in rows:
+        cid = row.get("content_id")
+        item_id = row.get("platform_item_id")
+        if cid and item_id:
+            by_cid.setdefault(cid, set()).add(item_id)
+    for row in rows:
+        title = row.get("title") or ""
+        row["title_publish_count"] = by_title.get(title, 0)
+        cid = row.get("content_id")
+        row["content_id_reliable"] = bool(cid) and len(by_cid.get(cid, set())) == 1
+    return by_title
 
 
 def main() -> int:
@@ -322,7 +362,14 @@ def main() -> int:
     )
 
     unique_contents = mark_representative(rows)
+    title_counts = annotate_title_and_id_reuse(rows)
     analysis_rows = [row for row in rows if row["is_representative_observation"]]
+
+    if rows:
+        worst_title, worst_count = max(title_counts.items(), key=lambda kv: kv[1])
+        print(f"[!] 标题重复发布最多：{worst_count} 次 —— {worst_title[:46]}")
+        unreliable = sum(1 for r in rows if r["content_id"] and not r["content_id_reliable"])
+        print(f"[!] content_id 不可靠（一个 cid 对应多篇真实文章）的行数：{unreliable}")
 
     analytics_dir = ROOT / "data" / "analytics"
     analytics_dir.mkdir(parents=True, exist_ok=True)

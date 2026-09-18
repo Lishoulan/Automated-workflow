@@ -1,19 +1,19 @@
 {
-  "generated_at": "2026-09-18T00:01:31",
+  "generated_at": "2026-09-18T09:56:38",
   "account": "robot_notes",
   "source_file": "output\\accounts\\robot-notes\\performance_metrics.json",
-  "sample_size": 20,
-  "raw_observation_count": 41,
-  "unique_content_count": 20,
+  "sample_size": 41,
+  "raw_observation_count": 43,
+  "unique_content_count": 41,
   "deduplication_note": "sample_size 是去重后的独立内容数；raw_observation_count 是采集层原始行数。统计一律基于 sample_size，重复观测只在 jsonl 里保留（is_representative_observation=false）。",
   "fields_completeness": {
-    "content_id": 85.0,
+    "content_id": 85.4,
     "title": 100.0,
-    "topic": 85.0,
+    "topic": 85.4,
     "publish_time": 100.0,
     "impressions": 100.0,
     "reads": 100.0,
-    "ctr_raw": 90.0,
+    "ctr_raw": 92.7,
     "likes": 100.0,
     "comments": 100.0,
     "shares": 100.0,
@@ -22,44 +22,128 @@
     "topic_bucket": 100.0
   },
   "ctr_definition_check": {
-    "compared": 38,
+    "compared": 40,
     "mismatch_gt_0_01": 0,
     "max_abs_delta": 0.0047,
     "conclusion": "platform ctr == reads/impressions*100"
   },
   "overall": {
     "impressions": {
-      "n": 20,
-      "mean": 579.25,
-      "median": 483.5,
+      "n": 41,
+      "mean": 545.5366,
+      "median": 456.0,
       "p25": 322.0,
-      "p75": 885.25,
+      "p75": 874.0,
       "min": 0.0,
       "max": 1919.0,
       "insufficient_sample": false
     },
     "reads": {
-      "n": 20,
-      "mean": 11.9,
-      "median": 3.0,
+      "n": 41,
+      "mean": 10.3659,
+      "median": 2.0,
       "p25": 0.0,
-      "p75": 15.5,
+      "p75": 10.0,
       "min": 0.0,
       "max": 81.0,
       "insufficient_sample": false
     },
     "ctr_raw": {
-      "n": 18,
-      "mean": 1.3417,
-      "median": 0.5749,
+      "n": 38,
+      "mean": 1.1853,
+      "median": 0.4244,
       "p25": 0.0,
-      "p75": 1.9462,
+      "p75": 2.0815,
       "min": 0.0,
       "max": 5.6818,
       "insufficient_sample": false
     }
   },
   "by_title_type": {
+    "BENEFIT": {
+      "impressions": {
+        "n": 1,
+        "mean": 326.0,
+        "median": 326.0,
+        "p25": null,
+        "p75": null,
+        "min": 326.0,
+        "max": 326.0,
+        "insufficient_sample": true
+      },
+      "reads": {
+        "n": 1,
+        "mean": 0.0,
+        "median": 0.0,
+        "p25": null,
+        "p75": null,
+        "min": 0.0,
+        "max": 0.0,
+        "insufficient_sample": true
+      },
+      "ctr_raw": {
+        "n": 1,
+        "mean": 0.0,
+        "median": 0.0,
+        "p25": null,
+        "p75": null,
+        "min": 0.0,
+        "max": 0.0,
+        "insufficient_sample": true
+      },
+      "title_length": {
+        "n": 1,
+        "mean": 19.0,
+        "median": 19.0,
+        "p25": null,
+        "p75": null,
+        "min": 19.0,
+        "max": 19.0,
+        "insufficient_sample": true
+      }
+    },
+    "CONFLICT": {
+      "impressions": {
+        "n": 2,
+        "mean": 501.5,
+        "median": 501.5,
+        "p25": null,
+        "p75": null,
+        "min": 464.0,
+        "max": 539.0,
+        "insufficient_sample": true
+      },
+      "reads": {
+        "n": 2,
+        "mean": 0.0,
+        "median": 0.0,
+        "p25": null,
+        "p75": null,
+        "min": 0.0,
+        "max": 0.0,
+        "insufficient_sample": true
+      },
+      "ctr_raw": {
+        "n": 2,
+        "mean": 0.0,
+        "median": 0.0,
+        "p25": null,
+        "p75": null,
+        "min": 0.0,
+        "max": 0.0,
+        "insufficient_sample": true
+      },
+      "title_length": {
+        "n": 2,
+        "mean": 25.0,
+        "median": 25.0,
+        "p25": null,
+        "p75": null,
+        "min": 25.0,
+        "max": 25.0,
+        "insufficient_sample": true
+      }
+    },
     "CONTRARIAN": {
       "impressions": {
         "n": 1,
@@ -146,61 +230,61 @@
     },
     "JUDGMENT": {
       "impressions": {
-        "n": 2,
-        "mean": 757.0,
-        "median": 757.0,
-        "p25": null,
-        "p75": null,
-        "min": 610.0,
+        "n": 4,
+        "mean": 498.75,
+        "median": 444.5,
+        "p25": 259.75,
+        "p75": 683.5,
+        "min": 202.0,
         "max": 904.0,
         "insufficient_sample": true
       },
       "reads": {
-        "n": 2,
-        "mean": 8.5,
-        "median": 8.5,
-        "p25": null,
-        "p75": null,
-        "min": 3.0,
+        "n": 4,
+        "mean": 4.25,
+        "median": 1.5,
+        "p25": 0.0,
+        "p75": 5.75,
+        "min": 0.0,
         "max": 14.0,
         "insufficient_sample": true
       },
       "ctr_raw": {
-        "n": 2,
-        "mean": 1.0202,
-        "median": 1.0202,
-        "p25": null,
-        "p75": null,
-        "min": 0.4918,
+        "n": 4,
+        "mean": 0.5101,
+        "median": 0.2459,
+        "p25": 0.0,
+        "p75": 0.756,
+        "min": 0.0,
         "max": 1.5487,
         "insufficient_sample": true
       },
       "title_length": {
-        "n": 2,
-        "mean": 23.5,
-        "median": 23.5,
-        "p25": null,
-        "p75": null,
-        "min": 22.0,
+        "n": 4,
+        "mean": 20.75,
+        "median": 21.0,
+        "p25": 19.0,
+        "p75": 22.75,
+        "min": 16.0,
         "max": 25.0,
         "insufficient_sample": true
       }
     },
     "QUESTION": {
       "impressions": {
-        "n": 16,
-        "mean": 530.9375,
-        "median": 454.0,
+        "n": 32,
+        "mean": 545.8438,
+        "median": 423.5,
         "p25": 280.0,
-        "p75": 647.25,
+        "p75": 875.25,
         "min": 0.0,
         "max": 1919.0,
         "insufficient_sample": false
       },
       "reads": {
-        "n": 16,
-        "mean": 13.375,
-        "median": 0.5,
+        "n": 32,
+        "mean": 12.5312,
+        "median": 2.0,
         "p25": 0.0,
         "p75": 20.25,
         "min": 0.0,
@@ -208,21 +292,21 @@
         "insufficient_sample": false
       },
       "ctr_raw": {
-        "n": 14,
-        "mean": 1.5068,
-        "median": 0.5155,
+        "n": 29,
+        "mean": 1.4478,
+        "median": 0.7899,
         "p25": 0.0,
-        "p75": 2.2944,
+        "p75": 2.4308,
         "min": 0.0,
         "max": 5.6818,
         "insufficient_sample": false
       },
       "title_length": {
-        "n": 16,
-        "mean": 18.3125,
-        "median": 17.0,
+        "n": 32,
+        "mean": 17.5312,
+        "median": 16.0,
         "p25": 16.0,
-        "p75": 20.25,
+        "p75": 19.25,
         "min": 13.0,
         "max": 24.0,
         "insufficient_sample": false
@@ -264,31 +348,31 @@
     },
     "机器人": {
       "impressions": {
-        "n": 19,
-        "mean": 563.4737,
-        "median": 469.0,
-        "p25": 322.0,
+        "n": 40,
+        "mean": 537.2,
+        "median": 447.5,
+        "p25": 311.25,
         "p75": 757.0,
         "min": 0.0,
         "max": 1919.0,
         "insufficient_sample": false
       },
       "reads": {
-        "n": 19,
-        "mean": 11.4211,
-        "median": 3.0,
+        "n": 40,
+        "mean": 10.1,
+        "median": 1.5,
         "p25": 0.0,
-        "p75": 12.0,
+        "p75": 8.5,
         "min": 0.0,
         "max": 81.0,
         "insufficient_sample": false
       },
       "ctr_raw": {
-        "n": 17,
-        "mean": 1.2801,
-        "median": 0.4918,
+        "n": 37,
+        "mean": 1.1528,
+        "median": 0.3571,
         "p25": 0.0,
-        "p75": 1.7544,
+        "p75": 2.0101,
         "min": 0.0,
         "max": 5.6818,
         "insufficient_sample": false
@@ -298,31 +382,31 @@
   "by_content_type": {
     "头条": {
       "impressions": {
-        "n": 20,
-        "mean": 579.25,
-        "median": 483.5,
+        "n": 41,
+        "mean": 545.5366,
+        "median": 456.0,
         "p25": 322.0,
-        "p75": 885.25,
+        "p75": 874.0,
         "min": 0.0,
         "max": 1919.0,
         "insufficient_sample": false
       },
       "reads": {
-        "n": 20,
-        "mean": 11.9,
-        "median": 3.0,
+        "n": 41,
+        "mean": 10.3659,
+        "median": 2.0,
         "p25": 0.0,
-        "p75": 15.5,
+        "p75": 10.0,
         "min": 0.0,
         "max": 81.0,
         "insufficient_sample": false
       },
       "ctr_raw": {
-        "n": 18,
-        "mean": 1.3417,
-        "median": 0.5749,
+        "n": 38,
+        "mean": 1.1853,
+        "median": 0.4244,
         "p25": 0.0,
-        "p75": 1.9462,
+        "p75": 2.0815,
         "min": 0.0,
         "max": 5.6818,
         "insufficient_sample": false
@@ -332,31 +416,31 @@
   "by_title_length_bucket": {
     "19-24": {
       "impressions": {
-        "n": 9,
-        "mean": 612.4444,
-        "median": 549.0,
-        "p25": 439.0,
-        "p75": 904.0,
+        "n": 13,
+        "mean": 608.7692,
+        "median": 456.0,
+        "p25": 322.0,
+        "p75": 968.0,
         "min": 0.0,
-        "max": 995.0,
+        "max": 1227.0,
         "insufficient_sample": false
       },
       "reads": {
-        "n": 9,
-        "mean": 15.1111,
-        "median": 14.0,
-        "p25": 1.0,
+        "n": 13,
+        "mean": 16.3077,
+        "median": 3.0,
+        "p25": 0.0,
         "p75": 21.0,
         "min": 0.0,
-        "max": 55.0,
+        "max": 69.0,
         "insufficient_sample": false
       },
       "ctr_raw": {
-        "n": 8,
-        "mean": 2.0653,
-        "median": 1.7794,
-        "p25": 0.5504,
-        "p75": 2.7936,
+        "n": 12,
+        "mean": 1.7141,
+        "median": 1.1033,
+        "p25": 0.0,
+        "p75": 2.3995,
         "min": 0.0,
         "max": 5.6818,
         "insufficient_sample": false
@@ -364,63 +448,63 @@
     },
     "25-30": {
       "impressions": {
-        "n": 1,
-        "mean": 610.0,
-        "median": 610.0,
+        "n": 3,
+        "mean": 537.6667,
+        "median": 539.0,
         "p25": null,
         "p75": null,
-        "min": 610.0,
+        "min": 464.0,
         "max": 610.0,
         "insufficient_sample": true
       },
       "reads": {
-        "n": 1,
-        "mean": 3.0,
-        "median": 3.0,
+        "n": 3,
+        "mean": 1.0,
+        "median": 0.0,
         "p25": null,
         "p75": null,
-        "min": 3.0,
+        "min": 0.0,
         "max": 3.0,
         "insufficient_sample": true
       },
       "ctr_raw": {
-        "n": 1,
-        "mean": 0.4918,
-        "median": 0.4918,
+        "n": 3,
+        "mean": 0.1639,
+        "median": 0.0,
         "p25": null,
         "p75": null,
-        "min": 0.4918,
+        "min": 0.0,
         "max": 0.4918,
         "insufficient_sample": true
       }
     },
     "<=18": {
       "impressions": {
-        "n": 10,
-        "mean": 546.3,
-        "median": 435.0,
-        "p25": 196.0,
-        "p75": 552.0,
+        "n": 25,
+        "mean": 513.6,
+        "median": 401.0,
+        "p25": 279.0,
+        "p75": 633.0,
         "min": 0.0,
         "max": 1919.0,
         "insufficient_sample": false
       },
       "reads": {
-        "n": 10,
-        "mean": 9.9,
-        "median": 0.0,
+        "n": 25,
+        "mean": 8.4,
+        "median": 2.0,
         "p25": 0.0,
-        "p75": 4.0,
+        "p75": 5.0,
         "min": 0.0,
         "max": 81.0,
         "insufficient_sample": false
       },
       "ctr_raw": {
-        "n": 9,
-        "mean": 0.7928,
-        "median": 0.0,
+        "n": 23,
+        "mean": 1.0427,
+        "median": 0.3571,
         "p25": 0.0,
-        "p75": 0.8032,
+        "p75": 1.9299,
         "min": 0.0,
         "max": 4.2209,
         "insufficient_sample": false
@@ -428,17 +512,17 @@
     }
   },
   "revenue_status_counts": {
-    "NOT_QUERIED": 1,
-    "PENDING": 2,
-    "UNKNOWN": 17
+    "NOT_QUERIED": 3,
+    "PENDING": 5,
+    "UNKNOWN": 33
   },
   "data_quality": {
-    "rows_without_content_id": 3,
-    "rows_unmatched_to_local_record": 3,
-    "rows_impressions_missing": 2,
+    "rows_without_content_id": 6,
+    "rows_unmatched_to_local_record": 6,
+    "rows_impressions_missing": 3,
     "rows_reads_missing": 0,
-    "rows_zero_reads": 8,
-    "duplicate_observations_dropped": 21,
-    "contents_with_multiple_observations": 11
+    "rows_zero_reads": 19,
+    "duplicate_observations_dropped": 2,
+    "contents_with_multiple_observations": 2
   }
 }

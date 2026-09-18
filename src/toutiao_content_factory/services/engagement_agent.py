@@ -55,12 +55,31 @@ class EngagementRecord:
 # ---------------------------------------------------------------------------
 
 _base = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com").rstrip("/")
-# DeepSeek API: base_url + /chat/completions (OpenAI 兼容)
-if _base.endswith("/v1"):
-    _DEEPSEEK_BASE_URL = _base + "/chat/completions"
-else:
-    _DEEPSEEK_BASE_URL = _base + "/v1/chat/completions"
+# ⚠️ 2026-09-18 修正：这里原来在 base 不以 /v1 结尾时**硬拼** "/v1/chat/completions"。
+# 两个 provider 的规范并不一致：
+#   - DeepSeek:  base=https://api.deepseek.com        → 需要 /v1/chat/completions
+#   - 智谱 GLM:  base=https://open.bigmodel.cn/api/paas/v4 → 直接 /chat/completions
+# 于是智谱配置下拼出了 /api/paas/v4/v1/chat/completions，云端日志里
+# 满屏「DeepSeek API 调用失败: HTTP Error 404」，互动评论全线失败还白烧运行时间。
+# 仓库其余部分（title_agent / 本文件实测探针）用的都是 `${base}/chat/completions`，
+# 所以以它为主选，仅在 404 时回落到 /v1 变体，两种 provider 都能工作。
 _DEEPSEEK_MODEL = os.getenv("OPENAI_MODEL", "deepseek-v4-flash")
+
+
+def _candidate_endpoints(base_url: str | None = None) -> list[str]:
+    """按「主选 → 回落」顺序给出候补端点，主选与仓库其余部分一致。
+
+    `base_url` 显式传入时以它为准（便于测试，不受模块导入时的环境变量影响）。
+    """
+    base = (_base if base_url is None else base_url.rstrip("/"))
+    primary = base + "/chat/completions"
+    if base.endswith("/v1"):
+        # base 已经带 /v1（DeepSeek 写法），只有主选一种。
+        return [primary]
+    return [primary, base + "/v1/chat/completions"]
+
+
+_DEEPSEEK_BASE_URL = _candidate_endpoints()[0]  # 保留旧名，供外部与测试引用
 
 
 def _call_deepseek(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int = 200) -> str:
@@ -79,33 +98,37 @@ def _call_deepseek(api_key: str, system_prompt: str, user_prompt: str, max_token
         "temperature": 0.7,
     }).encode("utf-8")
 
-    req = urllib.request.Request(
-        _DEEPSEEK_BASE_URL,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
-
     last_exc: Exception | None = None
-    for attempt in range(1, 4):
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-            return body.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-        except urllib.error.HTTPError as exc:
-            last_exc = exc
-            retryable = exc.code in (429, 500, 502, 503, 504)
-            if not retryable or attempt >= 3:
-                raise RuntimeError(f"DeepSeek API 调用失败: {exc}") from exc
-        except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError) as exc:
-            last_exc = exc
-            retryable = True
-            if attempt >= 3:
-                raise RuntimeError(f"DeepSeek API 调用失败: {exc}") from exc
-        time.sleep(min(5.0 * attempt, 30.0))
+    endpoints = _candidate_endpoints()
+    for endpoint_index, endpoint in enumerate(endpoints):
+        req = urllib.request.Request(
+            endpoint,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        for attempt in range(1, 4):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                return body.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            except urllib.error.HTTPError as exc:
+                last_exc = exc
+                if exc.code == 404 and endpoint_index + 1 < len(endpoints):
+                    # 端点写法不匹配（provider 规范差异），直接换下一个候补，不必重试。
+                    break
+                retryable = exc.code in (429, 500, 502, 503, 504)
+                if not retryable or attempt >= 3:
+                    raise RuntimeError(f"DeepSeek API 调用失败: {exc}") from exc
+            except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError) as exc:
+                last_exc = exc
+                retryable = True
+                if attempt >= 3:
+                    raise RuntimeError(f"DeepSeek API 调用失败: {exc}") from exc
+            time.sleep(min(5.0 * attempt, 30.0))
     raise RuntimeError(f"DeepSeek API 调用失败: {last_exc}") from last_exc
 
 

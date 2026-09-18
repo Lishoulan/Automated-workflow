@@ -256,12 +256,26 @@ jobs:
       MONTHLY_REVIEW_ENABLED: ${{ secrets.MONTHLY_REVIEW_ENABLED || '1' }}
 
       # ---- Docker AI 服务配置 ----
-      DEERFLOW_ENABLED: "1"
+      # ⚠️ 2026-09-18：云端整体关闭这三个 Docker 服务，理由是三处「死配置 + 纯浪费」：
+      #
+      # 1. DeerFlow 与 Prompt-Optimizer **从不参与内容生成**。全仓库对
+      #    DeerFlowClient / PromptOptimizerClient 的引用只出现在
+      #    app_service.check_ai_services_health() 里，即它们只被「健康检查」调用，
+      #    没有任何 agent 用它们做实际工作。启动它们只是白烧 Actions 分钟数。
+      # 2. Letta 只提供可选的记忆上下文（agent_workflow._get_memory_context），
+      #    失败时非阻塞降级为空字符串。本地流水线关闭 Letta 同样跑出 overall=87。
+      # 3. 下面「Ensure Letta agent exists」用的模型是 `deepseek-v4-flash`，
+      #    却配在智谱的 OPENAI_BASE_URL 上 —— 又一个模型名与端点错配的死配置。
+      #
+      # 省下的是每个 job 的：拉取 letta/prompt-optimizer/deerflow/postgres 镜像
+      # + docker compose up + `sleep 10` + 三次健康探测，实测每次运行 1~2 分钟。
+      # 若日后确实要用 Letta 记忆，把这三个开关设回 "1" 并恢复 Docker 步骤即可。
+      DEERFLOW_ENABLED: "0"
       DEERFLOW_BASE_URL: "http://localhost:8001"
-      LETTA_ENABLED: "1"
+      LETTA_ENABLED: "0"
       LETTA_BASE_URL: "http://localhost:8283"
       LETTA_AGENT_ID: ${{ secrets.LETTA_AGENT_ID || '' }}
-      PROMPT_OPTIMIZER_ENABLED: "1"
+      PROMPT_OPTIMIZER_ENABLED: "0"
       PROMPT_OPTIMIZER_BASE_URL: "http://localhost:8501"
       RUFLO_ENABLED: "0"
 
@@ -544,59 +558,14 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
-      - name: Start AI services via Docker Compose
+      - name: Note on removed Docker AI services
+        # 2026-09-18：原来这里有三步（docker compose up + 健康检查 + 建 Letta agent），
+        # 已整体删除。DeerFlow / Prompt-Optimizer 只被健康检查调用、从不干活，
+        # Letta 只是可选记忆且其 agent 模型名与端点错配。删除后每个 job 省 1~2 分钟。
         run: |
-          docker compose up -d deerflow letta prompt-optimizer postgres
-          echo "Waiting for services to be ready..."
-          sleep 10
-          docker compose ps
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          LETTA_DB_PASSWORD: letta_cloud_pass
-        continue-on-error: true
-
-      - name: Check AI services health
-        run: |
-          echo "Checking DeerFlow..."
-          curl -sf http://localhost:8001/health && echo "DeerFlow: OK" || echo "DeerFlow: UNAVAILABLE"
-          echo "Checking Letta..."
-          curl -sf http://localhost:8283/v1/health && echo "Letta: OK" || echo "Letta: UNAVAILABLE"
-          echo "Checking Prompt Optimizer..."
-          curl -sf http://localhost:8501/ && echo "Prompt Optimizer: OK" || echo "Prompt Optimizer: UNAVAILABLE"
-        continue-on-error: true
-
-      - name: Ensure Letta agent exists
-        if: env.LETTA_AGENT_ID == ''
-        continue-on-error: true
-        run: |
-          RESPONSE=$(curl -sf -X POST http://localhost:8283/v1/agents \
-            -H "Content-Type: application/json" \
-            -d '{
-              "name": "content-factory-memory",
-              "description": "Content factory memory agent",
-              "memory_blocks": [
-                {"label": "persona", "value": "I am a content factory assistant that remembers user preferences, writing style, and content strategy decisions."},
-                {"label": "human", "value": "The user is a tech content creator focusing on AI, robotics, and new energy."}
-              ],
-              "llm_config": {
-                "model": "deepseek-v4-flash",
-                "model_endpoint_type": "openai",
-                "model_endpoint": "'"${OPENAI_BASE_URL}"'",
-                "context_window": 64000
-              }
-            }' 2>/dev/null || echo "")
-          if [ -n "$RESPONSE" ]; then
-            AGENT_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
-            if [ -n "$AGENT_ID" ]; then
-              echo "LETTA_AGENT_ID=$AGENT_ID" >> $GITHUB_ENV
-              echo "Created Letta agent: $AGENT_ID"
-            else
-              echo "Letta agent creation returned no valid ID, skipping"
-            fi
-          else
-            echo "Letta service unavailable, skipping agent creation"
-          fi
+          echo "Docker AI services (deerflow / letta / prompt-optimizer) are disabled."
+          echo "DEERFLOW_ENABLED=${DEERFLOW_ENABLED} LETTA_ENABLED=${LETTA_ENABLED} PROMPT_OPTIMIZER_ENABLED=${PROMPT_OPTIMIZER_ENABLED}"
+          echo "Content generation does not depend on any of them; the pipeline degrades gracefully."
 
       - name: Restore publish history cache
         uses: actions/cache@v4

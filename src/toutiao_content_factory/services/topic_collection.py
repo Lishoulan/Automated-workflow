@@ -779,11 +779,25 @@ class TopicCollectionService:
     def _enrich_topic(self, topic: TopicCandidate) -> TopicCandidate:
         combined = f"{topic.title}\n{topic.snippet}\n{topic.summary}"
         matched_industries, matched_keywords = self._match_industries(combined)
-        # 实时热榜话题天然归属"热点"赛道：无论是否命中行业关键词，
-        # 只要账号启用了 hot_topic 赛道即视为聚焦热点内容。
+        # 实时热榜话题天然归属「热点」赛道：无论是否命中行业关键词，
+        # 只要账号启用了热点赛道即视为聚焦热点内容。
+        #
+        # ⚠️ 2026-09-18：这里原来**无条件**打上 "hot_topic"。但社会故事类账号的
+        # `focus_industries` 里必须去掉 hot_topic（理由见 `_passes_topic_focus`），
+        # 于是热榜题被打上 "hot_topic"、而账号只认 "social_story"，
+        # `_filter_to_focus_industries` 的「matched_industries 与 focus 有交集」
+        # 判定失败 —— 实测 54 条热榜题全部被计入 industry_mismatch，选题池为 0，
+        # 连「男子高空作业绳子被2楼老人剪断」这种正对题的题也进不来。
+        # 所以自动归属要跟随账号**实际启用的**热点赛道，而不是写死 hot_topic。
         if topic.source_type in self.HOT_SOURCE_TYPES:
-            if "hot_topic" not in matched_industries:
-                matched_industries = [*matched_industries, "hot_topic"]
+            hot_tracks = [
+                track
+                for track in ("hot_topic", "social_story")
+                if track in set(self.topic_settings.focus_industries)
+            ]
+            for track in hot_tracks or ["hot_topic"]:
+                if track not in matched_industries:
+                    matched_industries = [*matched_industries, track]
         numbers = self._extract_numbers(combined)
         freshness_score = self._freshness_score(topic.published_at)
         topic.matched_industries = matched_industries
@@ -1674,16 +1688,21 @@ class TopicCollectionService:
             return True
         return False
 
-    def _has_social_story_signal(self, topic: TopicCandidate) -> bool:
+    @classmethod
+    def _has_social_story_signal(cls, topic: TopicCandidate) -> bool:
         """这条题有没有「普通人的生活处境」。
 
         与体育/国际同样三态：命中明确的跑题词直接否掉（体育、时政、娱乐、
         财经），否则要求至少一个「人与关系」或「处境与冲突」的信号词。
+
+        做成 classmethod 是为了让 `TopicAutomationService` 的账号边界过滤也能
+        直接复用同一份判据（此前它只按账号 key 硬编码，换赛道后把题全拦掉了）。
+        判据只有一份，避免两处漂移。
         """
         text = f"{topic.title} {topic.summary} {topic.snippet}"
-        if any(token in text for token in self.SOCIAL_STORY_LOW_SIGNAL_TOKENS):
+        if any(token in text for token in cls.SOCIAL_STORY_LOW_SIGNAL_TOKENS):
             return False
-        signal_hits = sum(1 for token in self.SOCIAL_STORY_SIGNAL_TOKENS if token in text)
+        signal_hits = sum(1 for token in cls.SOCIAL_STORY_SIGNAL_TOKENS if token in text)
         if signal_hits >= 1:
             return True
         # 兜底：「偷/骗/讹/吵/闹」这类行为动词本身就是社会新闻的强信号
@@ -1726,9 +1745,20 @@ class TopicCollectionService:
         title_text = str(topic.title or "")
         # 热榜话题：标题即全部素材，天然 title_only。热度达标时放宽质量门禁，
         # 否则真实热榜话题会被误杀。质量把关交给 review agent。
+        #
+        # ⚠️ 2026-09-18：这里原来**只认 hot_topic**，而社会故事类账号必须在
+        # `focus_industries` 里**去掉 hot_topic**（否则 `_passes_topic_focus` 的
+        # hot_topic 分支会提前 return True，`social_story` 判据永远不执行）。
+        # 两个条件互相打架，结果换赛道后热榜题全部走到下面被当成质量不达标杀掉：
+        # 实测 54 条热榜题过滤后选题池为 0 条，连「男子高空作业绳子被2楼老人剪断」
+        # 这种正对题的题也进不来（热榜题天然 title_only，必然命中 quality_score 判据）。
+        # 所以放宽条件要同时认 social_story —— 它同样是以热榜为素材来源的赛道。
+        hot_track_enabled = bool(
+            {"hot_topic", "social_story"} & set(self.topic_settings.focus_industries)
+        )
         is_hot_pass = (
             topic.source_type in self.HOT_SOURCE_TYPES
-            and "hot_topic" in set(self.topic_settings.focus_industries)
+            and hot_track_enabled
             and topic.heat_value >= self.HOT_HEAT_THRESHOLD
         )
         if is_hot_pass:

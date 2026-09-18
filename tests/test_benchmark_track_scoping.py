@@ -68,7 +68,7 @@ def test_social_story_account_gets_no_benchmark_track() -> None:
 @pytest.mark.parametrize(
     ("account_key", "expected_track"),
     [
-        ("robot_notes", "AI机器人"),
+        ("sports_notes", "体育赛事"),
         ("sports_notes", "体育赛事"),
         ("politics_notes", "国际热点"),
     ],
@@ -98,20 +98,20 @@ def test_sports_account_is_not_misclassified_as_international() -> None:
 
 
 def test_unconfigured_track_is_dropped() -> None:
-    service = _service("robot_notes")
+    service = _service("sports_notes")
 
     assert service._drop_unconfigured_benchmark_track("不存在的赛道") is None
 
 
 @pytest.mark.parametrize("track", ["科技商业", "AI机器人", "国际热点", "体育赛事"])
 def test_configured_tracks_are_kept(track: str) -> None:
-    service = _service("robot_notes")
+    service = _service("sports_notes")
 
     assert service._drop_unconfigured_benchmark_track(track) == track
 
 
 def test_blank_track_is_dropped() -> None:
-    service = _service("robot_notes")
+    service = _service("sports_notes")
 
     assert service._drop_unconfigured_benchmark_track("") is None
     assert service._drop_unconfigured_benchmark_track(None) is None
@@ -160,7 +160,7 @@ def test_collect_topics_skips_benchmark_entirely_without_a_track(monkeypatch) ->
 
 def test_collect_topics_calls_benchmark_when_a_track_exists(monkeypatch) -> None:
     """对照组：有赛道的账号必须照旧采集，别把功能一起关掉。"""
-    service = _service("robot_notes")
+    service = _service("sports_notes")
     called: list[dict] = []
     monkeypatch.setattr(
         service, "collect_benchmark_hot_topics", lambda **kw: called.append(kw) or {}
@@ -170,7 +170,7 @@ def test_collect_topics_calls_benchmark_when_a_track_exists(monkeypatch) -> None
     service.collect_topics()
 
     assert called, "有对标赛道的账号应当照旧采集对标热点"
-    assert called[0].get("track") == "AI机器人"
+    assert called[0].get("track") == "体育赛事"
 
 
 def _stub_topic_collection(monkeypatch, service) -> None:

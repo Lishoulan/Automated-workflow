@@ -1,994 +1,770 @@
-{
-  "model": {
-    "name": "deepseek-v4-flash",
-    "temperature": 0.7
-  },
-  "writing": {
-    "article_word_target": 1500,
-    "max_input_chars": 16000,
-    "default_style": "deep_industry_analysis",
-    "title_count": 20,
-    "recommended_title_count": 3,
-    "cache_similarity_threshold": 0.82,
-    "kol_voice_enabled": false,
-    "kol_voice_name": "",
-    "kol_voice_style": "短段落、适度破折号、适度反问句、口语化转折"
-  },
-  "industry": {
-    "brand_name": "手蓝数据笔记",
-    "focus": "科技商业、AI产业、先进制造（机器人、新能源、智能装备、储能）",
-    "platform": "今日头条",
-    "audience": "关注科技商业与产业升级的从业者、投资者与决策者",
-    "positioning": "聚焦科技商业、AI产业与先进制造，用数据拆热点，用产业链看趋势兑现。"
-  },
-  "topic_collection": {
-    "lookback_days": 2,
-    "max_topic_age_hours": 12,
-    "drop_topics_without_timestamp": true,
-    "max_items_per_source": 24,
-    "max_export_topics": 40,
-    "request_timeout_seconds": 12,
-    "enabled_sources": [
-      "toutiao_hot",
-      "baidu_hot",
-      "36kr",
-      "zhidx",
-      "ofweek",
-      "chuneng_ofweek",
-      "newenergy_ofweek",
-      "ithome",
-      "solidot"
-    ],
-    "focus_industries": [
-      "hot_topic",
-      "humanoid_robot",
-      "new_energy",
-      "energy_storage",
-      "ai_hardware",
-      "industrial_automation"
-    ],
-    "keyword_map": {
-      "hot_topic": [
-        "热点",
-        "热搜",
-        "热议",
-        "爆火",
-        "刷屏",
-        "官宣",
-        "突发",
-        "通报",
-        "回应",
-        "反转"
-      ],
-      "humanoid_robot": [
-        "人形机器人",
-        "具身智能",
-        "灵巧手",
-        "减速器",
-        "执行器",
-        "无框力矩电机",
-        "丝杠"
-      ],
-      "new_energy": [
-        "新能源",
-        "光伏",
-        "风电",
-        "锂电",
-        "电池",
-        "充电",
-        "新能源汽车",
-        "动力电池",
-        "固态电池",
-        "钠电",
-        "充换电",
-        "光储",
-        "电池回收"
-      ],
-      "energy_storage": [
-        "储能",
-        "工商业储能",
-        "PCS",
-        "EMS",
-        "逆变器",
-        "电网侧储能",
-        "储能电站",
-        "储能电池",
-        "大储",
-        "户储",
-        "抽水蓄能",
-        "液流电池",
-        "源网荷储",
-        "构网型储能"
-      ],
-      "ai_hardware": [
-        "AI硬件",
-        "算力",
-        "服务器",
-        "GPU",
-        "芯片",
-        "边缘计算",
-        "CPO"
-      ],
-      "industrial_automation": [
-        "工业自动化",
-        "工业机器人",
-        "机器视觉",
-        "PLC",
-        "伺服",
-        "传感器",
-        "工业母机"
-      ]
-    },
-    "sources": {
-      "toutiao_hot": {
-        "type": "hot_board",
-        "urls": [
-          "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
-        ]
-      },
-      "baidu_hot": {
-        "type": "baidu_hot",
-        "urls": [
-          "https://top.baidu.com/board?tab=realtime"
-        ]
-      },
-      "36kr": {
-        "type": "rss",
-        "urls": [
-          "https://36kr.com/feed-article",
-          "https://36kr.com/feed-newsflash"
-        ]
-      },
-      "zhidx": {
-        "type": "html",
-        "urls": [
-          "https://www.zhidx.com/",
-          "https://www.zhidx.com/p/category/%E6%9C%BA%E5%99%A8%E4%BA%BA%E6%97%A0%E4%BA%BA%E6%9C%BA",
-          "https://www.zhidx.com/p/category/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD"
-        ]
-      },
-      "ofweek": {
-        "type": "html",
-        "urls": [
-          "https://robot.ofweek.com/CATList-8321200-8100-robot.html",
-          "https://robot.ofweek.com/CAT-898890-humanoidRobot.html",
-          "https://chuneng.ofweek.com/",
-          "https://nev.ofweek.com/",
-          "https://www.ofweek.com/ai/"
-        ]
-      },
-      "chuneng_ofweek": {
-        "type": "html",
-        "same_domain_only": true,
-        "urls": [
-          "https://chuneng.ofweek.com/"
-        ]
-      },
-      "newenergy_ofweek": {
-        "type": "html",
-        "same_domain_only": true,
-        "urls": [
-          "https://nev.ofweek.com/"
-        ]
-      },
-      "ithome": {
-        "type": "rss",
-        "urls": [
-          "https://www.ithome.com/rss/"
-        ]
-      },
-      "solidot": {
-        "type": "rss",
-        "urls": [
-          "https://www.solidot.org/index.rss"
-        ]
-      }
-    }
-  },
-  "automation": {
-    "default_topic_rank": 1,
-    "daily_run_times": [
-      "09:00"
-    ],
-    "weekend_run_times": [
-      "10:00"
-    ],
-    "archive_outputs": true,
-    "archive_dirname": "runs",
-    "selected_topic_basename": "selected_topic"
-  },
-  "revenue_optimization": {
-    "enabled": true,
-    "lookback_days": 30,
-    "min_samples": 10,
-    "weak_rpm_threshold": 0.0,
-    "weak_read_rate_threshold": 3.0,
-    "cooldown_weak_ratio": 0.5,
-    "stop_weak_ratio": 0.8,
-    "cooldown_penalty": 12
-  },
-  "review": {
-    "auto_prepare": true,
-    "min_overall_score": 72,
-    "max_ai_risk": 45,
-    "min_auto_publish_overall_score": 70,
-    "max_auto_publish_ai_risk": 42,
-    "min_auto_publish_validation_score": 70,
-    "min_auto_publish_readiness_score": 60,
-    "hot_topic_min_auto_publish_overall_score": 65,
-    "hot_topic_max_auto_publish_ai_risk": 50,
-    "hot_topic_min_auto_publish_readiness_score": 50,
-    "publish_dirname": "publish"
-  },
-  "compliance": {
-    "aigc_declaration_enabled": true,
-    "max_daily_posts": 1,
-    "draft_only_mode": false,
-    "anti_ai_flavor": {
-      "banned_words": [
-        "综上所述",
-        "不可否认",
-        "双刃剑",
-        "值得关注的是",
-        "换言之",
-        "深入探讨",
-        "如前所述",
-        "值得注意的是",
-        "不难发现",
-        "由此可见",
-        "众所周知",
-        "毋庸置疑",
-        "总而言之",
-        "归根结底",
-        "从某种程度上说"
-      ],
-      "style_rules": [
-        "使用短句和主动语态，避免大段学术化复杂长句",
-        "采用科技媒体记者的第一人称观察视角（如'笔者认为'、'在现场看到'）",
-        "穿插具体的、未经AI抽象化的原始数据（如'同比下滑14.2%'，而非'大幅下滑'）",
-        "每段不超过3个句子，段落之间用事实或数据衔接",
-        "避免使用排比句和对称结构"
-      ]
-    },
-    "proxy_server": "",
-    "account_login_interval_seconds": 300,
-    "account_switch_interval_seconds": 60
-  },
-  "image_generation": {
-    "width": 1280,
-    "height": 720,
-    "mobile_width": 1080,
-    "mobile_height": 1920,
-    "backend": "image2",
-    "backend_priority": "image2,local",
-    "api_mode": "images",
-    "model_name": "gpt-image-2",
-    "model_base_url": "",
-    "model_api_key": "",
-    "request_timeout_seconds": 180,
-    "cover_size": "1536x1024",
-    "infographic_size": "1024x1536",
-    "max_generated_assets": 2,
-    "quality": "high",
-    "style": "vivid",
-    "background": "opaque",
-    "fallback_to_renderer": true,
-    "theme_name": "dark_tech",
-    "primary_color": "#0B1220",
-    "secondary_color": "#122238",
-    "accent_color": "#26D9FF",
-    "background_color": "#060B14",
-    "card_color": "#0F1B2D",
-    "text_color": "#F5F8FF",
-    "muted_text_color": "#91A4C2",
-    "font_path": "",
-    "bold_font_path": "",
-    "export_html": true,
-    "export_svg": true,
-    "export_png": true
-  },
-  "publishing": {
-    "enabled": true,
-    "auto_publish": true,
-    "draft_only": false,
-    "platform": "toutiao",
-    "base_url": "https://mp.toutiao.com/",
-    "publish_url": "",
-    "user_data_dir": ".runtime/toutiao_profile",
-    "channel": "msedge",
-    "executable_path": "",
-    "headless": false,
-    "wait_timeout_ms": 15000,
-    "history_filename": "publish_history.json",
-    "allow_duplicate_topics": false,
-    "title_max_length": 30,
-    "cover_mode": "three",
-    "inline_images_enabled": true,
-    "weitoutiao_enabled": true,
-    "weitoutiao_publish_url": "https://mp.toutiao.com/profile_v4/weitoutiao/publish",
-    "weitoutiao_daily_target": 1,
-    "weitoutiao_standalone_enabled": true,
-    "weitoutiao_companion_enabled": false,
-    "weitoutiao_local_fallback_enabled": true,
-    "weitoutiao_personas": ["hot_comment", "warm", "sanhuo"],
-    "weitoutiao_selectors": {
-      "editor": [
-        "div.ProseMirror",
-        "div[contenteditable='true'][data-placeholder*='微头条']",
-        "div[contenteditable='true'][data-placeholder*='正文']",
-        "div[contenteditable='true']"
-      ],
-      "publish_button": [
-        "button:has-text('发布')",
-        "button:has-text('发表')",
-        "button:has-text('发布微头条')"
-      ],
-      "success_indicator": [
-        "text=发布成功",
-        "text=提交成功",
-        "text=审核中",
-        "text=已发布"
-      ]
-    }
-  },
-  "wechat": {
-    "enabled": true,
-    "auto_publish": false,
-    "toutiao_sync_delay_seconds": 1800,
-    "app_id": "",
-    "app_secret": "",
-    "account_name": "",
-    "author_name": "小椰科技",
-    "base_url": "https://mp.weixin.qq.com/",
-    "api_base_url": "https://api.weixin.qq.com",
-    "api_proxy": "",
-    "title_max_length": 64,
-    "digest_max_length": 120,
-    "history_filename": "wechat_publish_history.json",
-    "cover_strategy": "text_cover",
-    "layout_backend": "builtin",
-    "md2wechat_enabled": false,
-    "md2wechat_api_key": "",
-    "md2wechat_base_url": "https://www.md2wechat.com/api/v1",
-    "md2wechat_theme": "default",
-    "md2wechat_font_size": "medium",
-    "md2wechat_convert_version": "v1",
-    "md2wechat_cli_path": "",
-    "md2wechat_fallback_to_builtin": true,
-    "html_anything_enabled": false,
-    "html_anything_url": "http://localhost:3000",
-    "html_anything_template": "",
-    "html_anything_agent": "claude",
-    "serv00_proxy_enabled": false,
-    "serv00_proxy_url": "",
-    "serv00_proxy_secret": "",
-    "editor_135_enabled": false,
-    "editor_135_base_url": "https://www.135editor.com",
-    "editor_135_profile_dir": ".runtime/editor_135_profile",
-    "builtin_theme": "tech_blue"
-  },
-  "styles": {
-    "deep_industry_analysis": {
-      "label": "深度行业分析风",
-      "tone": "冷静、专业、强调产业链兑现和环节分化。",
-      "article_instruction": "突出产业链位置、订单验证、交付效率、盈利兑现。",
-      "title_instruction": "做出判断感和分化感，避免纯新闻播报标题。",
-      "image_instruction": "深色科技风，图表感强，突出产业链和数据节点。",
-      "opening_instruction": "开头先抛出一个反直觉判断，再给出数据证据。"
-    },
-    "tech_media": {
-      "label": "科技媒体风",
-      "tone": "节奏快、信息密度高、兼顾可读性。",
-      "article_instruction": "像科技媒体深稿，强调事件与趋势的连接。",
-      "title_instruction": "标题兼顾传播性和信息量，避免标题党。",
-      "image_instruction": "媒体封面感，主体明确，适合头条点击。",
-      "opening_instruction": "前三句快速交代变化、原因和最值得看的点。"
-    },
-    "finance_report": {
-      "label": "财经研报风",
-      "tone": "偏研报、偏结论先行、强调数据和盈利模型。",
-      "article_instruction": "结构接近券商行业点评，突出量化指标和风险提示。",
-      "title_instruction": "标题更像行业判断或投资框架总结。",
-      "image_instruction": "图表、数据卡片、深蓝配色，强调专业度。",
-      "opening_instruction": "第一句直接下结论，第二句给关键数据，第三句给配置视角。"
-    },
-    "viral_science": {
-      "label": "爆款科普风",
-      "tone": "易懂、反差强、适合非专业读者转发收藏。",
-      "article_instruction": "用通俗解释复杂技术，但保留关键数字和产业判断。",
-      "title_instruction": "标题可有反问、对比、悬念，但不能低质夸张。",
-      "image_instruction": "视觉冲击更强，主体更直观，适合移动端封面。",
-      "opening_instruction": "前三句要有悬念和反差，让读者愿意继续看。"
-    }
-  },
-  "accounts": {
-    "default": {
-      "label": "手蓝数据笔记",
-      "industry": {
-        "brand_name": "手蓝数据笔记",
-        "focus": "AI、机器人、芯片、新能源、储能、智能制造与科技商业",
-        "audience": "关注科技产业趋势、公司竞争格局与关键赛道机会的头条读者"
-      },
-      "writing": {
-        "default_style": "deep_industry_analysis"
-      },
-      "topic_collection": {
-        "max_topic_age_hours": 12,
-        "drop_topics_without_timestamp": true,
-        "enabled_sources": [
-          "toutiao_hot",
-          "baidu_hot",
-          "36kr",
-          "zhidx",
-          "ofweek",
-          "chuneng_ofweek",
-          "newenergy_ofweek",
-          "ithome",
-          "solidot"
-        ],
-        "focus_industries": [
-          "hot_topic",
-          "humanoid_robot",
-          "new_energy",
-          "energy_storage",
-          "ai_hardware",
-          "industrial_automation"
-        ]
-      },
-      "enabled": true
-    },
-    "robot_notes": {
-      "label": "机器人/地缘科技笔记",
-      "browser_profile_dir": ".runtime/accounts/robot-notes/toutiao_profile",
-      "industry": {
-        "brand_name": "手蓝机器人笔记",
-        "focus": "人形机器人、具身智能、AI硬件、工业自动化、新能源",
-        "audience": "关注人形机器人、具身智能与AI硬件技术进展的头条读者",
-        "positioning": "聚焦科技商业、AI产业与先进制造，用数据拆热点，用产业链看趋势兑现。"
-      },
-      "writing": {
-        "default_style": "tech_media"
-      },
-      "topic_collection": {
-        "max_topic_age_hours": 12,
-        "drop_topics_without_timestamp": false,
-        "enabled_sources": [
-          "toutiao_hot",
-          "baidu_hot",
-          "36kr",
-          "zhidx",
-          "ofweek",
-          "qbitai",
-          "jiqizhixin",
-          "leiphone",
-          "ithome",
-          "solidot"
-        ],
-        "focus_industries": [
-          "hot_topic",
-          "humanoid_robot",
-          "ai_hardware",
-          "industrial_automation",
-          "new_energy"
-        ],
-        "keyword_map": {
-          "humanoid_robot": [
-            "人形机器人",
-            "具身智能",
-            "灵巧手",
-            "减速器",
-            "执行器",
-            "无框力矩电机",
-            "丝杠",
-            "机器人",
-            "仿生",
-            "运动控制",
-            "Optimus",
-            "Walker",
-            "优必选",
-            "宇树",
-            "智元",
-            "傅利叶",
-            "小鹏铁",
-            "特斯拉机器人",
-            "机械臂",
-            "协作机器人",
-            "力传感器",
-            "六维力",
-            "谐波减速器",
-            "RV减速器",
-            "滚珠丝杠",
-            "行星滚柱",
-            "伺服电机",
-            "驱控一体",
-            "关节模组",
-            "末端执行器"
-          ],
-          "ai_hardware": [
-            "AI硬件",
-            "算力",
-            "GPU",
-            "芯片",
-            "边缘计算",
-            "服务器",
-            "CPO",
-            "大模型",
-            "LLM",
-            "智算",
-            "推理芯片",
-            "训练芯片",
-            "英伟达",
-            "华为昇腾",
-            "寒武纪",
-            "光模块",
-            "液冷",
-            "AI芯片",
-            "NPU",
-            "TPU",
-            "存算一体",
-            "HBM",
-            "先进封装",
-            "CoWoS"
-          ],
-          "industrial_automation": [
-            "工业自动化",
-            "工业机器人",
-            "机器视觉",
-            "PLC",
-            "伺服",
-            "传感器",
-            "工业母机",
-            "智能制造",
-            "数字孪生",
-            "工控",
-            "SCADA",
-            "MES",
-            "AGV",
-            "叉车",
-            "产线",
-            "柔性制造",
-            "黑灯工厂",
-            "智能工厂",
-            "工业互联网",
-            "低代码"
-          ],
-          "new_energy": [
-            "新能源",
-            "锂电",
-            "电池",
-            "充电",
-            "固态电池",
-            "储能",
-            "光伏",
-            "风电",
-            "动力电池",
-            "钠电",
-            "氢能",
-            "宁德时代",
-            "比亚迪",
-            "逆变器",
-            "充电桩",
-            "新能源车"
-          ]
-        },
-        "sources": {
-          "toutiao_hot": {
-            "type": "hot_board",
-            "urls": [
-              "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
-            ]
-          },
-          "baidu_hot": {
-            "type": "baidu_hot",
-            "urls": [
-              "https://top.baidu.com/board?tab=realtime"
-            ]
-          },
-          "36kr": {
-            "type": "rss",
-            "urls": [
-              "https://36kr.com/feed-article",
-              "https://36kr.com/feed-newsflash"
-            ]
-          },
-          "zhidx": {
-            "type": "html",
-            "urls": [
-              "https://www.zhidx.com/",
-              "https://www.zhidx.com/p/category/%E6%9C%BA%E5%99%A8%E4%BA%BA%E6%97%A0%E4%BA%BA%E6%9C%BA",
-              "https://www.zhidx.com/p/category/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD"
-            ]
-          },
-          "ofweek": {
-            "type": "html",
-            "urls": [
-              "https://robot.ofweek.com/CATList-8321200-8100-robot.html",
-              "https://robot.ofweek.com/CAT-898890-humanoidRobot.html",
-              "https://www.ofweek.com/ai/"
-            ]
-          },
-          "qbitai": {
-            "type": "rss",
-            "urls": [
-              "https://www.qbitai.com/feed"
-            ]
-          },
-          "jiqizhixin": {
-            "type": "rss",
-            "urls": [
-              "https://www.jiqizhixin.com/rss"
-            ]
-          },
-          "leiphone": {
-            "type": "rss",
-            "urls": [
-              "https://www.leiphone.com/feed/"
-            ]
-          }
-        }
-      },
-      "enabled": true
-    },
-    "politics_notes": {
-      "label": "手蓝政治笔记",
-      "browser_profile_dir": ".runtime/accounts/politics_notes/toutiao_profile",
-      "industry": {
-        "brand_name": "手蓝政治笔记",
-        "focus": "国际政治、地缘博弈、关税、外交与全球政经联动",
-        "audience": "关注国际政治、全球政经变化与中国视角解读的头条读者"
-      },
-      "writing": {
-        "default_style": "tech_media"
-      },
-      "topic_collection": {
-        "max_topic_age_hours": 48,
-        "enabled_sources": [
-          "toutiao_hot",
-          "baidu_hot",
-          "36kr"
-        ],
-        "focus_industries": [
-          "hot_topic",
-          "international"
-        ],
-        "keyword_map": {
-          "international": [
-            "国际",
-            "美国",
-            "欧洲",
-            "俄罗斯",
-            "乌克兰",
-            "中东",
-            "关税",
-            "制裁",
-            "外交",
-            "局势",
-            "停火",
-            "谈判",
-            "油价",
-            "黄金",
-            "美联储",
-            "北约",
-            "白宫",
-            "欧盟"
-          ]
-        },
-        "sources": {
-          "toutiao_hot": {
-            "type": "hot_board",
-            "urls": [
-              "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
-            ]
-          },
-          "baidu_hot": {
-            "type": "baidu_hot",
-            "urls": [
-              "https://top.baidu.com/board?tab=realtime"
-            ]
-          },
-          "36kr": {
-            "type": "rss",
-            "urls": [
-              "https://36kr.com/feed-article",
-              "https://36kr.com/feed-newsflash"
-            ]
-          }
-        }
-      },
-      "enabled": true
-    },
-    "sports_notes": {
-      "enabled": true,
-      "label": "体育笔记",
-      "browser_profile_dir": ".runtime/accounts/sports_notes/toutiao_profile",
-      "industry": {
-        "brand_name": "手蓝体育笔记",
-        "focus": "体育赛事、足球、篮球、国足、国际大赛、赛后复盘",
-        "audience": "关注比赛结果、关键人物、争议节点和赛后复盘的头条读者"
-      },
-      "writing": {
-        "default_style": "viral_science"
-      },
-      "topic_collection": {
-        "max_topic_age_hours": 48,
-        "enabled_sources": [
-          "toutiao_hot",
-          "baidu_hot",
-          "zhibo8",
-          "hupu_sports",
-          "sina_sports"
-        ],
-        "focus_industries": [
-          "hot_topic",
-          "sports"
-        ],
-        "keyword_map": {
-          "sports": [
-            "足球",
-            "篮球",
-            "国足",
-            "男篮",
-            "女篮",
-            "欧冠",
-            "英超",
-            "西甲",
-            "中超",
-            "NBA",
-            "世界杯",
-            "奥运",
-            "乒乓",
-            "羽毛球",
-            "比分",
-            "联赛",
-            "主帅",
-            "绝杀",
-            "淘汰",
-            "亚冠",
-            "CBA",
-            "季后赛",
-            "点球",
-            "红牌",
-            "转会"
-          ]
-        },
-        "sources": {
-          "toutiao_hot": {
-            "type": "hot_board",
-            "urls": [
-              "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
-            ]
-          },
-          "baidu_hot": {
-            "type": "baidu_hot",
-            "urls": [
-              "https://top.baidu.com/board?tab=realtime"
-            ]
-          },
-          "zhibo8": {
-            "type": "html",
-            "same_domain_only": true,
-            "urls": [
-              "https://news.zhibo8.cc/"
-            ]
-          },
-          "hupu_sports": {
-            "type": "html",
-            "same_domain_only": true,
-            "urls": [
-              "https://voice.hupu.com/fifa",
-              "https://voice.hupu.com/nba",
-              "https://voice.hupu.com/csl"
-            ]
-          },
-          "sina_sports": {
-            "type": "html",
-            "same_domain_only": true,
-            "urls": [
-              "https://sports.sina.com.cn/nba/1.shtml",
-              "https://sports.sina.com.cn/china/",
-              "https://sports.sina.com.cn/football/"
-            ]
-          }
-        }
-      }
-    },
-    "story_notes": {
-      "enabled": true,
-      "label": "手蓝人间故事",
-      "browser_profile_dir": ".runtime/accounts/story_notes/toutiao_profile",
-      "industry": {
-        "brand_name": "手蓝人间故事",
-        "focus": "社会民生热点、家庭伦理、代际关系、职场与人情冷暖",
-        "audience": "40-65 岁关注家长里短、人情世故与生活经验的头条读者",
-        "positioning": "把真实发生的社会新闻讲成看得懂的人情故事，给读者一个实在的提醒。"
-      },
-      "writing": {
-        "default_style": "family_story"
-      },
-      "publishing": {
-        "weitoutiao_personas": ["story_comment"],
-        "weitoutiao_daily_target": 3
-      },
-      "topic_collection": {
-        "max_topic_age_hours": 24,
-        "drop_topics_without_timestamp": false,
-        "enabled_sources": [
-          "baidu_hot",
-          "toutiao_hot",
-          "sina_social"
-        ],
-        "focus_industries": [
-          "social_story"
-        ],
-        "keyword_map": {
-          "social_story": [
-            "养老",
-            "退休",
-            "老人",
-            "老年",
-            "婆媳",
-            "儿媳",
-            "女婿",
-            "彩礼",
-            "婚姻",
-            "离婚",
-            "再婚",
-            "相亲",
-            "子女",
-            "独生",
-            "啃老",
-            "赡养",
-            "遗产",
-            "房产",
-            "分家",
-            "邻里",
-            "物业",
-            "小区",
-            "加班",
-            "裁员",
-            "辞职",
-            "打工",
-            "工资",
-            "欠薪",
-            "同事",
-            "职场",
-            "人情",
-            "份子钱",
-            "随礼",
-            "亲戚",
-            "借钱",
-            "催债",
-            "看病",
-            "医保",
-            "挂号",
-            "带娃",
-            "隔代",
-            "留守儿童",
-            "外卖",
-            "快递",
-            "摆摊",
-            "车祸",
-            "赔偿",
-            "调解",
-            "判决",
-            "官司",
-            "骗局",
-            "诈骗",
-            "老人机",
-            "保健品",
-            "广场舞",
-            "相亲角"
-          ]
-        },
-        "sources": {
-          "baidu_hot": {
-            "type": "baidu_hot",
-            "urls": [
-              "https://top.baidu.com/board?tab=realtime"
-            ]
-          },
-          "toutiao_hot": {
-            "type": "hot_board",
-            "urls": [
-              "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
-            ]
-          },
-          "sina_social": {
-            "type": "html",
-            "same_domain_only": true,
-            "urls": [
-              "https://news.sina.com.cn/society/",
-              "https://www.thepaper.cn/"
-            ]
-          }
-        }
-      }
-    },
-    "hardware_notes": {
-      "enabled": false,
-      "label": "手蓝硬件笔记",
-      "browser_profile_dir": ".runtime/accounts/hardware_notes/toutiao_profile",
-      "industry": {
-        "brand_name": "手蓝硬件笔记",
-        "focus": "AI硬件、机器人芯片、边缘算力、传感器、CPO、工业计算",
-        "audience": "关注芯片渗透率、器件升级和算力成本迁移的专业读者"
-      },
-      "writing": {
-        "default_style": "deep_industry_analysis"
-      },
-      "topic_collection": {
-        "focus_industries": [
-          "ai_hardware",
-          "humanoid_robot",
-          "industrial_automation"
-        ],
-        "enabled_sources": [],
-        "_todo_enabled_sources": "TODO: add enabled_sources"
-      }
-    },
-    "automation_notes": {
-      "enabled": false,
-      "label": "手蓝智造笔记",
-      "browser_profile_dir": ".runtime/accounts/automation_notes/toutiao_profile",
-      "industry": {
-        "brand_name": "手蓝智造笔记",
-        "focus": "工业自动化、智能装备、机器视觉、伺服、PLC、工厂数字化",
-        "audience": "关注制造业升级、设备替代和工业供应链演进的行业读者"
-      },
-      "writing": {
-        "default_style": "tech_media"
-      },
-      "topic_collection": {
-        "focus_industries": [
-          "industrial_automation",
-          "humanoid_robot",
-          "ai_hardware"
-        ],
-        "enabled_sources": [],
-        "_todo_enabled_sources": "TODO: add enabled_sources"
-      }
-    }
-  },
-  "enhanced_insights": {
-    "enabled": true,
-    "multi_source": false,
-    "historical": false,
-    "data_mining": true
-  },
-  "expert_council": {
-    "enabled": true,
-    "roles": [
-      "evidence-auditor",
-      "industry-strategist",
-      "reader-editor",
-      "devils-advocate",
-      "originality-editor"
-    ]
-  },
-  "quality_review_council": {
-    "enabled": true,
-    "auto_revise": true,
-    "max_auto_revisions": 1,
-    "min_overall_score": 78,
-    "min_dimension_score": 65,
-    "roles": [
-      "quality-fact-checker",
-      "quality-logic-auditor",
-      "quality-structure-editor",
-      "quality-originality-auditor",
-      "quality-compliance-editor"
-    ]
-  },
-  "one_person_company": {
-    "deerflow_enabled": false,
-    "deerflow_base_url": "http://localhost:8001",
-    "letta_enabled": false,
-    "letta_base_url": "http://localhost:8283",
-    "letta_agent_id": "",
-    "prompt_optimizer_enabled": false,
-    "prompt_optimizer_base_url": "http://localhost:8501",
-    "ruflo_enabled": false,
-    "ruflo_base_url": "http://localhost:8002",
-    "agency_roles_dir": "config/agency_roles"
-  }
-}
+model:
+  name: deepseek-v4-flash
+  temperature: 0.7
+writing:
+  article_word_target: 1500
+  max_input_chars: 16000
+  default_style: deep_industry_analysis
+  title_count: 20
+  recommended_title_count: 3
+  cache_similarity_threshold: 0.82
+  kol_voice_enabled: false
+  kol_voice_name: ''
+  kol_voice_style: 短段落、适度破折号、适度反问句、口语化转折
+industry:
+  brand_name: 手蓝数据笔记
+  focus: 科技商业、AI产业、先进制造（机器人、新能源、智能装备、储能）
+  platform: 今日头条
+  audience: 关注科技商业与产业升级的从业者、投资者与决策者
+  positioning: 聚焦科技商业、AI产业与先进制造，用数据拆热点，用产业链看趋势兑现。
+topic_collection:
+  lookback_days: 2
+  max_topic_age_hours: 12
+  drop_topics_without_timestamp: true
+  max_items_per_source: 24
+  max_export_topics: 40
+  request_timeout_seconds: 12
+  enabled_sources:
+  - toutiao_hot
+  - baidu_hot
+  - 36kr
+  - zhidx
+  - ofweek
+  - chuneng_ofweek
+  - newenergy_ofweek
+  - ithome
+  - solidot
+  focus_industries:
+  - hot_topic
+  - humanoid_robot
+  - new_energy
+  - energy_storage
+  - ai_hardware
+  - industrial_automation
+  keyword_map:
+    hot_topic:
+    - 热点
+    - 热搜
+    - 热议
+    - 爆火
+    - 刷屏
+    - 官宣
+    - 突发
+    - 通报
+    - 回应
+    - 反转
+    humanoid_robot:
+    - 人形机器人
+    - 具身智能
+    - 灵巧手
+    - 减速器
+    - 执行器
+    - 无框力矩电机
+    - 丝杠
+    new_energy:
+    - 新能源
+    - 光伏
+    - 风电
+    - 锂电
+    - 电池
+    - 充电
+    - 新能源汽车
+    - 动力电池
+    - 固态电池
+    - 钠电
+    - 充换电
+    - 光储
+    - 电池回收
+    energy_storage:
+    - 储能
+    - 工商业储能
+    - PCS
+    - EMS
+    - 逆变器
+    - 电网侧储能
+    - 储能电站
+    - 储能电池
+    - 大储
+    - 户储
+    - 抽水蓄能
+    - 液流电池
+    - 源网荷储
+    - 构网型储能
+    ai_hardware:
+    - AI硬件
+    - 算力
+    - 服务器
+    - GPU
+    - 芯片
+    - 边缘计算
+    - CPO
+    industrial_automation:
+    - 工业自动化
+    - 工业机器人
+    - 机器视觉
+    - PLC
+    - 伺服
+    - 传感器
+    - 工业母机
+  sources:
+    toutiao_hot:
+      type: hot_board
+      urls:
+      - https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc
+    baidu_hot:
+      type: baidu_hot
+      urls:
+      - https://top.baidu.com/board?tab=realtime
+    36kr:
+      type: rss
+      urls:
+      - https://36kr.com/feed-article
+      - https://36kr.com/feed-newsflash
+    zhidx:
+      type: html
+      urls:
+      - https://www.zhidx.com/
+      - https://www.zhidx.com/p/category/%E6%9C%BA%E5%99%A8%E4%BA%BA%E6%97%A0%E4%BA%BA%E6%9C%BA
+      - https://www.zhidx.com/p/category/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD
+    ofweek:
+      type: html
+      urls:
+      - https://robot.ofweek.com/CATList-8321200-8100-robot.html
+      - https://robot.ofweek.com/CAT-898890-humanoidRobot.html
+      - https://chuneng.ofweek.com/
+      - https://nev.ofweek.com/
+      - https://www.ofweek.com/ai/
+    chuneng_ofweek:
+      type: html
+      same_domain_only: true
+      urls:
+      - https://chuneng.ofweek.com/
+    newenergy_ofweek:
+      type: html
+      same_domain_only: true
+      urls:
+      - https://nev.ofweek.com/
+    ithome:
+      type: rss
+      urls:
+      - https://www.ithome.com/rss/
+    solidot:
+      type: rss
+      urls:
+      - https://www.solidot.org/index.rss
+automation:
+  default_topic_rank: 1
+  daily_run_times:
+  - 09:00
+  weekend_run_times:
+  - '10:00'
+  archive_outputs: true
+  archive_dirname: runs
+  selected_topic_basename: selected_topic
+revenue_optimization:
+  enabled: true
+  lookback_days: 30
+  min_samples: 10
+  weak_rpm_threshold: 0.0
+  weak_read_rate_threshold: 3.0
+  cooldown_weak_ratio: 0.5
+  stop_weak_ratio: 0.8
+  cooldown_penalty: 12
+review:
+  auto_prepare: true
+  min_overall_score: 72
+  max_ai_risk: 45
+  min_auto_publish_overall_score: 70
+  max_auto_publish_ai_risk: 42
+  min_auto_publish_validation_score: 70
+  min_auto_publish_readiness_score: 60
+  hot_topic_min_auto_publish_overall_score: 65
+  hot_topic_max_auto_publish_ai_risk: 50
+  hot_topic_min_auto_publish_readiness_score: 50
+  publish_dirname: publish
+compliance:
+  aigc_declaration_enabled: true
+  max_daily_posts: 1
+  draft_only_mode: false
+  anti_ai_flavor:
+    banned_words:
+    - 综上所述
+    - 不可否认
+    - 双刃剑
+    - 值得关注的是
+    - 换言之
+    - 深入探讨
+    - 如前所述
+    - 值得注意的是
+    - 不难发现
+    - 由此可见
+    - 众所周知
+    - 毋庸置疑
+    - 总而言之
+    - 归根结底
+    - 从某种程度上说
+    style_rules:
+    - 使用短句和主动语态，避免大段学术化复杂长句
+    - 采用科技媒体记者的第一人称观察视角（如'笔者认为'、'在现场看到'）
+    - 穿插具体的、未经AI抽象化的原始数据（如'同比下滑14.2%'，而非'大幅下滑'）
+    - 每段不超过3个句子，段落之间用事实或数据衔接
+    - 避免使用排比句和对称结构
+  proxy_server: ''
+  account_login_interval_seconds: 300
+  account_switch_interval_seconds: 60
+image_generation:
+  width: 1280
+  height: 720
+  mobile_width: 1080
+  mobile_height: 1920
+  backend: image2
+  backend_priority: image2,local
+  api_mode: images
+  model_name: gpt-image-2
+  model_base_url: ''
+  model_api_key: ''
+  request_timeout_seconds: 180
+  cover_size: 1536x1024
+  infographic_size: 1024x1536
+  max_generated_assets: 2
+  quality: high
+  style: vivid
+  background: opaque
+  fallback_to_renderer: true
+  theme_name: dark_tech
+  primary_color: '#0B1220'
+  secondary_color: '#122238'
+  accent_color: '#26D9FF'
+  background_color: '#060B14'
+  card_color: '#0F1B2D'
+  text_color: '#F5F8FF'
+  muted_text_color: '#91A4C2'
+  font_path: ''
+  bold_font_path: ''
+  export_html: true
+  export_svg: true
+  export_png: true
+publishing:
+  enabled: true
+  auto_publish: true
+  draft_only: false
+  platform: toutiao
+  base_url: https://mp.toutiao.com/
+  publish_url: ''
+  user_data_dir: .runtime/toutiao_profile
+  channel: msedge
+  executable_path: ''
+  headless: false
+  wait_timeout_ms: 15000
+  history_filename: publish_history.json
+  allow_duplicate_topics: false
+  title_max_length: 30
+  cover_mode: three
+  inline_images_enabled: true
+  weitoutiao_enabled: true
+  weitoutiao_publish_url: https://mp.toutiao.com/profile_v4/weitoutiao/publish
+  weitoutiao_daily_target: 1
+  weitoutiao_standalone_enabled: true
+  weitoutiao_companion_enabled: false
+  weitoutiao_local_fallback_enabled: true
+  weitoutiao_personas:
+  - hot_comment
+  - warm
+  - sanhuo
+  weitoutiao_selectors:
+    editor:
+    - div.ProseMirror
+    - div[contenteditable='true'][data-placeholder*='微头条']
+    - div[contenteditable='true'][data-placeholder*='正文']
+    - div[contenteditable='true']
+    publish_button:
+    - button:has-text('发布')
+    - button:has-text('发表')
+    - button:has-text('发布微头条')
+    success_indicator:
+    - text=发布成功
+    - text=提交成功
+    - text=审核中
+    - text=已发布
+wechat:
+  enabled: true
+  auto_publish: false
+  toutiao_sync_delay_seconds: 1800
+  app_id: ''
+  app_secret: ''
+  account_name: ''
+  author_name: 小椰科技
+  base_url: https://mp.weixin.qq.com/
+  api_base_url: https://api.weixin.qq.com
+  api_proxy: ''
+  title_max_length: 64
+  digest_max_length: 120
+  history_filename: wechat_publish_history.json
+  cover_strategy: text_cover
+  layout_backend: builtin
+  md2wechat_enabled: false
+  md2wechat_api_key: ''
+  md2wechat_base_url: https://www.md2wechat.com/api/v1
+  md2wechat_theme: default
+  md2wechat_font_size: medium
+  md2wechat_convert_version: v1
+  md2wechat_cli_path: ''
+  md2wechat_fallback_to_builtin: true
+  html_anything_enabled: false
+  html_anything_url: http://localhost:3000
+  html_anything_template: ''
+  html_anything_agent: claude
+  serv00_proxy_enabled: false
+  serv00_proxy_url: ''
+  serv00_proxy_secret: ''
+  editor_135_enabled: false
+  editor_135_base_url: https://www.135editor.com
+  editor_135_profile_dir: .runtime/editor_135_profile
+  builtin_theme: tech_blue
+styles:
+  deep_industry_analysis:
+    label: 深度行业分析风
+    tone: 冷静、专业、强调产业链兑现和环节分化。
+    article_instruction: 突出产业链位置、订单验证、交付效率、盈利兑现。
+    title_instruction: 做出判断感和分化感，避免纯新闻播报标题。
+    image_instruction: 深色科技风，图表感强，突出产业链和数据节点。
+    opening_instruction: 开头先抛出一个反直觉判断，再给出数据证据。
+  tech_media:
+    label: 科技媒体风
+    tone: 节奏快、信息密度高、兼顾可读性。
+    article_instruction: 像科技媒体深稿，强调事件与趋势的连接。
+    title_instruction: 标题兼顾传播性和信息量，避免标题党。
+    image_instruction: 媒体封面感，主体明确，适合头条点击。
+    opening_instruction: 前三句快速交代变化、原因和最值得看的点。
+  finance_report:
+    label: 财经研报风
+    tone: 偏研报、偏结论先行、强调数据和盈利模型。
+    article_instruction: 结构接近券商行业点评，突出量化指标和风险提示。
+    title_instruction: 标题更像行业判断或投资框架总结。
+    image_instruction: 图表、数据卡片、深蓝配色，强调专业度。
+    opening_instruction: 第一句直接下结论，第二句给关键数据，第三句给配置视角。
+  viral_science:
+    label: 爆款科普风
+    tone: 易懂、反差强、适合非专业读者转发收藏。
+    article_instruction: 用通俗解释复杂技术，但保留关键数字和产业判断。
+    title_instruction: 标题可有反问、对比、悬念，但不能低质夸张。
+    image_instruction: 视觉冲击更强，主体更直观，适合移动端封面。
+    opening_instruction: 前三句要有悬念和反差，让读者愿意继续看。
+accounts:
+  default:
+    label: 手蓝数据笔记
+    industry:
+      brand_name: 手蓝数据笔记
+      focus: AI、机器人、芯片、新能源、储能、智能制造与科技商业
+      audience: 关注科技产业趋势、公司竞争格局与关键赛道机会的头条读者
+    writing:
+      default_style: deep_industry_analysis
+    topic_collection:
+      max_topic_age_hours: 12
+      drop_topics_without_timestamp: true
+      enabled_sources:
+      - toutiao_hot
+      - baidu_hot
+      - 36kr
+      - zhidx
+      - ofweek
+      - chuneng_ofweek
+      - newenergy_ofweek
+      - ithome
+      - solidot
+      focus_industries:
+      - hot_topic
+      - humanoid_robot
+      - new_energy
+      - energy_storage
+      - ai_hardware
+      - industrial_automation
+    enabled: true
+  robot_notes:
+    label: 手蓝人间故事（原机器人笔记）
+    browser_profile_dir: .runtime/accounts/robot-notes/toutiao_profile
+    industry:
+      brand_name: 手蓝人间故事
+      focus: 社会民生热点、家庭伦理、代际关系、职场与人情冷暖
+      audience: 40-65 岁关注家长里短、人情世故与生活经验的头条读者
+      positioning: 把真实发生的社会新闻讲成看得懂的人情故事，给读者一个实在的提醒。
+    writing:
+      default_style: family_story
+    publishing:
+      weitoutiao_personas:
+      - story_comment
+      weitoutiao_daily_target: 3
+    topic_collection:
+      max_topic_age_hours: 24
+      drop_topics_without_timestamp: false
+      enabled_sources:
+      - baidu_hot
+      - toutiao_hot
+      - sina_social
+      focus_industries:
+      - social_story
+      keyword_map:
+        social_story:
+        - 养老
+        - 退休
+        - 老人
+        - 老年
+        - 婆媳
+        - 儿媳
+        - 女婿
+        - 彩礼
+        - 婚姻
+        - 离婚
+        - 再婚
+        - 相亲
+        - 子女
+        - 独生
+        - 啃老
+        - 赡养
+        - 遗产
+        - 房产
+        - 分家
+        - 邻里
+        - 物业
+        - 小区
+        - 加班
+        - 裁员
+        - 辞职
+        - 打工
+        - 工资
+        - 欠薪
+        - 同事
+        - 职场
+        - 人情
+        - 份子钱
+        - 随礼
+        - 亲戚
+        - 借钱
+        - 催债
+        - 看病
+        - 医保
+        - 挂号
+        - 带娃
+        - 隔代
+        - 留守儿童
+        - 外卖
+        - 快递
+        - 摆摊
+        - 车祸
+        - 赔偿
+        - 调解
+        - 判决
+        - 官司
+        - 骗局
+        - 诈骗
+        - 老人机
+        - 保健品
+        - 广场舞
+        - 相亲角
+      sources:
+        toutiao_hot:
+          type: hot_board
+          urls:
+          - https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc
+        baidu_hot:
+          type: baidu_hot
+          urls:
+          - https://top.baidu.com/board?tab=realtime
+        sina_social: &id001
+          type: html
+          same_domain_only: true
+          urls:
+          - https://news.sina.com.cn/society/
+          - https://www.thepaper.cn/
+    enabled: true
+  politics_notes:
+    label: 手蓝政治笔记
+    browser_profile_dir: .runtime/accounts/politics_notes/toutiao_profile
+    industry:
+      brand_name: 手蓝政治笔记
+      focus: 国际政治、地缘博弈、关税、外交与全球政经联动
+      audience: 关注国际政治、全球政经变化与中国视角解读的头条读者
+    writing:
+      default_style: tech_media
+    topic_collection:
+      max_topic_age_hours: 48
+      enabled_sources:
+      - toutiao_hot
+      - baidu_hot
+      - 36kr
+      focus_industries:
+      - hot_topic
+      - international
+      keyword_map:
+        international:
+        - 国际
+        - 美国
+        - 欧洲
+        - 俄罗斯
+        - 乌克兰
+        - 中东
+        - 关税
+        - 制裁
+        - 外交
+        - 局势
+        - 停火
+        - 谈判
+        - 油价
+        - 黄金
+        - 美联储
+        - 北约
+        - 白宫
+        - 欧盟
+      sources:
+        toutiao_hot:
+          type: hot_board
+          urls:
+          - https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc
+        baidu_hot:
+          type: baidu_hot
+          urls:
+          - https://top.baidu.com/board?tab=realtime
+        36kr:
+          type: rss
+          urls:
+          - https://36kr.com/feed-article
+          - https://36kr.com/feed-newsflash
+    enabled: true
+  sports_notes:
+    enabled: true
+    label: 体育笔记
+    browser_profile_dir: .runtime/accounts/sports_notes/toutiao_profile
+    industry:
+      brand_name: 手蓝体育笔记
+      focus: 体育赛事、足球、篮球、国足、国际大赛、赛后复盘
+      audience: 关注比赛结果、关键人物、争议节点和赛后复盘的头条读者
+    writing:
+      default_style: viral_science
+    topic_collection:
+      max_topic_age_hours: 48
+      enabled_sources:
+      - toutiao_hot
+      - baidu_hot
+      - zhibo8
+      - hupu_sports
+      - sina_sports
+      focus_industries:
+      - hot_topic
+      - sports
+      keyword_map:
+        sports:
+        - 足球
+        - 篮球
+        - 国足
+        - 男篮
+        - 女篮
+        - 欧冠
+        - 英超
+        - 西甲
+        - 中超
+        - NBA
+        - 世界杯
+        - 奥运
+        - 乒乓
+        - 羽毛球
+        - 比分
+        - 联赛
+        - 主帅
+        - 绝杀
+        - 淘汰
+        - 亚冠
+        - CBA
+        - 季后赛
+        - 点球
+        - 红牌
+        - 转会
+      sources:
+        toutiao_hot:
+          type: hot_board
+          urls:
+          - https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc
+        baidu_hot:
+          type: baidu_hot
+          urls:
+          - https://top.baidu.com/board?tab=realtime
+        zhibo8:
+          type: html
+          same_domain_only: true
+          urls:
+          - https://news.zhibo8.cc/
+        hupu_sports:
+          type: html
+          same_domain_only: true
+          urls:
+          - https://voice.hupu.com/fifa
+          - https://voice.hupu.com/nba
+          - https://voice.hupu.com/csl
+        sina_sports:
+          type: html
+          same_domain_only: true
+          urls:
+          - https://sports.sina.com.cn/nba/1.shtml
+          - https://sports.sina.com.cn/china/
+          - https://sports.sina.com.cn/football/
+  story_notes:
+    enabled: true
+    label: 手蓝人间故事
+    browser_profile_dir: .runtime/accounts/story_notes/toutiao_profile
+    industry:
+      brand_name: 手蓝人间故事
+      focus: 社会民生热点、家庭伦理、代际关系、职场与人情冷暖
+      audience: 40-65 岁关注家长里短、人情世故与生活经验的头条读者
+      positioning: 把真实发生的社会新闻讲成看得懂的人情故事，给读者一个实在的提醒。
+    writing:
+      default_style: family_story
+    publishing:
+      weitoutiao_personas:
+      - story_comment
+      weitoutiao_daily_target: 3
+    topic_collection:
+      max_topic_age_hours: 24
+      drop_topics_without_timestamp: false
+      enabled_sources:
+      - baidu_hot
+      - toutiao_hot
+      - sina_social
+      focus_industries:
+      - social_story
+      keyword_map:
+        social_story:
+        - 养老
+        - 退休
+        - 老人
+        - 老年
+        - 婆媳
+        - 儿媳
+        - 女婿
+        - 彩礼
+        - 婚姻
+        - 离婚
+        - 再婚
+        - 相亲
+        - 子女
+        - 独生
+        - 啃老
+        - 赡养
+        - 遗产
+        - 房产
+        - 分家
+        - 邻里
+        - 物业
+        - 小区
+        - 加班
+        - 裁员
+        - 辞职
+        - 打工
+        - 工资
+        - 欠薪
+        - 同事
+        - 职场
+        - 人情
+        - 份子钱
+        - 随礼
+        - 亲戚
+        - 借钱
+        - 催债
+        - 看病
+        - 医保
+        - 挂号
+        - 带娃
+        - 隔代
+        - 留守儿童
+        - 外卖
+        - 快递
+        - 摆摊
+        - 车祸
+        - 赔偿
+        - 调解
+        - 判决
+        - 官司
+        - 骗局
+        - 诈骗
+        - 老人机
+        - 保健品
+        - 广场舞
+        - 相亲角
+      sources:
+        baidu_hot:
+          type: baidu_hot
+          urls:
+          - https://top.baidu.com/board?tab=realtime
+        toutiao_hot:
+          type: hot_board
+          urls:
+          - https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc
+        sina_social: *id001
+  hardware_notes:
+    enabled: false
+    label: 手蓝硬件笔记
+    browser_profile_dir: .runtime/accounts/hardware_notes/toutiao_profile
+    industry:
+      brand_name: 手蓝硬件笔记
+      focus: AI硬件、机器人芯片、边缘算力、传感器、CPO、工业计算
+      audience: 关注芯片渗透率、器件升级和算力成本迁移的专业读者
+    writing:
+      default_style: deep_industry_analysis
+    topic_collection:
+      focus_industries:
+      - ai_hardware
+      - humanoid_robot
+      - industrial_automation
+      enabled_sources: []
+      _todo_enabled_sources: 'TODO: add enabled_sources'
+  automation_notes:
+    enabled: false
+    label: 手蓝智造笔记
+    browser_profile_dir: .runtime/accounts/automation_notes/toutiao_profile
+    industry:
+      brand_name: 手蓝智造笔记
+      focus: 工业自动化、智能装备、机器视觉、伺服、PLC、工厂数字化
+      audience: 关注制造业升级、设备替代和工业供应链演进的行业读者
+    writing:
+      default_style: tech_media
+    topic_collection:
+      focus_industries:
+      - industrial_automation
+      - humanoid_robot
+      - ai_hardware
+      enabled_sources: []
+      _todo_enabled_sources: 'TODO: add enabled_sources'
+enhanced_insights:
+  enabled: true
+  multi_source: false
+  historical: false
+  data_mining: true
+expert_council:
+  enabled: true
+  roles:
+  - evidence-auditor
+  - industry-strategist
+  - reader-editor
+  - devils-advocate
+  - originality-editor
+quality_review_council:
+  enabled: true
+  auto_revise: true
+  max_auto_revisions: 1
+  min_overall_score: 78
+  min_dimension_score: 65
+  roles:
+  - quality-fact-checker
+  - quality-logic-auditor
+  - quality-structure-editor
+  - quality-originality-auditor
+  - quality-compliance-editor
+one_person_company:
+  deerflow_enabled: false
+  deerflow_base_url: http://localhost:8001
+  letta_enabled: false
+  letta_base_url: http://localhost:8283
+  letta_agent_id: ''
+  prompt_optimizer_enabled: false
+  prompt_optimizer_base_url: http://localhost:8501
+  ruflo_enabled: false
+  ruflo_base_url: http://localhost:8002
+  agency_roles_dir: config/agency_roles

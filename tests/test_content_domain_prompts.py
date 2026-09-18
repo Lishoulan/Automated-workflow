@@ -65,8 +65,8 @@ def test_missing_content_domain_falls_back_to_industry() -> None:
 
 
 def test_the_two_accounts_resolve_to_different_domains() -> None:
-    assert _settings("robot_notes").get_style().content_domain == "industry"
-    assert _settings("story_notes").get_style().content_domain == "narrative"
+    assert _settings("sports_notes").get_style().content_domain == "industry"
+    assert _settings("robot_notes").get_style().content_domain == "narrative"
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +75,8 @@ def test_the_two_accounts_resolve_to_different_domains() -> None:
 
 
 def test_industry_rules_are_industry_only() -> None:
-    industry = WriterAgent._domain_thinking_rules(_settings("robot_notes").get_style())
-    narrative = WriterAgent._domain_thinking_rules(_settings("story_notes").get_style())
+    industry = WriterAgent._domain_thinking_rules(_settings("sports_notes").get_style())
+    narrative = WriterAgent._domain_thinking_rules(_settings("robot_notes").get_style())
 
     assert "产业链拆解" in industry
     assert "产业链拆解" not in narrative
@@ -85,8 +85,8 @@ def test_industry_rules_are_industry_only() -> None:
 
 
 def test_narrative_rules_are_narrative_only() -> None:
-    industry = WriterAgent._domain_thinking_rules(_settings("robot_notes").get_style())
-    narrative = WriterAgent._domain_thinking_rules(_settings("story_notes").get_style())
+    industry = WriterAgent._domain_thinking_rules(_settings("sports_notes").get_style())
+    narrative = WriterAgent._domain_thinking_rules(_settings("robot_notes").get_style())
 
     assert "处境还原" in narrative
     assert "处境还原" not in industry
@@ -96,8 +96,8 @@ def test_narrative_rules_are_narrative_only() -> None:
 
 def test_execution_rules_do_not_force_three_data_points_on_stories() -> None:
     """这条最关键：社会新闻常常只有一两个数字，硬要求三个会逼模型编数字。"""
-    narrative = WriterAgent._domain_execution_rules(_settings("story_notes").get_style())
-    industry = WriterAgent._domain_execution_rules(_settings("robot_notes").get_style())
+    narrative = WriterAgent._domain_execution_rules(_settings("robot_notes").get_style())
+    industry = WriterAgent._domain_execution_rules(_settings("sports_notes").get_style())
 
     assert "必须引用至少 3 个" not in narrative
     assert "必须引用至少 3 个" in industry
@@ -106,7 +106,7 @@ def test_execution_rules_do_not_force_three_data_points_on_stories() -> None:
 
 def test_narrative_system_prompt_forbids_inventing_people_and_stories() -> None:
     """违规红线在系统提示词里必须有明文，不能只靠风格字段描述。"""
-    style = _settings("story_notes").get_style()
+    style = _settings("robot_notes").get_style()
     text = WriterAgent._domain_writing_rules(style)
 
     assert "严禁编造人物与故事" in text
@@ -118,7 +118,7 @@ def test_narrative_system_prompt_forbids_inventing_people_and_stories() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("account_key", ["robot_notes", "story_notes"])
+@pytest.mark.parametrize("account_key", ["sports_notes", "robot_notes"])
 def test_safety_constraints_survive_in_both_domains(account_key: str, monkeypatch) -> None:
     """换领域绝不能顺手把反虚构与改写距离的红线一起换掉。
 
@@ -174,7 +174,7 @@ def test_prompt_template_keeps_the_shared_evidence_boundary(repo) -> None:
         content_format_label="深度分析", format_brief="f", paragraph_instruction="pp",
         evidence_strength="70", topic_quality_score="70", auto_publish_directive="",
     )
-    for account_key in ("robot_notes", "story_notes"):
+    for account_key in ("sports_notes", "robot_notes"):
         style = _settings(account_key).get_style()
         text = repo.render(
             "article_prompt_v2.md",

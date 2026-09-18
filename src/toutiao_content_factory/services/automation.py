@@ -1455,25 +1455,61 @@ class TopicAutomationService:
         return self.settings.project_root / "output" / "accounts" / slug
 
     def _topic_matches_account_boundary(self, topic: TopicCandidate) -> bool:
+        """这道题归不归这个账号。
+
+        ⚠️ 2026-09-18：这里原来把账号**硬编码**成垂直号：
+
+            if account_key == "robot_notes":
+                return self._is_robot_topic(topic)
+
+        于是 `robot_notes` 无论配置成什么赛道，都只收机器人题 —— 它的本意是
+        「防止机器人号发无关社会热点导致定位漂移」，但账号换了赛道之后，
+        这段硬编码反过来把新赛道的题全部拦掉：实测社会故事类账号的
+        6 条候选被这道边界过滤清成 0 条，选题池彻底为空。
+
+        现在改为**按账号声明的赛道**判断，而不是按账号 key：
+          - 声明了 hot_topic 的账号：热榜题放行（热点二创是涨浏览量的核心路径）；
+          - 声明了 social_story 的账号：只收通过社会故事判据的题；
+          - 声明了垂直赛道（机器人/能源/国际/体育）的账号：照旧只收本赛道题。
+        这样换赛道只需要改配置，不会再被硬编码挡住。
+        """
         account_key = self.settings.account_key
+        focus = {str(item).strip() for item in self.settings.topic_collection.focus_industries}
         is_hot_source = topic.source_type in {"hot_board", "baidu_hot"}
-        # 账号启用了 hot_topic 赛道时，热榜话题直接放行（热点二创是涨浏览量的核心路径）。
-        # 垂直账号（机器人/能源等）只接与自己赛道相关（含关键词命中）的热榜话题，
-        # 避免"机器人笔记"发无关社会热点导致账号定位漂移。
-        if is_hot_source and "hot_topic" in set(self.settings.topic_collection.focus_industries):
-            if account_key in {"robot_notes", "energy_notes", "politics_notes", "sports_notes"}:
-                robot_score, energy_score, international_score, sports_score = self._topic_domain_scores(topic)
-                if account_key == "robot_notes" and (robot_score >= 1 or energy_score >= 1):
-                    return True
-                if account_key == "energy_notes" and energy_score >= 1:
-                    return True
-                if account_key == "politics_notes" and international_score >= 1:
-                    return True
-                if account_key == "sports_notes" and sports_score >= 1:
+
+        # 社会故事类：以专题判据为准，不看机器人/能源等垂直分数。
+        if "social_story" in focus:
+            from toutiao_content_factory.services.topic_collection import (
+                TopicCollectionService,
+            )
+
+            return TopicCollectionService._has_social_story_signal(topic)
+
+        # 声明了热点赛道的垂直账号：热榜题必须命中自己的赛道关键词。
+        if is_hot_source and "hot_topic" in focus:
+            vertical = {
+                "robot_notes": ("robot", "energy"),
+                "energy_notes": ("energy",),
+                "politics_notes": ("international",),
+                "sports_notes": ("sports",),
+            }.get(account_key)
+            if vertical is not None:
+                robot_score, energy_score, international_score, sports_score = (
+                    self._topic_domain_scores(topic)
+                )
+                scores = {
+                    "robot": robot_score,
+                    "energy": energy_score,
+                    "international": international_score,
+                    "sports": sports_score,
+                }
+                if any(scores.get(name, 0) >= 1 for name in vertical):
                     return True
                 # 未命中垂直赛道关键词的热榜话题，交给默认账号消化
                 return False
             return True
+
+        # 垂直账号（未声明 hot_topic 时）：只收本赛道题。
         if account_key == "robot_notes":
             return self._is_robot_topic(topic)
         if account_key == "energy_notes":

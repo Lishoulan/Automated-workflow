@@ -82,18 +82,18 @@ def test_story_account_uses_the_story_persona(clean_persona_env: None) -> None:
     assert settings.publishing.weitoutiao_personas == ["story_comment"]
 
 
-def test_robot_account_keeps_its_personas(clean_persona_env: None) -> None:
+def test_vertical_account_keeps_its_personas(clean_persona_env: None) -> None:
     """既有账号行为不变 —— 这是这次改动的底线。"""
-    settings = load_settings(Path.cwd(), account_key="robot_notes")
+    settings = load_settings(Path.cwd(), account_key="sports_notes")
 
     assert settings.publishing.weitoutiao_personas == ["hot_comment", "warm", "sanhuo"]
 
 
 def test_two_accounts_do_not_share_personas(clean_persona_env: None) -> None:
-    robot = load_settings(Path.cwd(), account_key="robot_notes")
-    story = load_settings(Path.cwd(), account_key="story_notes")
+    vertical = load_settings(Path.cwd(), account_key="sports_notes")
+    story = load_settings(Path.cwd(), account_key="robot_notes")
 
-    assert robot.publishing.weitoutiao_personas != story.publishing.weitoutiao_personas
+    assert vertical.publishing.weitoutiao_personas != story.publishing.weitoutiao_personas
 
 
 def test_scoped_env_var_overrides_personas(
@@ -119,15 +119,15 @@ def test_blank_scoped_env_var_falls_through_to_config(
 
 def test_story_account_gets_a_higher_weitoutiao_target(clean_persona_env: None) -> None:
     """中老年流量的主入口是微头条，故事账号的目标量应高于机器人账号的 1 条。"""
-    story = load_settings(Path.cwd(), account_key="story_notes")
-    robot = load_settings(Path.cwd(), account_key="robot_notes")
+    story = load_settings(Path.cwd(), account_key="robot_notes")
+    vertical = load_settings(Path.cwd(), account_key="sports_notes")
 
-    assert story.publishing.weitoutiao_daily_target > robot.publishing.weitoutiao_daily_target
+    assert story.publishing.weitoutiao_daily_target > vertical.publishing.weitoutiao_daily_target
 
 
 def test_every_configured_persona_has_a_template(clean_persona_env: None) -> None:
     """配置里写了但模板里没有的人设会被静默回退成 hot_comment。"""
-    for account_key in ("robot_notes", "story_notes", "default"):
+    for account_key in ("sports_notes", "robot_notes", "default"):
         settings = load_settings(Path.cwd(), account_key=account_key)
         for persona in settings.publishing.weitoutiao_personas:
             assert persona in PERSONA_TEMPLATES, (

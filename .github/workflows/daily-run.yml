@@ -568,6 +568,12 @@ jobs:
           echo "Content generation does not depend on any of them; the pipeline degrades gracefully."
 
       - name: Restore publish history cache
+        # ⚠️ 2026-09-18：选题池必须跨 run 保留，否则云端每次都是空池。
+        # 每个 job 都是全新 runner，collect_topics 产出的 daily_topics.json 随
+        # job 结束即消失；下一个 cron 的 job 起手就没有池子，直接走
+        # 「daily_topics.json is missing or empty → 长青选题兜底」，
+        # 于是云端选题脱离热点、永远只发常青稿。本地因为一直落盘所以没这问题。
+        # （注释写在这里而不是 path 块内，避免被当成 glob 模式。）
         uses: actions/cache@v4
         with:
           path: |
@@ -576,6 +582,8 @@ jobs:
             output/accounts/*/wechat_publish_history.json
             output/accounts/*/automation/last_daily_run_result.json
             output/automation/last_daily_run_result.json
+            output/accounts/*/daily_topics.json
+            output/daily_topics.json
           key: daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-${{ github.run_id }}
           restore-keys: |
             daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-

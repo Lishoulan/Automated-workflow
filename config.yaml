@@ -805,6 +805,10 @@
       "writing": {
         "default_style": "family_story"
       },
+      "publishing": {
+        "weitoutiao_personas": ["story_comment"],
+        "weitoutiao_daily_target": 3
+      },
       "topic_collection": {
         "max_topic_age_hours": 24,
         "drop_topics_without_timestamp": false,

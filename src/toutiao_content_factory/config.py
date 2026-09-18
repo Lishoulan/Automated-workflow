@@ -1458,15 +1458,48 @@ def _load_publishing_config_final(
             "TOUTIAO_WEITOUTIAO_LOCAL_FALLBACK_ENABLED",
             publishing_config.weitoutiao_local_fallback_enabled,
         ),
-        weitoutiao_personas=[
-            item.strip()
-            for item in os.getenv(
-                "TOUTIAO_WEITOUTIAO_PERSONAS",
-                ",".join(publishing_config.weitoutiao_personas),
-            ).split(",")
-            if item.strip()
-        ],
+        weitoutiao_personas=_resolve_weitoutiao_personas(
+            account_profile, publishing_config
+        ),
     )
+
+
+def _resolve_weitoutiao_personas(
+    account_profile: AccountProfile,
+    publishing_config: PublishSettings,
+) -> list[str]:
+    """微头条人设的取值优先级：账号级环境变量 > 账号级配置 > 全局环境变量 > 全局配置。
+
+    ⚠️ 2026-09-18：这里原来只读全局（`TOUTIAO_WEITOUTIAO_PERSONAS` 环境变量，
+    否则全局 config.yaml 的 `publishing.weitoutiao_personas`），账号级
+    `publishing.weitoutiao_personas` 写了也不生效 —— 和 default_style 是同一个毛病。
+
+    对社会故事类账号这是硬需求：它需要用 `story_comment` 人设（就事实讲人情、给读者
+    实在提醒），而机器人账号用的是 `hot_comment/warm/sanhuo`。共用一套人设会让
+    story_notes 发出来的微头条是科技热点评论腔，跟账号定位完全不符。
+    """
+    account_publishing = account_profile.overrides.get("publishing")
+    account_personas: list[str] = []
+    if isinstance(account_publishing, dict):
+        raw = account_publishing.get("weitoutiao_personas")
+        if isinstance(raw, (list, tuple)):
+            account_personas = [str(item).strip() for item in raw if str(item).strip()]
+
+    scoped = (
+        os.getenv(
+            account_env_name("TOUTIAO_WEITOUTIAO_PERSONAS", account_profile.key), ""
+        )
+        or ""
+    ).strip()
+    if scoped:
+        return [item.strip() for item in scoped.split(",") if item.strip()]
+    if account_personas:
+        return account_personas
+
+    raw_env = os.getenv("TOUTIAO_WEITOUTIAO_PERSONAS", "").strip()
+    if raw_env:
+        return [item.strip() for item in raw_env.split(",") if item.strip()]
+    return list(publishing_config.weitoutiao_personas)
 
 
 def _load_wechat_config_final(

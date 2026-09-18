@@ -40,9 +40,12 @@ PROGRESS = ROOT / ".runtime" / "visibility_progress.json"
 ROW_TITLES_JS = """() => {
     const vis = el => { const r = el.getBoundingClientRect();
         return r.width > 0 && r.height > 0; };
+    // 先清掉上一轮打的标记，避免残留
+    document.querySelectorAll('[data-dsh-row]').forEach(el => el.removeAttribute('data-dsh-row'));
     const mores = [...document.querySelectorAll('*')].filter(el =>
         el.children.length === 0 && (el.textContent || '').trim() === '更多' && vis(el));
     const out = [];
+    let n = 0;
     for (const m of mores) {
         let row = m, found = null;
         for (let i = 0; i < 10 && row; i++) {
@@ -52,10 +55,29 @@ ROW_TITLES_JS = """() => {
                 || cls.includes('article-card-wrap')) { found = row; break; }
         }
         if (!found) continue;
+        // ⚠️ 给行打标记，后续按标记点击，彻底消除「快照与 locator 选取集合不一致」
+        // 造成的索引错位（这是低成功率的主因）
+        found.setAttribute('data-dsh-row', String(n));
         const t = (found.innerText || '').split('\\n')[0].trim().slice(0, 90);
-        if (t) out.push({title: t, isPrivate: (found.innerText || '').includes('仅我可见')});
+        if (t) out.push({index: n, title: t,
+                         isPrivate: (found.innerText || '').includes('仅我可见')});
+        n += 1;
     }
     return out;
+}"""
+
+#: 按标记点击该行的「更多」，返回是否点到了
+CLICK_MORE_BY_INDEX_JS = """(n) => {
+    const row = document.querySelector(`[data-dsh-row="${n}"]`);
+    if (!row) return 'no-row';
+    const m = [...row.querySelectorAll('*')].find(el =>
+        el.children.length === 0 && (el.textContent || '').trim() === '更多');
+    if (!m) return 'no-more';
+    const r = m.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return 'not-visible';
+    m.scrollIntoView({block: 'center', inline: 'center'});
+    m.click();
+    return 'ok';
 }"""
 
 
@@ -68,21 +90,12 @@ def load_progress() -> dict:
     return {}
 
 
-def save_progress(done: dict) -> None:
+def save_progress(done: dict, titles: dict | None = None) -> None:
     PROGRESS.parent.mkdir(parents=True, exist_ok=True)
-    PROGRESS.write_text(json.dumps({"done": done}, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def more_buttons(page):
-    """返回作品行里的「更多」按钮（精确匹配，排除头像区的「更多信息」）。
-
-    ⚠️ 不能用 `page.locator("text=更多")`：它是子串匹配，会把头像区那个
-    688x72 的「**更多信息**」按钮也算进来，于是 `text=更多` 匹配到 11 个元素，
-    而真实作品行只有 10 个 —— 索引整体错位，导致列表底部的条目点不开菜单
-    （实测：PS5 / 工信部 / 俄无人机 三条反复失败，就是这个原因）。
-    用 Playwright 的精确文本匹配 `text="更多"` 即可排除「更多信息」。
-    """
-    return page.locator('text="更多"')
+    payload = {"done": done}
+    if titles:
+        payload["titles"] = titles
+    PROGRESS.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def go_to_page(page, page_no: int) -> bool:
@@ -141,44 +154,39 @@ def current_private_titles(page) -> set[str]:
 
 
 def set_one_private(page, index: int) -> tuple[bool, str]:
-    """把第 index 行设为仅我可见。
+    """把标记为 `data-dsh-row=index` 的那一行设为仅我可见。
 
     返回 (是否复核确认生效, 该行的标题)。
 
-    ⚠️ 标题**必须在点击前、用同一次 DOM 快照按同一个 index 取**。
-    最初版本先从一次快照算出 pending 索引、再在另一次快照上按索引取标题，
-    两次之间列表会变（已处理的条目状态变化），导致「标题与目标行不匹配」：
-    实测同一条被重复处理、而真正的目标被跳过。
+    实现要点：
+      - 用 `snapshot()` 给每行打 `data-dsh-row` 标记，点击时按**标记**找行，
+        不再依赖 Playwright locator 的 `.nth(i)`。之前两者选取集合的规则不同
+        （`text="更多"` 是子串匹配，且会命中容器元素），索引会对不上，
+        表现为「点错行」和大量莫名失败。
+      - 复核以**该行自己的文本**里是否出现「仅我可见」为唯一判据。
     """
-    mores = more_buttons(page)
-    total = mores.count()
-    if index >= total:
-        return False, ""
-
     rows_before = snapshot(page)
-    if index >= len(rows_before):
+    match = next((r for r in rows_before if r["index"] == index), None)
+    if match is None:
         return False, ""
-    title = rows_before[index]["title"]
+    title = match["title"]
 
-    target = mores.nth(index)
     try:
-        # ⚠️ 滚动必须可靠。实测列表靠下的行（y≈1984，远超视口高度）在
-        # `scroll_into_view_if_needed()` 之后仍可能不在可点位置，点击静默无效。
-        # 先滚回顶部，把目标滚到**视口中间**，并确认坐标确实落在视口内再点击。
-        page.evaluate("window.scrollTo(0, 0)")
-        page.wait_for_timeout(400)
-        target.scroll_into_view_if_needed()
-        page.wait_for_timeout(700)
-        box = target.bounding_box()
-        viewport = page.viewport_size or {"width": 1280, "height": 720}
-        if not box or box["y"] < 0 or box["y"] > viewport["height"] - 40:
-            target.evaluate("el => el.scrollIntoView({block: 'center', inline: 'center'})")
-            page.wait_for_timeout(900)
-            box = target.bounding_box()
-        if not box or box["y"] < 0 or box["y"] > viewport["height"] - 20:
-            return False, title
-        target.click(timeout=15000)
-        page.wait_for_timeout(2500)
+        # ⚠️ 必须用 Playwright 的真实点击，**不能用 JS 的 element.click()**。
+        # 实测对照（见 commit 说明）：
+        #   A) JS click         -> 菜单不弹出
+        #   B) Playwright click -> 菜单弹出 ✅
+        # 这个下拉组件只响应真实鼠标事件序列，JS 派发的 click 它不处理，
+        # 表现为「点击无反应、随后误判为失败」。曾为「消除索引歧义」改成 JS 点击，
+        # 结果整页条目全部失败。
+        #
+        # 定位用「标记行内部的『更多』」这个 CSS 选择器：既拿到真实点击，
+        # 又不依赖 locator 的 .nth(i)（那个集合与快照不一致，会点错行）。
+        more = page.locator(f'[data-dsh-row="{index}"] span:has-text("更多")').last
+        more.scroll_into_view_if_needed()
+        page.wait_for_timeout(600)
+        more.click(timeout=15000)
+        page.wait_for_timeout(2200)
 
         item = page.locator("text=设为仅我可见").first
         if item.count() == 0 or not item.is_visible():
@@ -196,9 +204,22 @@ def set_one_private(page, index: int) -> tuple[bool, str]:
         except Exception:
             pass
 
-        # 复核：该标题现在是否带「仅我可见」
-        privates = current_private_titles(page)
-        return title in privates, title
+        # 复核：重新快照，看该标记行是否已变为「仅我可见」
+        for _ in range(3):
+            after = snapshot(page)
+            row = next((r for r in after if r["index"] == index), None)
+            if row is not None:
+                if row.get("isPrivate"):
+                    return True, title
+                if row["title"] == title:
+                    # 同一行仍在且还没变私密，再等一会儿
+                    page.wait_for_timeout(1500)
+                    continue
+            # 行不在了（可能因状态变化被过滤），改按标题全局查
+            if title in current_private_titles(page):
+                return True, title
+            break
+        return title in current_private_titles(page), title
     except Exception:
         try:
             page.keyboard.press("Escape")
@@ -228,7 +249,9 @@ def main() -> int:
     if not profile_dir.is_absolute():
         profile_dir = ROOT / profile_dir
 
-    done = load_progress().get("done", {})
+    progress = load_progress()
+    done = progress.get("done", {})
+    done_titles = progress.get("titles", {})
     already = sum(1 for v in done.values() if v == "private")
     print(f"进度：已确认设为仅我可见 {already} 条")
 
@@ -260,64 +283,79 @@ def main() -> int:
         )
         print(f"共 {total_pages} 页\n")
 
-        # ⚠️ 必须有「多次失败就跳过」的保护。实测有一条微头条始终处理不了，
-        # 最初版本会一直重试它，把整批都阻塞在这一条上，后面几十条一条都碰不到。
-        MAX_ATTEMPTS_PER_TITLE = 3
+        # ⚠️ 两个设计要点，都是实测踩出来的：
+        #
+        # 1) 进度**按「页码 + 行号」记，不能按标题记**。实测存在完全同名的重复作品
+        #    （例如两条「工厂1.91万台：机器人如何实测」），按标题记会让它们互相干扰：
+        #    第一条被标为 private 后，第二条也被当成已完成而漏掉。
+        # 2) **多轮重试**。单轮里每条最多试 MAX_ATTEMPTS 次，失败就跳过继续；
+        #    整轮跑完后再从头扫一遍，把仍失败的再试。实测有些条目换个时刻就能成功
+        #    （页面渲染状态不同），单轮跳过会永久漏掉它们。
+        MAX_ATTEMPTS = 3
+        MAX_PASSES = 3
         attempts: dict[str, int] = {}
         start_page = args.start_page
 
-        for page_no in range(start_page, total_pages + 1):
+        def do_page(page_no: int) -> None:
+            """处理一页；每轮只对同一条最多试 MAX_ATTEMPTS 次，失败则跳过继续。"""
+            nonlocal processed
             if args.limit and processed >= args.limit:
-                print(f"已达本次上限 {args.limit}，停止。")
-                break
+                return
             if page_no != current_page_no(page):
                 if not go_to_page(page, page_no):
-                    print(f"无法跳到第 {page_no} 页，停止。")
-                    break
+                    print(f"无法跳到第 {page_no} 页，跳过。")
+                    return
             rows = snapshot(page)
             print(f"\n=== 第 {page_no}/{total_pages} 页：{len(rows)} 行 ===")
-
-            # 行索引会随状态变化漂移，所以每轮重新取列表与索引
             for _ in range(200):
                 rows = snapshot(page)
+                by_index = {r["index"]: r for r in rows}
                 pending = [
-                    i
-                    for i, r in enumerate(rows)
+                    r["index"]
+                    for r in rows
                     if not r.get("isPrivate")
-                    and attempts.get(r["title"], 0) < MAX_ATTEMPTS_PER_TITLE
+                    and attempts.get(f"p{page_no}-{r['index']}", 0) < MAX_ATTEMPTS
                 ]
                 if not pending:
-                    stuck = [r["title"] for r in rows if not r.get("isPrivate")]
-                    if stuck:
-                        print(f"  本页剩余 {len(stuck)} 条重试 {MAX_ATTEMPTS_PER_TITLE} 次仍失败，跳过。")
-                    else:
-                        print("  本页已全部处理。")
-                    break
+                    left = [r["title"] for r in rows if not r.get("isPrivate")]
+                    print(f"  本页结束（剩余未处理 {len(left)} 条）")
+                    return
                 if args.dry_run:
                     for i in pending:
-                        print(f"  [将处理] {rows[i]['title']}")
-                    break
+                        print(f"  [将处理] {by_index[i]['title']}")
+                    return
                 if args.limit and processed >= args.limit:
-                    print(f"已达本次上限 {args.limit}，停止。")
-                    break
+                    print(f"  已达本次上限 {args.limit}，停止。")
+                    return
 
                 idx = pending[0]
+                key = f"p{page_no}-{idx}"
                 ok, title = set_one_private(page, idx)
                 if not title:
-                    title = rows[idx]["title"]
-                attempts[title] = attempts.get(title, 0) + 1
-                done[title] = "private" if ok else "failed"
-                save_progress(done)
+                    title = by_index.get(idx, {}).get("title", f"<row {idx}>")
+                attempts[key] = attempts.get(key, 0) + 1
+                done[key] = "private" if ok else "failed"
+                done_titles[key] = title
+                save_progress(done, done_titles)
                 processed += 1
                 suffix = ""
-                if not ok and attempts[title] >= MAX_ATTEMPTS_PER_TITLE:
-                    suffix = f"  -> 已失败 {attempts[title]} 次，跳过该条"
-                print(f"  [{'OK ' if ok else 'FAIL'}] {title[:44]}  (累计 {processed}){suffix}")
+                if not ok and attempts[key] >= MAX_ATTEMPTS:
+                    suffix = f"  -> 本条失败 {attempts[key]} 次，本轮跳过"
+                print(f"  [{'OK ' if ok else 'FAIL'}] {title[:40]}  (累计 {processed}){suffix}")
                 time.sleep(random.uniform(args.min_delay, args.max_delay))
+
+        for pass_no in range(1, MAX_PASSES + 1):
+            if args.limit and processed >= args.limit:
+                break
+            print(f"\n########## 第 {pass_no}/{MAX_PASSES} 轮 ##########")
+            for page_no in range(start_page, total_pages + 1):
+                if args.limit and processed >= args.limit:
+                    break
+                do_page(page_no)
             if args.dry_run:
                 break
 
-        save_progress(done)
+        save_progress(done, done_titles)
         ctx.close()
 
     stats: dict = {}

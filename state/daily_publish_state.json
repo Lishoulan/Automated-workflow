@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-09-18T09:19:28",
+  "updated_at": "2026-09-18T17:17:06",
   "entries": {
     "2026-09-16": {
       "toutiao": {
@@ -46,6 +46,14 @@
         "title": "年全球出货预判仅2万台，优必选万台工厂赌对了吗",
         "publish_url": "",
         "recorded_at": "2026-09-18T09:19:28"
+      },
+      "toutiao_weitoutiao": {
+        "channel": "cloud",
+        "status": "submitted_for_review",
+        "pgc_id": "",
+        "title": "机器人突破不止于展示，交付先过这三道关",
+        "publish_url": "",
+        "recorded_at": "2026-09-18T17:17:06"
       }
     }
   }

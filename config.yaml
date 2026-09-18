@@ -792,6 +792,116 @@
         }
       }
     },
+    "story_notes": {
+      "enabled": true,
+      "label": "手蓝人间故事",
+      "browser_profile_dir": ".runtime/accounts/story_notes/toutiao_profile",
+      "industry": {
+        "brand_name": "手蓝人间故事",
+        "focus": "社会民生热点、家庭伦理、代际关系、职场与人情冷暖",
+        "audience": "40-65 岁关注家长里短、人情世故与生活经验的头条读者",
+        "positioning": "把真实发生的社会新闻讲成看得懂的人情故事，给读者一个实在的提醒。"
+      },
+      "writing": {
+        "default_style": "family_story"
+      },
+      "topic_collection": {
+        "max_topic_age_hours": 24,
+        "drop_topics_without_timestamp": false,
+        "enabled_sources": [
+          "baidu_hot",
+          "toutiao_hot",
+          "sina_social"
+        ],
+        "focus_industries": [
+          "hot_topic",
+          "social_story"
+        ],
+        "keyword_map": {
+          "social_story": [
+            "养老",
+            "退休",
+            "老人",
+            "老年",
+            "婆媳",
+            "儿媳",
+            "女婿",
+            "彩礼",
+            "婚姻",
+            "离婚",
+            "再婚",
+            "相亲",
+            "子女",
+            "独生",
+            "啃老",
+            "赡养",
+            "遗产",
+            "房产",
+            "分家",
+            "邻里",
+            "物业",
+            "小区",
+            "加班",
+            "裁员",
+            "辞职",
+            "打工",
+            "工资",
+            "欠薪",
+            "同事",
+            "职场",
+            "人情",
+            "份子钱",
+            "随礼",
+            "亲戚",
+            "借钱",
+            "催债",
+            "看病",
+            "医保",
+            "挂号",
+            "带娃",
+            "隔代",
+            "留守儿童",
+            "外卖",
+            "快递",
+            "摆摊",
+            "车祸",
+            "赔偿",
+            "调解",
+            "判决",
+            "官司",
+            "骗局",
+            "诈骗",
+            "老人机",
+            "保健品",
+            "广场舞",
+            "相亲角"
+          ]
+        },
+        "sources": {
+          "baidu_hot": {
+            "type": "baidu_hot",
+            "urls": [
+              "https://top.baidu.com/board?tab=realtime"
+            ]
+          },
+          "toutiao_hot": {
+            "type": "hot_board",
+            "urls": [
+              "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
+            ]
+          },
+          "sina_social": {
+            "type": "html",
+            "same_domain_only": true,
+            "urls": [
+              "https://news.sina.com.cn/society/",
+              "https://news.sina.com.cn/s/",
+              "https://www.thepaper.cn/"
+            ]
+          }
+        }
+      }
+    },
     "hardware_notes": {
       "enabled": false,
       "label": "手蓝硬件笔记",

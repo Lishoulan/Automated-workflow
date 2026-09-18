@@ -963,7 +963,35 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     )
 
     is_default_account = account_profile.key == DEFAULT_ACCOUNT_KEY
-    default_style = os.getenv("DEFAULT_STYLE", str(merged_payload.get("writing", {}).get("default_style", "deep_industry_analysis")))
+
+    # 写作风格的取值优先级：账号级 writing.default_style > DEFAULT_STYLE 环境变量 > 全局。
+    #
+    # ⚠️ 2026-09-18：这里原来**只读全局** `writing.default_style` 且让环境变量无条件压过它，
+    # config.yaml 里每个账号自带的 `writing.default_style` 被静默忽略
+    # （robot_notes=tech_media、sports_notes=viral_science …全都不生效）。
+    # 本项目的 .env 又设了 `DEFAULT_STYLE=tech_media`，于是**所有账号用的是同一个风格**，
+    # 「按账号换写作风格」这件事实际不存在。
+    #
+    # 现在改为账号级优先、环境变量作兜底：
+    #   - 单账号使用者：账号没配风格时，.env 的 DEFAULT_STYLE 照旧生效（行为不变）；
+    #   - 多账号：每个账号各用各的风格，不需要同步改 .env；
+    #   - 想强制覆盖某个账号：用账号级变量 `DEFAULT_STYLE__<SLUG>`。
+    account_writing = account_profile.overrides.get("writing")
+    account_default_style = ""
+    if isinstance(account_writing, dict):
+        account_default_style = str(account_writing.get("default_style", "") or "").strip()
+    scoped_default_style = (
+        os.getenv(account_env_name("DEFAULT_STYLE", account_profile.key), "") or ""
+    ).strip()
+    global_default_style = str(
+        merged_payload.get("writing", {}).get("default_style", "deep_industry_analysis")
+    )
+    default_style = (
+        scoped_default_style
+        or account_default_style
+        or os.getenv("DEFAULT_STYLE", "")
+        or global_default_style
+    )
 
     # Resolve account paths
     paths = _load_account_paths(project_root, account_profile, is_default_account, publishing_config)
@@ -2048,6 +2076,33 @@ def _default_style_payloads() -> dict[str, dict[str, str]]:
             "title_instruction": "标题可有反问、对比、悬念，但不能低质夸张。",
             "image_instruction": "视觉冲击更强，主体更直观，适合移动端封面。",
             "opening_instruction": "前三句要有悬念和反差，让读者愿意继续看。",
+        },
+        # 面向中老年读者的社会故事/人间观察类账号（大妈文赛道）。
+        #
+        # ⚠️ 合规是这个风格的第一约束，不是可选项。头条的创作规范里两条红线
+        # 直接冲着这个赛道来：
+        #   1.「故事诱导营销」——编造与事实不符的故事、以讲述自身经历或社会事件
+        #      的形式吸引点击，属于违规。
+        #   2.《人工智能生成合成内容标识办法》2025-09-01 起强制 AI 内容打标，
+        #      且头条 2026-09 正在专项治理 AI 低质内容与虚构故事。
+        # 所以这里的写法是**真实事件 + 观察解读**：素材必须是可追溯的真实报道或
+        # 公开事件，文章做分析、对比和给读者的提醒，而不是冒充当事人自述。
+        # `article_instruction` 里那两句禁止性要求是硬约束，改动前请先看
+        # docs/ 下社会故事赛道的合规说明。
+        "family_story": {
+            "label": "人间故事观察风",
+            "tone": "讲人话、有生活细节、有共情但不煽情，像一位见多识广的长者在慢慢说事。",
+            "article_instruction": (
+                "从真实事件里的具体人物处境切入，还原事实、补充背景，再给出对读者的"
+                "提醒或判断。禁止编造第一人称亲历故事，禁止虚构不存在的当事人自述；"
+                "所有情节必须能追溯到素材来源。"
+            ),
+            "title_instruction": (
+                "用具体的人、具体的选择、具体的结果做标题，让读者一眼看到与自己相关；"
+                "不要用悬念和省略号故弄玄虚，不要用极限用语。"
+            ),
+            "image_instruction": "生活场景感、光线温暖、人物主体清晰，避免强烈的科技与图表风格。",
+            "opening_instruction": "开头先给一个具体的生活场景或一句实在话，让读者立刻代入。",
         },
     }
 

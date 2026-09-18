@@ -662,21 +662,37 @@ jobs:
 
       - name: Inject cross-platform cookies
         run: |
-          echo "Checking for exported cookies..."
+          echo "Checking for exported cookies (account=$RUN_ACCOUNT)..."
+          # ⚠️ 2026-09-18：这里原来下载**固定名字** exported_cookies.json 并注入给当次账号。
+          # 单账号没问题，但多账号时两个账号会共享同一个 cookie 文件 —— 等于把 A 账号的
+          # 登录态注进 B 账号。现在按账号找专属资产，找不到才回退 legacy 名字
+          # （robot_notes 目前依赖 legacy，不能直接删）。
           COOKIES_FILE=""
-          # 用 gh api 下载(避免 gh release download 的 CDN 缓存问题)
-          ASSET_URL=$(gh api repos/Lishoulan/Automated-workflow/releases/tags/browser-profiles-v1 \
-              --jq '.assets[] | select(.name=="exported_cookies.json") | .url' 2>/dev/null)
-          if [ -n "$ASSET_URL" ]; then
+          ASSET_NAMES=$(python scripts/resolve_cookie_asset.py --account "$RUN_ACCOUNT")
+          echo "Candidate cookie assets:"
+          echo "$ASSET_NAMES" | sed 's/^/  - /'
+          for ASSET_NAME in $ASSET_NAMES; do
+            ASSET_URL=$(gh api "repos/Lishoulan/Automated-workflow/releases/tags/browser-profiles-v1" \
+                --jq ".assets[] | select(.name==\"$ASSET_NAME\") | .url" 2>/dev/null)
+            if [ -z "$ASSET_URL" ]; then
+              echo "  $ASSET_NAME: not present in the release, trying next."
+              continue
+            fi
             gh api "$ASSET_URL" -H "Accept: application/octet-stream" > /tmp/exported_cookies.json 2>/dev/null
             if [ -s /tmp/exported_cookies.json ]; then
               COOKIES_FILE="/tmp/exported_cookies.json"
-              echo "Downloaded fresh cookies from Release via API."
-              # 验证文件内容
+              echo "Downloaded cookies from Release asset: $ASSET_NAME"
               EXPORTED_AT=$(python -c "import json; print(json.load(open('/tmp/exported_cookies.json')).get('exported_at','unknown'))" 2>/dev/null || echo "parse_error")
               echo "Cookie exported_at: $EXPORTED_AT"
+              ACCOUNT_OF_COOKIES=$(python -c "import json; print(json.load(open('/tmp/exported_cookies.json')).get('account','unknown'))" 2>/dev/null || echo "unknown")
+              echo "Cookie account field: $ACCOUNT_OF_COOKIES"
+              if [ "$ASSET_NAME" = "exported_cookies.json" ] && [ "$RUN_ACCOUNT" != "default" ]; then
+                echo "::warning::Falling back to the shared legacy cookie asset for account=$RUN_ACCOUNT. Upload exported_cookies_$(python scripts/resolve_cookie_asset.py --account "$RUN_ACCOUNT" --format primary | sed 's/^exported_cookies_//; s/\.json$//').json to the release to give this account its own login state."
+              fi
+              break
             fi
-          fi
+            echo "  $ASSET_NAME: downloaded but empty, trying next."
+          done
           # API 下载失败时,回退到本地缓存
           if [ -z "$COOKIES_FILE" ] && [ -f ".runtime/automation/exported_cookies.json" ]; then
             COOKIES_FILE=".runtime/automation/exported_cookies.json"

@@ -264,6 +264,30 @@ class PerformanceService:
                                 row_selectors=row_selectors,
                                 max_pages=self.MAX_PAGES,
                             )
+                            # 微头条的行不在图文列表页里：它们挂在独立的列表 URL 上，
+                            # 而这个循环拿到第一批作品行就会 return ⇒ 永远停在图文页
+                            # ⇒ 每次采集 platform 全是 toutiao，已发布的 21 条微头条指标为 0
+                            # （2026-09-18 实测确认）。这里补采一次，失败不影响主流程。
+                            extra_rows = self._collect_weitoutiao_rows(
+                                page=page, row_selectors=row_selectors
+                            )
+                            if extra_rows:
+                                seen_row_keys = {
+                                    f"{row.get('title', '')}|{row.get('url', '')}|{row.get('text', '')[:120]}"
+                                    for row in all_rows
+                                }
+                                added = 0
+                                for row in extra_rows:
+                                    key = f"{row.get('title', '')}|{row.get('url', '')}|{row.get('text', '')[:120]}"
+                                    if key in seen_row_keys:
+                                        continue
+                                    seen_row_keys.add(key)
+                                    all_rows.append(row)
+                                    added += 1
+                                if added:
+                                    self.logger.info(
+                                        "Merged %s rows from the weitoutiao list page.", added
+                                    )
                         else:
                             rows = self._extract_metric_rows(page, row_selectors)
                             if not rows:
@@ -992,6 +1016,37 @@ class PerformanceService:
     def _human_pause(self, page: Any, *, lower_ms: int | None = None, upper_ms: int | None = None) -> None:
         wait_lower, wait_upper = self.HUMAN_WAIT_RANGE_MS
         page.wait_for_timeout(random.randint(lower_ms or wait_lower, upper_ms or wait_upper))
+
+    WEITOUTIAO_LIST_URL = "https://mp.toutiao.com/profile_v4/manage/content/weitoutiao"
+
+    def _collect_weitoutiao_rows(
+        self,
+        *,
+        page: Any,
+        row_selectors: tuple[str, ...],
+    ) -> list[dict[str, str]]:
+        """补采微头条列表页的作品行（2026-09-18 新增）。
+
+        为什么必须单独这一步：`_collect_platform_metrics` 的候选 URL 循环是
+        「拿到第一批作品行就 return」，所以它永远停在第一条 URL（作品管理 all 页，
+        该列表只渲染图文 tab）。结果是 21 条已发布微头条的**指标一条都采不到**，
+        `performance_metrics.json` 里 platform 恒为 `toutiao`。
+
+        实测（2026-09-18）：访问微头条列表页可抓到行，其中包含当天发布的微头条条目。
+
+        全程 non-fatal：任何异常都返回空列表，图文采集不受影响。
+        """
+        try:
+            page.goto(self.WEITOUTIAO_LIST_URL, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(6000)
+            self._enter_content_manage(page)
+            page.wait_for_timeout(6000)
+            rows = self._extract_metric_rows_from_frames(page, row_selectors)
+            self.logger.info("Weitoutiao list page exposed %s rows.", len(rows) if rows else 0)
+            return rows or []
+        except Exception as exc:  # pragma: no cover - browser/runtime dependent
+            self.logger.warning("Weitoutiao row collection failed (non-fatal): %s", exc)
+            return []
 
     def _collect_rows_with_pagination(
         self,

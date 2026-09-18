@@ -79,9 +79,16 @@ jobs:
       # 标题环节单独使用强模型（title_agent.py 读该变量；为空则沿用正文模型）。
       # 2026-09-15 本地实测：glm-4.6 的标题能过 RULE_006/007/009，glm-4-flash 常被全过滤。
       # 2026-09-17 起云端也启用，配合 TITLE_MODEL_EXPERIMENT 做一次对照实验。
-      OPENAI_TITLE_MODEL: ${{ secrets.OPENAI_TITLE_MODEL || 'glm-4.6' }}
+      #
+      # ⚠️ 2026-09-18 修正：glm-4.6 是**付费模型**，本账号已「余额不足或无可用资源包」。
+      # 云端每次调用都被拒 → TitleAgent 池全灭 → 静默退回硬编码兜底模板，
+      # 这正是 9-16/9-17 发布出「工信部推动机器人80%：具身智能如何实测」的原因。
+      # 离线实测（.runtime/free_model_title_probe.py）：glm-4-flash 生成 19 条标题、
+      # 14 条过 ArticleQualityChecker（74%），并非「常被全过滤」。
+      # 故云端标题模型改为免费模型，与正文同模型（同模型时 title_agent 不再另建客户端）。
+      OPENAI_TITLE_MODEL: ${{ secrets.OPENAI_TITLE_MODEL || 'glm-4-flash' }}
       # 纯标记，不参与业务逻辑，仅用于区分实验前后的运行。
-      TITLE_MODEL_EXPERIMENT: glm-4.6-20260917
+      TITLE_MODEL_EXPERIMENT: glm-4-flash-20260918
 
       IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY || secrets.OPENAI_API_KEY }}
       IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL || secrets.OPENAI_BASE_URL }}
@@ -1078,9 +1085,9 @@ jobs:
       OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
       OPENAI_MODEL: ${{ secrets.OPENAI_BASE_URL && secrets.OPENAI_MODEL || '' }}
       OPENAI_TEMPERATURE: ${{ secrets.OPENAI_TEMPERATURE || '0.7' }}
-      # 与主 job 保持一致：标题环节使用强模型（见主 job 同名变量说明）。
-      OPENAI_TITLE_MODEL: ${{ secrets.OPENAI_TITLE_MODEL || 'glm-4.6' }}
-      TITLE_MODEL_EXPERIMENT: glm-4.6-20260917
+      # 与主 job 保持一致：标题环节使用免费模型（见主 job 同名变量说明）。
+      OPENAI_TITLE_MODEL: ${{ secrets.OPENAI_TITLE_MODEL || 'glm-4-flash' }}
+      TITLE_MODEL_EXPERIMENT: glm-4-flash-20260918
 
       IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY || secrets.OPENAI_API_KEY }}
       IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL || secrets.OPENAI_BASE_URL }}

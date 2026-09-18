@@ -121,6 +121,144 @@ class TopicCollectionService:
         "排行榜",
         "赛程",
     )
+    # ---- 社会故事赛道（故事/人间观察类账号） ----
+    #
+    # 这个赛道和体育、国际一样需要自己的信号判据：热榜上真正属于
+    # 「社会民生 / 家庭伦理 / 人情冷暖」的题只占少数，其余是体育、时政、
+    # 娱乐和商业新闻。没有判据就会把「男篮输球」这类完全跑题的题放进选题池。
+    #
+    # SOCIAL_STORY_SIGNAL_TOKENS 判「这条题有没有人的生活处境」，
+    # SOCIAL_STORY_LOW_SIGNAL_TOKENS 判「这条题明显不属于本赛道」。
+    SOCIAL_STORY_SIGNAL_TOKENS = (
+        # 人与关系
+        "老人",
+        "老太",
+        "大爷",
+        "大妈",
+        "夫妻",
+        "妻子",
+        "丈夫",
+        "儿子",
+        "女儿",
+        "儿媳",
+        "女婿",
+        "婆婆",
+        "岳母",
+        "父母",
+        "孩子",
+        "邻居",
+        "房东",
+        "租客",
+        "同事",
+        "老板",
+        "员工",
+        "农民工",
+        "保安",
+        "外卖员",
+        "快递员",
+        "保洁",
+        "司机",
+        # 处境与冲突
+        "赡养",
+        "养老",
+        "退休",
+        "遗产",
+        "房产",
+        "彩礼",
+        "离婚",
+        "再婚",
+        "相亲",
+        "官司",
+        "判决",
+        "赔偿",
+        "调解",
+        "欠薪",
+        "讨薪",
+        "借钱",
+        "诈骗",
+        "骗局",
+        "摔倒",
+        "扶不扶",
+        "让座",
+        "噪音",
+        "扰民",
+        "物业",
+        "婆媳",
+        "啃老",
+        "带娃",
+        "隔代",
+        # 事故/纠纷/赔付 —— 这类题常不带人物称谓（「9万买的马车祸身亡 主人获赔13.5万」），
+        # 但同样是标准的民生社会新闻，只靠关系词会漏掉。
+        # 注意不要放单字「撞」：它会把「菲船故意冲撞中方」这种时政题也算成社会新闻。
+        "车祸",
+        "身亡",
+        "受伤",
+        "获赔",
+        "赔付",
+        "理赔",
+        "追责",
+        "判刑",
+        "肇事",
+        "撞人",
+        "被撞",
+    )
+    SOCIAL_STORY_LOW_SIGNAL_TOKENS = (
+        # 体育
+        "男篮",
+        "男足",
+        "国足",
+        "女篮",
+        "女排",
+        "中超",
+        "英超",
+        "西甲",
+        "NBA",
+        "CBA",
+        "欧冠",
+        "世界杯",
+        "奥运",
+        "联赛",
+        "赛季",
+        "夺冠",
+        "晋级",
+        "比分",
+        # 时政/军事/外交
+        "外交部",
+        "国防部",
+        "军演",
+        "军舰",
+        "战机",
+        "导弹",
+        "关税",
+        "制裁",
+        "峰会",
+        "会谈",
+        "访华",
+        "白宫",
+        "北约",
+        "停火",
+        "冲突升级",
+        # 娱乐/明星
+        "恋情",
+        "分手",
+        "结婚照",
+        "演唱会",
+        "新歌",
+        "综艺",
+        "票房",
+        "收视",
+        # 资本市场/企业财报（属于科技财经赛道，不是社会故事）
+        "财报",
+        "营收",
+        "净利润",
+        "股价",
+        "涨停",
+        "跌停",
+        "融资",
+        "IPO",
+        "招股",
+        "市值",
+    )
     INTERNATIONAL_SIGNAL_TOKENS = (
         "美国",
         "俄罗斯",
@@ -1477,6 +1615,13 @@ class TopicCollectionService:
             if not self._has_sports_event_signal(topic):
                 filtered_out["weak_focus"] += 1
                 return False
+        if "social_story" in set(self.topic_settings.focus_industries):
+            # 注意：上面 hot_topic 那个分支会在热度达标时**直接 return True**，
+            # 所以社会故事类账号的 config.yaml 不要同时启用 hot_topic，
+            # 否则这条判据永远不会执行（篮球、时政、财报都会漏进来）。
+            if not self._has_social_story_signal(topic):
+                filtered_out["weak_focus"] += 1
+                return False
         title_hits = self._keyword_hits_in_title(topic)
         keyword_hits = len(topic.matched_keywords)
         macro_penalty = self._macro_noise_penalty(topic)
@@ -1528,6 +1673,21 @@ class TopicCollectionService:
         if signal_hits >= 1 and any(token in title for token in ("比赛", "决赛", "转会", "绝杀", "点球", "红牌", "晋级", "淘汰", "赛季", "联赛")):
             return True
         return False
+
+    def _has_social_story_signal(self, topic: TopicCandidate) -> bool:
+        """这条题有没有「普通人的生活处境」。
+
+        与体育/国际同样三态：命中明确的跑题词直接否掉（体育、时政、娱乐、
+        财经），否则要求至少一个「人与关系」或「处境与冲突」的信号词。
+        """
+        text = f"{topic.title} {topic.summary} {topic.snippet}"
+        if any(token in text for token in self.SOCIAL_STORY_LOW_SIGNAL_TOKENS):
+            return False
+        signal_hits = sum(1 for token in self.SOCIAL_STORY_SIGNAL_TOKENS if token in text)
+        if signal_hits >= 1:
+            return True
+        # 兜底：「偷/骗/讹/吵/闹」这类行为动词本身就是社会新闻的强信号
+        return any(token in text for token in ("偷", "骗", "讹", "吵", "闹", "讹诈", "争执", "动手"))
 
     def _focus_industry_bonus(self, topic: TopicCandidate) -> int:
         bonus = 0

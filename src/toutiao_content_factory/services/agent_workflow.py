@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 import logging
@@ -48,7 +48,7 @@ class AgentWorkflowService:
     AUTO_PUBLISH_ARTICLE_MIN_CHARS = 1750
     #: 叙事类（社会故事）自动发布的正文下限。
     #: 与 `AppService._minimum_article_chars` 的 750 保持一致，改一处必须改另一处。
-    NARRATIVE_ARTICLE_MIN_CHARS = 750
+    NARRATIVE_ARTICLE_MIN_CHARS = 700
     # 整个 workflow 生命周期内 LLM expansion 最大调用次数
     # DeepSeek-V4-Flash 单次 expansion 耗时 5-7 分钟，多次累计会导致云端 30 分钟超时
     MAX_LLM_EXPANSION_CALLS = 1

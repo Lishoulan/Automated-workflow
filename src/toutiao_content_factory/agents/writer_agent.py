@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import ast
 
@@ -29,7 +29,7 @@ class WriterAgent(BaseAgent):
     #: 叙事类（社会故事）自动发布的正文下限。
     #: 与 `AgentWorkflowService.NARRATIVE_ARTICLE_MIN_CHARS`、
     #: `AppService._minimum_article_chars` 的叙事分支必须一致（三处，750）。
-    NARRATIVE_ARTICLE_MIN_CHARS = 750
+    NARRATIVE_ARTICLE_MIN_CHARS = 700
     REQUIRED_HEADING_COUNT = (3, 4)
     INTERNAL_ARTICLE_MARKERS = (
         "manual_paste",

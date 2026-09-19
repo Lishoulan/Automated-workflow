@@ -2788,6 +2788,12 @@ class ContentFactoryAppService:
     #: 可用环境变量覆盖；设为 0 或负数表示不限制。
     DAILY_RUN_BUDGET_SECONDS = 1980
 
+    #: 叙事体裁（社会故事）的正文下限 —— **全流程唯一一处定义**。
+    #: `_minimum_article_chars` 的两条分支（自动发布 / 人工审核）都引用它，
+    #: 有测试锁住两处一致，避免"一边放行一边拦"。
+    #: 取值依据见 `_minimum_article_chars` 的注释（按云端实测的字数分布定）。
+    NARRATIVE_ARTICLE_MIN_CHARS = 700
+
     def _daily_run_budget_seconds(self) -> float:
         raw = os.getenv("TOUTIAO_DAILY_RUN_BUDGET_SECONDS", "")
         try:
@@ -2908,19 +2914,23 @@ class ContentFactoryAppService:
             # 实测一篇 838 字的稿子在这里判 review_required，而云端实际会放行。
             # 两条路径对同一体裁必须用同一个下限，否则本地验证无法代表云端。
             if self._run_uses_narrative_domain(snapshot):
-                return 750
+                return self.NARRATIVE_ARTICLE_MIN_CHARS
             return 850 if is_hot_topic else 800
         if self._run_uses_narrative_domain(snapshot):
             # 故事体裁：叙事写法不需要产业稿那么长。
             #
-            # ⚠️ 2026-09-19：这里原来定 950。那是按"优质模型能写多少"定的目标，
-            # 但当前免费模型 `glm-4-flash` 在人情故事题材上的实际产出是 **556~1114 字**
-            # （同一天多次真实运行），中位数落在 600 附近。定 950 的后果不是"写出更长的稿"，
-            # 而是**四次尝试全部判 review_required、一篇都发不出去**（实测 verify10）。
-            # 与其让门槛空转，不如按实际能力定一个能稳定达成的下限：
-            # 750 字足够讲完一件事 + 讲透处境 + 给一句提醒，且模型能稳定做到。
-            # 想提高下限请先换模型，不要只改这个数字。
-            return 750
+            # ⚠️ 2026-09-20：这里从 750 调到 **700**。依据是云端实测，不是拍脑袋：
+            # 换用 `glm-4-flash-250414` 之后，云端三条候选产出 658 / 670 / 732 字
+            # （日志：`只是字数不足（差 92 字）`、`差 80 字`、`732 chars`），
+            # **全部只差一点点**，而这三篇都是完整讲完一件事的故事稿。
+            # 750 的来历是"`glm-4-flash` 产出中位 600"那个更早的观测 ——
+            # 模型换了，这个数字就该跟着实测走。
+            #
+            # 700 仍然高于"标题型热点人工审核"档的 600，
+            # 也仍然保证"讲完一件事 + 讲透处境 + 给一句提醒"有足够篇幅。
+            # ⚠️ 想继续往下调，请先看云端最近几条候选的实际字数分布，
+            # 不要把这条线当成可以随手拧的旋钮。
+            return self.NARRATIVE_ARTICLE_MIN_CHARS
         return 1750
 
     def _run_uses_narrative_domain(self, snapshot: dict[str, object]) -> bool:

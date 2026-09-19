@@ -490,7 +490,45 @@ Review approved and publish package exported:
 "`glm-4-flash` 产出中位 600"那个更早的观测 —— 模型换了，这个数字就该跟着实测走。
 700 仍高于"标题型热点人工审核"档的 600。
 
-### 4.18 仍待观察
+### 4.18 真正的根因：`_content_mode` 认不出叙事体裁（2026-09-20 05:xx）
+
+上一节那三处修复（扩展资格、缺口阈值、扩展次数）方向都对，但云端日志里
+`Skipping LLM expansion ... not eligible for grounded expansion` **依然存在**。
+追到底发现：**它们根本没被执行到。**
+
+`BaseAgent._content_mode()` 是**按报告内容关键字**判定的 —— 它找
+`focus_industry` / `topic_title` / `selection_reason` 里有没有
+`social_story` / `社会故事`。而云端的报告长这样：
+
+    focus_industry = '家庭服务'        ← 一个正常的中文行业名，不含关键字
+    topic_type     = 'evergreen'
+    is_hot_topic   = False
+
+于是它返回 `generic`，**所有为叙事体裁写的分支全都进不去**：
+writer 的扩展资格、review 的信息密度评分、具象钩子放宽、人称与语气……
+一处失效，上游修再多也白搭。
+
+修法：关键字判定之后加一条**权威兜底** ——
+账号配置里已经声明了 `content_domain == narrative`，就用它。
+账号自己的声明比"报告里有没有出现某个词"可靠得多。
+
+验证（`.runtime/probe_content_mode.py`）：
+
+    content_domain(账号配置)  = narrative
+    _content_mode(report)     = social_story   ← 原来 generic
+    _has_story_material()     = True
+    information_density       = 82             ← 原来 56
+
+`information_density` 56 → 82 尤其关键：`_determine_pass_status` 里
+`information_density <= 68` 会**直接判 `needs_revision`** ——
+这是"`overall_score` 上不去、卡在自动发布门槛"的另一半原因。
+
+> **教训**：这个项目里"按内容关键字判定体裁"是个反复出现的脆弱模式
+> （`_content_mode`、`_has_grounded_evidence`、`_has_social_story_signal`…）。
+> 内容关键字适合做**初筛**，但**最终判据应该来自账号自己的配置声明**。
+> 判断修好没有，要看最终那行 `Automatic publish result accepted: status=...`。
+
+### 4.19 仍待观察
 
 | # | 问题 | 说明 |
 |---|---|---|

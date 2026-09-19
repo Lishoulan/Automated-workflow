@@ -612,8 +612,24 @@ class AgentWorkflowService:
             reasons.append("missing_subject_anchor")
         return reasons
 
+    def _default_article_min_chars(self) -> int:
+        """没显式传下限时该用多少 —— **跟着写作领域走**。
+
+        ⚠️ 2026-09-20：原来这里无条件用 `ARTICLE_MIN_CHARS = 1500`（产业稿标准）。
+        只要有任何一条调用路径忘了把叙事下限传进来，文章就会被拿去补到 1500 字，
+        日志里就会出现 `minimum 1500` 与 `target 700` 两个数字并存的怪象，
+        而 `target 1500` 那一侧还会把"差 50 字"的故事稿判成不达标
+        （云端连续多次运行都出现过）。把默认值本身做成领域感知，
+        任何漏传的调用方也能拿到正确下限。
+        """
+        return (
+            self.NARRATIVE_ARTICLE_MIN_CHARS
+            if self._uses_narrative_domain()
+            else self.ARTICLE_MIN_CHARS
+        )
+
     def _ensure_article_min_chars(self, article: str, data_report, min_chars: int = None) -> str:
-        min_chars = min_chars if min_chars is not None else self.ARTICLE_MIN_CHARS
+        min_chars = min_chars if min_chars is not None else self._default_article_min_chars()
         current = len(article.replace("\n", "").replace(" ", ""))
         if current >= min_chars:
             return article
@@ -779,7 +795,7 @@ class AgentWorkflowService:
         return reasons
 
     def _legacy_ensure_article_min_chars(self, article: str, data_report, min_chars: int = None) -> str:
-        min_chars = min_chars if min_chars is not None else self.ARTICLE_MIN_CHARS
+        min_chars = min_chars if min_chars is not None else self._default_article_min_chars()
         article = clean_article_text(article, min_word_count=0)
         # Keep the explicit auto-publish target intact even when a hot-topic
         # source has limited evidence.  Otherwise the fallback word-target

@@ -2747,9 +2747,15 @@ class WriterAgent(BaseAgent):
         # expansion. current=694 target=700`）也不给补。
         #
         # 故事稿能不能扩，判据应该是"有没有素材正文可依据"——
-        # `asset_facts`/`evidence_notes`/`source_facts` 非空即可，
-        # 而不是要求"公司+数字"。
-        if content_mode == "social_story" and not can_expand:
+        # `evidence_notes`/`source_facts` ≥2 条或 snippet ≥400 字即可，
+        # 而不是要求"公司 + 数字"。
+        #
+        # ⚠️ 而且**不能靠 `content_mode == "social_story"` 来判**：
+        # `_content_mode` 是按**报告内容关键字**判定的，实测云端
+        # `focus_industry='家庭服务'`（不含 "social_story" / "社会故事"）
+        # → 它返回 `generic`，那条分支根本进不去。
+        # 权威判据是**账号自己的写作领域配置**（`_is_narrative_run()`）。
+        if not can_expand and self._is_narrative_run():
             can_expand = self._has_story_material(data_report)
         if final_chars < min_chars and allow_llm_expansion and can_expand and self.openai_service.available:
             logger.info(

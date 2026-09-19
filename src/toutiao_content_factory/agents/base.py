@@ -611,6 +611,17 @@ class BaseAgent:
         ).lower()
         if "social_story" in text_early or "社会故事" in text_early:
             return "social_story"
+        # ⚠️ 2026-09-20：**账号自己的写作领域是权威判据**。
+        #
+        # 上面那条只能看"报告里有没有出现 social_story / 社会故事"这些字。
+        # 实测云端 `focus_industry='家庭服务'`（一个正常的中文行业名，不含关键字），
+        # 于是 `_content_mode` 返回 `generic` —— 而下游好几个把关人正是用它分流：
+        # 具象钩子放宽、人称与语气、以及 writer 的"能不能扩展补字数"。
+        # 结果就是那些为叙事体裁写的分支根本进不去，日志表现是
+        # 「一条完整故事稿差 30 字却不给补」。
+        # 账号配置里已经明确声明了 `content_domain=narrative`，用它兜底最可靠。
+        if str(getattr(self.settings, "content_domain", "industry") or "industry").strip().lower() == "narrative":
+            return "social_story"
         # The explicit route flag is authoritative.  A title-only hot topic
         # may not carry the words used by the text heuristic, especially after
         # the data agent has normalized its title and angle.

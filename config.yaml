@@ -161,6 +161,17 @@ automation:
   archive_outputs: true
   archive_dirname: runs
   selected_topic_basename: selected_topic
+  # ⚠️ 2026-09-19：本地通道的「让位云端」时间闸。
+  #
+  # 两个通道的 publish_history **互不可见**：共享状态只能让本地看见"云端已发过"，
+  # 没法让云端看见本地。所以本地若在云端窗口之前抢先发布，云端当天还会再发一篇 ——
+  # **同一个号一天发两篇重复内容**。
+  #
+  # 本字段默认是 -1（不限制，云端 CI 必须用 -1），而 config.yaml 一直没设它，
+  # 于是本地 07:00/09:30/12:30/15:30/18:00 这 5 个计划任务**全都在抢发**。
+  # 云端定时恢复后必须显式设成 21：本地在这些时段只做采集与生成、不发布，
+  # 由 21:30 那个任务作为"云端当天没发成功"的兜底。
+  local_fallback_after_hour: 21
 revenue_optimization:
   enabled: true
   lookback_days: 30

@@ -103,6 +103,65 @@ def test_evergreen_pool_has_no_stale_robot_track_wording() -> None:
     assert hits == [], f"长青池里仍有转型前的领域词: {hits}"
 
 
+#: 事件式标题的特征：谁遇到了什么事（有具体动作/结果，而不是设问或方法论）。
+EVENT_ANCHORS = (
+    "起诉",
+    "起诉要回",
+    "判了",
+    "索赔",
+    "被拒",
+    "破门",
+    "报警",
+    "被赶出",
+    "争房产",
+    "摔伤",
+    "摔倒",
+    "过户",
+    "退款",
+    "起争执",
+    "争吵",
+)
+
+#: 方法论/设问式标题的特征 —— 这类标题在搜索引擎上拿不到结果，连摘要都没有。
+METHOD_STYLE_MARKERS = (
+    "该怎么做",
+    "怎么做",
+    "哪几件事",
+    "哪几步",
+    "为什么",
+    "如何",
+    "值得吗",
+    "算不算",
+)
+
+
+def test_evergreen_titles_are_event_shaped() -> None:
+    """长青题标题必须写成"谁遇到了什么事"的事件式。
+
+    ⚠️ 2026-09-19 实测：方法论/设问式标题（「…想要回来得先做哪几件事」）
+    在 Bing 上**一条结果都拿不到** —— 连搜索结果摘要都拿不到，等于没有素材可写；
+    事件式标题至少能拿到 1~8 条摘要，拼出 550~900 字的可用素材。
+    """
+    for payload in _payloads():
+        title = str(payload.get("title", ""))
+        assert any(anchor in title for anchor in EVENT_ANCHORS), (
+            f"长青题标题不是事件式（没有具体动作/结果）: {title}"
+        )
+
+
+def test_evergreen_titles_avoid_method_style_phrasing() -> None:
+    for payload in _payloads():
+        title = str(payload.get("title", ""))
+        hits = [marker for marker in METHOD_STYLE_MARKERS if marker in title]
+        assert hits == [], f"长青题标题仍是设问/方法论式 {hits}: {title}"
+
+
+def test_evergreen_titles_fit_the_publish_length_limit() -> None:
+    for payload in _payloads():
+        title = str(payload.get("title", ""))
+        assert 10 <= len(title) <= 30, f"标题长度 {len(title)} 不在 10~30: {title}"
+
+
 def test_evergreen_topics_are_marked_as_evergreen() -> None:
     for payload in _payloads():
         assert payload.get("topic_type") == "evergreen"

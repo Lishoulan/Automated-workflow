@@ -73,24 +73,31 @@ class TopicPoolService:
         # 现在的条目按三件事挑选，缺一不可：
         #   1. 通过 `_topic_matches_account_boundary`（matched_industries=social_story）
         #   2. 通过 `_has_social_story_signal`（人与关系 / 处境与冲突的词）
-        #   3. 标题里天然带一个"可追踪的具体切口"，让 `_hydrate_topic_material`
-        #      去 Bing 抓真实案例时有抓手（纯方法论标题抓不到东西）
+        #   3. 标题写成**事件式**（有"谁遇到了什么事"的具体形状），而不是方法论/设问式。
+        #      方法论式标题（「…想要回来得先做哪几件事」）在搜索引擎上拿不到结果，
+        #      连摘要都拿不到，等于没有素材可写。
+        #
+        # ⚠️ 但要认清一个**架构性限制**（2026-09-19 实测 13 条候选，全部如此）：
+        #
+        #   长青题**永远拿不到"正文可抓"的搜索结果**。同一套 `search_web`：
+        #       热榜题「男子高空作业绳子被2楼老人剪断」→ 6 条结果**全部**是
+        #         sohu / news.qq.com / thepaper / 163 / news.china.com（正文 1000~3800 字）
+        #       长青题（13 条 event-shaped 候选）→ **0 条**正文可抓，只有搜狗微信的
+        #         跳转链接（落到 antispider）或零散摘要
+        #
+        #   原因是算法性的：**必应优先返回新鲜新闻**，长青/通用查询不在它的排序里。
+        #   所以不要把"提高长青题素材量"当作可以靠改标题解决的问题。
+        #   长青题的正确定位是：**热榜一条可用题都没有时的保底**，
+        #   它产出的是 550~900 字的短稿（靠 Bing 摘要拼素材 + 模型写作），
+        #   能不能过自动发布门槛取决于当天模型状态。
+        #
+        #   「每天都发得出去」主要靠热榜题那条链路 —— 那条链路已验证可发布
+        #   （2026-09-19 23:16 首次真实发布，pgc_id=7687264638244831784）。
         # 全部实测通过，见 tests/test_evergreen_story_pool.py。
         "robot_notes": [
             {
-                "title": "老人把养老钱借给亲戚，对方拖着不还，想要回来得先做哪几件事",
-                "summary": "围绕借条、转账记录、诉讼时效与调解顺序，讲清普通人追回借款的实际路径。",
-                "matched_industries": ["social_story"],
-                "matched_keywords": ["养老", "借钱"],
-                "topic_type": "evergreen",
-                "topic_type_label": "生活经验",
-                "recommended_format": "quick_commentary",
-                "recommended_format_label": "快讯点评",
-                "title_playbook_track": "社会故事",
-            },
-            {
-                "title": "父母留下的房子，几个子女谈不拢，最后是怎么分的",
-                "summary": "围绕遗嘱、继承顺序、份额协商与诉讼成本，讲清房产继承里最容易谈崩的一步。",
+                "title": "老人去世后房产过户给儿子，其他子女起诉要回",
+                "summary": "围绕遗嘱效力、法定继承顺序与份额协商，讲清房产继承里最容易谈崩的一步。",
                 "matched_industries": ["social_story"],
                 "matched_keywords": ["遗产", "房产"],
                 "topic_type": "evergreen",
@@ -100,7 +107,7 @@ class TopicPoolService:
                 "title_playbook_track": "社会故事",
             },
             {
-                "title": "老人在家摔倒后，子女才发现没人知道他的日常情况",
+                "title": "独居老人家中摔倒两天无人知，邻居报警破门",
                 "summary": "独居老人的照护盲区：从日常联系频率、紧急联络人到社区可用的求助渠道。",
                 "matched_industries": ["social_story"],
                 "matched_keywords": ["摔倒", "养老"],
@@ -111,7 +118,18 @@ class TopicPoolService:
                 "title_playbook_track": "社会故事",
             },
             {
-                "title": "保姆照顾老人期间出了意外，责任该由谁来担",
+                "title": "老人把房子过户给儿子后被赶出家门，起诉要回居住权",
+                "summary": "围绕赠与撤销、居住权约定与举证责任，讲清把房产提前给子女前该留什么。",
+                "matched_industries": ["social_story"],
+                "matched_keywords": ["房产", "赡养"],
+                "topic_type": "evergreen",
+                "topic_type_label": "养老处境",
+                "recommended_format": "quick_commentary",
+                "recommended_format_label": "快讯点评",
+                "title_playbook_track": "社会故事",
+            },
+            {
+                "title": "保姆照看老人期间老人摔伤，家属索赔被拒",
                 "summary": "围绕雇佣关系、家政公司责任与保险赔付，讲清请人照护前该确认的几件事。",
                 "matched_industries": ["social_story"],
                 "matched_keywords": ["保姆", "养老"],
@@ -122,7 +140,7 @@ class TopicPoolService:
                 "title_playbook_track": "社会故事",
             },
             {
-                "title": "子女轮流照顾老人，为什么最后总是闹到翻脸",
+                "title": "子女轮流照顾老人起争执，老人搬去养老院",
                 "summary": "赡养分工失衡的常见起因：出钱与出力的换算、长期照护的疲惫、缺少书面约定。",
                 "matched_industries": ["social_story"],
                 "matched_keywords": ["赡养", "养老"],
@@ -133,7 +151,18 @@ class TopicPoolService:
                 "title_playbook_track": "社会故事",
             },
             {
-                "title": "退休后帮子女带孩子，两代人为这件事吵得最凶",
+                "title": "老人借钱给亲戚没打借条，起诉后法院这样认定",
+                "summary": "围绕借条、转账记录、诉讼时效与调解顺序，讲清普通人追回借款的实际路径。",
+                "matched_industries": ["social_story"],
+                "matched_keywords": ["借钱", "养老"],
+                "topic_type": "evergreen",
+                "topic_type_label": "生活经验",
+                "recommended_format": "quick_commentary",
+                "recommended_format_label": "快讯点评",
+                "title_playbook_track": "社会故事",
+            },
+            {
+                "title": "退休后帮子女带孙子，两代人为育儿方式争吵",
                 "summary": "隔代育儿里的边界问题：谁来定规矩、钱怎么算、老人累出病之后怎么办。",
                 "matched_industries": ["social_story"],
                 "matched_keywords": ["带娃", "隔代"],
@@ -144,7 +173,7 @@ class TopicPoolService:
                 "title_playbook_track": "社会故事",
             },
             {
-                "title": "小区物业和业主为停车位打了好几年官司，最后谁赢了",
+                "title": "业主起诉物业要求公开停车费收支，法院判了",
                 "summary": "从业主共有部分收益、物业合同权限和举证责任，讲清这类邻里纠纷为什么难打。",
                 "matched_industries": ["social_story"],
                 "matched_keywords": ["物业", "官司"],
@@ -155,12 +184,23 @@ class TopicPoolService:
                 "title_playbook_track": "社会故事",
             },
             {
-                "title": "再婚老伴走在他前面，两边的子女为房子闹到了法院",
+                "title": "再婚老伴去世后，继子女与亲生子女争房产",
                 "summary": "再婚家庭的财产与居住权争议：婚前财产怎么算、继子女有没有继承权、居住权能不能主张。",
                 "matched_industries": ["social_story"],
                 "matched_keywords": ["再婚", "房产"],
                 "topic_type": "evergreen",
                 "topic_type_label": "家庭伦理",
+                "recommended_format": "quick_commentary",
+                "recommended_format_label": "快讯点评",
+                "title_playbook_track": "社会故事",
+            },
+            {
+                "title": "老人被推销买下高价保健品，子女要求退款被拒",
+                "summary": "围绕虚假宣传、老年消费诱导与退货维权路径，讲清家里遇到这类事该留哪些证据。",
+                "matched_industries": ["social_story"],
+                "matched_keywords": ["诈骗", "养老"],
+                "topic_type": "evergreen",
+                "topic_type_label": "消费维权",
                 "recommended_format": "quick_commentary",
                 "recommended_format_label": "快讯点评",
                 "title_playbook_track": "社会故事",

@@ -282,36 +282,82 @@ def extract_article_body(page_html: str, min_chars: int = 600) -> str:
 
 
 def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2.0) -> list[dict]:
-    """搜索候选报道，返回 [{title, url}]。**按多个搜索后端依次尝试**。
+    """搜索候选报道，返回 [{title, url}]。
 
-    ⚠️ 为什么必须是"多后端"（2026-09-19 实测，两轮踩坑）：
+    ## 为什么要多后端
 
-    第一轮：只用 Bing，本地（中国）正常。上线云端后**一条都抓不到**。
-    第二轮：从 GitHub runner（美国 IP）实测，Bing 返回的是**本地化结果** ——
-        搜「老人在家摔倒后，子女才发现没人知道他的日常情况」返回**披萨食谱**，
-        搜「张雪回应打车被认出"忽悠"司机」返回 **Reddit 板块**，
-        抓下来全是 403 或登录页，`usable=0 total_chars=0`。
-    同一次从 runner 跑的入口探测（`scripts/probe_cn_search.py`）：
+    ⚠️ 2026-09-19 实测：**云端的可用后端与本地完全不同**，只挑一个必然翻车。
+    第一轮只用 Bing（本地正常），上线云端后一条素材都抓不到 —— 因为
+    `cn.bing.com` 在美国 IP 上是 301，而 Bing 默认会把中文查询**本地化成美国结果**
+    （搜「老人在家摔倒后…」返回「47 Homemade Pizza Recipes」）。
 
-        可用：今日头条搜索 so.toutiao.com（HTTP 200，命中相关）
-              搜狗微信   weixin.sogou.com（HTTP 200，命中相关）
-        不可用：百度（TLS 握手超时，被墙）
-                必应中国 cn.bing.com（301 失效）
-                新浪/中新网/澎湃/网易站内搜索（均返回无关页面）
+    ## 为什么要"合并"而不是"依次返回第一个有结果的"
 
-    结论：**云端的可用后端与本地完全不同**，所以不能只挑一个。
-    按"在 runner 上实测可用"的顺序尝试，全部失败才返回空：
+    ⚠️ 2026-09-19 第二次踩坑：改成"依次尝试、第一个有结果就用"之后，
+    **搜狗微信**（`weixin.sogou.com`）返回了 21 条结果，于是 Bing 的结果全部被丢弃 ——
+    可搜狗微信给的是 `/link?url=...` **跳转链接**，实测**全部落到 `antispider` 反爬页**，
+    正文恒为 0 字。21 次抓取预算全浪费在拿不到的链接上。
 
-    1. `so.toutiao.com`  —— runner 与本地都可用，且与发布平台同源，最优先
-    2. `weixin.sogou.com` —— runner 上可用，公众号文章质量高
-    3. `cn.bing.com`      —— 本地主力，runner 上会退化，仅作兜底
+    现在的做法：
+      1. **每个后端都查**，把结果合并去重；
+      2. 按**能不能抓到正文**排序 —— `PREFERRED_FETCH_HOSTS` 里的域
+         （实测在云端能抓到正文的新闻站）排前面，已知拿不到的跳转链接排最后；
+      3. 这样抓取预算先花在"大概率能拿到正文"的链接上，
+         拿不到时还有摘要兜底。
 
-    每个后端失败就换下一个；用**真实浏览器**取结果（HTTP 直接抓搜索引擎不稳定）。
+    用**真实浏览器**取结果（HTTP 直接抓搜索引擎不稳定）。
     """
+    merged: list[dict] = []
+    seen_urls: set[str] = set()
     for backend in SEARCH_BACKENDS:
         hits = _search_with_backend(backend, query, retries=retries, pause=pause)
-        if hits:
-            return hits[:limit]
+        for hit in hits:
+            url = str(hit.get("url", "") or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            merged.append(hit)
+        # 已经拿到足够多"高优先级"来源就不必再查后面的后端
+        if sum(1 for item in merged if _fetch_priority(str(item.get("url", ""))) >= 2) >= limit:
+            break
+    merged.sort(key=lambda item: -_fetch_priority(str(item.get("url", ""))))
+    return merged[:limit]
+
+
+#: 实测在 GitHub runner（美国 IP）上**能抓到正文**的新闻域。
+#: 抓取预算有限（每次运行 3 条），所以优先花在它们身上。
+#: 数据来自 `.runtime/probe_fetch_hosts.py` 的实测。
+PREFERRED_FETCH_HOSTS = (
+    "news.china.com",
+    "china.com",
+    "sohu.com",
+    "thepaper.cn",
+    "news.qq.com",
+    "qq.com",
+    "163.com",
+    "sina.com.cn",
+    "ifeng.com",
+    "people.com.cn",
+    "xinhuanet.com",
+    "chinanews.com",
+    "cctv.com",
+    "baijiahao.baidu.com",
+)
+
+
+def _fetch_priority(url: str) -> int:
+    """抓取优先级：2 = 已知可抓正文；0 = 已知抓不到（跳转/搜索站）；1 = 未知。"""
+    text = str(url or "")
+    if not text:
+        return 0
+    # 已知抓不到正文的跳转链接：搜狗微信、百度 link、搜索引擎自身
+    if "weixin.sogou.com/link" in text or "baidu.com/link" in text:
+        return 0
+    if any(host in text for host in SKIP_HOSTS):
+        return 0
+    if any(host in text for host in PREFERRED_FETCH_HOSTS):
+        return 2
+    return 1
     return []
 
 

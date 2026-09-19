@@ -73,13 +73,17 @@ PROBES = [
     ("搜狗微信", "https://weixin.sogou.com/weixin?type=2&query=" + quote("老人摔倒")),
     ("必应中国", "https://cn.bing.com/search?q=" + quote("老人摔倒") + "&ensearch=0"),
     ("必应中文站", "https://cn.bing.com/search?q=" + quote("老人摔倒") + "&mkt=zh-CN"),
+    ("必应全球zh", "https://www.bing.com/search?q=" + quote("老人摔倒") + "&mkt=zh-CN&setlang=zh-CN&cc=CN"),
+    ("必应全球默认", "https://www.bing.com/search?q=" + quote("老人摔倒")),
+    ("必应新闻", "https://www.bing.com/news/search?q=" + quote("老人摔倒") + "&mkt=zh-CN"),
+    ("谷歌新闻", "https://news.google.com/search?q=" + quote("老人摔倒") + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"),
+    ("谷歌搜索", "https://www.google.com/search?q=" + quote("老人摔倒") + "&hl=zh-CN"),
     ("今日头条搜索", "https://so.toutiao.com/search?keyword=" + quote("老人摔倒")),
     ("新浪搜索", "https://search.sina.com.cn/?q=" + quote("老人摔倒") + "&c=news"),
     ("中新网搜索", "https://sou.chinanews.com.cn/search.do?q=" + quote("老人摔倒")),
     ("澎湃搜索", "https://www.thepaper.cn/searchResult?searchWord=" + quote("老人摔倒")),
     ("网易搜索", "https://www.163.com/search?keyword=" + quote("老人摔倒")),
     ("360搜索", "https://www.so.com/s?q=" + quote("老人摔倒")),
-    ("Bing 全球中文", "https://www.bing.com/search?q=" + quote("老人摔倒") + "&mkt=zh-CN&setlang=zh-CN"),
 ]
 
 

@@ -872,7 +872,26 @@ class ContentFactoryAppService:
         losing_attempts: list[dict[str, object]] = []
         best_attempt: dict[str, object] | None = None
 
+        # ⚠️ 2026-09-20：**运行时长预算**。
+        #
+        # 实测单次运行会跑到 30~40 分钟（每条候选都要走一次浏览器搜索 +
+        # 编辑委员会 + 质量复核），而云端 workflow 的 `timeout-minutes` 是 45。
+        # 定时任务一旦被超时杀掉，等于当天白跑 —— 用户要的是"每天都能发出去"，
+        # 所以必须在接近上限时**主动收敛**：停止换题，用手上最好的候选走发布，
+        # 而不是让整个 run 被外部杀掉。
+        started_at = time.monotonic()
+        budget_seconds = self._daily_run_budget_seconds()
         for attempt_index, candidate in enumerate(candidate_specs, start=1):
+            elapsed = time.monotonic() - started_at
+            if best_attempt is not None and elapsed >= budget_seconds:
+                self.logger.warning(
+                    "Daily workflow 已用 %.1f 分钟（预算 %.1f 分钟），停止换题，"
+                    "用当前最优候选走发布流程。剩余候选 %d 条未尝试。",
+                    elapsed / 60.0,
+                    budget_seconds / 60.0,
+                    len(candidate_specs) - attempt_index + 1,
+                )
+                break
             self.logger.info(
                 "Daily workflow attempt %s/%s: %s",
                 attempt_index,
@@ -2713,6 +2732,19 @@ class ContentFactoryAppService:
             article_text = article_path.read_text(encoding="utf-8").replace("\n", "").replace(" ", "")
             snapshot["article_char_count"] = len(article_text)
         return snapshot
+
+    #: 单次 daily_run 的候选轮换时间预算（秒）。
+    #: 云端 workflow 的 `timeout-minutes` 是 45，留 12 分钟给发布与收尾。
+    #: 可用环境变量覆盖；设为 0 或负数表示不限制。
+    DAILY_RUN_BUDGET_SECONDS = 1980
+
+    def _daily_run_budget_seconds(self) -> float:
+        raw = os.getenv("TOUTIAO_DAILY_RUN_BUDGET_SECONDS", "")
+        try:
+            value = float(raw) if str(raw).strip() else float(self.DAILY_RUN_BUDGET_SECONDS)
+        except (TypeError, ValueError):
+            value = float(self.DAILY_RUN_BUDGET_SECONDS)
+        return value if value > 0 else float("inf")
 
     def _qualifies_for_auto_approval(
         self,

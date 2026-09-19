@@ -281,6 +281,14 @@ def extract_article_body(page_html: str, min_chars: int = 600) -> str:
     return body if len(body) >= min_chars else ""
 
 
+#: 进程级「后端已死」缓存：本次运行里连续拿不到结果的搜索后端不再重复查询。
+#:
+#: ⚠️ 2026-09-20：一次运行要为 4 个候选选题各搜一次，而每次都把 3 个后端全查一遍，
+#: 每个后端还带 2 次重试 —— 实测 `cn.bing.com`（在美国 IP 上 301）白白多花
+#: 1~2 分钟/次。这个缓存把"已经证明没用"的后端从后续查询里摘掉。
+_DEAD_BACKENDS: set[str] = set()
+
+
 def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2.0) -> list[dict]:
     """搜索候选报道，返回 [{title, url}]。
 
@@ -299,7 +307,7 @@ def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2
     正文恒为 0 字。21 次抓取预算全浪费在拿不到的链接上。
 
     现在的做法：
-      1. **每个后端都查**，把结果合并去重；
+      1. 查**还没被证明没用**的后端，把结果合并去重；
       2. 按**能不能抓到正文**排序 —— `PREFERRED_FETCH_HOSTS` 里的域
          （实测在云端能抓到正文的新闻站）排前面，已知拿不到的跳转链接排最后；
       3. 这样抓取预算先花在"大概率能拿到正文"的链接上，
@@ -310,7 +318,14 @@ def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2
     merged: list[dict] = []
     seen_urls: set[str] = set()
     for backend in SEARCH_BACKENDS:
+        name = backend[0]
+        if name in _DEAD_BACKENDS:
+            continue
         hits = _search_with_backend(backend, query, retries=retries, pause=pause)
+        if not hits:
+            # 完全没结果 = 这个后端在当前网络下不可用（如 cn.bing.com 在美国 IP 上 301）。
+            # 后续查询不再浪费时间去试它 —— 一次运行有 4 个候选要搜。
+            _DEAD_BACKENDS.add(name)
         for hit in hits:
             url = str(hit.get("url", "") or "").strip()
             if not url or url in seen_urls:
@@ -367,7 +382,6 @@ def _fetch_priority(url: str) -> int:
     if any(host in text for host in PREFERRED_FETCH_HOSTS):
         return 2
     return 1
-    return []
 
 
 #: 从搜索结果页抓取「结果列表」的通用 JS：标题 + 链接 + **描述片段**。

@@ -612,3 +612,53 @@ def test_vertical_account_still_uses_sports_mode() -> None:
 
     assert automation._topic_mode(topic) == "sports"
 
+
+# ---------------------------------------------------------------------------
+# 10. 单次运行必须有时间预算（否则定时任务会被 45 分钟上限杀掉）
+# ---------------------------------------------------------------------------
+#
+# 实测云端单次运行会跑到 30~40 分钟：每条候选都要走一次浏览器搜索 +
+# 编辑委员会 + 质量复核，而 workflow 的 `timeout-minutes` 是 45。
+# 被外部超时杀掉 = 当天白跑。所以要能在接近上限时主动收敛：
+# 停止换题，用手上最好的候选走发布。
+
+
+def test_daily_run_budget_defaults_and_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    from toutiao_content_factory.services.app_service import ContentFactoryAppService
+
+    service = ContentFactoryAppService.__new__(ContentFactoryAppService)
+
+    monkeypatch.delenv("TOUTIAO_DAILY_RUN_BUDGET_SECONDS", raising=False)
+    default = service._daily_run_budget_seconds()
+    assert default == ContentFactoryAppService.DAILY_RUN_BUDGET_SECONDS
+    # 必须显著小于 workflow 的 45 分钟上限，给发布与收尾留出余量
+    assert default < 45 * 60
+
+    monkeypatch.setenv("TOUTIAO_DAILY_RUN_BUDGET_SECONDS", "600")
+    assert service._daily_run_budget_seconds() == 600
+
+    # 非法值与"不限制"都能安全处理
+    monkeypatch.setenv("TOUTIAO_DAILY_RUN_BUDGET_SECONDS", "abc")
+    assert (
+        service._daily_run_budget_seconds()
+        == ContentFactoryAppService.DAILY_RUN_BUDGET_SECONDS
+    )
+    monkeypatch.setenv("TOUTIAO_DAILY_RUN_BUDGET_SECONDS", "0")
+    assert service._daily_run_budget_seconds() == float("inf")
+
+
+def test_candidate_loop_honours_the_budget() -> None:
+    """候选循环里必须真的检查预算并 break —— 光有时间函数不算。
+
+    注意预算检查在 `_daily_run_impl`（`daily_run` 只是加锁与错误处理的包装层）。
+    """
+    import inspect
+
+    from toutiao_content_factory.services import app_service as module
+
+    source = inspect.getsource(module.ContentFactoryAppService._daily_run_impl)
+
+    assert "budget_seconds" in source
+    assert "停止换题" in source
+    assert "break" in source
+

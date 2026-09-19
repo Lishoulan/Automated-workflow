@@ -2696,6 +2696,16 @@ class ContentFactoryAppService:
                 data_report = wf.get("data_report") or {}
                 if isinstance(data_report, dict):
                     snapshot["is_hot_topic"] = 1 if bool(data_report.get("is_hot_topic", False)) else 0
+                    # ⚠️ 2026-09-19：长青题也必须能被下游认出来 —— 原创性门、
+                    # 自动批准门都要用它。这几项原来没进快照，
+                    # `_snapshot_is_evergreen()` 于是恒为 False，
+                    # 长青题在最后一道门上照样被拦。
+                    flags = data_report.get("topic_quality_flags") or []
+                    if isinstance(flags, list) and flags:
+                        snapshot["topic_quality_flags"] = [str(item) for item in flags]
+                    topic_type = str(data_report.get("topic_type", "") or "").strip()
+                    if topic_type:
+                        snapshot["topic_type"] = topic_type
         article_path = run_dir / "publish" / "article.md"
         if not article_path.exists():
             article_path = run_dir / "article.md"
@@ -2755,6 +2765,7 @@ class ContentFactoryAppService:
             originality_reason = self._originality_block_reason(
                 content_guard_report.get("source_copy_ratio"),
                 is_hot_topic=bool(score_snapshot.get("is_hot_topic", 0)),
+                is_evergreen=self._snapshot_is_evergreen(score_snapshot),
             )
             if originality_reason:
                 self.logger.warning(
@@ -2840,8 +2851,55 @@ class ContentFactoryAppService:
             return False
 
     @staticmethod
+    def _snapshot_is_evergreen(score_snapshot: dict[str, Any]) -> bool:
+        """这次运行是不是长青题（常青选题池）。
+
+        判据与 `TopicAutomationService._is_evergreen_topic` 保持同一口径：
+        来源标记 / 来源类型 / 题目标记命中任一即可。
+        """
+        if not isinstance(score_snapshot, dict):
+            return False
+        flags = {
+            str(item).strip()
+            for item in (score_snapshot.get("topic_quality_flags") or [])
+            if str(item).strip()
+        }
+        return (
+            "evergreen_fallback" in flags
+            or str(score_snapshot.get("topic_type", "") or "").strip() == "evergreen"
+            or str(score_snapshot.get("topic_source_type", "") or "").strip() == "evergreen"
+            or str(score_snapshot.get("topic_source", "") or "").strip() == "evergreen_pool"
+        )
+
+    def _run_dir_is_evergreen(self, run_dir: Path | None) -> bool:
+        """从 run 目录里的选题快照判断这次是不是长青题。"""
+        if run_dir is None:
+            return False
+        try:
+            selected = Path(run_dir) / "selected_topic.json"
+            if not selected.exists():
+                return False
+            payload = _safe_json_loads(selected.read_text(encoding="utf-8"), default={})
+            topic = payload.get("selected_topic") or {}
+            if not isinstance(topic, dict):
+                return False
+            flags = {
+                str(item).strip()
+                for item in (topic.get("quality_flags") or [])
+                if str(item).strip()
+            }
+            return (
+                "evergreen_fallback" in flags
+                or str(topic.get("topic_type", "") or "").strip() == "evergreen"
+                or str(topic.get("source_type", "") or "").strip() == "evergreen"
+                or str(topic.get("source", "") or "").strip() == "evergreen_pool"
+            )
+        except Exception:  # noqa: BLE001 - 判定不了就按"不是长青题"处理（保守）
+            return False
+
+    @staticmethod
     def _originality_block_reason(
-        ratio: float | None, *, is_hot_topic: bool
+        ratio: float | None, *, is_hot_topic: bool, is_evergreen: bool = False
     ) -> str:
         """原创红线：与素材原文的连续抄录率。严格门与兜底门共用这一条判定。
 
@@ -2852,7 +2910,16 @@ class ContentFactoryAppService:
         正是抄了一篇外部稿，而当时本地只比对自家历史、看不见外部素材。既然这
         条线存在的意义就是守住它，那么没有素材原文可比对时，宁可放弃当天发布。
 
-        例外只有热点选题：热榜条目本来就没有正文素材，无从比对，放行但记录风险。
+        例外只有热点选题与长青题：这两类本来就**没有正文素材**，无从比对，
+        放行但记录风险。
+        —— 2026-09-19：原来只豁免 `is_hot_topic`，漏了长青题（常青选题池）。
+        后果与 `insufficient_source_facts` 那次一模一样：采集侧已经
+        「[素材] 长青题不要求抓到报道正文」放行，走到最后却被这条拦下 ——
+        实测云端 run 35447335967：
+            Fallback publish skipped …: 原创性无法核验：素材原文缺失或过短，拒绝自动发布
+        同一件事在三个模块里有三种口径（素材门槛 / 证据门槛 / 原创门槛），
+        这次统一成"长青题按热点选题对待"。
+
         返回空串表示放行；返回非空字符串即拦截原因。
         """
         from toutiao_content_factory.services.originality_service import (
@@ -2860,7 +2927,7 @@ class ContentFactoryAppService:
         )
 
         if ratio is None:
-            if is_hot_topic:
+            if is_hot_topic or is_evergreen:
                 return ""
             return "原创性无法核验：素材原文缺失或过短，拒绝自动发布"
         if float(ratio) >= REVIEW_THRESHOLD:
@@ -2940,12 +3007,14 @@ class ContentFactoryAppService:
                 article, source_file.read_text(encoding="utf-8")
             )["ratio"]
         originality_reason = self._originality_block_reason(
-            ratio, is_hot_topic=is_hot_topic
+            ratio,
+            is_hot_topic=is_hot_topic,
+            is_evergreen=self._run_dir_is_evergreen(run_dir),
         )
         if originality_reason:
             reasons.append(originality_reason)
         elif ratio is None:
-            notes.append("热点选题无原文素材，原创风险未量化")
+            notes.append("热点/长青选题无原文素材，原创风险未量化")
         else:
             notes.append(f"与素材连续抄录 {ratio}%")
 

@@ -313,8 +313,14 @@ class OpenAIContentService:
         reason = str(exc).strip() or "provider account balance is insufficient"
         if not self._unavailable_reason:
             self._unavailable_reason = reason
+            # ⚠️ 2026-09-20：把**模型名与原始错误**一起打出来。
+            # 这个标志是"本次运行内永久失效"，而它会让所有后续的"补足篇幅"动作静默跳过
+            # （日志只显示 `api_available=False`，看不出是谁触发的）。
+            # 实测云端因此连续多轮无法把"差 30~50 字"的稿子补过线。
             self.logger.error(
-                "Model client disabled for the remainder of this run: account balance is insufficient."
+                "Model client disabled for the remainder of this run: model=%s reason=%s",
+                self.model,
+                reason[:300],
             )
 
     def _is_insufficient_balance_error(self, exc: Exception) -> bool:

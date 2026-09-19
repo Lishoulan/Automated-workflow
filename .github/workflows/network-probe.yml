@@ -23,6 +23,9 @@ jobs:
       - name: Probe reachability (direct)
         run: python scripts/probe_network_reach.py
 
+      - name: Probe Chinese search endpoints (the real question)
+        run: python scripts/probe_cn_search.py
+
       - name: Install material-search dependencies
         run: |
           pip install --quiet httpx2 beautifulsoup4 lxml playwright

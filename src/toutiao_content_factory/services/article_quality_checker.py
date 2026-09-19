@@ -247,8 +247,22 @@ class ArticleQualityChecker:
             issues.extend(compliance_result["issues"])
             suggestions.extend(compliance_result["suggestions"])
 
+            # ⚠️ 2026-09-19：1500 字是**「头条首发激励」的资格线**，不是"能不能发布"的门槛。
+            # 原来把它算成 `issues`（非建议类问题），于是：
+            #   787 字的稿子 → 「字数不足1500字」+「首发激励要求文章字数不少于1500字」
+            #   +「内容质量标准覆盖不足」= 3 条 issues > 2 → is_passed=False
+            #   → `publish_service` 直接抛
+            #   「Publish quality gate blocked: 字数不足1500字 | 内容质量标准覆盖不足 |
+            #     首发激励要求文章字数不少于1500字」→ **一个字都发不出去**。
+            # 而同一段逻辑的上游（`publish_service`）在字数不足时**已经自动取消首发声明**
+            # 并继续发布 —— 两处自相矛盾。
+            # 现在的口径：字数不足 1500 只降级为建议（等于"这篇拿不到首发激励"），
+            # 不阻断发布；真正的发布下限由 `AppService._minimum_article_chars` 把关。
             if word_count < 1500:
-                issues.append("首发激励要求文章字数不少于1500字")
+                suggestions.append(
+                    f"字数{word_count}字，未达头条首发激励的1500字要求，本篇将不声明首发"
+                    "（不影响正常发布与阅读收益）"
+                )
             has_data_ref = self._has_any_keyword(content_lower, self._DATA_KEYWORDS)
             if not has_data_ref:
                 suggestions.append("建议增加数据引用以提升首发激励合规性")
@@ -321,11 +335,40 @@ class ArticleQualityChecker:
             count += len(matches)
         return count
 
+    #: 叙事/故事体裁的结尾与用语特征。用于把「首发激励资格」类判定降级为建议。
+    #:
+    #: ⚠️ 2026-09-19：`_check_compliance` 查的是**头条首发激励的五大质量标准**
+    #: （首发时效 / 原创深度 / 信息增量 / 创作规范 / 用户价值），这套画像本来就是
+    #: 给"产业分析稿"写的 —— 故事体裁不讲"信息增量""创作规范（数据、统计）"，
+    #: 天然只能覆盖 2 项左右，于是固定产出「内容质量标准覆盖不足」这条 issue。
+    #: 它被 `is_passed = 非建议类问题 <= 2` 计入，再叠上字数那条，
+    #: 一篇正常的叙事稿必然 `is_passed=False` → `publish_service` 直接拒绝发布。
+    #: 两处口径统一为：**拿不到首发激励是"少赚"，不是"不能发"**，
+    #: 所以这类判定在叙事体裁下只作为建议。
+    NARRATIVE_MARKERS = (
+        "换成是你",
+        "你会怎么处理",
+        "当事人",
+        "人情",
+        "家长里短",
+        "邻里",
+        "赡养",
+        "离婚",
+    )
+
+    def _looks_like_narrative(self, content: str) -> bool:
+        sample = str(content or "")
+        if not sample:
+            return False
+        hits = sum(1 for marker in self.NARRATIVE_MARKERS if marker in sample)
+        return hits >= 2
+
     def _check_compliance(self, content: str, content_lower: str) -> dict:
         """检查首发激励合规性"""
         issues = []
         suggestions = []
         score = 0
+        narrative = self._looks_like_narrative(content)
 
         # 检查五大质量标准覆盖情况
         standards_covered = 0
@@ -340,10 +383,17 @@ class ArticleQualityChecker:
             suggestions.append("建议加强内容深度，增加更多信息增量")
         elif standards_covered >= 2:
             score += 10
-            issues.append("内容质量标准覆盖不足")
+            # 故事体裁：这是"首发激励资格不足"，不是"文章不合格"
+            target = suggestions if narrative else issues
+            target.append("内容质量标准覆盖不足" if not narrative else "内容未覆盖首发激励的多数质量标准，本篇将不声明首发")
             suggestions.append("建议增加原创观点和深度分析")
         else:
-            issues.append("严重不足：缺少五大质量标准的覆盖")
+            target = suggestions if narrative else issues
+            target.append(
+                "严重不足：缺少五大质量标准的覆盖"
+                if not narrative
+                else "未覆盖首发激励的质量标准，本篇将不声明首发"
+            )
             suggestions.append("需要在首发时效、原创深度、信息增量、创作规范、用户价值等方面全面提升")
 
         # 检查信息来源

@@ -513,6 +513,24 @@ class AgentWorkflowService:
             if str(flag).strip()
         }
         is_title_only = "title_only" in quality_flags
+        # ⚠️ 2026-09-19：长青兜底题也必须算进"标题型热点"这一类。
+        #
+        # `hot_topic_evidence_exempt` 的语义是"这条题**本来就没有正文素材**，
+        # 别拿证据门槛拦它"。而长青题（常青选题池）是**最典型**的这类题 ——
+        # 它们不是新闻事件，网上没有对应报道，永远满足不了「≥6 条事实且 ≥320 字」。
+        # 原来只认 `is_hot_topic` / `title_only`，长青题两条都不满足，于是：
+        #   日志显示「[素材] 长青题不要求抓到报道正文」→ 紧接着
+        #   「Skipping low-quality topic: … | reasons=insufficient_source_facts」
+        #   → 4 个候选全被跳过 → `Daily workflow did not produce any runnable candidates`
+        #   → 云端当天一篇都发不出去（实测 run 35445305454）。
+        # 平台方（`automation._is_evergreen_topic`）已明确豁免长青题的素材门槛，
+        # 这里必须用同一口径。
+        is_evergreen = (
+            "evergreen_fallback" in quality_flags
+            or str(getattr(extraction, "topic_type", "") or "").strip() == "evergreen"
+            or str(getattr(data_report, "topic_type", "") or "").strip() == "evergreen"
+        )
+        is_title_only = is_title_only or is_evergreen
         publishing = getattr(self.settings, "publishing", None)
         toutiao_auto_publish = bool(
             getattr(publishing, "enabled", False)

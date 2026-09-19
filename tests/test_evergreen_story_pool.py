@@ -56,14 +56,14 @@ def _as_topic(payload: dict) -> TopicCandidate:
     title = str(payload["title"])
     return TopicCandidate(
         title=title,
-        url=f"evergreen://robot-notes/{abs(hash(title)) % 10**8}",
-        source="evergreen_pool",
-        source_type="evergreen",
+        url=str(payload.get("url") or f"evergreen://robot-notes/{abs(hash(title)) % 10**8}"),
+        source=str(payload.get("source", "evergreen_pool")),
+        source_type=str(payload.get("source_type", "evergreen")),
         summary=str(payload.get("summary", "")),
         snippet="",
         matched_industries=list(payload.get("matched_industries", [])),
         matched_keywords=list(payload.get("matched_keywords", [])),
-        topic_type="evergreen",
+        topic_type=str(payload.get("topic_type", "")),
         recommended_format=str(payload.get("recommended_format", "")),
     )
 
@@ -107,3 +107,52 @@ def test_evergreen_topics_are_marked_as_evergreen() -> None:
     for payload in _payloads():
         assert payload.get("topic_type") == "evergreen"
         assert str(payload.get("summary", "")).strip(), "长青题必须有摘要，否则抓素材没抓手"
+
+
+# ---------------------------------------------------------------------------
+# 质量门必须认长青题（否则选题被选中了、又在这里被拦掉）
+# ---------------------------------------------------------------------------
+#
+# 实测（云端 run 35445305454）：日志里先出现
+#   「[素材] 长青题不要求抓到报道正文（非新闻事件）」   ← 采集侧已豁免
+# 紧接着又出现
+#   「Skipping low-quality topic: … | reasons=insufficient_source_facts」
+# 4 个候选全部被跳过 → `Daily workflow did not produce any runnable candidates`
+# → 云端当天一篇都发不出去。
+#
+# 根因：`hot_topic_evidence_exempt` 的生效条件是 `is_hot_topic or is_title_only`，
+# 而长青题两条都不满足 —— 两个模块对同一件事给了相反的口径。
+
+
+def test_evergreen_fallback_flag_counts_as_title_only() -> None:
+    """`_abort_if_low_quality` 必须把 evergreen_fallback 当成"本来就没有正文素材"。"""
+    import inspect
+
+    from toutiao_content_factory.services import agent_workflow as module
+
+    source = inspect.getsource(module.AgentWorkflowService._abort_if_low_quality)
+
+    assert "evergreen_fallback" in source, (
+        "长青题没被算进豁免范围；采集侧放行、质量门拦截，两处口径不一致"
+    )
+    assert "is_title_only = is_title_only or is_evergreen" in source
+
+
+def test_automation_knows_which_topics_are_evergreen() -> None:
+    """采集侧的判据必须能命中 pool 里的每一条，且不误判热榜题。"""
+    from toutiao_content_factory.services.automation import TopicAutomationService
+
+    for payload in _payloads():
+        assert TopicAutomationService._is_evergreen_topic(_as_topic(payload)) is True
+
+    hot = _as_topic(
+        {
+            "title": "男子高空作业绳子被2楼老人剪断",
+            "matched_industries": ["social_story"],
+            "matched_keywords": ["老人"],
+            "source": "toutiao_hot",
+            "source_type": "hot_board",
+            "topic_type": "project_progress",
+        }
+    )
+    assert TopicAutomationService._is_evergreen_topic(hot) is False

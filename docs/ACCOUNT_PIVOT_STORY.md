@@ -318,9 +318,30 @@ publish_status=submitted_for_review
 顺带修掉一个更值钱的缺陷：搜索后端原来是"依次尝试、第一个有结果的就用"，
 而搜狗微信会返回 21 条 `/link?url=` 跳转链接（**全部落到 antispider，正文恒 0 字**），
 于是 Bing 的结果全被丢弃、21 次抓取预算全浪费在拿不到的链接上。
-现在**合并所有后端结果**，并用 `_fetch_priority()` 把实测能抓到正文的新闻域排前面。
+现在**合并所有后端结果**，并用 `_fetch_priority()` 把实测能抓到正文的新闻域排前面，
+**已知拿不到正文的链接直接不进抓取队列**。
 
-### 4.13 仍待观察
+### 4.13 同一判据被抄成三份（本轮最费时间的坑）
+
+"标题信息密度"这一条判据在项目里有**三份独立实现**，修一处就被下一处打回来。
+三次云端运行各卡在一处，日志特征各不相同：
+
+| 运行 | 卡在哪个入口 | 日志特征 |
+|---|---|---|
+| 35443949496 | `TitleAgent.validate_title_candidate` | `0/0 candidates passed the gate` |
+| 35453836286 | `AgentWorkflowService._filter_titles_by_quality` | `标题质量硬过滤全灭：18 个候选均未通过` |
+| 35455257246 | `ReviewWorkflowService.select_auto_title` | `0/8 … top_reasons=[('rule_009_low_information', 8)]` |
+
+三处现在都用同一口径（`NARRATIVE_EXEMPT_TITLE_CODES` /
+`NARRATIVE_EXEMPT_TITLE_MARKERS`），并有测试 `test_all_three_title_gate_copies_agree`
+把"三处一起改"变成可执行约束。
+
+> **教训**：这个项目里"同一个判据"经常被复制到生成侧、旁路、最终选择三处。
+> 只修一处时，**表面日志会显示"已修复"**（生成侧合格率上去了），
+> 但发布仍然失败。判断是否真修好，要看最终那一行
+> `Automatic publish result accepted: status=...`，不能看中间某一步的成功率。
+
+### 4.14 仍待观察
 
 | # | 问题 | 说明 |
 |---|---|---|

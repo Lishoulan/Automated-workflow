@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-09-19T23:17:17",
+  "updated_at": "2026-09-20T01:52:36",
   "entries": {
     "2026-09-16": {
       "toutiao": {
@@ -72,6 +72,24 @@
         "title": "“老王退休后帮儿子看孩子，结果一家子因为育儿规矩吵翻天”",
         "publish_url": "",
         "recorded_at": "2026-09-19T23:17:17"
+      }
+    },
+    "2026-09-20::robot-notes": {
+      "toutiao": {
+        "channel": "cloud",
+        "status": "submitted_for_review",
+        "pgc_id": "",
+        "title": "独居老人摔倒两天，邻居报警破门揭示照护盲区",
+        "publish_url": "",
+        "recorded_at": "2026-09-20T01:52:36"
+      },
+      "toutiao_weitoutiao": {
+        "channel": "cloud",
+        "status": "submitted_for_review",
+        "pgc_id": "",
+        "title": "老人借亲戚钱没打借条，法院怎么判？",
+        "publish_url": "",
+        "recorded_at": "2026-09-20T01:52:36"
       }
     }
   }

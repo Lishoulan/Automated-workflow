@@ -316,6 +316,32 @@ class TitleAgent(BaseAgent):
         rule_issues = self._rule_gate_issues(title, body)
         reason_codes.extend(rule_issues)
 
+        # ⚠️ 2026-09-19：叙事体裁的标题闸门必须**收窄到安全类检查**。
+        #
+        # 实测（云端 run 35443949496）：模型产出 18 条标题，全部被拒，
+        # 最终走 emergency 池、2 条候选也全拒（missing_concrete_hook + rule_009），
+        # 于是 `select_auto_title` 返回空标题 → `qualifies_for_auto_approval=False`
+        # → 整篇判 `review_required`、**没有发布**。
+        #
+        # 被拒的两个理由是给"产业分析稿"设计的：
+        #   - `missing_concrete_hook`：要求标题承接正文里的**高置信度锚点**
+        #     （公司名 0.9 / 带量级的数字 0.8）。社会故事里没有公司，
+        #     数字是「20年」「4次」这类弱锚点（0.45）→ 正文高置信度锚点不足 →
+        #     闸门自己都判定 UNAVAILABLE（日志原文：「无法要求标题承接具象信息」），
+        #     却仍按 FAIL 拒标题。
+        #   - `rule_009_low_information`：按"数据/公司/产业链"密度衡量信息量，
+        #     故事标题天然不满足。
+        #
+        # 叙事体裁下保留的仍是**安全类**检查：长度、禁用句式、财务因果越界、
+        # 内部指令泄漏、标题-正文一致性。放开的只是那两个"产业信息密度"判据。
+        if self._is_narrative_mode():
+            hook_status = STATUS_UNAVAILABLE
+            reason_codes = [
+                code
+                for code in reason_codes
+                if code not in self.NARRATIVE_EXEMPT_TITLE_CODES
+            ]
+
         if not body_available:
             # 不偷偷放行：正文缺失意味着整条 body-aware 闸门这次**无法生效**，
             # 必须留下一个可统计的标记（下游据此知道这条标题只是「过了无正文版校验」）。
@@ -333,6 +359,23 @@ class TitleAgent(BaseAgent):
             concrete_hook_status=hook_status,
             validation_context=validation_context,
             rejected_by=rejected_by,
+        )
+
+    #: 叙事体裁下**不再作为拒绝理由**的码。它们衡量的是产业分析稿的信息密度，
+    #: 对社会故事标题不适用；安全类检查（长度/句式/越界/泄漏/一致性）一条都不放。
+    NARRATIVE_EXEMPT_TITLE_CODES = frozenset(
+        {
+            "missing_concrete_hook",
+            "rule_009_low_information",
+            "rule_006_missing_concrete_subject",
+        }
+    )
+
+    def _is_narrative_mode(self) -> bool:
+        """当前账号是否叙事体裁（社会故事）。"""
+        return (
+            str(getattr(self.settings, "content_domain", "industry") or "industry").strip().lower()
+            == "narrative"
         )
 
     def validate_title_compliance(self, title: str, body_text: str = "") -> bool:

@@ -261,3 +261,76 @@ def test_is_narrative_style_reads_the_account_domain() -> None:
     assert industry_agent._is_narrative_style(_settings(INDUSTRY_ACCOUNT).get_style()) is False
 
 
+# ---------------------------------------------------------------------------
+# 4. 标题校验有**两个入口**，豁免清单必须一致
+# ---------------------------------------------------------------------------
+#
+# 实测（云端 run 35453836286）：模型 18 条标题在 `TitleAgent.validate_title_candidate`
+# 里全部合格，但 `AgentWorkflowService._filter_titles_by_quality` 是**旁路** ——
+# 它直接调 `quality_checker._check_title`，不经过 TitleAgent ——
+# 于是同一批标题又被 RULE_009「信息密度不足」全部毙掉：
+#   「标题质量硬过滤全灭：18 个候选标题均未通过校验，已清空候选」
+#   → 没有可用标题 → 整篇判 review_required、没有发布。
+#
+# 只修一处等于没修。这里锁住"两处用的是同一口径"。
+
+
+def test_both_title_gates_exempt_the_same_narrative_codes() -> None:
+    from toutiao_content_factory.agents.title_agent import TitleAgent
+    from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
+
+    agent_codes = set(TitleAgent.NARRATIVE_EXEMPT_TITLE_CODES)
+    workflow_markers = set(AgentWorkflowService.NARRATIVE_EXEMPT_TITLE_MARKERS)
+
+    # TitleAgent 用 reason code；workflow 那边匹配的是中文 issue 文本，所以按语义映射
+    assert "rule_009_low_information" in agent_codes
+    assert "RULE_009" in workflow_markers
+    assert "missing_concrete_hook" in agent_codes
+    assert any("006" in marker or "具象" in marker for marker in workflow_markers), (
+        "workflow 侧没有豁免 RULE_006（具象化），两处口径不一致"
+    )
+
+
+def test_narrative_rejection_is_exempted_in_the_bypass_path() -> None:
+    """行为验证：叙事账号下，RULE_009 那类 issue 不应导致标题被清空。"""
+    from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
+
+    service = AgentWorkflowService.__new__(AgentWorkflowService)  # 不跑 __init__
+
+    class _Checker:
+        def _check_title(self, title, article):
+            return {
+                "issues": [
+                    "标题信息密度不足（RULE_009）。头条实测：同一事件完整标题"
+                    "（主体+数字+后果）阅读1.3万，简略标题仅23阅读。"
+                ]
+            }
+
+    class _Content:
+        def __init__(self) -> None:
+            self.titles = ["西贝员工工资推迟，员工权益受冲击"]
+            self.recommended_titles = ["西贝员工工资推迟，员工权益受冲击"]
+            self.article = "西贝门店员工称工资推迟了10天发放。"
+            self.title_validation = {}
+            self.validation_notes = []
+            self.selected_title_source = "model"
+
+    class _Settings:
+        content_domain = "narrative"
+        recommended_title_count = 3
+
+    service.quality_checker = _Checker()
+    service.settings = _Settings()
+    service.logger = logging.getLogger("test_narrative_titles")
+    service._cap_title_skeleton_families = lambda titles: titles
+    service._unique = lambda items: list(dict.fromkeys(items))
+
+    content = _Content()
+    service._filter_titles_by_quality(content)
+
+    assert content.titles == ["西贝员工工资推迟，员工权益受冲击"], (
+        "叙事账号下 RULE_009 不该清空标题候选"
+    )
+
+
+

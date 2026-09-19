@@ -1075,9 +1075,29 @@ class AgentWorkflowService:
 
         kept_titles: list[str] = []
         rejected: list[str] = []
+        # ⚠️ 2026-09-19：这里必须与 `TitleAgent.validate_title_candidate` 用**同一份豁免清单**。
+        #
+        # 上一轮只豁免了 `TitleAgent` 那条路径，而本函数是**旁路** ——
+        # 它直接调 `quality_checker._check_title`，不经过 `TitleAgent`。实测后果：
+        # 模型产出的 18 条标题在 `TitleAgent` 里全部合格，到这里又被 RULE_009
+        # 「标题信息密度不足」全部毙掉 → `all_rejected` → 没有可用标题 →
+        # 整篇判 `review_required`、没有发布（云端 run 35453836286）。
+        #
+        # RULE_009 的口径是「完整标题（主体+数字+后果）阅读 1.3 万，简略标题仅 23 阅读，
+        # 必须包含具体主体/数字 + 强动作或结果词」—— 这套判据是给产业稿写的：
+        # 社会故事没有可量化数字（是「老人」「儿媳」这类人物主体），
+        # 天然被判"信息密度不足"。叙事体裁下放开它，安全类检查一条不放。
+        narrative = self._uses_narrative_domain()
+        exempt_codes = self._narrative_exempt_title_codes() if narrative else ()
         for title in original_titles:
             result = self.quality_checker._check_title(title, article_text)
             issues = result.get("issues", []) if isinstance(result, dict) else []
+            if exempt_codes:
+                issues = [
+                    item
+                    for item in issues
+                    if not any(code in str(item) for code in exempt_codes)
+                ]
             # 只拦截 RULE_006/007/一致性问题（issues 中的硬性问题），suggestions 不拦截
             if issues:
                 rejected.append(f"{title} -> {'; '.join(str(item) for item in issues)}")
@@ -1141,6 +1161,20 @@ class AgentWorkflowService:
         )
 
     MAX_TITLES_PER_SKELETON = 3
+
+    #: 叙事体裁下不作为拒绝理由的标题校验结果关键词。
+    #: **必须与 `TitleAgent.NARRATIVE_EXEMPT_TITLE_CODES` 保持同一口径** ——
+    #: 两处不一致就会出现"生成侧合格、旁路过滤全灭"（实测云端 run 35453836286）。
+    #: 有测试锁住这条一致性。
+    NARRATIVE_EXEMPT_TITLE_MARKERS = (
+        "RULE_009",
+        "信息密度不足",
+        "RULE_006",
+        "具象",
+    )
+
+    def _narrative_exempt_title_codes(self) -> tuple[str, ...]:
+        return self.NARRATIVE_EXEMPT_TITLE_MARKERS
 
     def _cap_title_skeleton_families(self, titles: list[str]) -> list[str]:
         """限制同一「开头骨架」的候选数量，避免候选列表被一个句式垄断。

@@ -70,6 +70,67 @@ def test_the_two_accounts_resolve_to_different_domains() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 1b. 字数指令必须与上游一致（润色不许要求叙事稿达到 1800 字）
+# ---------------------------------------------------------------------------
+#
+# 背景（2026-09-19 实测）：`PolishAgent._auto_publish_directive` **无条件**要求
+# 「润色后仍需保持约1800字，最低1750字」，而同一篇叙事稿的上游指令是
+# 「目标约1100字，最低950字」。两条互相矛盾的硬指标同时压给模型，
+# 模型两边都满足不了就交残稿：润色把 843 字砍成 187 / 413 / 166 字，
+# 触发「Polish was too aggressive」一次次空跑。
+
+
+def _polish_agent(account_key: str):
+    from toutiao_content_factory.agents.polish_agent import PolishAgent
+
+    settings = _settings(account_key)
+
+    class _Publishing:
+        enabled = True
+        auto_publish = True
+        draft_only = False
+
+    class _AutoPublishSettings:
+        """只把自动发布开关打开；其余字段全部转发给真实 settings。
+
+        真实 settings 是 frozen dataclass，不能就地改。
+        """
+
+        publishing = _Publishing()
+
+        def __getattr__(self, name: str):
+            return getattr(settings, name)
+
+    return PolishAgent(
+        _AutoPublishSettings(),
+        PromptRepository(Path.cwd() / "prompts"),
+        type("_Stub", (), {"model": "stub"})(),
+        logging.getLogger("test_domain"),
+    )
+
+
+def test_narrative_polish_directive_does_not_demand_1800_chars() -> None:
+    agent = _polish_agent("robot_notes")
+
+    directive = agent._auto_publish_directive()
+
+    assert directive, "自动发布模式下必须有润色指令"
+    assert "1800" not in directive
+    assert "1750" not in directive
+    # 必须明确禁止把正文压短
+    assert "80%" in directive
+
+
+def test_industry_polish_directive_keeps_its_own_target() -> None:
+    """对照：产业号仍然要求 1800 字。"""
+    agent = _polish_agent("default")
+
+    directive = agent._auto_publish_directive()
+
+    assert "1800" in directive
+
+
+# ---------------------------------------------------------------------------
 # 2. 领域专属规则只出现在自己的那一侧
 # ---------------------------------------------------------------------------
 
@@ -241,3 +302,128 @@ def test_prompt_repository_keeps_the_industry_wording_by_default(repo) -> None:
         (Path.cwd() / "prompts" / template).unlink(missing_ok=True)
 
     assert "产业分析写法" in rendered
+
+
+# ---------------------------------------------------------------------------
+# 5. 领域措辞必须覆盖**所有**提示词，不能只有 WriterAgent 享受
+# ---------------------------------------------------------------------------
+#
+# 背景（2026-09-18）：提示词把「你是做什么的」写死成科技号 ——
+#   analysis_prompt「你是中国科技产业方向的资深编辑和行业研究员」
+#   generation_prompt「你是一名中文科技产业深度作者」
+#   title_prompt_v2「你要为 ${platform} 的科技产业分析文章生成标题」
+#                 「标题要像头条科技分析号」
+#   polish/review/trend/data 同样各有一句。
+# 但只有 WriterAgent 显式传了 content_domain，TitleAgent 等全部落回 industry，
+# 于是社会故事号的标题依旧被套进「科技行业」框架。
+
+# 这些词在叙事号渲染结果里出现，就说明定位还是科技号。
+_NARRATIVE_FORBIDDEN = (
+    "科技产业",
+    "科技行业",
+    "科技分析",
+    "产业分析",
+    "科技新闻",
+)
+
+_PROMPT_TEMPLATES = (
+    "analysis_prompt.md",
+    "article_prompt.md",
+    "data_prompt.md",
+    "data_prompt_v2.md",
+    "editorial_council_prompt.md",
+    "generation_prompt.md",
+    "polish_prompt.md",
+    "publish_review_prompt.md",
+    "review_prompt.md",
+    "title_prompt.md",
+    "title_prompt_v2.md",
+    "trend_prompt.md",
+    "trend_prompt_v2.md",
+)
+
+# 这些是「示例数据」而不是自我定位，允许出现在示例行里。
+_EXAMPLE_ANCHORS = ("宇树科技", "机器人", "产业链")
+
+
+def _self_positioning_hits(text: str) -> list[str]:
+    """只挑出「自我定位」性质的领域词，放过示例行里的领域词。"""
+    hits: list[str] = []
+    for word in _NARRATIVE_FORBIDDEN:
+        for line in text.splitlines():
+            if word not in line:
+                continue
+            if any(anchor in line for anchor in _EXAMPLE_ANCHORS):
+                continue
+            hits.append(word)
+            break
+    return hits
+
+
+@pytest.mark.parametrize("template", _PROMPT_TEMPLATES)
+def test_no_tech_self_positioning_in_narrative_domain(repo, template: str) -> None:
+    """叙事域下每个提示词都不该再把账号定位成科技号。"""
+    rendered = repo.render(
+        template,
+        content_domain="narrative",
+        platform="今日头条",
+        brand_name="手蓝人间故事",
+        account_name="手蓝人间故事",
+    )
+    assert _self_positioning_hits(rendered) == [], f"{template} 仍把账号定位成科技号"
+
+
+@pytest.mark.parametrize("template", _PROMPT_TEMPLATES)
+def test_industry_domain_wording_is_untouched(repo, template: str) -> None:
+    """产业号的行为不能被叙事化改动误伤。"""
+    raw = (Path.cwd() / "prompts" / template).read_text(encoding="utf-8")
+    if "科技产业" not in raw and "科技行业" not in raw:
+        pytest.skip(f"{template} 本来就不含科技定位措辞")
+    rendered = repo.render(
+        template, content_domain="industry", platform="今日头条", brand_name="手蓝数据笔记"
+    )
+    assert "科技产业" in rendered or "科技行业" in rendered
+
+
+def test_title_prompt_speaks_the_account_domain(repo) -> None:
+    """标题提示词第一句决定了模型把自己当什么号，必须跟着账号走。"""
+    narrative = repo.render(
+        "title_prompt_v2.md", content_domain="narrative", platform="今日头条"
+    )
+    industry = repo.render(
+        "title_prompt_v2.md", content_domain="industry", platform="今日头条"
+    )
+    assert "人情故事与社会观察文章生成标题" in narrative
+    assert "科技产业分析文章生成标题" in industry
+    assert "头条人间故事号" in narrative
+    assert "头条科技分析号" not in narrative
+
+
+def test_base_agent_render_prompt_follows_account_domain() -> None:
+    """BaseAgent.render_prompt 必须自动带上账号领域，agent 不必各自记得传。"""
+    from toutiao_content_factory.agents.base import BaseAgent
+
+    repo = PromptRepository(Path.cwd() / "prompts")
+
+    class _Settings:
+        def __init__(self, domain: str) -> None:
+            self.content_domain = domain
+
+    class _Agent(BaseAgent):
+        def __init__(self, settings) -> None:  # noqa: D107
+            self.settings = settings
+            self.prompt_repository = repo
+            self.logger = logging.getLogger("test")
+
+    narrative = _Agent(_Settings("narrative")).render_prompt("title_prompt_v2.md")
+    industry = _Agent(_Settings("industry")).render_prompt("title_prompt_v2.md")
+
+    assert "人情故事与社会观察文章生成标题" in narrative
+    assert "科技产业分析文章生成标题" in industry
+
+    # 调用方显式传入时优先，不被 settings 覆盖
+    explicit = _Agent(_Settings("narrative")).render_prompt(
+        "title_prompt_v2.md", content_domain="industry"
+    )
+    assert "科技产业分析文章生成标题" in explicit
+

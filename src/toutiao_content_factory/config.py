@@ -912,6 +912,21 @@ class AppSettings:
         return self.style_profiles.get(key, self.style_profiles[self.default_style])
 
     @property
+    def content_domain(self) -> str:
+        """当前账号的内容领域（industry / narrative）。
+
+        提示词里把「你是科技产业编辑」「标题要像头条科技分析号」写死成了领域定位，
+        `PromptRepository` 按这个值决定是否替换成叙事措辞。
+        ⚠️ 2026-09-18：原来只有 WriterAgent 显式传了 `content_domain`，
+        标题/润色/审核等 agent 全部落回默认 `industry` —— 于是标题依旧被套进科技框架。
+        现在由 `BaseAgent.render_prompt` 统一从这里取，agent 不需要各自记得传。
+        """
+        try:
+            return str(getattr(self.get_style(), "content_domain", "industry") or "industry")
+        except Exception:  # noqa: BLE001 - 配置异常不应阻断提示词渲染
+            return "industry"
+
+    @property
     def account_runtime_dir(self) -> Path:
         if self.is_default_account:
             return self.project_root / ".runtime"

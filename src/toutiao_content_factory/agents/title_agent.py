@@ -680,6 +680,55 @@ class TitleAgent(BaseAgent):
             "title_validation": validation_payload,
         }
 
+    def _is_narrative_style(self, style: StyleProfile) -> bool:
+        """当前账号是不是叙事类（社会故事）定位。"""
+        return str(getattr(style, "content_domain", "industry") or "industry").strip().lower() == "narrative"
+
+    def _narrative_fallback_titles(
+        self,
+        content: GeneratedContent,
+        data_report: DataReport,
+    ) -> list[str]:
+        """社会故事号的兜底标题：只用「主体 + 事件 + 结果/提醒」组句。
+
+        铁律：**一个产业词都不许出现**（订单/交付/产能/产业链/重估/突围/样机…）。
+        素材是真实社会新闻时，最稳的兜底其实就是**选题原标题**——它是平台自己
+        给这条新闻起的标题，天然贴合事件，也天然是"人间故事"的说法，
+        比任何拼接句式都安全，所以放在第一位。
+        """
+        titles: list[str] = []
+
+        def push(text: str) -> None:
+            cleaned = self._sanitize_title(str(text or ""))
+            if cleaned and len(cleaned) >= 8 and cleaned not in titles:
+                titles.append(cleaned)
+
+        topic = self._sanitize_title(str(getattr(data_report, "topic_title", "") or ""))
+        if topic:
+            push(topic)
+
+        # 拼句用的「事件短名」：选题原标题动辄 15-20 字，再套句式就会超 30 字上限，
+        # 所以优先用正文里出现过的具体场景词，其次才是关键词。
+        # 兜底第一位的选题原标题不受影响（它本身就贴合事件）。
+        scene = self._primary_scene(content, data_report)
+        keyword = self._primary_topic_label(data_report)
+        subject = scene or keyword or topic
+        if subject and len(subject) > 14:
+            subject = topic  # 长主体就不套句式了，直接用原标题
+
+        push(f"{subject}这件事，最后是怎么处理的")
+        push(f"{subject}之后，当事人面临的是什么")
+        push(f"{subject}：换成你该先做什么")
+        push(f"{subject}给普通人提了个醒")
+
+        # 数字锚点：社会新闻里的金额/时长/年龄往往是最抓人的信息
+        for number in list(getattr(data_report, "growth_numbers", []) or [])[:2]:
+            value = self.clean_publish_text(number)
+            if value and len(value) <= 16:
+                push(f"{subject}，{value}这个数字说明了什么")
+
+        return titles[: self.settings.title_count]
+
     def _emergency_titles(self, content: GeneratedContent, data_report: DataReport) -> list[str]:
         """标题兜底地板：所有候选都被去重杀光时，至少保住一个可用标题。
 
@@ -694,10 +743,15 @@ class TitleAgent(BaseAgent):
 
         company = self._primary_company(data_report)
         label = self._primary_topic_label(data_report)
-        if company and label and f"{company}{label}" not in candidates:
-            candidates.append(self._fit_title_length(f"{company}{label}横向对比"))
-        if label:
-            candidates.append(self._fit_title_length(f"{label}热度之外，谁在拿走真正订单"))
+        # ⚠️ 2026-09-19：最后这两条兜底句是**产业句式**，叙事号不许用
+        # （实测会拼出「老人热度之外，谁在拿走真正订单」这种科技号标题）。
+        # 叙事号这里直接退回"选题原标题 + 正文首句"，两者都是事件本身的说法。
+        narrative = str(getattr(self.settings, "content_domain", "industry") or "industry").strip().lower() == "narrative"
+        if not narrative:
+            if company and label and f"{company}{label}" not in candidates:
+                candidates.append(self._fit_title_length(f"{company}{label}横向对比"))
+            if label:
+                candidates.append(self._fit_title_length(f"{label}热度之外，谁在拿走真正订单"))
 
         article_first = ""
         for line in str(getattr(content, "article", "") or "").splitlines():
@@ -820,6 +874,20 @@ class TitleAgent(BaseAgent):
                 f"{keyword}走到验证期，市场开始重选公司",
                 f"{keyword}背后，谁在改写竞争规则",
             ]
+
+        if self._is_narrative_style(style):
+            # ⚠️ 2026-09-19：上面那批兜底模板是**产业分析句式**（样机/交付/订单/产能/重估/
+            # 突围/热门公司）。社会故事号一旦走到兜底层，就会被拼出并且**选中**这种标题 ——
+            # 实测（2026-09-19 真实运行，titles.txt）：
+            #   「老人从样机走到交付，中间卡在哪一步」
+            #   「老人升温之后，先突围的不是热门公司」
+            #   「老人热度之外，谁在拿走真正订单」
+            # 关键字「老人」是对的，句式完全是科技号的，发出去会直接毁掉「人间故事」的定位。
+            # 这里把故事句式**放到最前面**：兜底层本来就只在模型候选全灭时启用，
+            # 既然必须兜底，就必须兜成"像这个号会发的标题"。
+            story_titles = self._narrative_fallback_titles(content, data_report)
+            if story_titles:
+                templates = story_titles + templates
 
         fact_titles = self._fallback_fact_titles(content, data_report)
         if fact_titles:

@@ -235,3 +235,130 @@ def test_story_account_keyword_map_matches_its_track() -> None:
     assert keywords, "社会故事账号必须有关键词表"
     for tech_keyword in ("人形机器人", "具身智能", "算力", "GPU"):
         assert tech_keyword not in keywords
+
+
+# ---------------------------------------------------------------------------
+# 6. 「产业模板摘要」必须被识别为串味
+# ---------------------------------------------------------------------------
+#
+# 背景（2026-09-19）：`topic_collection._summarize_topic` 的**旧兜底句**
+#   「{标题}，重点看{关键词}对应的项目落地和订单节奏」
+# 会残留在已经持久化的选题数据里（daily_topics 快照 / 选题池 jsonl）。
+# `automation._summary_uses_wrong_domain_template` 本该把它拦下来，
+# 但白名单只写了 {"sports", "international"}，**漏了 social_story** ——
+# 于是这句产业套话被原样写进提示词的「素材摘要」，writer 照抄进正文
+# （实测 publish/article.md 第 13 段：「…重点看老人对应的项目落地和订单节奏」）。
+
+_WRONG_DOMAIN_SUMMARY = "男子高空作业绳子被2楼老人剪断，重点看老人对应的项目落地和订单节奏。"
+
+
+def test_story_summary_with_industry_template_is_flagged_as_wrong_domain() -> None:
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    topic = _hot_topic("男子高空作业绳子被2楼老人剪断")
+
+    assert automation._topic_mode(topic) == "social_story"
+    assert automation._summary_uses_wrong_domain_template(topic, _WRONG_DOMAIN_SUMMARY) is True
+
+
+def test_industry_summary_with_industry_wording_is_not_flagged() -> None:
+    """对照：产业号自己的摘要里出现「订单节奏」是正常的，不能被误判。"""
+    automation = TopicAutomationService(
+        _settings(VERTICAL_ACCOUNT), logging.getLogger("test_pivot")
+    )
+    topic = _hot_topic("某队绝杀晋级")
+
+    assert automation._summary_uses_wrong_domain_template(topic, _WRONG_DOMAIN_SUMMARY) is False
+
+
+def test_bare_title_is_not_treated_as_evidence() -> None:
+    """摘要退化到只剩标题时，绝不能把它当「素材摘要」喂给模型。
+
+    实测后果：模型拿 28 个字的标题硬编 855 字「安全意识」「应急处理能力」套话，
+    标题池因为没有任何具体事实锚点而塌成 1 条兜底模板。
+    """
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    topic = _hot_topic("男子高空作业绳子被2楼老人剪断")
+    topic.summary = topic.title
+    topic.snippet = ""
+
+    assert automation._preferred_topic_summary(topic) == ""
+
+
+def test_real_material_is_still_used_as_evidence() -> None:
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    topic = _hot_topic("男子高空作业绳子被2楼老人剪断")
+    topic.snippet = (
+        "据报道，事发当日该男子正在小区外立面进行清洁作业，"
+        "二楼住户因不满绳索经过自家窗户，用剪刀将绳索剪断，男子随后被安全绳固定住。"
+    )
+    topic.summary = topic.snippet
+
+    assert automation._preferred_topic_summary(topic).startswith("据报道")
+
+
+# ---------------------------------------------------------------------------
+# 7. 抓不到素材就不发（宁可不发，也不发垃圾）
+# ---------------------------------------------------------------------------
+
+
+class _StubBundle:
+    def __init__(self, usable: bool, text: str = "") -> None:
+        self.usable = ["s"] if usable else []
+        self.combined_text = text
+        self.total_chars = len(text)
+        self.sources = ["s"] if usable else []
+
+
+def test_no_material_switches_to_the_next_topic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """首选抓不到素材时，必须换下一条，而不是硬写。"""
+    import toutiao_content_factory.services.material_search_service as mss
+
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    first = _hot_topic("男子高空作业绳子被2楼老人剪断")
+    second = _hot_topic("女子离婚后发现丈夫隐瞒债务")
+
+    calls: list[str] = []
+
+    def fake_collect(title, **_kwargs):
+        calls.append(title)
+        if title == first.title:
+            return _StubBundle(usable=False)
+        return _StubBundle(usable=True, text="据报道，" + "详细经过。" * 80)
+
+    monkeypatch.setattr(mss, "collect_material", fake_collect)
+
+    class _Report:
+        topics = [first, second]
+
+    monkeypatch.setattr(
+        automation, "_material_retry_candidates", lambda report: [first, second]
+    )
+
+    # 真实调用顺序：先试首选，失败后才进入 fallback
+    assert automation._hydrate_topic_material(first) is False
+    selected = automation._hydrate_with_fallback(_Report(), first)
+
+    assert selected is not None
+    assert selected.title == second.title
+    assert calls == [first.title, second.title]
+
+
+def test_all_topics_without_material_yield_no_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import toutiao_content_factory.services.material_search_service as mss
+
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    first = _hot_topic("男子高空作业绳子被2楼老人剪断")
+    second = _hot_topic("女子离婚后发现丈夫隐瞒债务")
+
+    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _StubBundle(usable=False))
+    monkeypatch.setattr(
+        automation, "_material_retry_candidates", lambda report: [first, second]
+    )
+
+    class _Report:
+        topics = [first, second]
+
+    assert automation._hydrate_with_fallback(_Report(), first) is None
+

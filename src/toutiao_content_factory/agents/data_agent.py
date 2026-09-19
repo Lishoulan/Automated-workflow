@@ -376,6 +376,42 @@ class DataAgent(BaseAgent):
             source_name = "公开材料"
         return [f"{source_name}：{item}" for item in evidence]
 
+    #: 这些字样出现即说明这段「素材」其实是写给模型的指令，不是事实。
+    #:
+    #: ⚠️ 2026-09-19：实测热榜快评的 closing_instruction（「这是实时热点二创：你拿到的
+    #: 素材只有热点标题和热度值，没有完整原文。请围绕热点标题展开，写成一篇有观点、
+    #: 有信息量的头条快评。…中段展开…结尾留一个具体的开放式互动问题…」）被
+    #: `_extract_source_facts` 按句号切开、当成 source_fact 收进了事实台账，
+    #: 随后被 writer 的补充段落引用，**整段写进了正文明文**。
+    #: 在源头挡掉是最省事的：下游所有路径（补充段落、证据、兜底稿）都不再拿到指令。
+    INSTRUCTION_TEXT_MARKERS = (
+        "写作要求",
+        "这是实时热点二创",
+        "你拿到的素材只有",
+        "请围绕热点标题",
+        "请围绕这件",
+        "请围绕这条",
+        "只能基于常识和公开背景",
+        "明确区分事实与推测",
+        "结尾留一个",
+        "结尾只留一个",
+        "前两句直接给判断",
+        "中段展开",
+        "全文600到900字",
+        "全文600到1000字",
+        "不要使用 #",
+        "严禁编造当事人",
+        "严禁写成第一人称",
+        "不要拆产业链",
+        "写成一篇有观点",
+    )
+
+    def _looks_like_instruction_text(self, text: str) -> bool:
+        sample = str(text or "").strip()
+        if not sample:
+            return False
+        return any(marker in sample for marker in self.INSTRUCTION_TEXT_MARKERS)
+
     def _extract_source_facts(self, extraction: ExtractionResult) -> list[str]:
         """Retain a bounded, cleaned fact ledger for local model-free writing.
 
@@ -391,11 +427,16 @@ class DataAgent(BaseAgent):
 
         facts: list[str] = []
         for raw_sentence in re.split(r"[。！？!?\n]+", raw_text):
+            # 指令文本一律不收（见 INSTRUCTION_TEXT_MARKERS 的说明）
+            if self._looks_like_instruction_text(raw_sentence):
+                continue
             sentence = self._sanitize_prompt_input(raw_sentence)
             sentence = re.sub(r"^\s*(?:原文标题|导语|摘要|补充片段)[：:]\s*", "", sentence).strip()
             sentence = self._clean_evidence_item(sentence)
             sentence = re.sub(r"\s+", " ", sentence).strip()
             if len(sentence) < 8:
+                continue
+            if self._looks_like_instruction_text(sentence):
                 continue
             if len(sentence) > self.SOURCE_FACT_MAX_LENGTH:
                 sentence = sentence[: self.SOURCE_FACT_MAX_LENGTH].rstrip("，,；;：:")

@@ -12,6 +12,27 @@ class PromptRepository:
     _SERVICE_ACCOUNT_PATTERN = re.compile(r"服务账号是[“\"].*?[”\"]")
     _RESPONSIBLE_ACCOUNT_PATTERN = re.compile(r"负责账号[“\"].*?[”\"]的头条内容生产")
     _WRITING_STYLE_PATTERN = re.compile(r"按.*?的写法来写")
+    # 提示词里把「你是做什么的」和「文章体裁、账号调性」写死成了科技/产业，
+    # 叙事号必须一起换掉，否则模型会先把自己认成科技号，
+    # 再把社会故事硬套进「科技行业」的框架里（实测标题会出现「科技行业……」）。
+    # 顺序敏感：长串在前，避免被短串先吃掉。
+    _ARTICLE_GENRE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+        (re.compile(r"中文科技产业内容的专家委员会会议"), "中文社会民生内容的专家委员会会议"),
+        (re.compile(r"中国科技产业方向的资深编辑和行业研究员"), "中国社会民生方向的资深编辑和故事作者"),
+        (re.compile(r"中文科技产业深度作者"), "中文社会故事深度作者"),
+        (re.compile(r"科技产业趋势编辑"), "社会民生趋势编辑"),
+        (re.compile(r"产业研究助理"), "素材研究助理"),
+        (re.compile(r"科技新闻和研报"), "社会新闻和民生报道"),
+        (re.compile(r"科技产业分析文章"), "人情故事与社会观察文章"),
+        (re.compile(r"科技产业分析稿"), "人情故事分析稿"),
+        (re.compile(r"头条科技分析号"), "头条人间故事号"),
+        (re.compile(r"科技产业分析号"), "人间故事号"),
+        (re.compile(r"科技行业文章"), "社会民生文章"),
+        (re.compile(r"科技行业标题"), "社会民生标题"),
+        (re.compile(r"产业分析"), "人情故事分析"),
+        (re.compile(r"科技行业"), "社会民生"),
+        (re.compile(r"科技产业"), "社会民生"),
+    )
     _BRACED_VARIABLE_PATTERN = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
     def __init__(self, prompts_dir: Path) -> None:
@@ -61,4 +82,7 @@ class PromptRepository:
         cleaned = self._SERVICE_ACCOUNT_PATTERN.sub(f"服务对象是{service_subject}", cleaned)
         cleaned = self._RESPONSIBLE_ACCOUNT_PATTERN.sub(responsible_line, cleaned)
         cleaned = self._WRITING_STYLE_PATTERN.sub(writing_style_line, cleaned)
+        for pattern, narrative_text in self._ARTICLE_GENRE_PATTERNS:
+            if narrative:
+                cleaned = pattern.sub(narrative_text, cleaned)
         return cleaned

@@ -277,9 +277,29 @@ class PolishAgent(BaseAgent):
     def _auto_publish_directive(self) -> str:
         if not self._auto_publish_mode():
             return ""
+        if self._is_narrative_domain():
+            # ⚠️ 2026-09-19：这里原来**无条件**要求「润色后仍需保持约1800字，最低1750字」。
+            # 而叙事稿的上游指令是「目标约1100字，最低950字」—— 两条互相矛盾的硬指标
+            # 同时压给模型，模型两边都满足不了，就交出一份残稿：
+            # 实测润色把 843 字砍成 187 / 413 / 166 字（砍掉 50%~80%），
+            # 触发「Polish was too aggressive, keeping original」一次次空跑，
+            # 白烧 token 又拖长运行。叙事稿的润色是**轻度编辑**，不是扩写。
+            return (
+                "当前是自动发布候选：这是人情故事观察稿，篇幅约1000到1200字。"
+                "润色只做「理顺句子、删掉重复表达、补上遗漏的事实细节」，"
+                "**不得把正文压短到原文的 80% 以下，也不得为了凑字数扩写到 1500 字以上**；"
+                "只能重组输入材料已有事实，缺证据处收窄结论，不得新增编造的人物、对话或情节。"
+            )
         return (
             "当前是自动发布候选：润色后正文仍需保持约1800字，最低1750字。不得为了简洁把完整分析压缩成800字短评；"
             "只能重组输入材料已有事实，缺证据处收窄结论，不得用重复套话或新增事实补长度。"
+        )
+
+    def _is_narrative_domain(self) -> bool:
+        """当前账号是不是叙事类（社会故事）定位。"""
+        return (
+            str(getattr(self.settings, "content_domain", "industry") or "industry").strip().lower()
+            == "narrative"
         )
 
     def _polish_system_prompt(self) -> str:

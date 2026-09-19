@@ -283,7 +283,27 @@ class TopicAutomationService:
             self.logger.warning("Auto topic selection failed: no eligible topics found.")
             return None
         # 热榜类选题只有标题、没有正文，必须先补真实素材。
-        self._hydrate_topic_material(topic)
+        #
+        # ⚠️ 2026-09-19：这里原来**忽略返回值**，抓不到素材也照样往下写、往下发。
+        # 实测后果：Bing 偶发抓取失败时，模型只拿到 28 个字的标题，硬编出 855 字
+        # 「安全意识」「应急处理能力」这类万能话术，正文里还漏出上游的产业模板句
+        # 「重点看老人对应的项目落地和订单节奏」，标题池也塌成 1 条兜底模板。
+        # 现在的规则是：**没有真实素材就不发** —— 抓不到就换下一条选题，
+        # 全都抓不到就让本次运行失败退出（宁可今天不发，也不发一篇会伤账号的稿子）。
+        explicit_pick = rank is not None or bool(str(title_query or "").strip())
+        if not self._hydrate_topic_material(topic):
+            if explicit_pick:
+                self.logger.error(
+                    "[素材] 指定选题抓不到正文素材，放弃本次运行（不发布）: %s",
+                    topic.title,
+                )
+                return None
+            topic = self._hydrate_with_fallback(report, topic)
+            if topic is None:
+                self.logger.error(
+                    "[素材] 所有候选选题都抓不到正文素材，放弃本次运行（不发布）。"
+                )
+                return None
         input_text = self._build_input_text(topic)
         # ⚠️ 2026-09-18：`input_text` 末尾挂着一段写给模型的写作指令（closing_instruction），
         # 而这份文本正是 document_loader 当作 **paste 素材**解析的东西 ——
@@ -302,6 +322,42 @@ class TopicAutomationService:
             exported_files=exported_files,
         )
 
+    #: 素材抓取的备选尝试上限（每次尝试都会真实联网检索，不宜过多）
+    MATERIAL_FALLBACK_ATTEMPTS = 5
+
+    def _hydrate_with_fallback(
+        self,
+        report: DailyTopicsReport,
+        primary: TopicCandidate,
+    ) -> TopicCandidate | None:
+        """首选选题抓不到素材时，按同一优先级顺序继续试后面几条。"""
+        candidates = self._material_retry_candidates(report)
+        primary_key = (primary.url or "", self._normalize_text(primary.title))
+        tried = 0
+        for candidate in candidates:
+            if (candidate.url or "", self._normalize_text(candidate.title)) == primary_key:
+                continue  # 首选刚试过，跳过
+            if tried >= self.MATERIAL_FALLBACK_ATTEMPTS:
+                break
+            tried += 1
+            self.logger.warning(
+                "[素材] 换选题重试（第 %d 条）: %s", tried, candidate.title
+            )
+            if self._hydrate_topic_material(candidate):
+                return candidate
+        return None
+
+    def _material_retry_candidates(
+        self, report: DailyTopicsReport
+    ) -> list[TopicCandidate]:
+        """可继续尝试补素材的选题，顺序与 `_select_topic` 的自动选题一致。"""
+        available = self._available_topics(report.topics, allow_generated_duplicates=True)
+        if not available:
+            available = self._available_topics_soft(
+                report.topics, allow_generated_duplicates=True
+            )
+        return self._prioritize_evidence_rich_topics(available)
+
     #: 写作指令段落的分隔标记：`_build_input_text` 用空行把它与素材字段隔开
     _INSTRUCTION_SENTINEL = "请围绕"
 
@@ -314,7 +370,10 @@ class TopicAutomationService:
         利润率承压」这类与社会新闻毫无关系的内容。
 
         素材来源：`material_search_service`（Bing 搜索 → 抓真实报道 → 抽正文）。
-        拿不到素材时**不阻断流程**，但会留下明确日志，便于判断当天为什么写不好。
+
+        ⚠️ 2026-09-19：拿不到素材**会阻断本次运行**（由 `prepare_auto_run` 判定）。
+        这里本身只返回 False 并留明确日志，是否放弃由调用方决定 ——
+        实测「抓不到素材也照样发」的后果见 `prepare_auto_run` 里的说明。
 
         返回是否补上了素材。
         """
@@ -607,15 +666,24 @@ class TopicAutomationService:
         if (
             not summary
             or summary == topic.title
+            # ⚠️ 2026-09-19：裸标题**不算证据**。摘要回退到标题时，提示词的「素材摘要」
+            # 会变成一句和标题一模一样的话，模型没有任何事实可写，只能拿标题里的词
+            # 编出「安全意识」「应急处理」这类万能话术（实测 855 字正文全是套话，
+            # 标题池也因此只剩 1 条兜底模板）。宁可让上层判定「无可用素材」。
+            or len(summary) < self.MIN_EVIDENCE_CHARS
             or self._looks_like_mojibake(summary)
             or self._summary_uses_wrong_domain_template(topic, summary)
         ):
             if snippet and not self._looks_like_mojibake(snippet):
-                return snippet
-            return topic.title
+                if len(snippet) >= self.MIN_EVIDENCE_CHARS or self._is_evidence_rich_topic_text(snippet):
+                    return snippet[: self.PROMPT_EVIDENCE_CONTEXT_LENGTH]
+            return ""
         if self._is_evidence_rich_topic_text(summary):
             return summary[: self.PROMPT_EVIDENCE_CONTEXT_LENGTH]
         return summary[: self.PROMPT_SUMMARY_LENGTH]
+
+    #: 少于这个字数的「摘要」视为没有证据（裸标题一般 10-30 字）
+    MIN_EVIDENCE_CHARS = 40
 
     def _preferred_topic_snippet(self, topic: TopicCandidate, fallback: str) -> str:
         snippet = self._clean_topic_snippet_for_prompt(
@@ -665,7 +733,16 @@ class TopicAutomationService:
     def _summary_uses_wrong_domain_template(self, topic: TopicCandidate, text: str) -> bool:
         mode = self._topic_mode(topic)
         candidate = str(text or "").strip()
-        if mode not in {"sports", "international"} or not candidate:
+        if not candidate:
+            return False
+        # 叙事类赛道（社会故事）以外的模式不判串味 —— 产业稿摘要里本来就会出现
+        # 「订单节奏」这类词，判错会把合格的产业摘要也丢掉。
+        #
+        # ⚠️ 2026-09-19：这里原来只放行 {"sports", "international"}，**漏了 social_story** ——
+        # 于是社会故事选题带着产业模板摘要「…重点看老人对应的项目落地和订单节奏」
+        # 一路走到 writer，被原样照抄进正文（实测 publish/article.md 第 13 段）。
+        narrative_modes = {"sports", "international", "social_story"}
+        if mode not in narrative_modes:
             return False
         wrong_markers = ("项目落地", "订单节奏", "产业链", "融资", "交付", "客户验证", "利润兑现")
         return any(marker in candidate for marker in wrong_markers)

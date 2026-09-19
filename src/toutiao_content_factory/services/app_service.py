@@ -4035,11 +4035,52 @@ class ContentFactoryAppService:
     _DAILY_RUN_LOCK_TIMEOUT_SECONDS = 1800
     _DAILY_RUN_HEARTBEAT_TIMEOUT_SECONDS = 600
 
+    @staticmethod
+    def _is_process_alive(pid: int) -> bool:
+        """锁持有进程是否还活着。
+
+        ⚠️ 2026-09-19：原来的锁判定**只看时间戳，不看 PID 是否还在**。
+        进程被强杀（本地 Ctrl+C、云端 runner 被取消）时 `finally` 里的释放逻辑
+        不会执行，而锁心跳停在最后一刻 —— 于是这把锁会一直"新鲜"到
+        600 秒心跳超时，期间所有运行都只打印
+        「Another daily_run is already in progress. Skipping this invocation.」
+        实测就是这么被卡住的（锁里 PID 39768 早已不存在）。
+        """
+        if pid <= 0:
+            return False
+        try:
+            if os.name == "nt":
+                import ctypes
+
+                kernel32 = ctypes.windll.kernel32
+                # 0x1000 = PROCESS_QUERY_LIMITED_INFORMATION
+                handle = kernel32.OpenProcess(0x1000, False, pid)
+                if not handle:
+                    return False
+                kernel32.CloseHandle(handle)
+                return True
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        except Exception:  # noqa: BLE001 - 判定不了时按「活着」处理，宁可保守
+            return True
+        return True
+
     def _acquire_daily_run_lock(self) -> bool:
         lock_path = self.settings.automation_dir / "daily_run.lock"
         if lock_path.exists():
             try:
                 payload = _safe_json_loads(lock_path.read_text(encoding="utf-8"), default={})
+                # 最可靠的一条：持有者进程已经不存在，锁一定是死的。
+                holder_pid = int(payload.get("pid", 0) or 0)
+                if holder_pid and not self._is_process_alive(holder_pid):
+                    self.logger.warning(
+                        "Dead daily_run lock detected (holder PID %s is gone). Removing.",
+                        holder_pid,
+                    )
+                    with suppress(Exception):
+                        lock_path.unlink()
+                    return self._write_daily_run_lock(lock_path)
                 # 优先检查心跳超时
                 last_heartbeat_ts = float(payload.get("last_heartbeat_ts", 0))
                 if last_heartbeat_ts > 0 and time.time() - last_heartbeat_ts > self._DAILY_RUN_HEARTBEAT_TIMEOUT_SECONDS:
@@ -4060,6 +4101,9 @@ class ContentFactoryAppService:
                 self.logger.warning("Corrupted daily_run lock file. Removing.")
             with suppress(Exception):
                 lock_path.unlink()
+        return self._write_daily_run_lock(lock_path)
+
+    def _write_daily_run_lock(self, lock_path: Path) -> bool:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         now_ts = time.time()
         lock_path.write_text(json.dumps({

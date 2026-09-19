@@ -72,6 +72,39 @@ def test_behavior_verbs_count_as_a_social_signal(collector) -> None:
     assert collector._has_social_story_signal(_topic("男子冒充房东骗取押金")) is True
 
 
+# --- 应当丢弃：靠一个「人味词」蒙进来的财经/宏观题 ---
+#
+# 背景（2026-09-19 实测）：热榜上出现「巴菲特：时间老人已对我十分慷慨」。
+# 它靠**「老人」**这个人与关系信号命中了社会故事判据，于是被当成社会故事选题，
+# 随后抓来 5852 字巴菲特投资哲学材料 —— 题材是投资，不是家长里短。
+# 关键词表是按「故事的样子」写的，天然会漏这种字面撞词，
+# 所以低信号表必须覆盖财经人物与宏观术语。
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "巴菲特：时间老人已对我十分慷慨",
+        "芒格生前最后一次股东大会讲话",
+        "美联储宣布降息25个基点",
+    ],
+)
+def test_finance_false_positives_are_rejected(collector, title: str) -> None:
+    assert collector._has_social_story_signal(_topic(title)) is False
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "老人被骗走全部积蓄，民警帮忙追回",
+        "儿媳拒绝赡养公婆被起诉",
+    ],
+)
+def test_finance_filter_does_not_break_real_social_news(collector, title: str) -> None:
+    """反面保险：这些词精度必须够高，不能把真实社会新闻一起误杀。"""
+    assert collector._has_social_story_signal(_topic(title)) is True
+
+
 def test_story_account_must_not_enable_hot_topic() -> None:
     """社会故事账号不能启用 hot_topic 赛道。
 

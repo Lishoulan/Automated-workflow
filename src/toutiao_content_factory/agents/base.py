@@ -138,6 +138,10 @@ class BaseAgent:
         self.growth_ops_service = GrowthOpsService(settings, logger)
 
     def render_prompt(self, template_name: str, **kwargs: str) -> str:
+        # 领域措辞必须跟着账号走：提示词里写死了「科技产业」定位，
+        # 不传 content_domain 就会落回 industry，叙事号会被反写成产业分析号。
+        # 调用方显式传的优先。
+        kwargs.setdefault("content_domain", getattr(self.settings, "content_domain", "industry"))
         return self.prompt_repository.render(template_name, **kwargs)
 
     def best_practices_rule_path(self) -> Path:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+
 import json
 import logging
 import random
@@ -97,6 +99,14 @@ class WriterAgent(BaseAgent):
         "当前分析角度",
         "质量审核",
         "发布就绪",
+        # ⚠️ 2026-09-19：补段曾把**带来源标记的原始素材行**当事实直接拼进正文，
+        # 实测正文里出现「把素材里能确认的部分列一下：【来源：网红张凯毅官宣离婚，
+        # 孩子的抚养权归她，承认婚姻走到今天 ...】」—— 读者看到的是抓取器的内部格式。
+        # 素材拼接里带这些标记的一律不许当"可确认事实"。
+        "【来源",
+        "素材来源",
+        "原文标题",
+        "原文链接",
     )
     HOT_TOPIC_MARKETING_REWRITES = (
         ("国内工业机器人3D视觉龙头", "国内工业机器人3D视觉企业"),
@@ -391,6 +401,41 @@ class WriterAgent(BaseAgent):
         fact_chars = sum(len(item.replace(" ", "")) for item in facts)
         return len(facts) >= self.LOCAL_SOURCE_FACT_MIN_COUNT and fact_chars >= self.LOCAL_SOURCE_FACT_MIN_CHARS
 
+    #: 这些字样出现即说明这段「素材」其实是写给模型的指令，不是事实。
+    #:
+    #: ⚠️ 2026-09-19：实测热榜快评的 closing_instruction 被当成 source_fact 抽了出来，
+    #: 于是正文里出现「把素材里能确认的部分列一下：这是实时热点二创：你拿到的素材只有
+    #: 热点标题和热度值，没有完整原文。」「请围绕热点标题展开，写成一篇有观点、有信息量的
+    #: 头条快评。」—— 提示词被当成事实写进了文章。凡是这类句子一律不得进入正文。
+    INSTRUCTION_TEXT_MARKERS = (
+        "写作要求",
+        "写作要求：",
+        "这是实时热点二创",
+        "你拿到的素材只有",
+        "请围绕热点标题",
+        "请围绕这件",
+        "请围绕这条",
+        "只能基于常识和公开背景",
+        "明确区分事实与推测",
+        "结尾留一个",
+        "结尾只留一个",
+        "前两句直接给判断",
+        "中段展开",
+        "全文600到900字",
+        "全文600到1000字",
+        "不要使用 #",
+        "严禁编造当事人",
+        "严禁写成第一人称",
+        "先把能直接核对的事实摆出来",
+    )
+
+    def _looks_like_instruction_text(self, text: str) -> bool:
+        """判断一段「素材」是不是写给模型的指令。"""
+        sample = str(text or "").strip()
+        if not sample:
+            return False
+        return any(marker in sample for marker in self.INSTRUCTION_TEXT_MARKERS)
+
     def _clean_hot_topic_source_facts(self, data_report: DataReport) -> list[str]:
         """Return source facts that are safe to reuse in public hot-topic copy."""
         cleaned_facts: list[str] = []
@@ -409,10 +454,15 @@ class WriterAgent(BaseAgent):
             text = self.clean_publish_text(str(raw_fact or ""))
             if not text:
                 continue
+            # 指令文本绝不能当素材（见 INSTRUCTION_TEXT_MARKERS 的说明）
+            if self._looks_like_instruction_text(text):
+                continue
             text = clean_article_text(text, min_word_count=0)
             for block in re.split(r"\n\s*\n+", text):
                 fact = block.strip()
                 if not fact:
+                    continue
+                if self._looks_like_instruction_text(fact):
                     continue
                 for prefix in source_prefixes:
                     if fact.startswith(prefix):
@@ -609,10 +659,20 @@ class WriterAgent(BaseAgent):
         if not self._auto_publish_mode():
             return ""
         if self._is_narrative_run():
+            # ⚠️ 2026-09-19：这里原来是软要求（「目标约1100字，最低950字」+ 一堆"不要"），
+            # 实测模型只写 436 字就收尾，然后整条链路开始救火：
+            # 补段 → 扩展（只到 724）→ 润色把 724 砍成 184~299 → 最终 846 字卡在门槛上
+            # 判 review_required。产业稿那条指令措辞强硬得多，所以这里也要给出**结构要求**，
+            # 而不是只给一个字数。素材有 3800+ 字时，正文必须把里面的具体事实用起来。
             return (
-                "当前是自动发布候选：正文目标约1100字，最低950字。"
-                "写成人情故事观察稿——把这件事讲清楚、把当事人的处境和选择讲透、"
-                "结尾给读者一句具体可用的提醒，不要拆产业链、不要写订单毛利、不做行业判断。"
+                "当前是自动发布候选：正文目标约1100字，最低950字，最少写6段。"
+                "结构要求：第1段直接讲发生了什么（时间、地点、人物、动作、结果）；"
+                "中间每段讲一个侧面——当事人的处境、他当时能怎么选、各方说法、"
+                "已经公开的处理进展、这类事通常卡在哪一步；最后一段给读者一句具体可用的提醒。"
+                "**输入材料里有大量具体事实（时间、地点、身份、经过、回应），"
+                "每一段都必须用到其中的具体信息，不许只写「安全意识」「社会问题」这类放到任何"
+                "一件事上都成立的空话。**字数不够时，回去材料里找还没用上的细节继续写，"
+                "而不是用感慨和反问凑。"
                 "只能用输入材料里的事实，缺的地方留白；严禁编造当事人姓名、身份、对话、"
                 "心理活动或现场细节，严禁写成第一人称亲历。证据不足时收窄结论，不得套话凑字数。"
             )
@@ -1264,6 +1324,74 @@ class WriterAgent(BaseAgent):
         return f"限制条件也很具体：{risk_text}。{question}"
 
 
+    def _coerce_structured_article(self, article: object) -> str:
+        """把模型以结构化形式返回的正文还原成纯文本。
+
+        ⚠️ 2026-09-19：实测真实链路的正文被写成
+        `[{'paragraph': '两名外籍游客…'}, {'paragraph': '…'}]` —— 模型把正文按
+        结构化对象返回，随后被 `str()` 化成了 Python repr 塞进正文。
+        这会让整篇文章变成一串字典字面量（无法发布），必须先还原。
+        """
+        text = str(article or "").strip()
+        if not text:
+            return ""
+        head = text[:1]
+        if head not in {"[", "{"}:
+            return text
+
+        # 先试标准 JSON（模型也可能返回合法 JSON 字符串）
+        parsed: object = None
+        for candidate in (text, text.replace("'", '"')):
+            try:
+                parsed = json.loads(candidate)
+                break
+            except Exception:
+                parsed = None
+        if parsed is None:
+            # 退回字面量求值：Python repr 形态只能用这个解
+            try:
+                parsed = ast.literal_eval(text)
+            except Exception:
+                return text
+
+        def collect(node: object, out: list[str]) -> None:
+            if isinstance(node, str):
+                stripped = node.strip()
+                if stripped:
+                    out.append(stripped)
+                return
+            if isinstance(node, dict):
+                # 优先取段落类字段，取不到就按顺序取所有字符串值
+                for key in ("paragraph", "text", "content", "body", "article"):
+                    if key in node:
+                        collect(node[key], out)
+                        return
+                for value in node.values():
+                    collect(value, out)
+                return
+            if isinstance(node, (list, tuple)):
+                for item in node:
+                    collect(item, out)
+
+        parts: list[str] = []
+        collect(parsed, parts)
+        return "\n\n".join(parts) if parts else text
+
+    def _strip_instruction_paragraphs(self, text: str) -> str:
+        """从正文里剔除「其实是写给模型的指令」的段落。
+
+        ⚠️ 2026-09-19：指令文本会从多条路径混进正文（closing_instruction 被当素材、
+        被当 source_fact、被补充段落引用）。在**正文出口**统一清一遍是最可靠的兜底：
+        凡是命中 `INSTRUCTION_TEXT_MARKERS` 的段落一律删掉。
+        实测正文里出现过「这是实时热点二创：你拿到的素材只有热点标题和热度值」
+        「请围绕热点标题展开，写成一篇有观点、有信息量的头条快评」这类整段指令。
+        """
+        blocks = [block.strip() for block in str(text or "").split("\n\n")]
+        kept = [block for block in blocks if block and not self._looks_like_instruction_text(block)]
+        if not kept:
+            return str(text or "")
+        return "\n\n".join(kept)
+
     def _finalize_article(
         self,
         article: str,
@@ -1273,7 +1401,8 @@ class WriterAgent(BaseAgent):
         benchmark_track: str = "",
         self_benchmark_context: dict[str, object] | None = None,
     ) -> str:
-        cleaned = self.strip_prompt_leakage(article)
+        cleaned = self.strip_prompt_leakage(self._coerce_structured_article(article))
+        cleaned = self._strip_instruction_paragraphs(cleaned)
         # The sanitizer only normalizes and removes leakage; length is handled
         # later by the evidence-aware workflow gate.
         cleaned = clean_article_text(cleaned, min_word_count=0)
@@ -1693,6 +1822,17 @@ class WriterAgent(BaseAgent):
             return False
         if any(marker in text for marker in ("回复", "领取", "咨询", "周报", "你怎么看", "欢迎留言")):
             return False
+        if self._is_narrative_run():
+            # ⚠️ 2026-09-19：叙事号的结尾问题**不能**用产业锚点（公司/跟踪指标/数字）来判具体性，
+            # 否则模型写的正常结尾问题会被判"不够具体"，再被 `_build_concrete_comment_prompt`
+            # 换成产业句 —— 实测正文结尾变成
+            # 「官宣的2024年之后，更需要先验证交付，还是先看利润和回款？」
+            # 一条网红离婚的稿子问起了交付和回款。
+            # 叙事稿的判据是：是个面向读者的问题，且不问产业链/交付/回款。
+            if "？" not in text and "?" not in text:
+                return False
+            industry_markers = ("交付", "回款", "利润", "毛利", "订单", "产能", "产业链", "赛道", "兑现")
+            return not any(marker in text for marker in industry_markers)
         anchors = [
             *self._company_candidates(data_report)[:4],
             *self.clean_publish_list(getattr(data_report, "watch_metrics", []) or [], limit=4),
@@ -1711,6 +1851,9 @@ class WriterAgent(BaseAgent):
         return has_anchor and has_choice
 
     def _build_concrete_comment_prompt(self, data_report: DataReport | None) -> str:
+        if self._is_narrative_run():
+            # 叙事号的兜底结尾：只问读者"换成你会怎么做"，绝不引入产业选项。
+            return "换成是你遇到这种情况，会怎么处理？"
         if data_report is None:
             return "你更看重订单交付，还是利润和现金流改善？"
         companies = self._company_candidates(data_report)
@@ -2124,6 +2267,14 @@ class WriterAgent(BaseAgent):
     ) -> list[str]:
         patterns = self._self_benchmark_patterns(self_benchmark_context)
         if not patterns or not paragraphs:
+            return paragraphs
+        if self._is_narrative_run():
+            # ⚠️ 2026-09-19：这套结构全部是**产业分析节拍** ——
+            # 「场景先行开头」「跨国对比冲突」「利润迁移框架」「结尾保留跟踪变量」，
+            # 每一拍都会往正文里插产业句。实测叙事稿被插进
+            # 「后续可按网红婚姻事件的舆论反应…核对进度。只有这些信号连续出现，
+            # 才适合把行业变化写成收入和利润的兑现。」—— 一条离婚稿谈起收入与利润兑现。
+            # 叙事稿不套产业节拍，直接返回原文。
             return paragraphs
 
         updated = list(paragraphs)
@@ -2612,6 +2763,13 @@ class WriterAgent(BaseAgent):
         existing_paragraphs: list[str] | None = None,
         target_chars: int | None = None,
     ) -> list[str]:
+        # ⚠️ 2026-09-19：叙事领域（社会故事）必须走自己的补充段落，不能用下面那套
+        # 「订单、验收、收入和回款」「产品与业务描述」的产业分析文案。
+        # 实测：模型只写了 3 段故事，这套硬编码补段把正文后半截填成了产业链分析，
+        # 整篇看起来像「机器人号在写社会新闻」——而这正是要避免的。
+        if self._is_narrative_run():
+            return self._build_narrative_supplementary_paragraphs(data_report, existing_paragraphs)
+
         existing_text = "\n".join(existing_paragraphs) if existing_paragraphs else ""
         existing = list(existing_paragraphs or [])
         paragraphs: list[str] = []
@@ -2992,6 +3150,91 @@ class WriterAgent(BaseAgent):
         if any(marker in text for marker in ("未来三年", "例如", "比如", "某头部", "投资者应")):
             return True
         return bool(re.search(r"以[^。！？!?\n]{0,24}为例", text))
+
+    #: 叙事领域补段：只用「素材事实 + 处境 + 提醒」推进，不引入任何产业分析口径
+    NARRATIVE_SUPPLEMENT_LEADS = (
+        "把素材里能确认的部分列一下：",
+        "事情的过程大致是这样：",
+        "从公开报道能看到：",
+    )
+    NARRATIVE_SUPPLEMENT_BOUNDARIES = (
+        "这些是目前能核实的范围，后续处理结果还没有公开。",
+        "报道没有交代的部分不补，避免把推测写成事实。",
+        "同样的信息，不同来源的说法可能不一致，以官方通报为准。",
+    )
+    NARRATIVE_SUPPLEMENT_PARAGRAPHS = (
+        "这类事情里，当事人当时能做的选择其实不多。事情往往发生得很快，"
+        "留给人的反应时间很短，事后复盘才会发现哪一步本来可以不一样。",
+        "对读者来说，更实际的是把可以固定的东西先留下：时间、地点、涉及的人和处理结果，"
+        "以及过程中有没有书面凭证。这些东西在后续沟通里往往比口头说法管用。",
+        "遇到类似情况，先找对应的管理方或主管部门反映，再考虑是否需要法律途径。"
+        "把顺序走对，比事后争论更有效。",
+        "需要说明的是，公开报道能确认的只是事情的一部分。"
+        "当事人的完整处境、后续处理结果和各方说法，都要等新的信息出来才能判断。",
+    )
+
+    def _build_narrative_supplementary_paragraphs(
+        self,
+        data_report: "DataReport",
+        existing_paragraphs: list[str] | None = None,
+    ) -> list[str]:
+        """社会故事体裁的补段：交代事实、还原处境、给读者提醒。"""
+        existing = list(existing_paragraphs or [])
+        existing_normalized = re.sub(
+            r"[^\u4e00-\u9fffA-Za-z0-9%]+", "", "\n".join(existing)
+        ).casefold()
+        supplements: list[str] = []
+
+        def append_if_new(text: str) -> None:
+            if len(supplements) >= self.MAX_LOCAL_SUPPLEMENTARY_PARAGRAPHS:
+                return
+            candidate = clean_article_text(str(text or ""), min_word_count=0).strip()
+            if not candidate:
+                return
+            for block in (item.strip() for item in candidate.split("\n\n")):
+                if not block:
+                    continue
+                normalized = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9%]+", "", block).casefold()
+                if normalized and normalized in existing_normalized:
+                    continue
+                if any(item == block for item in supplements):
+                    continue
+                supplements.append(block)
+
+        facts = self._clean_hot_topic_source_facts(data_report)
+        # ⚠️ 2026-09-19：引导句和边界句各自只有 3 条，而事实最多 6 条，
+        # 原来按 `index % len(...)` 取用，第 4 条起必然重复。实测正文里
+        # 「把素材里能确认的部分列一下」出现 3 次、「这些是目前能核实的范围，
+        # 后续处理结果还没有公开」出现 3 次 —— 读起来像机器拼接。
+        # 现在：引导句与边界句**各自最多用一次**，素材事实段落最多 3 段
+        # （原来 6 条事实会生成 6 段，其中一半是重复的引导/边界句）。
+        lead_pool = list(self.NARRATIVE_SUPPLEMENT_LEADS)
+        used_leads: set[str] = set()
+        used_boundaries: set[str] = set()
+        for fact in facts[:6]:
+            available_leads = [lead for lead in lead_pool if lead not in used_leads]
+            available_boundaries = [
+                item for item in self.NARRATIVE_SUPPLEMENT_BOUNDARIES if item not in used_boundaries
+            ]
+            if not available_leads or not available_boundaries:
+                break
+            lead = available_leads[0]
+            boundary = available_boundaries[0]
+            used_leads.add(lead)
+            used_boundaries.add(boundary)
+            append_if_new(f"{lead}{fact.rstrip('。！？!?')}。{boundary}")
+        for paragraph in self.NARRATIVE_SUPPLEMENT_PARAGRAPHS[: self.NARRATIVE_GENERIC_SUPPLEMENT_LIMIT]:
+            append_if_new(paragraph)
+        return self._trim_low_confidence_paragraphs(supplements, data_report)
+
+    #: 通用（不含本篇事实的）补段最多插几条。
+    #:
+    #: ⚠️ 2026-09-19：这四条是**对任何故事都成立**的模板句（"当事人当时能做的选择其实不多"、
+    #: "把可以固定的东西先留下"…）。原来 4 条全插，实测正文变成"两套稿子缝合"：
+    #: 前半是模型写的这个故事，后半是同一段模板话，读起来不连贯。
+    #: 真正的解法是让首次生成写够字数（见 `_auto_publish_directive`），
+    #: 这里先收紧到 2 条，把伤害降到最低。
+    NARRATIVE_GENERIC_SUPPLEMENT_LIMIT = 2
 
     def _legacy_build_supplementary_paragraphs(self, data_report: "DataReport", existing_paragraphs: list[str] | None = None) -> list[str]:
         # 保留旧调用方的入口，但让新旧路径共享同一套证据约束。

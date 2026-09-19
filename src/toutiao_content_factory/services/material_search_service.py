@@ -317,21 +317,52 @@ def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2
 
 #: 搜索后端：(名字, 结果页 URL 模板, 结果项提取 JS)
 #: 顺序 = 尝试顺序，按"GitHub runner 上实测可用"排。
+#:
+#: ⚠️ 2026-09-19 从 runner（美国 IP）实测各入口的结论（`scripts/probe_cn_search.py`）：
+#:
+#:   可用：www.bing.com + mkt=zh-CN（HTTP 200，命中相关）
+#:         www.bing.com 默认（HTTP 200，命中相关）
+#:         so.toutiao.com（HTTP 200 但**页面里没有文章链接**，提取恒为 0 条）
+#:         weixin.sogou.com（HTTP 200，但 /link 跳转全部落到 antispider，正文 0 字）
+#:   不可用：cn.bing.com（**301，直接失效** —— 这就是云端一条素材都抓不到的根因）
+#:           百度（TLS 握手超时，被墙）
+#:           谷歌新闻（302）、谷歌搜索（返回页面里没有中文结果）
+#:           新浪/中新网/澎湃/网易/360 站内搜索（均返回无关页面）
+#:
+#: 所以主力后端必须是 **www.bing.com**（全球站 + 中文市场参数），
+#: 而不是原来写死的 cn.bing.com。
 SEARCH_BACKENDS: tuple[tuple[str, str, str], ...] = (
     (
-        "toutiao",
-        "https://so.toutiao.com/search?keyword={q}",
-        # 头条搜索结果里正文链接通常带 /article/ 或 /w/ 或 /group/
+        "bing-global-zh",
+        "https://www.bing.com/search?q={q}&mkt=zh-CN&setlang=zh-CN&cc=CN",
         """() => {
             const seen = new Set();
             const results = [];
-            const anchors = document.querySelectorAll('a[href]');
-            for (const a of anchors) {
+            for (const h2 of document.querySelectorAll('li.b_algo h2, h2')) {
+                const a = h2.querySelector('a');
+                if (!a) continue;
                 const title = (a.innerText || '').trim();
                 const href = a.href || '';
-                if (title.length < 8) continue;
-                if (!/^https?:/.test(href)) continue;
-                if (!/(toutiao\\.com\\/(article|w|group|a)|\\/item\\/)/.test(href)) continue;
+                if (title.length < 6 || !/^https?:/.test(href)) continue;
+                if (seen.has(href)) continue;
+                seen.add(href);
+                results.push({title: title.slice(0, 120), url: href});
+            }
+            return results;
+        }""",
+    ),
+    (
+        "bing-cn",
+        "https://cn.bing.com/search?q={q}",
+        """() => {
+            const seen = new Set();
+            const results = [];
+            for (const h2 of document.querySelectorAll('li.b_algo h2, h2')) {
+                const a = h2.querySelector('a');
+                if (!a) continue;
+                const title = (a.innerText || '').trim();
+                const href = a.href || '';
+                if (title.length < 6 || !/^https?:/.test(href)) continue;
                 if (seen.has(href)) continue;
                 seen.add(href);
                 results.push({title: title.slice(0, 120), url: href});
@@ -352,25 +383,6 @@ SEARCH_BACKENDS: tuple[tuple[str, str, str], ...] = (
                 const title = (h3.innerText || a.innerText || '').trim();
                 let href = a.href || '';
                 if (title.length < 8 || !/^https?:/.test(href)) continue;
-                if (seen.has(href)) continue;
-                seen.add(href);
-                results.push({title: title.slice(0, 120), url: href});
-            }
-            return results;
-        }""",
-    ),
-    (
-        "bing-cn",
-        "https://cn.bing.com/search?q={q}",
-        """() => {
-            const seen = new Set();
-            const results = [];
-            for (const h2 of document.querySelectorAll('li.b_algo h2, h2')) {
-                const a = h2.querySelector('a');
-                if (!a) continue;
-                const title = (a.innerText || '').trim();
-                const href = a.href || '';
-                if (title.length < 6 || !/^https?:/.test(href)) continue;
                 if (seen.has(href)) continue;
                 seen.add(href);
                 results.push({title: title.slice(0, 120), url: href});
@@ -439,6 +451,51 @@ def _filter_relevant_hits(backend_name: str, query: str, hits: list[dict]) -> li
     return kept
 
 
+def _search_phrases(title: str) -> list[str]:
+    """把选题标题变成几个"搜索引擎能给出结果"的查询词。
+
+    ⚠️ 2026-09-19 实测：直接把整句标题丢给搜索引擎，长句标题（尤其是长青题那种
+    「…，为什么最后总是闹到翻脸」的议论句）**一条结果都没有**：
+
+        「老人在家摔倒后，子女才发现没人知道他的日常情况」 → hits=0
+        「老人把养老钱借给亲戚，对方拖着不还，想要回来得先做哪几件事」 → hits: 0
+        「子女轮流照顾老人，为什么最后总是闹到翻脸」 → hits=0
+
+    而短的事件短语能拿到大量真实报道（「男子高空作业绳子被2楼老人剪断」→ 10 条）。
+    所以这里按标点切分，从**最短到最长**依次尝试，取第一个有结果的。
+    """
+    text = str(title or "").strip()
+    if not text:
+        return []
+    phrases: list[str] = []
+    head = re.split(r"[，,。！!？?；;：:]", text)[0].strip()
+    if head:
+        phrases.append(head)
+    # 去掉疑问/议论尾巴（「为什么…」「该先做哪几件事」），留事件主干
+    stem = re.sub(
+        r"(为什么|怎么|如何|该|先|最后|总是|究竟|到底|值得|算|看|做|办|处理|回事|几步|几件事|哪几件事|哪几件|几步)",
+        "",
+        head,
+    ).strip()
+    stem = re.sub(r"[的地得了着过]$", "", stem).strip()
+    if stem and stem not in phrases and len(stem) >= 4:
+        phrases.append(stem)
+    # 再退一步：取主干里的前 8~10 个字
+    if stem and len(stem) > 10:
+        phrases.append(stem[:10])
+    phrases.append(text)
+    # 去重且保持顺序；太短的丢掉（「老人」这种搜出来全是无关内容）
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in phrases:
+        normalized = item.strip()
+        if len(normalized) < 4 or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
 def collect_material(
     title: str,
     *,
@@ -447,22 +504,30 @@ def collect_material(
     min_body_chars: int = 600,
     timeout: int = 20,
 ) -> MaterialBundle:
-    """按标题找报道并抓正文。"""
+    """按标题找报道并抓正文。
+
+    搜索用**多个由标题派生的短语**依次尝试（见 `_search_phrases`）：
+    长句标题直接搜不到东西，但它的前半句/主干往往能搜到大量真实报道。
+    """
     bundle = MaterialBundle(query=title)
-    for hit in search_web(title, limit=limit):
+    hits: list[dict] = []
+    for phrase in _search_phrases(title):
+        hits = search_web(phrase, limit=limit)
+        if hits:
+            break
+    for hit in hits:
         if len(bundle.usable) >= max_sources:
             break
         url = hit["url"]
         if any(host in url for host in SKIP_HOSTS):
             # 跳转链接允许（百度 / 搜狗微信的 link 域），但纯搜索/视频站跳过。
             # ⚠️ 2026-09-19：`weixin.sogou.com` 必须在白名单里 ——
-            # 它是云端（美国 IP）少数可用的搜索后端，结果给的就是 /link?url= 跳转链接。
+            # 它是云端少数有结果的后端，结果给的就是 /link?url= 跳转链接。
             if "baidu.com/link" not in url and "weixin.sogou.com/link" not in url:
                 continue
         source = MaterialSource(title=hit["title"], url=url)
         try:
             # `fetch_text_smart`：HTTP 拿到反爬页时自动改用真实浏览器。
-            # 搜狗微信的跳转链接必须走浏览器，否则一律落到 antispider。
             page, final_url, how = fetch_text_smart(url, timeout=timeout)
             source.url = final_url or url
             body = extract_article_body(page, min_chars=min_body_chars)

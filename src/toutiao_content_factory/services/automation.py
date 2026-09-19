@@ -320,7 +320,14 @@ class TopicAutomationService:
         #     `_select_topic` 返回的只是"排序第一"，它不代表"唯一可用的题"。
         requested_title = bool(str(title_query or "").strip())
         retry_allowed = allow_material_retry or not requested_title
-        if not self._hydrate_topic_material(topic):
+        # 长青题豁免素材门槛：它们本来就不是新闻事件，搜不到报道是正常的。
+        # 详见 `_is_evergreen_topic`。
+        evergreen_topic = self._is_evergreen_topic(topic)
+        if evergreen_topic:
+            self.logger.info(
+                "[素材] 长青题不要求抓到报道正文（非新闻事件）: %s", topic.title
+            )
+        elif not self._hydrate_topic_material(topic):
             if not retry_allowed:
                 self.logger.error(
                     "[素材] 指定选题抓不到正文素材，放弃本次运行（不发布）: %s",
@@ -360,6 +367,25 @@ class TopicAutomationService:
 
     #: 素材抓取的备选尝试上限（每次尝试都会真实联网检索，不宜过多）
     MATERIAL_FALLBACK_ATTEMPTS = 5
+
+    @staticmethod
+    def _is_evergreen_topic(topic: TopicCandidate) -> bool:
+        """这条题是不是长青题（常青选题池来的，没有对应的真实热点事件）。
+
+        ⚠️ 2026-09-19：长青题**搜不到真实报道** —— 它们本来就是"方法论 / 生活经验"
+        型选题，不是新闻事件。实测：
+            「老人在家摔倒后，子女才发现没人知道他的日常情况」→ Bing 只返回百度百科
+            「子女轮流照顾老人，为什么最后总是闹到翻脸」      → 同上
+        而事件式热榜题能抓到 3800+ 字真实报道。
+
+        所以素材门槛对长青题不适用：非要"抓到正文才写"，等于把兜底选题全部作废，
+        当天一条都发不出去（这正是 2026-09-19 云端连续失败的成因之一）。
+        长青稿的内容安全由 writer 侧的反虚构约束保证（只能写常识与公开背景、
+        不许编造具体人物与案情），而不是靠"必须有报道正文"。
+        """
+        source = str(getattr(topic, "source", "") or "").strip()
+        source_type = str(getattr(topic, "source_type", "") or "").strip()
+        return source == "evergreen_pool" or source_type == "evergreen"
 
     def _hydrate_with_fallback(
         self,

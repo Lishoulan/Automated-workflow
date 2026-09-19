@@ -797,13 +797,31 @@ class AgentWorkflowService:
                 break
         result = clean_article_text("\n\n".join(paragraphs), min_word_count=0)
         result_chars = len(result.replace("\n", "").replace(" ", ""))
-        if result_chars < min_chars and self.openai_service.available and self._has_grounded_evidence(data_report):
+        # ⚠️ 2026-09-19：差距太大时**不要**调用 LLM 扩展。
+        # 实测云端：长青题补段后只有 459~911 字，而目标 1500 —— 缺口 600~1000 字，
+        # 一次扩展（单次上限约 800 字且常失败）根本补不上，纯属白烧一次大 prompt
+        # 又不解决问题，还把这轮运行拖长到接近 workflow 的 45 分钟上限。
+        # 差距 > 40% 时直接跳过，把状态如实交给上层判定。
+        gap_ratio = 0.0 if min_chars <= 0 else (min_chars - result_chars) / float(min_chars)
+        if (
+            result_chars < min_chars
+            and self.openai_service.available
+            and self._has_grounded_evidence(data_report)
+            and gap_ratio <= 0.4
+        ):
             self.logger.info(
                 "Supplementary paragraphs brought article to %d chars, still below %d. Attempting grounded LLM expansion.",
                 result_chars,
                 min_chars,
             )
             result = self._expand_article_via_llm(result, data_report, min_chars)
+        elif result_chars < min_chars:
+            self.logger.info(
+                "正文 %d 字，距目标 %d 字缺口 %.0f%%，超出单次扩展能力，跳过 LLM 扩展。",
+                result_chars,
+                min_chars,
+                gap_ratio * 100,
+            )
         return clean_article_text(result, min_word_count=0)
 
     def _legacy_expand_article_via_llm(self, article: str, data_report, min_chars: int) -> str:

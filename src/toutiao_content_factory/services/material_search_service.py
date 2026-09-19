@@ -143,6 +143,62 @@ def _ssl_context() -> ssl.SSLContext:
     return ctx
 
 
+#: 命中这些标记说明落到了反爬/验证页，HTTP 抓取拿不到正文
+_ANTISPIDER_MARKERS = (
+    "antispider",
+    "wappass.baidu.com",
+    "验证码",
+    "请输入验证码",
+    "访问过于频繁",
+    "sec.163.com",
+)
+
+
+def _looks_like_antispider(page_html: str, final_url: str) -> bool:
+    haystack = f"{final_url} {page_html[:3000]}"
+    return any(marker in haystack for marker in _ANTISPIDER_MARKERS)
+
+
+def fetch_text_with_browser(url: str, timeout_ms: int = 45000) -> tuple[str, str]:
+    """用真实浏览器抓页面，返回 (页面 HTML, 最终地址)。
+
+    ⚠️ 2026-09-19 实测：`weixin.sogou.com` 的搜索结果给的是 **`/link?url=...` 跳转链接**，
+    用 urllib 直接抓会被判为爬虫、落到 `weixin.sogou.com/antispider/`（正文 0 字）。
+    真实浏览器带完整 cookie 与 JS 执行环境时能正常跳转到公众号文章页。
+    """
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            context = browser.new_context(locale="zh-CN", user_agent=USER_AGENT)
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.wait_for_timeout(3000)
+            return page.content(), page.url
+        finally:
+            browser.close()
+
+
+def fetch_text_smart(url: str, timeout: int = 20) -> tuple[str, str, str]:
+    """先走 HTTP，遇到反爬页自动改用真实浏览器。返回 (html, final_url, how)。
+
+    `how` 是 "http" 或 "browser"，便于日志里看清是哪条路径拿到的。
+    """
+    try:
+        page_html, final_url = fetch_text(url, timeout=timeout)
+    except Exception:
+        page_html, final_url = "", url
+    if page_html and not _looks_like_antispider(page_html, final_url):
+        return page_html, final_url, "http"
+    # HTTP 拿不到（反爬/异常）→ 换浏览器
+    try:
+        page_html, final_url = fetch_text_with_browser(url)
+    except Exception:
+        return page_html, final_url, "browser-failed"
+    return page_html, final_url, "browser"
+
+
 def fetch_text(url: str, timeout: int = 20, follow_redirects: bool = True) -> tuple[str, str]:
     """抓取 URL 并解码为文本，返回 (页面文本, 最终地址)。
 
@@ -226,20 +282,117 @@ def extract_article_body(page_html: str, min_chars: int = 600) -> str:
 
 
 def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2.0) -> list[dict]:
-    """搜索候选报道，返回 [{title, url}]。
+    """搜索候选报道，返回 [{title, url}]。**按多个搜索后端依次尝试**。
 
-    ⚠️ 为什么用 Bing 而不是百度/搜狗（2026-09-19 实测）：
-      - **百度**：无头浏览器与 urllib 都被判为机器人，直接跳验证码页
-        （`wappass.baidu.com/static/captcha/tuxing_v2.html`），命中恒为 0，换 IP 也很快再被封。
-      - **搜狗**：跳反爬页 `sogou.com/antispider/`。
-      - **Bing**：无头浏览器下正常返回，能直接拿到真实文章 URL
-        （实测拿到 sohu / china.com / news.qq.com 的真实报道链接）。
+    ⚠️ 为什么必须是"多后端"（2026-09-19 实测，两轮踩坑）：
 
-    因此这里走 Bing，并用**真实浏览器**取结果 —— HTTP 抓取对搜索引擎不稳定。
+    第一轮：只用 Bing，本地（中国）正常。上线云端后**一条都抓不到**。
+    第二轮：从 GitHub runner（美国 IP）实测，Bing 返回的是**本地化结果** ——
+        搜「老人在家摔倒后，子女才发现没人知道他的日常情况」返回**披萨食谱**，
+        搜「张雪回应打车被认出"忽悠"司机」返回 **Reddit 板块**，
+        抓下来全是 403 或登录页，`usable=0 total_chars=0`。
+    同一次从 runner 跑的入口探测（`scripts/probe_cn_search.py`）：
+
+        可用：今日头条搜索 so.toutiao.com（HTTP 200，命中相关）
+              搜狗微信   weixin.sogou.com（HTTP 200，命中相关）
+        不可用：百度（TLS 握手超时，被墙）
+                必应中国 cn.bing.com（301 失效）
+                新浪/中新网/澎湃/网易站内搜索（均返回无关页面）
+
+    结论：**云端的可用后端与本地完全不同**，所以不能只挑一个。
+    按"在 runner 上实测可用"的顺序尝试，全部失败才返回空：
+
+    1. `so.toutiao.com`  —— runner 与本地都可用，且与发布平台同源，最优先
+    2. `weixin.sogou.com` —— runner 上可用，公众号文章质量高
+    3. `cn.bing.com`      —— 本地主力，runner 上会退化，仅作兜底
+
+    每个后端失败就换下一个；用**真实浏览器**取结果（HTTP 直接抓搜索引擎不稳定）。
     """
+    for backend in SEARCH_BACKENDS:
+        hits = _search_with_backend(backend, query, retries=retries, pause=pause)
+        if hits:
+            return hits[:limit]
+    return []
+
+
+#: 搜索后端：(名字, 结果页 URL 模板, 结果项提取 JS)
+#: 顺序 = 尝试顺序，按"GitHub runner 上实测可用"排。
+SEARCH_BACKENDS: tuple[tuple[str, str, str], ...] = (
+    (
+        "toutiao",
+        "https://so.toutiao.com/search?keyword={q}",
+        # 头条搜索结果里正文链接通常带 /article/ 或 /w/ 或 /group/
+        """() => {
+            const seen = new Set();
+            const results = [];
+            const anchors = document.querySelectorAll('a[href]');
+            for (const a of anchors) {
+                const title = (a.innerText || '').trim();
+                const href = a.href || '';
+                if (title.length < 8) continue;
+                if (!/^https?:/.test(href)) continue;
+                if (!/(toutiao\\.com\\/(article|w|group|a)|\\/item\\/)/.test(href)) continue;
+                if (seen.has(href)) continue;
+                seen.add(href);
+                results.push({title: title.slice(0, 120), url: href});
+            }
+            return results;
+        }""",
+    ),
+    (
+        "sogou-weixin",
+        "https://weixin.sogou.com/weixin?type=2&query={q}",
+        # 公众号文章结果在 .news-list li 里，链接是 /link?url=... 跳转
+        """() => {
+            const seen = new Set();
+            const results = [];
+            for (const h3 of document.querySelectorAll('.news-list h3, .txt-box h3, h3')) {
+                const a = h3.querySelector('a') || (h3.closest('a') ? h3.closest('a') : null);
+                if (!a) continue;
+                const title = (h3.innerText || a.innerText || '').trim();
+                let href = a.href || '';
+                if (title.length < 8 || !/^https?:/.test(href)) continue;
+                if (seen.has(href)) continue;
+                seen.add(href);
+                results.push({title: title.slice(0, 120), url: href});
+            }
+            return results;
+        }""",
+    ),
+    (
+        "bing-cn",
+        "https://cn.bing.com/search?q={q}",
+        """() => {
+            const seen = new Set();
+            const results = [];
+            for (const h2 of document.querySelectorAll('li.b_algo h2, h2')) {
+                const a = h2.querySelector('a');
+                if (!a) continue;
+                const title = (a.innerText || '').trim();
+                const href = a.href || '';
+                if (title.length < 6 || !/^https?:/.test(href)) continue;
+                if (seen.has(href)) continue;
+                seen.add(href);
+                results.push({title: title.slice(0, 120), url: href});
+            }
+            return results;
+        }""",
+    ),
+)
+
+
+def _search_with_backend(
+    backend: tuple[str, str, str],
+    query: str,
+    *,
+    retries: int = 2,
+    pause: float = 2.0,
+) -> list[dict]:
+    """用单个后端搜索；失败（含反爬页）返回空列表，由调用方换下一个后端。"""
+    name, template, extractor = backend
     from playwright.sync_api import sync_playwright
 
-    url = "https://cn.bing.com/search?q=" + urllib.parse.quote(query)
+    url = template.replace("{q}", urllib.parse.quote(query))
     out: list[dict] = []
     for attempt in range(1, max(retries, 1) + 1):
         try:
@@ -249,23 +402,7 @@ def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2
                 page = context.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
                 page.wait_for_timeout(3500)
-                out = page.evaluate(
-                    """() => {
-                        const seen = new Set();
-                        const results = [];
-                        for (const h2 of document.querySelectorAll('li.b_algo h2, h2')) {
-                            const a = h2.querySelector('a');
-                            if (!a) continue;
-                            const title = (a.innerText || '').trim();
-                            const href = a.href || '';
-                            if (title.length < 6 || !/^https?:/.test(href)) continue;
-                            if (seen.has(href)) continue;
-                            seen.add(href);
-                            results.push({title: title.slice(0, 120), url: href});
-                        }
-                        return results;
-                    }"""
-                )
+                out = page.evaluate(extractor)
                 browser.close()
         except Exception:
             out = []
@@ -273,7 +410,33 @@ def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2
             break
         if attempt < retries:
             time.sleep(pause * attempt)
-    return out[:limit]
+    if out:
+        return _filter_relevant_hits(name, query, out)
+    return []
+
+
+def _filter_relevant_hits(backend_name: str, query: str, hits: list[dict]) -> list[dict]:
+    """丢掉与查询无关的结果。
+
+    ⚠️ 2026-09-19 实测（GitHub runner）：Bing 会把中文查询本地化成美国结果 ——
+    搜「老人在家摔倒后…」返回「47 Homemade Pizza Recipes」，
+    搜「张雪回应打车…」返回 Reddit 板块。这些条目抓下来全是 403，
+    白白耗掉抓取预算，还会让人误以为"搜索引擎是通的"。
+    判据：标题或 URL 里必须出现查询中的中文片段（取最长的 2-4 字词）。
+    """
+    tokens = [
+        token
+        for token in re.findall(r"[\u4e00-\u9fff]{2,4}", query)
+        if token
+    ]
+    if not tokens:
+        return hits
+    kept: list[dict] = []
+    for hit in hits:
+        haystack = f"{hit.get('title', '')} {hit.get('url', '')}"
+        if any(token in haystack for token in tokens):
+            kept.append(hit)
+    return kept
 
 
 def collect_material(
@@ -291,19 +454,23 @@ def collect_material(
             break
         url = hit["url"]
         if any(host in url for host in SKIP_HOSTS):
-            # 跳转链接允许（百度 link 域），但纯搜索/视频站跳过
-            if "baidu.com/link" not in url:
+            # 跳转链接允许（百度 / 搜狗微信的 link 域），但纯搜索/视频站跳过。
+            # ⚠️ 2026-09-19：`weixin.sogou.com` 必须在白名单里 ——
+            # 它是云端（美国 IP）少数可用的搜索后端，结果给的就是 /link?url= 跳转链接。
+            if "baidu.com/link" not in url and "weixin.sogou.com/link" not in url:
                 continue
         source = MaterialSource(title=hit["title"], url=url)
         try:
-            page, final_url = fetch_text(url, timeout=timeout)
+            # `fetch_text_smart`：HTTP 拿到反爬页时自动改用真实浏览器。
+            # 搜狗微信的跳转链接必须走浏览器，否则一律落到 antispider。
+            page, final_url, how = fetch_text_smart(url, timeout=timeout)
             source.url = final_url or url
             body = extract_article_body(page, min_chars=min_body_chars)
             if body:
                 source.body = body
                 source.ok = True
             else:
-                source.error = "页面里没抽出足够长的正文"
+                source.error = f"页面里没抽出足够长的正文（{how}）"
         except urllib.error.HTTPError as exc:
             source.error = f"HTTP {exc.code}"
         except Exception as exc:

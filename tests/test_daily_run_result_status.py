@@ -375,6 +375,106 @@ def test_daily_run_tries_next_candidate_after_duplicate_title_failure(app_settin
     assert report["final_attempt"]["topic_title"] == "第二候选标题"
 
 
+def test_daily_run_tries_next_candidate_when_article_is_too_short(
+    app_settings, tmp_path: Path
+) -> None:
+    """正文长度不达标时必须**换下一条候选**，而不是当天收工。
+
+    背景（2026-09-20 实测）：流水线全通、`Review approved`、标题 17/17 全过，
+    但正文只有 655~671 字，低于自动发布下限 750 → 判 `review_required`。
+    正文长度是当前**唯一不可控变量**（`glm-4-flash` 产出 426~1114 字波动）：
+    素材薄的选题写出来就是不够长，素材厚的选题轻松过线。
+    所以要多试几条 —— 4 条里只要有一条抓到完整正文，当天就能发出去。
+    """
+    object.__setattr__(app_settings.publishing, "enabled", True)
+    object.__setattr__(app_settings.publishing, "auto_publish", True)
+
+    app = ContentFactoryAppService(app_settings, logging.getLogger("test-daily-short-rotate"))
+    run_dirs: list[Path] = []
+    # run-1 故意写短（低于 750 的叙事下限），run-2 足够长
+    for index, title, repeats in (
+        (1, "偏短的候选", 20),
+        (2, "长度达标的候选", 400),
+    ):
+        run_dir = tmp_path / f"short-run-{index}"
+        run_dir.mkdir(parents=True)
+        (run_dir / "article.md").write_text("测试文章内容。" * repeats, encoding="utf-8")
+        (run_dir / "content_score.json").write_text(
+            json.dumps(
+                {
+                    "scores": {
+                        "overall_score": 88,
+                        "ai_generated_risk": 20,
+                        "validation_score": 88,
+                        "publish_readiness_score": 88,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run_dir / "workflow_result.json").write_text("{}", encoding="utf-8")
+        (run_dir / "source_material_full.txt").write_text(
+            "素材来源：测试\n原文标题：测试\n原文链接：https://example.test/s\n\n"
+            + "这一段素材原文与待发布正文完全没有重合，仅用于通过原创性核验。" * 20,
+            encoding="utf-8",
+        )
+        (run_dir / "content_guard_report.json").write_text(
+            json.dumps({"blocked": False, "blocking_flags": [], "source_copy_ratio": 0.0}),
+            encoding="utf-8",
+        )
+        (run_dir / "review_status.json").write_text(
+            json.dumps({"status": "approved", "selected_title": title}),
+            encoding="utf-8",
+        )
+        run_dirs.append(run_dir)
+
+    app.collect_topics = MagicMock(return_value={})
+    app.platform_health_service.quick_health_check = MagicMock(
+        return_value={"blocking_platforms": [], "blocking_flags": []}
+    )
+    app.platform_health_service.ensure_publish_ready = MagicMock(
+        return_value={"platform_health": "", "blocking_platforms": []}
+    )
+    app._build_daily_candidate_specs = MagicMock(
+        return_value=[
+            {"rank": 1, "title": "偏短的候选", "url": "https://example.test/1"},
+            {"rank": 2, "title": "长度达标的候选", "url": "https://example.test/2"},
+        ]
+    )
+    app.auto_run = MagicMock(
+        side_effect=[
+            {"archive_root": str(run_dirs[0])},
+            {"archive_root": str(run_dirs[1])},
+        ]
+    )
+    app.approve_run = MagicMock(return_value={})
+    app.review_service.select_auto_title = MagicMock(
+        side_effect=[
+            {"selected_title": "偏短的候选", "selected_title_index": 1},
+            {"selected_title": "长度达标的候选", "selected_title_index": 1},
+        ]
+    )
+    app.review_service.mark_skipped_review = MagicMock(return_value={})
+    app._run_daily_platform_automation = MagicMock(
+        return_value=(
+            {},
+            {"toutiao": {"status": "submitted_for_review", "external_url": "https://example.test/2"}},
+            [],
+        )
+    )
+
+    exported = app.daily_run(skip_wait=True)
+
+    # 关键断言：两条候选都被尝试过（没有因为第一条偏短就收工）
+    assert app.auto_run.call_count == 2, "正文偏短时必须继续试下一条候选"
+    report = json.loads(Path(exported["workflow_report"]).read_text(encoding="utf-8"))
+    statuses = {item["topic_title"]: item.get("status") for item in report["attempts"]}
+    # 偏短那条会被记为 too_short_skipped，随后 `_mark_attempts_skipped`
+    # 统一规范成 "skipped"；这里两种都接受，重点是"没有被当成最终结果"。
+    assert statuses.get("偏短的候选") in {"too_short_skipped", "skipped"}, statuses
+    assert report["final_attempt"]["topic_title"] == "长度达标的候选", statuses
+
+
 def test_fallback_publish_points_archive_root_at_the_published_run(
     app_settings, tmp_path: Path
 ) -> None:

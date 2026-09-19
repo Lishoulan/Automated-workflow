@@ -301,12 +301,33 @@ class ReviewWorkflowService:
 
         passed: list[tuple[int, int, str]] = []
         reason_summary: dict[str, int] = {}
+        # ⚠️ 2026-09-19：叙事体裁必须与另外两个入口用**同一份豁免清单**。
+        #
+        # 同一套"标题信息密度"判据在项目里有**三份独立实现**：
+        #   1. `TitleAgent.validate_title_candidate`   —— 生成侧
+        #   2. `AgentWorkflowService._filter_titles_by_quality` —— 旁路 A
+        #   3. **本函数**（`select_auto_title`）—— 旁路 B，发布前的最终选择
+        # 修一处就会被下一处打回来。实测三次云端运行各卡在一处：
+        #   run 35443949496 卡在 1、run 35453836286 卡在 2、run 35455257246 卡在 3，
+        #   日志分别是 `0/0`、`标题质量硬过滤全灭`、`0/8 candidates passed
+        #   (top_reasons=[('rule_009_low_information', 8)])`。
+        #
+        # RULE_009 衡量的「主体+数字+后果」信息密度是产业稿的判据；
+        # 社会故事的主体是「老人」「儿媳」这类人物，没有可量化数字，天然不达标。
+        # 叙事体裁下放开它，安全类检查（长度/禁用句式/越界/泄漏/一致性）一条不放。
+        exempt_markers = self._narrative_exempt_title_markers(bundle)
         for index, candidate in enumerate(candidates, start=1):
             title = self.publish_service._clip_title(
                 self._text_cleaner.strip_prompt_leakage(candidate).strip()
             )
             result = checker._check_title(title, bundle.article)
             issues = [str(item) for item in result.get("issues", []) if str(item).strip()]
+            if exempt_markers:
+                issues = [
+                    item
+                    for item in issues
+                    if not any(marker in item for marker in exempt_markers)
+                ]
             if duplicate_guard_enabled:
                 if topic_duplicate:
                     issues.append("选题与近7天已发布选题重复")
@@ -384,6 +405,32 @@ class ReviewWorkflowService:
             "top_reasons": top_reasons,
             "reason": "No candidate title passed the final title quality gate.",
         }
+
+    #: 叙事体裁下不作为拒绝理由的标题 issue 关键词。
+    #: **必须与 `TitleAgent.NARRATIVE_EXEMPT_TITLE_CODES` 和
+    #: `AgentWorkflowService.NARRATIVE_EXEMPT_TITLE_MARKERS` 同一口径。**
+    NARRATIVE_EXEMPT_TITLE_MARKERS = (
+        "RULE_009",
+        "信息密度不足",
+        "RULE_006",
+        "具象",
+    )
+
+    def _narrative_exempt_title_markers(self, bundle) -> tuple[str, ...]:
+        """当前账号是否叙事体裁；是则返回要豁免的标题 issue 关键词。"""
+        style_key = ""
+        data_report = getattr(bundle, "data_report", None)
+        if data_report is not None:
+            style_key = str(getattr(data_report, "style_key", "") or "").strip()
+        try:
+            settings = self.settings
+            if style_key:
+                domain = str(settings.get_style(style_key).content_domain).strip().lower()
+            else:
+                domain = str(getattr(settings, "content_domain", "industry") or "industry").strip().lower()
+        except Exception:  # noqa: BLE001 - 判定不了就按产业稿处理（保守）
+            return ()
+        return self.NARRATIVE_EXEMPT_TITLE_MARKERS if domain == "narrative" else ()
 
     @staticmethod
     def _title_issue_code(issue: str) -> str:

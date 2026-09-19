@@ -1,4 +1,4 @@
-"""叙事账号（社会故事）的兜底标题不许出现产业句式。
+﻿"""叙事账号（社会故事）的兜底标题不许出现产业句式。
 
 背景（2026-09-19 真实运行，`output/accounts/robot-notes/titles.txt`）：
 模型候选被闸门全拒后启用了兜底池，而 `_fallback_titles` 的模板全是产业分析句式
@@ -278,17 +278,46 @@ def test_is_narrative_style_reads_the_account_domain() -> None:
 def test_both_title_gates_exempt_the_same_narrative_codes() -> None:
     from toutiao_content_factory.agents.title_agent import TitleAgent
     from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
+    from toutiao_content_factory.services.review_service import ReviewWorkflowService
 
     agent_codes = set(TitleAgent.NARRATIVE_EXEMPT_TITLE_CODES)
     workflow_markers = set(AgentWorkflowService.NARRATIVE_EXEMPT_TITLE_MARKERS)
+    review_markers = set(ReviewWorkflowService.NARRATIVE_EXEMPT_TITLE_MARKERS)
 
-    # TitleAgent 用 reason code；workflow 那边匹配的是中文 issue 文本，所以按语义映射
+    # TitleAgent 用 reason code；另外两处匹配的是中文 issue 文本，所以按语义映射
     assert "rule_009_low_information" in agent_codes
-    assert "RULE_009" in workflow_markers
     assert "missing_concrete_hook" in agent_codes
-    assert any("006" in marker or "具象" in marker for marker in workflow_markers), (
-        "workflow 侧没有豁免 RULE_006（具象化），两处口径不一致"
-    )
+    for name, markers in (("workflow", workflow_markers), ("review", review_markers)):
+        assert "RULE_009" in markers, f"{name} 侧没有豁免 RULE_009"
+        assert any("006" in marker or "具象" in marker for marker in markers), (
+            f"{name} 侧没有豁免 RULE_006（具象化），口径不一致"
+        )
+
+
+def test_all_three_title_gate_copies_agree() -> None:
+    """同一套判据在项目里有**三份独立实现**，口径必须一致。
+
+    ⚠️ 2026-09-19 实测：修一处就会被下一处打回来，三次云端运行各卡在一处 ——
+        run 35443949496 卡在 `TitleAgent`（`0/0 candidates passed`）
+        run 35453836286 卡在 `_filter_titles_by_quality`（`标题质量硬过滤全灭`）
+        run 35455257246 卡在 `select_auto_title`
+            （`0/8 candidates passed, top_reasons=[('rule_009_low_information', 8)]`）
+    这个用例把"三处一起改"变成可执行的约束。
+    """
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[1] / "src/toutiao_content_factory"
+    files = {
+        "title_agent": root / "agents/title_agent.py",
+        "agent_workflow": root / "services/agent_workflow.py",
+        "review_service": root / "services/review_service.py",
+    }
+    for name, path in files.items():
+        source = path.read_text(encoding="utf-8")
+        assert "NARRATIVE_EXEMPT_TITLE" in source, f"{name} 里找不到叙事豁免清单常量"
+        assert "_narrative" in source or "narrative" in source, (
+            f"{name} 没有做叙事体裁判定"
+        )
 
 
 def test_narrative_rejection_is_exempted_in_the_bypass_path() -> None:
@@ -331,6 +360,7 @@ def test_narrative_rejection_is_exempted_in_the_bypass_path() -> None:
     assert content.titles == ["西贝员工工资推迟，员工权益受冲击"], (
         "叙事账号下 RULE_009 不该清空标题候选"
     )
+
 
 
 

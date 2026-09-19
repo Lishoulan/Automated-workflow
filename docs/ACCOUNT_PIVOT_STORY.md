@@ -528,7 +528,47 @@ writer 的扩展资格、review 的信息密度评分、具象钩子放宽、人
 > 内容关键字适合做**初筛**，但**最终判据应该来自账号自己的配置声明**。
 > 判断修好没有，要看最终那行 `Automatic publish result accepted: status=...`。
 
-### 4.19 仍待观察
+### 4.19 ⚠️ 验证陷阱：`--dry-run` 会**完全跳过模型**（2026-09-20 06:xx）
+
+这一轮踩了一个代价很大的坑，写下来避免重复：
+
+`main.py --dry-run` 的官方说明是
+**「Use local fallback logic without calling the model」**。
+它不是"生成但不发布"，而是**完全不调模型**：
+
+    app_service.auto_run(dry_run=True)
+      → ContentFactoryPipeline(force_mock=True)
+        → OpenAIContentService(force_mock=True)   # self.client = None
+          → available == False
+
+我用 `workflow_dispatch -f dry_run=true` 从云端调试时，看到的
+"正文 507 字""差 30~50 字""扩展被跳过""api_available=False"
+**全是 mock 产物，不是模型行为** —— 我因此追了好几轮一个不存在的问题
+（hook 的排除性诊断 `api_available=False` 正是这个原因）。
+
+## 怎么分辨
+
+| 方式 | 是否真实调模型 |
+|---|---|
+| `scripts/verify_content_drypublish.py` | ✅ **真实**（它调 `daily_run()` 时不传 `dry_run`，只关掉发布开关） |
+| 云端 `workflow_dispatch` 且 `dry_run=false` | ✅ 真实 |
+| 云端 `workflow_dispatch` 且 `dry_run=true` | ❌ **完全 mock** |
+| `main.py --daily-run --dry-run` | ❌ 完全 mock |
+
+**判断依据（最可靠）**：日志里有没有 `Model usage recorded: prompt_tokens=...`
+—— mock 模式一句都没有。
+
+## 这次排查的净结果
+
+- 我基于真实运行（`dry_run=false`）的结论**依然成立**：
+  换模型后正文 658~732 字、`Review approved`、`状态: success`；
+  两次真实发布有 pgc_id。
+- 我基于 `dry_run=true` 的那几轮结论**作废**（那是在看 mock 输出）。
+- 顺带给 `_mark_unavailable` 与"扩展被跳过"两处加了完整诊断日志
+  （模型名、原始错误、全部判据）—— 这类"标志位静默改变行为"的地方，
+  日志必须自证，否则只能靠猜。
+
+### 4.20 仍待观察
 
 | # | 问题 | 说明 |
 |---|---|---|

@@ -24,7 +24,9 @@ jobs:
         run: python scripts/probe_network_reach.py
 
       - name: Install material-search dependencies
-        run: pip install --quiet httpx2 beautifulsoup4 lxml
+        run: |
+          pip install --quiet httpx2 beautifulsoup4 lxml playwright
+          python -m playwright install --with-deps chromium
 
       - name: Fetch a real article through Bing (same path as material search)
         run: |

@@ -21,7 +21,11 @@ def _safe_json_loads(text: str, *, default: dict | list | None = None) -> dict |
         return default
 
 from toutiao_content_factory.config import AppSettings
-from toutiao_content_factory.exceptions import LowQualityAbortException, PlatformAuthError
+from toutiao_content_factory.exceptions import (
+    LengthFloorAbortException,
+    LowQualityAbortException,
+    PlatformAuthError,
+)
 from toutiao_content_factory.models import DailyTopicsReport, TopicCandidate
 from toutiao_content_factory.services.automation import TopicAutomationService
 from toutiao_content_factory.services.cross_channel_state import (
@@ -914,6 +918,21 @@ class ContentFactoryAppService:
                     # 因此当天一篇都没发出去）。
                     allow_material_retry=True,
                 )
+            except LengthFloorAbortException as exc:
+                # 保留这条分支是为了兼容**直接抛出长度异常**的调用方（例如
+                # 兜底发布的安全检查路径）。`_qualifies_for_auto_approval` 本身
+                # 走的是"返回 False + 快照标记"，见下方 `length_shortfall` 处理。
+                self.logger.warning(
+                    "Daily workflow attempt %s/%s 正文长度不达标，换下一条候选：%s",
+                    attempt_index,
+                    len(candidate_specs),
+                    exc,
+                )
+                attempt_record.update(
+                    {"status": "too_short_skipped", "skip_reason": str(exc)}
+                )
+                losing_attempts.append(attempt_record)
+                continue
             except LowQualityAbortException as exc:
                 self.logger.info(
                     "Daily workflow skipped low-quality candidate %s/%s: %s",
@@ -1036,6 +1055,37 @@ class ContentFactoryAppService:
                     **attempt_record,
                     "exported_files": dict(attempt_exports),
                 }
+
+            # ⚠️ 2026-09-20：**正文长度不达标 → 继续试下一条候选**。
+            #
+            # 实测：`glm-4-flash` 产出 426~1114 字波动，自动发布下限 750。
+            # 素材薄的选题（长青题只有 550~900 字摘要）写出来就是不够长；
+            # 素材厚的选题（能抓到完整正文的热榜题，2000~3800 字）轻松过线。
+            # 长度是当前**唯一不可控变量**，所以要多试几条，不要因为
+            # 前几条偏短就认定当天发不出去。
+            #
+            # 注意：这条 `continue` 放在 `best_attempt` 更新**之后** ——
+            # 这条稿子仍留在候选池里，最后 `_try_fallback_publish` 还会评估它。
+            shortfall = int(score_snapshot.get("length_shortfall", 0) or 0)
+            if shortfall > 0 and not qualifies and not content_guard_blocked:
+                attempt_record.update(
+                    {
+                        "status": "too_short_skipped",
+                        "skip_reason": (
+                            f"正文比自动发布下限少 {shortfall} 字"
+                            f"（下限 {int(score_snapshot.get('length_minimum', 0) or 0)} 字）；"
+                            "换下一条候选"
+                        ),
+                    }
+                )
+                losing_attempts.append(attempt_record)
+                self.logger.warning(
+                    "Daily candidate %s/%s 只是字数不足（差 %d 字），换下一条候选。",
+                    attempt_index,
+                    len(candidate_specs),
+                    shortfall,
+                )
+                continue
 
             if no_archive or run_dir is None:
                 attempt_record["status"] = "generated"
@@ -2768,6 +2818,12 @@ class ContentFactoryAppService:
                 article_chars,
                 minimum_article_chars,
             )
+            # ⚠️ 2026-09-20：**这里仍返回 False**（本函数是布尔判定，契约不变），
+            # 但把"差多少字"记进快照，让候选循环能识别出
+            # "这条失败只是不够长"，从而**继续试下一条候选**。
+            # 详见 `_daily_run_impl` 里对 `length_shortfall` 的处理。
+            score_snapshot["length_shortfall"] = minimum_article_chars - article_chars
+            score_snapshot["length_minimum"] = minimum_article_chars
             return False
         if content_guard_report is not None and (
             content_guard_report.get("blocked")

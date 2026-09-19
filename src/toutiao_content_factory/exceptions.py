@@ -24,6 +24,17 @@ class ContentQualityError(ContentFactoryError):
 class LowQualityAbortException(ContentQualityError):
     """Topic quality is too low to justify the full agent workflow."""
 
+class LengthFloorAbortException(ContentQualityError):
+    """正文长度低于自动发布下限。
+
+    ⚠️ 2026-09-20：与 `LowQualityAbortException` **分开**是有意的。
+    长度是当前免费模型（`glm-4-flash`，产出 426~1114 字波动）唯一的不可控变量：
+    素材薄的选题写出来就是不够长，素材厚的选题轻松过线。
+    所以候选循环对这两种失败的处理不同 ——
+    长度不达标要**继续换下一条候选**（多试几条总能碰上够长的），
+    而不是当天收工。
+    """
+
 
 # ========================================================================
 # Content Safety

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-09-18T17:17:06",
+  "updated_at": "2026-09-19T23:17:17",
   "entries": {
     "2026-09-16": {
       "toutiao": {
@@ -54,6 +54,24 @@
         "title": "机器人突破不止于展示，交付先过这三道关",
         "publish_url": "",
         "recorded_at": "2026-09-18T17:17:06"
+      }
+    },
+    "2026-09-19::robot-notes": {
+      "toutiao": {
+        "channel": "cloud",
+        "status": "submitted_for_review",
+        "pgc_id": "",
+        "title": "养老困境：独居老人摔倒，家庭责任与社区服务如何结合",
+        "publish_url": "",
+        "recorded_at": "2026-09-19T23:17:17"
+      },
+      "toutiao_weitoutiao": {
+        "channel": "cloud",
+        "status": "submitted_for_review",
+        "pgc_id": "",
+        "title": "“老王退休后帮儿子看孩子，结果一家子因为育儿规矩吵翻天”",
+        "publish_url": "",
+        "recorded_at": "2026-09-19T23:17:17"
       }
     }
   }

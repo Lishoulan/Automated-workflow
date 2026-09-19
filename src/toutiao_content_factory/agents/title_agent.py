@@ -707,14 +707,26 @@ class TitleAgent(BaseAgent):
         if topic:
             push(topic)
 
-        # 拼句用的「事件短名」：选题原标题动辄 15-20 字，再套句式就会超 30 字上限，
-        # 所以优先用正文里出现过的具体场景词，其次才是关键词。
-        # 兜底第一位的选题原标题不受影响（它本身就贴合事件）。
+        # 拼句用的「事件短名」：选题原标题动辄 20+ 字，再套句式就会超 30 字上限。
+        #
+        # ⚠️ 2026-09-19：这里原来回退到 `_primary_topic_label`（关键词），
+        # 而长青题的 `matched_keywords` 往往是「养老」「借钱」这类**单个泛词**，
+        # 于是拼出「老人这件事，最后是怎么处理的」「老人给普通人提了个醒」这种
+        # 完全不知道在说什么的标题（实测 `.runtime/probe_evergreen_titles.py`）。
+        # 正确做法是从选题标题里**裁出有意义的半句**（一般在逗号处断开）：
+        #   「老人在家摔倒后，子女才发现没人知道他的日常情况」→「老人在家摔倒后」
+        # 这样既够具体，又留得下后半句句式的字数。
+        topic_head = self._topic_head_phrase(topic)
         scene = self._primary_scene(content, data_report)
         keyword = self._primary_topic_label(data_report)
-        subject = scene or keyword or topic
-        if subject and len(subject) > 14:
-            subject = topic  # 长主体就不套句式了，直接用原标题
+        subject = ""
+        for candidate in (topic_head, scene, keyword):
+            text = str(candidate or "").strip()
+            if text and len(text) <= 14:
+                subject = text
+                break
+        if not subject:
+            subject = topic  # 实在裁不出来就用原标题，宁长不空
 
         push(f"{subject}这件事，最后是怎么处理的")
         push(f"{subject}之后，当事人面临的是什么")
@@ -728,6 +740,24 @@ class TitleAgent(BaseAgent):
                 push(f"{subject}，{value}这个数字说明了什么")
 
         return titles[: self.settings.title_count]
+
+    @staticmethod
+    def _topic_head_phrase(topic_title: str, limit: int = 14) -> str:
+        """从选题标题里裁出一段「说得清是什么事」的短名。
+
+        标题通常是「事件，后续/追问」结构，在第一个标点处断开最自然：
+            「老人在家摔倒后，子女才发现没人知道他的日常情况」→「老人在家摔倒后」
+            「子女轮流照顾老人，为什么最后总是闹到翻脸」→「子女轮流照顾老人」
+        断出来的半句若仍超长，再退到按字数硬裁（不切断标点）。
+        """
+        text = str(topic_title or "").strip()
+        if not text:
+            return ""
+        for mark in ("，", ",", "：", ":", "；", ";", "。", "！", "!", "？", "?"):
+            index = text.find(mark)
+            if 0 < index <= limit:
+                return text[:index].strip()
+        return text[:limit].strip()
 
     def _emergency_titles(self, content: GeneratedContent, data_report: DataReport) -> list[str]:
         """标题兜底地板：所有候选都被去重杀光时，至少保住一个可用标题。

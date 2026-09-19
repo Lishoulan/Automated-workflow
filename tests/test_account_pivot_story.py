@@ -363,6 +363,84 @@ def test_all_topics_without_material_yield_no_selection(
     assert automation._hydrate_with_fallback(_Report(), first) is None
 
 
+def _daily_report(topics: list[TopicCandidate]):
+    """构造一个字段完整的 DailyTopicsReport，供 `prepare_auto_run` 走完整流程。"""
+    from toutiao_content_factory.models import DailyTopicsReport
+
+    return DailyTopicsReport(
+        generated_at="2026-09-19T15:00:00+08:00",
+        lookback_days=1,
+        max_topic_age_hours=24,
+        focus_industries=["social_story"],
+        total_raw_items=len(topics),
+        total_selected_items=len(topics),
+        topics=topics,
+        source_stats={},
+        failed_sources=[],
+        filtered_out={},
+    )
+
+
+def test_auto_selection_retries_the_next_topic_when_material_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """自动选题抓不到素材必须换题，不能整天不发。
+
+    实测（云端 run 35430296347）：榜首「张雪回应打车被认出"忽悠"司机」抓不到素材，
+    旧逻辑把"自动选题"也当成显式指定、直接放弃整次运行，云端只有一次机会，
+    于是 `Daily workflow did not produce any runnable candidates`，当天一篇都没发。
+    """
+    import toutiao_content_factory.services.material_search_service as mss
+
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    blocked = _hot_topic("张雪回应打车被认出忽悠司机")
+    good = _hot_topic("男子高空作业绳子被2楼老人剪断")
+    # 已带足够素材（> MATERIAL_MIN_CHARS=600），无需联网即可通过素材门槛
+    good.snippet = "据报道，" + "详细经过。" * 200
+
+    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _StubBundle(usable=False))
+    monkeypatch.setattr(automation, "_select_topic", lambda *a, **k: blocked)
+    monkeypatch.setattr(
+        automation, "_material_retry_candidates", lambda report: [blocked, good]
+    )
+
+    report = _daily_report([blocked, good])
+    monkeypatch.setattr(automation, "_load_daily_topics", lambda: report)
+
+    selection = automation.prepare_auto_run(allow_generated_duplicates=True)
+
+    assert selection is not None, "自动选题必须换到下一条，而不是直接放弃"
+    assert selection.topic.title == good.title
+
+
+def test_explicit_topic_title_is_never_silently_swapped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """用户显式给了标题却抓不到素材时，放弃而不是偷偷换成别的题。"""
+    import toutiao_content_factory.services.material_search_service as mss
+
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    blocked = _hot_topic("张雪回应打车被认出忽悠司机")
+    other = _hot_topic("男子高空作业绳子被2楼老人剪断")
+
+    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _StubBundle(usable=False))
+    monkeypatch.setattr(
+        automation, "_material_retry_candidates", lambda report: [blocked, other]
+    )
+
+    class _Report:
+        topics = [blocked, other]
+
+    monkeypatch.setattr(automation, "_load_daily_topics", lambda: _Report())
+    monkeypatch.setattr(
+        automation,
+        "_select_topic",
+        lambda report, rank, title_query, allow_generated_duplicates=False: blocked,
+    )
+
+    assert automation.prepare_auto_run(title_query=blocked.title) is None
+
+
 def test_retry_candidates_stay_inside_the_account_track() -> None:
     """重试范围只许比 `_select_topic` 更窄，不许更宽。
 

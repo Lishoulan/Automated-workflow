@@ -284,26 +284,45 @@ class TopicAutomationService:
             return None
         # 热榜类选题只有标题、没有正文，必须先补真实素材。
         #
-        # ⚠️ 2026-09-19：这里原来**忽略返回值**，抓不到素材也照样往下写、往下发。
-        # 实测后果：Bing 偶发抓取失败时，模型只拿到 28 个字的标题，硬编出 855 字
-        # 「安全意识」「应急处理能力」这类万能话术，正文里还漏出上游的产业模板句
-        # 「重点看老人对应的项目落地和订单节奏」，标题池也塌成 1 条兜底模板。
-        # 现在的规则是：**没有真实素材就不发** —— 抓不到就换下一条选题，
-        # 全都抓不到就让本次运行失败退出（宁可今天不发，也不发一篇会伤账号的稿子）。
-        explicit_pick = rank is not None or bool(str(title_query or "").strip())
+        # ⚠️ 2026-09-19（第一次修）：这里原来**忽略返回值**，抓不到素材也照样往下写、
+        # 往下发。实测后果：Bing 偶发抓取失败时，模型只拿到 28 个字的标题，
+        # 硬编出 855 字「安全意识」「应急处理能力」这类万能话术，正文里还漏出上游的
+        # 产业模板句，标题池也塌成 1 条兜底模板。
+        #
+        # ⚠️ 2026-09-19（第二次修）：第一次修的时候把"抓不到就放弃"的范围划得**太宽** ——
+        # 只要是自动选题（rank/title_query 都没传）就换题，但换题逻辑只在
+        # `_select_topic` 返回 None 时才走到。实测云端（run 35430296347）：
+        #     [素材] 未能为选题抓到正文…: 张雪回应打车被认出"忽悠"司机（尝试 0 个来源）
+        #     ERROR [素材] 指定选题抓不到正文素材，放弃本次运行（不发布）
+        #     → Daily workflow did not produce any runnable candidates
+        # 云端只有一次机会，榜首那条抓不到就**整天不发**。
+        #
+        # 现在的规则分两种情况：
+        #   - **用户显式指定了选题**（--topic-rank / --topic-title）：抓不到就放弃，
+        #     尊重人的选择，不擅自换成别的题。
+        #   - **自动选题**：抓不到就**继续试后面几条**，全试完才放弃。
+        #     `_select_topic` 返回的只是"排序第一"，它不代表"唯一可用的题"。
+        requested_title = bool(str(title_query or "").strip())
         if not self._hydrate_topic_material(topic):
-            if explicit_pick:
+            if requested_title:
                 self.logger.error(
                     "[素材] 指定选题抓不到正文素材，放弃本次运行（不发布）: %s",
                     topic.title,
                 )
                 return None
-            topic = self._hydrate_with_fallback(report, topic)
-            if topic is None:
+            if rank is not None:
+                self.logger.warning(
+                    "[素材] 指定序号（rank=%s）的选题抓不到正文素材，按用户指定处理，不换题: %s",
+                    rank,
+                    topic.title,
+                )
+            retried = self._hydrate_with_fallback(report, topic)
+            if retried is None:
                 self.logger.error(
                     "[素材] 所有候选选题都抓不到正文素材，放弃本次运行（不发布）。"
                 )
                 return None
+            topic = retried
         input_text = self._build_input_text(topic)
         # ⚠️ 2026-09-18：`input_text` 末尾挂着一段写给模型的写作指令（closing_instruction），
         # 而这份文本正是 document_loader 当作 **paste 素材**解析的东西 ——

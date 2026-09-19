@@ -114,6 +114,64 @@ def test_narrative_fallback_titles_respect_the_length_limit() -> None:
         assert len(title) <= limit, f"兜底标题超长({len(title)}>{limit}): {title}"
 
 
+# ---------------------------------------------------------------------------
+# 1b. 拼句主体必须"说得清是什么事"，不能退化成单个泛词
+# ---------------------------------------------------------------------------
+#
+# 实测（.runtime/probe_evergreen_titles.py）：长青题的 `matched_keywords` 往往是
+# 「养老」「借钱」这类单个泛词，原来回退到关键词当主体，于是拼出
+#   「老人这件事，最后是怎么处理的」
+#   「老人给普通人提了个醒」
+# 完全不知道在说什么。正确做法是从选题标题裁出有意义的半句。
+
+
+@pytest.mark.parametrize(
+    "topic_title,expected",
+    [
+        ("老人在家摔倒后，子女才发现没人知道他的日常情况", "老人在家摔倒后"),
+        ("子女轮流照顾老人，为什么最后总是闹到翻脸", "子女轮流照顾老人"),
+        ("父母留下的房子，几个子女谈不拢，最后是怎么分的", "父母留下的房子"),
+    ],
+)
+def test_topic_head_phrase_cuts_at_the_first_punctuation(
+    topic_title: str, expected: str
+) -> None:
+    assert TitleAgent._topic_head_phrase(topic_title) == expected
+
+
+def test_topic_head_phrase_falls_back_to_a_hard_cut() -> None:
+    """没有标点时按字数硬裁，不能返回空串。"""
+    head = TitleAgent._topic_head_phrase("这是一条没有任何标点的很长很长的选题标题")
+
+    assert head
+    assert len(head) <= 14
+
+
+def test_evergreen_story_fallback_does_not_use_a_bare_keyword_subject() -> None:
+    """用真实长青题验证：拼句主体不许是「老人」这种单个泛词。"""
+    agent = _agent(_settings(STORY_ACCOUNT))
+    report = DataReport(
+        topic_title="老人在家摔倒后，子女才发现没人知道他的日常情况",
+        focus_industry="social_story",
+        focus_keywords=["老人", "养老"],
+        supply_chain_keywords=["老人"],
+    )
+    content = GeneratedContent(
+        article="据公开报道，这户人家的老人独自在家时摔倒，直到第二天子女上门才发现。",
+        polished_article="据公开报道，这户人家的老人独自在家时摔倒，直到第二天子女上门才发现。",
+        summary="老人独自在家摔倒",
+    )
+
+    titles = agent._narrative_fallback_titles(content, report)
+
+    # 第一位是选题原标题（最安全的兜底）
+    assert titles[0] == "老人在家摔倒后，子女才发现没人知道他的日常情况"
+    # 其余句式必须带上具体半句，而不是只留「老人」
+    for title in titles[1:]:
+        assert not title.startswith("老人这件事"), f"主体退化成了泛词: {title}"
+        assert "老人在家摔倒后" in title or "老人独自在家" in title, title
+
+
 def test_narrative_fallback_puts_the_original_topic_title_first() -> None:
     """平台自己给这条新闻起的标题是最安全的兜底，必须排第一。"""
     agent = _agent(_settings(STORY_ACCOUNT))

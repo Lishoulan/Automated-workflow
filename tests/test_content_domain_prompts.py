@@ -187,7 +187,6 @@ def test_narrative_floor_matches_between_the_two_places() -> None:
 def test_industry_rules_are_industry_only() -> None:
     industry = WriterAgent._domain_thinking_rules(_settings("sports_notes").get_style())
     narrative = WriterAgent._domain_thinking_rules(_settings("robot_notes").get_style())
-
     assert "产业链拆解" in industry
     assert "产业链拆解" not in narrative
     assert "数据锚定" in industry
@@ -475,4 +474,110 @@ def test_base_agent_render_prompt_follows_account_domain() -> None:
         "title_prompt_v2.md", content_domain="industry"
     )
     assert "科技产业分析文章生成标题" in explicit
+
+
+# ---------------------------------------------------------------------------
+# 6. `_content_mode` 必须认账号自己的写作领域（这是根因那一处）
+# ---------------------------------------------------------------------------
+#
+# ⚠️ 2026-09-20 实测：`_content_mode` 是按**报告内容关键字**判定的，它找的是
+# `focus_industry` / `topic_title` / `selection_reason` 里有没有
+# `social_story` / `社会故事`。而云端的报告是 `focus_industry='家庭服务'`
+# —— 一个正常的中文行业名，不含关键字 —— 于是返回 `generic`，
+# **所有为叙事体裁写的分支全都进不去**：
+#   - writer 的"能不能扩展补字数"（差 30 字却不给补）
+#   - review 的信息密度评分（56 分 vs 正确的 82 分）
+#   - 说明 downstream 的 `information_density <= 68` 会直接判 needs_revision
+# 这正是"overall_score 上不去、卡在自动发布门槛"的另一半原因。
+#
+# 权威判据是**账号配置里的 content_domain**，不是报告里有没有出现某个词。
+
+
+def _generic_report():
+    """复现云端的真实报告：行业名是普通中文，不含 social_story 关键字。"""
+    from toutiao_content_factory.models import DataReport
+
+    return DataReport(
+        topic_title="保姆照看老人期间老人摔伤，家属索赔被拒",
+        focus_industry="家庭服务",
+        focus_keywords=["保姆", "养老"],
+        selection_reason="围绕保姆这个生活场景，读者容易有话可说。",
+        evidence_notes=[
+            "据公开报道，一位老人在保姆照看期间摔伤，家属向家政公司索赔被拒。",
+            "家政公司表示，合同约定服务范围不含看护，责任认定仍在协商。",
+        ],
+        source_facts=[
+            "老人在保姆照看期间摔伤，家属索赔被拒。",
+            "家政公司称合同不含看护责任。",
+        ],
+        is_hot_topic=False,
+        topic_type="evergreen",
+        evidence_strength=60,
+    )
+
+
+def test_content_mode_falls_back_to_the_account_domain() -> None:
+    from toutiao_content_factory.agents.writer_agent import WriterAgent
+
+    story_settings = _settings("robot_notes")
+    assert story_settings.content_domain == "narrative"
+
+    agent = WriterAgent(
+        story_settings,
+        PromptRepository(Path.cwd() / "prompts"),
+        type("_Stub", (), {"model": "stub", "available": True})(),
+        logging.getLogger("test_domain"),
+    )
+    agent._current_content_domain = "narrative"
+
+    assert agent._content_mode(_generic_report()) == "social_story"
+
+
+def test_content_mode_stays_industry_for_industry_accounts() -> None:
+    """对照：产业账号的报告不会被误判成 social_story。"""
+    from toutiao_content_factory.agents.writer_agent import WriterAgent
+
+    settings = _settings("sports_notes")
+    agent = WriterAgent(
+        settings,
+        PromptRepository(Path.cwd() / "prompts"),
+        type("_Stub", (), {"model": "stub", "available": True})(),
+        logging.getLogger("test_domain"),
+    )
+    agent._current_content_domain = "industry"
+
+    assert agent._content_mode(_generic_report()) != "social_story"
+
+
+def test_narrative_information_density_is_not_penalised() -> None:
+    """信息密度必须能在叙事体裁下越过 `_determine_pass_status` 的 68 线。
+
+    否则 `_determine_pass_status` 会直接判 `needs_revision`，
+    `overall_score` 再高也过不了自动发布。
+    """
+    from toutiao_content_factory.agents.review_agent import ReviewAgent
+    from toutiao_content_factory.models import GeneratedContent
+
+    settings = _settings("robot_notes")
+    agent = ReviewAgent(
+        settings,
+        PromptRepository(Path.cwd() / "prompts"),
+        type("_Stub", (), {"model": "stub", "available": True})(),
+        logging.getLogger("test_domain"),
+    )
+    agent._current_content_domain = "narrative"
+    report = _generic_report()
+    body = (
+        "一位老人在保姆照看期间摔伤。据公开报道，家属向家政公司索赔被拒。"
+        "家政公司表示，合同约定的服务范围不含看护，责任认定仍在协商。"
+    ) * 8
+    content = GeneratedContent(
+        article=body,
+        polished_article=body,
+        summary=body[:60],
+        validation_score=100,
+    )
+
+    assert agent._content_mode(report) == "social_story"
+    assert agent._score_information_density(content, report) > 68
 

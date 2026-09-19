@@ -1,0 +1,40 @@
+name: Network Reach Probe
+
+# 诊断用：从 GitHub runner 探测材料抓取链路要访问的站点是否可达。
+# 用来判定"云端抓不到正文素材"是不是网络可达性问题（本地 vs runner 对比）。
+# 只读、无副作用，可以随时删除。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Probe reachability (direct)
+        run: python scripts/probe_network_reach.py
+
+      - name: Fetch a real article through Bing (same path as material search)
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "src")
+          from toutiao_content_factory.services.material_search_service import collect_material
+
+          for title in ("老人在家摔倒后，子女才发现没人知道他的日常情况",
+                        "张雪回应打车被认出忽悠司机"):
+              bundle = collect_material(title, max_sources=3, min_body_chars=400)
+              print(f"--- {title}")
+              print(f"    usable={len(bundle.usable)} total_chars={bundle.total_chars}")
+              for src in bundle.sources[:3]:
+                  print(f"    source: {str(src)[:140]}")
+          PY

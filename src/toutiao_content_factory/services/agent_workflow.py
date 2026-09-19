@@ -46,6 +46,9 @@ class AgentWorkflowService:
     # Leave room for publish-time sanitization and CTA removal.  The Toutiao
     # quality gate evaluates the public article, not the generated draft.
     AUTO_PUBLISH_ARTICLE_MIN_CHARS = 1750
+    #: 叙事类（社会故事）自动发布的正文下限。
+    #: 与 `AppService._minimum_article_chars` 的 750 保持一致，改一处必须改另一处。
+    NARRATIVE_ARTICLE_MIN_CHARS = 750
     # 整个 workflow 生命周期内 LLM expansion 最大调用次数
     # DeepSeek-V4-Flash 单次 expansion 耗时 5-7 分钟，多次累计会导致云端 30 分钟超时
     MAX_LLM_EXPANSION_CALLS = 1
@@ -968,7 +971,16 @@ class AgentWorkflowService:
             # Concise formats can stay short in draft/manual mode, but every
             # auto-published article must leave room for publish-time cleanup
             # and still clear Toutiao's public 1500-char gate.
-            effective_min_chars = self.AUTO_PUBLISH_ARTICLE_MIN_CHARS
+            #
+            # ⚠️ 2026-09-19：这条 1750 的硬线对**叙事类（社会故事）**是错的 ——
+            # 它无条件套用产业长文标准。实测后果：叙事稿被要求补到 1750 字，
+            # 补段/扩展反复空转，最终仍只有 564~685 字，四次尝试全部判 review_required。
+            # 叙事体裁的门槛与 `AppService._minimum_article_chars` 保持一致（750）。
+            effective_min_chars = (
+                self.NARRATIVE_ARTICLE_MIN_CHARS
+                if self._uses_narrative_domain()
+                else self.AUTO_PUBLISH_ARTICLE_MIN_CHARS
+            )
         else:
             effective_min_chars = 850 if is_hot_topic else self.ARTICLE_MIN_CHARS
         content.article = self._ensure_article_min_chars(
@@ -978,6 +990,13 @@ class AgentWorkflowService:
         if update_validation:
             content.validation_notes = list(polish_pack.get("validation_notes", []))
             content.validation_score = int(polish_pack.get("validation_score", 0))
+
+    def _uses_narrative_domain(self) -> bool:
+        """账号当前是否用叙事类写作领域（社会故事等）。"""
+        return (
+            str(getattr(self.settings, "content_domain", "industry") or "industry").strip().lower()
+            == "narrative"
+        )
 
     def _refresh_titles(self, content, trend_report, data_report, style, cache_context) -> None:
         title_pack = self.title_agent.run(content, trend_report, data_report, style, cache_context)

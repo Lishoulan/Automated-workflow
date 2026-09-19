@@ -26,6 +26,10 @@ class WriterAgent(BaseAgent):
     SHORT_CONTENT_FORMATS = frozenset(("quick_commentary", "short_comment", "news_flash"))
     AUTO_PUBLISH_ARTICLE_TARGET = 1800
     AUTO_PUBLISH_ARTICLE_MIN_CHARS = 1750
+    #: 叙事类（社会故事）自动发布的正文下限。
+    #: 与 `AgentWorkflowService.NARRATIVE_ARTICLE_MIN_CHARS`、
+    #: `AppService._minimum_article_chars` 的叙事分支必须一致（三处，750）。
+    NARRATIVE_ARTICLE_MIN_CHARS = 750
     REQUIRED_HEADING_COUNT = (3, 4)
     INTERNAL_ARTICLE_MARKERS = (
         "manual_paste",
@@ -427,6 +431,17 @@ class WriterAgent(BaseAgent):
         "严禁编造当事人",
         "严禁写成第一人称",
         "先把能直接核对的事实摆出来",
+        # ⚠️ 2026-09-19：实测又漏出一条**上游写作指令**被当素材抄进正文：
+        # 「请先准确理解并消化素材里的英文信息，再写成自然中文国际热点解读稿。」
+        # 它来自国际热点分支的 closing_instruction，而这句话本身是中文，
+        # 混在中文素材里很难靠"像不像素材"判断 —— 只能穷举指令的起句特征。
+        "请先准确理解",
+        "请先理解",
+        "并消化素材",
+        "再写成",
+        "解读稿",
+        "写成自然中文",
+        "素材里的英文信息",
     )
 
     def _looks_like_instruction_text(self, text: str) -> bool:
@@ -1548,11 +1563,14 @@ class WriterAgent(BaseAgent):
     def _min_word_target_for(self, data_report: DataReport) -> str:
         """根据内容体裁计算提示词中的最低字数要求。
 
-        热点快评 / 快讯点评：600~900 字；叙事类（社会故事）：950 字；
+        热点快评 / 快讯点评：600~900 字；叙事类（社会故事）：见
+        `NARRATIVE_ARTICLE_MIN_CHARS`（750，与另外两处门槛一致）；
         其余体裁维持 1500 字长文标准。
         """
         if self._auto_publish_mode():
-            return "950" if self._is_narrative_run() else str(self.AUTO_PUBLISH_ARTICLE_TARGET)
+            if self._is_narrative_run():
+                return str(self.NARRATIVE_ARTICLE_MIN_CHARS)
+            return str(self.AUTO_PUBLISH_ARTICLE_TARGET)
         content_format = str(getattr(data_report, "content_format", "") or "")
         word_target = int(getattr(data_report, "word_target", 0) or 0)
         if self._content_mode(data_report) == "hot_topic":
@@ -2470,7 +2488,15 @@ class WriterAgent(BaseAgent):
         content_mode = self._content_mode(data_report)
         if min_chars <= 0:
             word_target = getattr(data_report, "word_target", 0) or 0
-            if content_mode == "hot_topic":
+            if self._is_narrative_run():
+                # ⚠️ 2026-09-19：叙事稿原来落到下面那条 `max(1500, ...)`，
+                # 于是每次都在"补到 1500 字"上反复空转（实测日志：
+                # 「Supplementary paragraphs brought article to 318 chars,
+                # still below 1500. Attempting grounded LLM expansion.」），
+                # 而免费模型的实际产出只有 556~1114 字。门槛与
+                # `AgentWorkflowService.NARRATIVE_ARTICLE_MIN_CHARS` 保持一致。
+                min_chars = self.NARRATIVE_ARTICLE_MIN_CHARS
+            elif content_mode == "hot_topic":
                 # 热点快评：600~900 字即可，不强制 1500 字长文
                 min_chars = max(600, min(int(word_target * 0.8) if word_target > 0 else 700, 900))
             elif word_target > 0:
@@ -2623,7 +2649,10 @@ class WriterAgent(BaseAgent):
         explicit_min_chars = min_chars > 0
         content_mode = self._content_mode(data_report)
         if min_chars <= 0:
-            if self._auto_publish_mode():
+            if self._is_narrative_run():
+                # 叙事稿：与另外两处门槛一致（750），不要落到 1800 的产业目标上
+                min_chars = self.NARRATIVE_ARTICLE_MIN_CHARS
+            elif self._auto_publish_mode():
                 min_chars = max(
                     self.AUTO_PUBLISH_ARTICLE_TARGET,
                     int(getattr(data_report, "word_target", 0) or self.settings.article_word_target or 0),
@@ -3265,6 +3294,12 @@ class WriterAgent(BaseAgent):
     def _ensure_closing_question(self, paragraphs: list[str], comment_prompt: str) -> list[str]:
         if not paragraphs:
             return [comment_prompt]
+        # ⚠️ 2026-09-19：模型经常把互动问题写在**文章中间**，同时末段又另有一个问题。
+        # 实测叙事稿第 8 段末就挂着「你对张凯毅的离婚事件有什么看法？」，后面还有 3 段，
+        # 读者读到一半被要求互动，节奏断掉。这里先把正文中段那些"整段就是提问"的
+        # 段落去掉，再由下面的逻辑统一补末段互动问题。
+        paragraphs = self._drop_mid_article_question_paragraphs(paragraphs)
+
         question = comment_prompt.strip()
         if question and question[-1] not in "？?":
             question += "？"
@@ -3273,12 +3308,65 @@ class WriterAgent(BaseAgent):
 
         last = paragraphs[-1]
         if "？" in last or "?" in last:
+            # ⚠️ 2026-09-19：末段**已经有问句**时原来直接返回，于是模型写在结尾的那个
+            # 问句被留下、我们自己的互动问题不再加 —— 看似没问题，实际是**两个问题并排**：
+            #   「…你对这起高空作业事故有何看法？ 你认为如何才能有效保障高空作业安全？」
+            # 互动问题只能有一个。这里把末段末尾那个问句换成指定的互动问题。
+            replaced = self._replace_trailing_question(last, question)
+            paragraphs[-1] = replaced
             return paragraphs
         if len(last) <= 150:
             paragraphs[-1] = f"{last} {question}".strip()
             return paragraphs
         paragraphs.append(question)
         return paragraphs
+
+    @staticmethod
+    def _replace_trailing_question(paragraph: str, question: str) -> str:
+        """把段落末尾的问句替换成指定问题，保留前面的陈述内容。"""
+        text = str(paragraph or "").rstrip()
+        # 从最后一个句末标点往前找问句的起点
+        boundary = max(
+            (text.rfind(mark) for mark in "。！!；;"),
+            default=-1,
+        )
+        tail = text[boundary + 1 :].strip() if boundary >= 0 else text
+        if tail.endswith(("？", "?")):
+            head = text[: boundary + 1] if boundary >= 0 else ""
+            combined = f"{head}{question}".strip()
+            return combined or question
+        return f"{text} {question}".strip()
+
+    def _drop_mid_article_question_paragraphs(self, paragraphs: list[str]) -> list[str]:
+        """删掉正文中段"整段就是一句提问"的段落（末段除外）。
+
+        只删**几乎整段都是问句**的段落。叙事里夹一句反问是正常的（"这一步本该谁来做？"），
+        那种段落主体仍是陈述，不会被误删。
+        """
+        if len(paragraphs) <= 1:
+            return paragraphs
+        kept: list[str] = []
+        for index, paragraph in enumerate(paragraphs):
+            text = str(paragraph or "").strip()
+            if not text:
+                continue
+            is_last = index == len(paragraphs) - 1
+            if not is_last and self._paragraph_is_mostly_a_question(text):
+                continue
+            kept.append(text)
+        return kept or paragraphs
+
+    @staticmethod
+    def _paragraph_is_mostly_a_question(text: str) -> bool:
+        has_question = "？" in text or "?" in text
+        if not has_question:
+            return False
+        question_marks = text.count("？") + text.count("?")
+        # 以问号结尾，且问句占了整段的大部分（按"问号数 ≥ 句子数的一半"近似）
+        if not text.rstrip().endswith(("？", "?")):
+            return False
+        sentences = [item for item in re.split(r"[。！？!?]+", text) if item.strip()]
+        return question_marks >= max(1, len(sentences) - 1)
 
     def _mode_clean_items(self, items: list[str], limit: int, blocked: tuple[str, ...]) -> list[str]:
         result: list[str] = []

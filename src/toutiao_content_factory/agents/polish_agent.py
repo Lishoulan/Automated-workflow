@@ -193,6 +193,22 @@ class PolishAgent(BaseAgent):
         cache_context: CacheContext,
         revision_focus: list[str] | None = None,
     ) -> dict[str, object]:
+        if self._is_narrative_domain() and str(getattr(content, "article", "") or "").strip():
+            # ⚠️ 2026-09-19：**叙事稿跳过 LLM 润色**。
+            #
+            # 实测（同一天多次真实运行）：writer 能稳定写出 1114 字的故事稿，
+            # 而润色步骤把它砍成 331 / 543 / 179 / 187 / 166 字 ——
+            # 每次都触发 `_finalize_article` 的"缩水超过 40% 就丢弃"保护，
+            # 于是润色**必然空跑**，只留下三样代价：
+            #   1. 白烧一次大 prompt（data_json + trend_json 全量塞进去）；
+            #   2. 每次运行多几十秒；
+            #   3. 把模型的注意力从"写故事"引到"改写"，产出反而更差。
+            # 换措辞、改成"保持 80%"都没用：这个免费模型做不好整篇改写，只会压缩。
+            # 叙事体裁本来也不靠"润色"提升，靠的是素材里的具体事实，所以直接跳过。
+            # 需要恢复时把 NARRATIVE_SKIP_LLM_POLISH 置 False 即可。
+            self.logger.info("叙事领域：跳过 LLM 润色，保留 writer 原稿。")
+            return self._fallback(content, trend_report, data_report, revision_focus=revision_focus)
+
         # 动态筛选 TOP 3 规则，用于门控校对
         active_rules = self.select_top_rules(
             industry=self.clean_publish_text(data_report.focus_industry).strip(),
@@ -301,7 +317,6 @@ class PolishAgent(BaseAgent):
             str(getattr(self.settings, "content_domain", "industry") or "industry").strip().lower()
             == "narrative"
         )
-
     def _polish_system_prompt(self) -> str:
         directive = self._auto_publish_directive()
         return f"{self.POLISH_SYSTEM_PROMPT}{directive}" if directive else self.POLISH_SYSTEM_PROMPT

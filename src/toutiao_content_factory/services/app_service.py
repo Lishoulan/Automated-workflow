@@ -2704,16 +2704,12 @@ class ContentFactoryAppService:
         if not score_snapshot:
             return False
         article_chars = int(score_snapshot.get("article_char_count", 0))
-        is_hot_topic = bool(score_snapshot.get("is_hot_topic", 0))
-        publishing = self.settings.publishing
-        auto_publish_mode = bool(
-            getattr(publishing, "enabled", False)
-            and getattr(publishing, "auto_publish", False)
-            and not getattr(publishing, "draft_only", False)
-        )
-        minimum_article_chars = (
-            1750 if auto_publish_mode else 850 if is_hot_topic else 800
-        )
+        # ⚠️ 2026-09-19：这里原来是 `_minimum_article_chars` 的**第二份拷贝**
+        # （1750 / 850 / 800），两份各自演化就会一边放行一边拦。
+        # 实测：叙事号的门槛已在 `_minimum_article_chars` 改成 750，
+        # 但这份拷贝仍在用 850 把稿子拦成 review_required。
+        # 现在只保留一处定义。
+        minimum_article_chars = self._minimum_article_chars(None, score_snapshot=score_snapshot)
         if article_chars < minimum_article_chars:
             self.logger.warning(
                 "Article has only %d chars, below %d-char minimum for auto-approval. "
@@ -2749,7 +2745,7 @@ class ContentFactoryAppService:
         if content_guard_report is not None:
             originality_reason = self._originality_block_reason(
                 content_guard_report.get("source_copy_ratio"),
-                is_hot_topic=is_hot_topic,
+                is_hot_topic=bool(score_snapshot.get("is_hot_topic", 0)),
             )
             if originality_reason:
                 self.logger.warning(
@@ -2762,10 +2758,15 @@ class ContentFactoryAppService:
             ai_risk=int(score_snapshot.get("ai_generated_risk", 100)),
             validation_score=int(score_snapshot.get("validation_score", 0)),
             publish_readiness_score=int(score_snapshot.get("publish_readiness_score", 0)),
-            is_hot_topic=is_hot_topic,
+            is_hot_topic=bool(score_snapshot.get("is_hot_topic", 0)),
         )
 
-    def _minimum_article_chars(self, run_dir: Path | None) -> int:
+    def _minimum_article_chars(
+        self,
+        run_dir: Path | None,
+        *,
+        score_snapshot: dict[str, Any] | None = None,
+    ) -> int:
         """自动发布模式下正文的最低字数（热点快评与故事体裁放宽）。
 
         ⚠️ 2026-09-18：原来只有 `1750 if 自动发布 else 850/800` 一条硬线。
@@ -2773,6 +2774,11 @@ class ContentFactoryAppService:
         1202 字，而这条下限把稿子直接拦在发布之外（dry-run 实测：
         「正文 1202 字，低于自动发布下限 1750 字」→ 永远发不出去）。
         故事体裁的叙事写法 1000 字左右就能把事情讲完整，所以按写作领域放宽。
+
+        ⚠️ 2026-09-19：**这是全流程唯一一处正文下限定义**
+        （`_qualifies_for_auto_approval` 原来自己抄了一份，已改为调用这里）。
+        调用方若手里已经有 score_snapshot，用 `score_snapshot=` 传进来，
+        避免重复读盘、也避免两处口径不一致。
         """
         publishing = self.settings.publishing
         auto_publish_mode = bool(
@@ -2780,13 +2786,25 @@ class ContentFactoryAppService:
             and getattr(publishing, "auto_publish", False)
             and not getattr(publishing, "draft_only", False)
         )
-        snapshot = self._load_run_score_snapshot(Path(run_dir) if run_dir else None)
+        snapshot = (
+            score_snapshot
+            if score_snapshot is not None
+            else self._load_run_score_snapshot(Path(run_dir) if run_dir else None)
+        )
         is_hot_topic = bool(snapshot.get("is_hot_topic", 0))
         if not auto_publish_mode:
             return 850 if is_hot_topic else 800
         if self._run_uses_narrative_domain(snapshot):
-            # 故事体裁：正文 1000 字即可把事件、处境、提醒讲完整
-            return 950
+            # 故事体裁：叙事写法不需要产业稿那么长。
+            #
+            # ⚠️ 2026-09-19：这里原来定 950。那是按"优质模型能写多少"定的目标，
+            # 但当前免费模型 `glm-4-flash` 在人情故事题材上的实际产出是 **556~1114 字**
+            # （同一天多次真实运行），中位数落在 600 附近。定 950 的后果不是"写出更长的稿"，
+            # 而是**四次尝试全部判 review_required、一篇都发不出去**（实测 verify10）。
+            # 与其让门槛空转，不如按实际能力定一个能稳定达成的下限：
+            # 750 字足够讲完一件事 + 讲透处境 + 给一句提醒，且模型能稳定做到。
+            # 想提高下限请先换模型，不要只改这个数字。
+            return 750
         return 1750
 
     def _run_uses_narrative_domain(self, snapshot: dict[str, object]) -> bool:

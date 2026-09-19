@@ -350,13 +350,22 @@ class TopicAutomationService:
     def _material_retry_candidates(
         self, report: DailyTopicsReport
     ) -> list[TopicCandidate]:
-        """可继续尝试补素材的选题，顺序与 `_select_topic` 的自动选题一致。"""
+        """可继续尝试补素材的选题，顺序与 `_select_topic` 的自动选题一致。
+
+        ⚠️ 2026-09-19：这里必须**自己再过一遍账号边界**。
+        第一版直接返回 `_available_topics(...)` 的结果，漏了 `_topic_matches_account_boundary`
+        —— 而选题池里混着别的赛道的历史条目，于是"换题重试"把一条
+        **机器人**选题塞进了社会故事号（实测 verify11：重试选中
+        「机器人首秀网球场，银河通用突破具身智能「AstraTennis时刻」」）。
+        范围只许比 `_select_topic` 更窄，不许更宽。
+        """
         available = self._available_topics(report.topics, allow_generated_duplicates=True)
         if not available:
             available = self._available_topics_soft(
                 report.topics, allow_generated_duplicates=True
             )
-        return self._prioritize_evidence_rich_topics(available)
+        in_scope = [topic for topic in available if self._topic_matches_account_boundary(topic)]
+        return self._prioritize_evidence_rich_topics(in_scope)
 
     #: 写作指令段落的分隔标记：`_build_input_text` 用空行把它与素材字段隔开
     _INSTRUCTION_SENTINEL = "请围绕"
@@ -539,6 +548,25 @@ class TopicAutomationService:
                     "[Topic Engine] Strict filtering yielded no topics for account=%s. A softer fallback pass was activated.",
                     self.settings.account_key,
                 )
+                # ⚠️ 2026-09-19：软兜底**必须再过一遍账号边界**。
+                # `_available_topics_soft` 只放宽"当天是否已发过"这类去重条件，
+                # 它不看赛道；而选题池里存着别的赛道的历史条目。
+                # 实测后果：社会故事号被软兜底塞进
+                # 「海尔发布全自主家用 AI 烹饪机器人…」（matched_industries=
+                # ['humanoid_robot','ai_hardware']），并真的抓素材写稿发出去了。
+                # 边界是账号定位的底线，任何兜底都不许跨过去。
+                in_scope = [
+                    topic
+                    for topic in available_topics
+                    if self._topic_matches_account_boundary(topic)
+                ]
+                if len(in_scope) != len(available_topics):
+                    self.logger.warning(
+                        "[Topic Engine] Soft fallback dropped %d out-of-scope topics for account=%s.",
+                        len(available_topics) - len(in_scope),
+                        self.settings.account_key,
+                    )
+                available_topics = in_scope
         if not available_topics:
             self.logger.warning(
                 "[Topic Engine] No unpublished topics available for account=%s.",
@@ -755,16 +783,41 @@ class TopicAutomationService:
         实测后果是把「男子高空作业绳子被2楼老人剪断」写成
         「重点看老人对应的项目落地和订单节奏」「毛利率可能会先承压」——
         writer 是忠实照抄这些上游字段的，口吻跑偏的根因就在这里，不在 writer。
+
+        ⚠️ 2026-09-19 第二个坑：模式判据原来只按**题目内容**决定，不看账号赛道。
+        实测「男子高空作业绳子被2楼老人剪断」被判成了 **international**：
+        `_hydrate_topic_material` 把抓来的 3702 字正文写进了 `topic.snippet`，
+        而国际判据正是在 snippet 上做关键词匹配，正文里一个「美国/欧洲」就让它抢在
+        social_story 之前命中。后果是故事号的正文里出现国际模式的写作指令
+        （「请先准确理解并消化素材里的英文信息，再写成自然中文国际热点解读稿」）。
+        所以：**账号只做 social_story 时，体育/国际模式一律不适用** ——
+        一个只发人间故事的号，不存在「这条要按体育稿写」的情况。
         """
+        focus = self._account_focus_industries()
+        story_account = "social_story" in focus
         if self._is_social_story_topic(topic):
             return "social_story"
+        if story_account:
+            # 故事号：跳过体育/国际判定，避免正文里的偶然词把体裁带跑
+            if topic.source_type in {"hot_board", "baidu_hot"}:
+                return "social_story" if "social_story" in focus else "hot_topic"
+            return "generic"
         if self._is_sports_topic(topic):
             return "sports"
         if self._is_international_topic(topic):
             return "international"
-        if topic.source_type in {"hot_board", "baidu_hot"} and "hot_topic" in (topic.matched_industries or []):
+        if topic.source_type in {"hot_board", "baidu_hot"} and "hot_topic" in (
+            topic.matched_industries or []
+        ):
             return "hot_topic"
         return "generic"
+
+    def _account_focus_industries(self) -> set[str]:
+        return {
+            str(item).strip()
+            for item in self.settings.topic_collection.focus_industries
+            if str(item).strip()
+        }
 
     def _is_social_story_topic(self, topic: TopicCandidate) -> bool:
         """账号是否在做社会故事赛道，且这条题确实通过了社会故事判据。

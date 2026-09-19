@@ -362,3 +362,116 @@ def test_all_topics_without_material_yield_no_selection(
 
     assert automation._hydrate_with_fallback(_Report(), first) is None
 
+
+def test_retry_candidates_stay_inside_the_account_track() -> None:
+    """重试范围只许比 `_select_topic` 更窄，不许更宽。
+
+    实测回归（verify11）：第一版 `_material_retry_candidates` 直接返回
+    `_available_topics(...)`，漏了账号边界过滤，于是"换题重试"把一条**机器人**选题
+    塞进了社会故事号（抓来 2066 字具身智能材料）。
+    """
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    story = _hot_topic("男子高空作业绳子被2楼老人剪断")
+    robot = _hot_topic("机器人首秀网球场，银河通用突破具身智能AstraTennis时刻")
+
+    class _Report:
+        topics = [story, robot]
+
+    retry = automation._material_retry_candidates(_Report())
+
+    titles = [item.title for item in retry]
+    assert story.title in titles
+    assert robot.title not in titles, "重试候选里出现了机器人选题"
+
+
+def test_soft_fallback_does_not_cross_the_account_boundary() -> None:
+    """软兜底只放宽去重条件，不许放宽赛道。
+
+    实测回归（verify12）：`_select_topic` 的 `_available_topics_soft` 分支完全不看赛道，
+    于是把「海尔发布全自主家用 AI 烹饪机器人…」（matched_industries=
+    ['humanoid_robot','ai_hardware']）选成了社会故事的选题，并真的抓素材写成稿发了出去。
+    """
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    robot = _hot_topic("海尔发布全自主家用 AI 烹饪机器人CR3")
+    robot.matched_industries = ["humanoid_robot", "ai_hardware"]
+    robot.matched_keywords = ["机器人", "大模型"]
+
+    class _Report:
+        topics = [robot]
+
+    selection = automation._select_topic(
+        _Report(), rank=None, title_query=None, allow_generated_duplicates=True
+    )
+
+    assert selection is None, "软兜底把赛道外的选题放进了故事号"
+
+
+def test_soft_fallback_still_serves_in_scope_topics() -> None:
+    """正面：赛道内的选题仍然能被软兜底救回来。"""
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    story = _hot_topic("男子高空作业绳子被2楼老人剪断")
+
+    class _Report:
+        topics = [story]
+
+    selection = automation._select_topic(
+        _Report(), rank=None, title_query=None, allow_generated_duplicates=True
+    )
+
+    assert selection is not None
+    assert selection.title == story.title
+
+
+# ---------------------------------------------------------------------------
+# 8. 模式判据必须看账号赛道，而不是只看题目内容
+# ---------------------------------------------------------------------------
+#
+# 实测（verify14 出稿）：故事号的正文里出现国际模式的写作指令
+# 「请先准确理解并消化素材里的英文信息，再写成自然中文国际热点解读稿」。
+# 根因：`_topic_mode` 的国际判据是在 `topic.snippet` 上做关键词匹配，而
+# `_hydrate_topic_material` 会把抓来的 3700+ 字正文写进 snippet —— 正文里出现
+# 一个「美国/欧洲」就让 international 抢在 social_story 之前命中。
+# 一个只发人间故事的号，不存在"这条要按体育稿/国际稿写"的情况。
+
+
+def test_story_account_never_uses_international_mode() -> None:
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    topic = _hot_topic("男子高空作业绳子被2楼老人剪断")
+    # 抓来的正文里混进了国际词，正是实测里的情形
+    topic.snippet = "据美国媒体报道，该男子在高空作业时绳索被剪断。欧洲多个城市也有类似案例。"
+
+    assert automation._topic_mode(topic) != "international"
+    assert automation._topic_mode(topic) == "social_story"
+
+
+def test_story_account_never_uses_sports_mode() -> None:
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    topic = _hot_topic("男子高空作业绳子被2楼老人剪断")
+    topic.snippet = "当地联赛赛季期间，该男子照常作业，NBA 也报道了此事。"
+
+    assert automation._topic_mode(topic) != "sports"
+
+
+def test_story_closing_instruction_is_the_narrative_one() -> None:
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    topic = _hot_topic("男子高空作业绳子被2楼老人剪断")
+    topic.snippet = "据美国媒体报道，该男子在高空作业时绳索被剪断。"
+
+    instruction = automation._build_closing_instruction(
+        topic, topic_mode=automation._topic_mode(topic), primary_industry="社会故事"
+    )
+
+    assert "人情故事" in instruction
+    assert "国际热点" not in instruction
+    assert "英文信息" not in instruction
+
+
+def test_vertical_account_still_uses_sports_mode() -> None:
+    """对照：垂直体育号不受影响。"""
+    automation = TopicAutomationService(
+        _settings(VERTICAL_ACCOUNT), logging.getLogger("test_pivot")
+    )
+    topic = _hot_topic("国足绝杀晋级，联赛赛季迎来关键一战")
+
+    assert automation._topic_mode(topic) == "sports"
+

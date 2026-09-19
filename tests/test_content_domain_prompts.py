@@ -131,6 +131,46 @@ def test_industry_polish_directive_keeps_its_own_target() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 1c. 自动发布的正文下限必须按领域分开
+# ---------------------------------------------------------------------------
+#
+# 背景（2026-09-19 实测）：自动发布模式原来**无条件**要求 1750 字
+# （`AgentWorkflowService.AUTO_PUBLISH_ARTICLE_MIN_CHARS`），
+# `AppService._minimum_article_chars` 对叙事号定 950。
+# 而当前免费模型 glm-4-flash 在人情故事题材上的实际产出是 556~1114 字，
+# 后果不是"写出更长的稿"，而是**四次尝试全部判 review_required、一篇都发不出去**。
+# 现在叙事号统一 750，并且这个数字在两处必须一致。
+
+
+def test_narrative_article_floor_is_achievable() -> None:
+    from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
+
+    narrative = AgentWorkflowService.NARRATIVE_ARTICLE_MIN_CHARS
+    # 免费模型的实测产出中位数在 600 附近，下限不能高于它太多
+    assert 600 <= narrative <= 800, f"叙事下限 {narrative} 与免费模型的实际产出不匹配"
+    assert AgentWorkflowService.AUTO_PUBLISH_ARTICLE_MIN_CHARS == 1750, "产业下限不许动"
+
+
+def test_narrative_floor_matches_between_the_two_places() -> None:
+    """两处下限必须一致，否则一边放行一边拦。
+
+    `app_service._minimum_article_chars` 里是字面量（没有导出常量），
+    所以这里按源码里那条 return 校验；改了任一处都会让用例失败。
+    """
+    from toutiao_content_factory.services import app_service as app_module
+    from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
+
+    narrative = AgentWorkflowService.NARRATIVE_ARTICLE_MIN_CHARS
+    source = Path(app_module.__file__).read_text(encoding="utf-8")
+
+    assert f"return {narrative}\n" in source, (
+        f"agent_workflow 的 {narrative} 与 app_service 里的下限不一致"
+    )
+    # 同一个函数里产业分支必须仍是 1750
+    assert "return 1750" in source
+
+
+# ---------------------------------------------------------------------------
 # 2. 领域专属规则只出现在自己的那一侧
 # ---------------------------------------------------------------------------
 

@@ -224,6 +224,53 @@ def test_statement_without_question_is_not_accepted_as_closing() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 3c. 互动问题只能出现在末段
+# ---------------------------------------------------------------------------
+
+
+def test_mid_article_question_paragraph_is_dropped() -> None:
+    """实测第 8 段末挂着「你对张凯毅的离婚事件有什么看法？」，后面还有 3 段。"""
+    agent = _story_agent()
+    paragraphs = [
+        "第一段讲事情经过。",
+        "你对张凯毅的离婚事件有什么看法？",
+        "第三段继续讲当事人的处境。",
+        "第四段给读者提醒。",
+    ]
+
+    updated = agent._ensure_closing_question(paragraphs, "换成是你遇到这种情况，会怎么处理？")
+
+    joined = "\n".join(updated)
+    assert "你对张凯毅的离婚事件有什么看法" not in joined
+    assert "第一段讲事情经过" in joined
+    assert "第三段继续讲当事人的处境" in joined
+
+
+def test_narrative_rhetorical_question_inside_a_paragraph_survives() -> None:
+    """叙事里夹一句反问是正常的，不能因为段落里有问号就整段删掉。"""
+    agent = _story_agent()
+    paragraphs = [
+        "第一段讲事情经过。",
+        "事情发生得很快。那一步本该谁来做？当事人当时未必想得到，事后复盘才发现问题。",
+        "最后一段给读者提醒。",
+    ]
+
+    updated = agent._ensure_closing_question(paragraphs, "换成是你遇到这种情况，会怎么处理？")
+
+    joined = "\n".join(updated)
+    assert "那一步本该谁来做" in joined
+
+
+def test_closing_question_is_added_to_the_last_paragraph() -> None:
+    agent = _story_agent()
+    paragraphs = ["第一段。", "最后一段给读者一句提醒。"]
+
+    updated = agent._ensure_closing_question(paragraphs, "换成是你遇到这种情况，会怎么处理？")
+
+    assert updated[-1].rstrip().endswith(("？", "?"))
+
+
+# ---------------------------------------------------------------------------
 # 4. 产业账号不受影响
 # ---------------------------------------------------------------------------
 

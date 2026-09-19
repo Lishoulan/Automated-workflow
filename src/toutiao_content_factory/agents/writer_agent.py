@@ -2482,6 +2482,22 @@ class WriterAgent(BaseAgent):
     # DeepSeek 系模型长文常出现"字数不足→LLM补全→polish压缩→再次不足"的循环，
     # 若不设上限会反复消耗 token 并拖长单次运行（历史 auto-run 达 17 分钟）。
     MAX_LLM_EXPANSION_CALLS = 1
+    #: 叙事体裁允许的扩展次数（比产业稿多一次）。
+    #:
+    #: ⚠️ 2026-09-20：云端实测换模型后候选稳定落在 650~690 字，距 700 只差
+    #: 10~50 字（1.5%~7%）。这种"差一点点"一次扩展就能补上（实测一次能加
+    #: 200~400 字），但原上限 1 次常被首次生成前的扩展用掉，到最终闸门时
+    #: 反而没机会补 —— 两条本该能发的稿子被判 review_required、白白换题。
+    #: 注意 `AgentWorkflowService` 那边有一份**同名常量**，两处都要给叙事体裁放行。
+    NARRATIVE_MAX_LLM_EXPANSION_CALLS = 2
+
+    def _max_expansion_calls_for_run(self) -> int:
+        """本次 run 允许的扩展次数上限（叙事体裁多一次）。"""
+        return (
+            self.NARRATIVE_MAX_LLM_EXPANSION_CALLS
+            if self._is_narrative_run()
+            else self.MAX_LLM_EXPANSION_CALLS
+        )
 
     def _legacy_ensure_min_char_count(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 0) -> list[str]:
         # 动态获取最小字数：优先 data_report.word_target，其次 settings.article_word_target，最后 1500
@@ -2547,11 +2563,12 @@ class WriterAgent(BaseAgent):
 
         logger = logging.getLogger(__name__)
         # 单次 run 生命周期内限制 expansion 调用次数，防止"补全→polish→再补全"循环
-        if self._llm_expansion_call_count >= self.MAX_LLM_EXPANSION_CALLS:
+        max_calls = self._max_expansion_calls_for_run()
+        if self._llm_expansion_call_count >= max_calls:
             logger.warning(
                 "LLM expansion 已达上限（%d/%d），跳过本次调用。当前文章 %d 字符，目标 %d。",
                 self._llm_expansion_call_count,
-                self.MAX_LLM_EXPANSION_CALLS,
+                max_calls,
                 sum(len(p.replace("\n", "").replace(" ", "")) for p in paragraphs),
                 min_chars,
             )

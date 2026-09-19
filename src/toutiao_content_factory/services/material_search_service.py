@@ -321,6 +321,15 @@ def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2
         if sum(1 for item in merged if _fetch_priority(str(item.get("url", ""))) >= 2) >= limit:
             break
     merged.sort(key=lambda item: -_fetch_priority(str(item.get("url", ""))))
+    # ⚠️ 2026-09-19：**不要把已知拿不到正文的链接交给抓取**。
+    # 搜狗微信的 `/link?url=` 实测 100% 落到 antispider（正文恒 0 字），
+    # 而它在结果列表里常常占掉一大半。抓取预算只有 3 条，
+    # 花在这种链接上等于把额度丢进水里 —— 实测过一次"21 条全是搜狗链接"，
+    # 结果 usable=0。
+    usable = [item for item in merged if _fetch_priority(str(item.get("url", ""))) > 0]
+    if usable:
+        return usable[:limit]
+    # 全是不可抓链接时仍然返回（让上层拿到标题/摘要，走摘要兜底路径）
     return merged[:limit]
 
 

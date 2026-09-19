@@ -315,6 +315,51 @@ def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2
     return []
 
 
+#: 从搜索结果页抓取「结果列表」的通用 JS：标题 + 链接 + **描述片段**。
+#:
+#: ⚠️ 2026-09-19：描述片段（Bing 每条结果下面那两行摘要）是**兜底素材的关键** ——
+#: 实测云端（美国 IP）能从 Bing 拿到结果列表，但目标站点经常拒绝抓取正文
+#: （`尝试 2 个来源` → 正文 0 字 → 放弃运行）。而描述片段本身通常就含
+#: 「时间 + 地点 + 人物 + 经过 + 结果」，足以支撑一篇有事实依据的短稿。
+_BING_RESULT_JS = """() => {
+    const seen = new Set();
+    const results = [];
+    for (const li of document.querySelectorAll('li.b_algo')) {
+        const a = li.querySelector('h2 a');
+        if (!a) continue;
+        const title = (a.innerText || '').trim();
+        const href = a.href || '';
+        if (title.length < 6 || !/^https?:/.test(href)) continue;
+        if (seen.has(href)) continue;
+        seen.add(href);
+        const caption = li.querySelector('.b_caption, .b_lineclamp2, .b_algoSlug, p');
+        const snippet = caption ? (caption.innerText || '').trim() : '';
+        results.push({title: title.slice(0, 120), url: href, snippet: snippet.slice(0, 400)});
+    }
+    return results;
+}"""
+
+#: 搜狗微信结果：标题 + 链接 + 摘要
+_SOGOU_RESULT_JS = """() => {
+    const seen = new Set();
+    const results = [];
+    for (const li of document.querySelectorAll('.news-list li, li')) {
+        const h3 = li.querySelector('h3');
+        if (!h3) continue;
+        const a = h3.querySelector('a') || li.querySelector('a');
+        if (!a) continue;
+        const title = (h3.innerText || '').trim();
+        const href = a.href || '';
+        if (title.length < 8 || !/^https?:/.test(href)) continue;
+        if (seen.has(href)) continue;
+        seen.add(href);
+        const p = li.querySelector('.txt-info, p');
+        const snippet = p ? (p.innerText || '').trim() : '';
+        results.push({title: title.slice(0, 120), url: href, snippet: snippet.slice(0, 400)});
+    }
+    return results;
+}"""
+
 #: 搜索后端：(名字, 结果页 URL 模板, 结果项提取 JS)
 #: 顺序 = 尝试顺序，按"GitHub runner 上实测可用"排。
 #:
@@ -324,71 +369,29 @@ def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2
 #:         www.bing.com 默认（HTTP 200，命中相关）
 #:         so.toutiao.com（HTTP 200 但**页面里没有文章链接**，提取恒为 0 条）
 #:         weixin.sogou.com（HTTP 200，但 /link 跳转全部落到 antispider，正文 0 字）
-#:   不可用：cn.bing.com（**301，直接失效** —— 这就是云端一条素材都抓不到的根因）
+#:   不可用：cn.bing.com（**301，直接失效** —— 这是云端抓不到素材的第一层根因）
 #:           百度（TLS 握手超时，被墙）
 #:           谷歌新闻（302）、谷歌搜索（返回页面里没有中文结果）
 #:           新浪/中新网/澎湃/网易/360 站内搜索（均返回无关页面）
 #:
-#: 所以主力后端必须是 **www.bing.com**（全球站 + 中文市场参数），
-#: 而不是原来写死的 cn.bing.com。
+#: 第二层根因：即便搜索有结果，**目标站点在美国 IP 上经常拒绝正文抓取**
+#: （实测 `尝试 2 个来源` → 正文 0 字）。所以除了换搜索站点，还要用
+#: **搜索结果自带的描述片段**兜底（见 `_BING_RESULT_JS` 与 `collect_material`）。
 SEARCH_BACKENDS: tuple[tuple[str, str, str], ...] = (
     (
         "bing-global-zh",
         "https://www.bing.com/search?q={q}&mkt=zh-CN&setlang=zh-CN&cc=CN",
-        """() => {
-            const seen = new Set();
-            const results = [];
-            for (const h2 of document.querySelectorAll('li.b_algo h2, h2')) {
-                const a = h2.querySelector('a');
-                if (!a) continue;
-                const title = (a.innerText || '').trim();
-                const href = a.href || '';
-                if (title.length < 6 || !/^https?:/.test(href)) continue;
-                if (seen.has(href)) continue;
-                seen.add(href);
-                results.push({title: title.slice(0, 120), url: href});
-            }
-            return results;
-        }""",
+        _BING_RESULT_JS,
     ),
     (
         "bing-cn",
         "https://cn.bing.com/search?q={q}",
-        """() => {
-            const seen = new Set();
-            const results = [];
-            for (const h2 of document.querySelectorAll('li.b_algo h2, h2')) {
-                const a = h2.querySelector('a');
-                if (!a) continue;
-                const title = (a.innerText || '').trim();
-                const href = a.href || '';
-                if (title.length < 6 || !/^https?:/.test(href)) continue;
-                if (seen.has(href)) continue;
-                seen.add(href);
-                results.push({title: title.slice(0, 120), url: href});
-            }
-            return results;
-        }""",
+        _BING_RESULT_JS,
     ),
     (
         "sogou-weixin",
         "https://weixin.sogou.com/weixin?type=2&query={q}",
-        # 公众号文章结果在 .news-list li 里，链接是 /link?url=... 跳转
-        """() => {
-            const seen = new Set();
-            const results = [];
-            for (const h3 of document.querySelectorAll('.news-list h3, .txt-box h3, h3')) {
-                const a = h3.querySelector('a') || (h3.closest('a') ? h3.closest('a') : null);
-                if (!a) continue;
-                const title = (h3.innerText || a.innerText || '').trim();
-                let href = a.href || '';
-                if (title.length < 8 || !/^https?:/.test(href)) continue;
-                if (seen.has(href)) continue;
-                seen.add(href);
-                results.push({title: title.slice(0, 120), url: href});
-            }
-            return results;
-        }""",
+        _SOGOU_RESULT_JS,
     ),
 )
 
@@ -540,8 +543,53 @@ def collect_material(
             source.error = f"HTTP {exc.code}"
         except Exception as exc:
             source.error = f"{type(exc).__name__}: {str(exc)[:80]}"
+
+        # ── 兜底：正文抓不到时，用搜索结果自带的描述片段 ────────────────────
+        #
+        # ⚠️ 2026-09-19 云端实测：搜索能拿到结果列表，但目标站点在美国 IP 上
+        # 经常拒绝抓取（`尝试 2 个来源` → 正文 0 字 → 整个选题作废 → 当天不发）。
+        # Bing 每条结果下面那两行摘要通常已经含「时间 + 地点 + 人物 + 经过 + 结果」，
+        # 是**有来源、可核对**的事实，比"什么都发不出去"或"让模型凭空编"都好。
+        # 标注 `[搜索结果摘要]`，writer 侧仍受反虚构约束（不得补造细节）。
+        if not source.ok:
+            snippet = str(hit.get("snippet", "") or "").strip()
+            snippet = re.sub(r"\s+", " ", snippet)
+            if len(snippet) >= 40:
+                source.body = f"{hit['title']}。{snippet}"
+                source.ok = True
+                source.error = ""
         bundle.sources.append(source)
+
+    # 若逐条抓取拿到的正文太少，把所有结果的摘要合并成一份兜底素材
+    if sum(len(item.body) for item in bundle.usable) < min_body_chars:
+        merged = _merge_snippet_material(hits)
+        if merged:
+            bundle.sources.append(
+                MaterialSource(
+                    title=f"{title}（搜索结果汇总）",
+                    url="",
+                    body=merged,
+                    ok=True,
+                )
+            )
     return bundle
+
+
+def _merge_snippet_material(hits: list[dict]) -> str:
+    """把搜索结果里的标题与描述合并成一份兜底素材。"""
+    lines: list[str] = []
+    seen: set[str] = set()
+    for hit in hits:
+        title = str(hit.get("title", "") or "").strip()
+        snippet = re.sub(r"\s+", " ", str(hit.get("snippet", "") or "").strip())
+        for item in (title, snippet):
+            normalized = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9%]+", "", item)
+            if len(normalized) < 12 or normalized in seen:
+                continue
+            seen.add(normalized)
+            lines.append(item)
+    merged = "\n".join(lines)
+    return merged if len(merged) >= 200 else ""
 
 
 def collect_material_bulk(

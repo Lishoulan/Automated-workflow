@@ -2787,10 +2787,22 @@ class WriterAgent(BaseAgent):
                 for p in trimmed_result
             )
         elif final_chars < min_chars:
+            # ⚠️ 2026-09-20：把**每一个判据**都打出来。
+            # 之前这条只报 current/target，导致我连续几轮只能猜"到底是哪一个条件
+            # 拦住了扩展"（云端看不到本地探针的中间态）。日志自己说清楚最省时间。
             logger.info(
-                "Skipping LLM expansion because the topic is not eligible for grounded expansion. current=%d target=%d",
+                "Skipping LLM expansion (not eligible). current=%d target=%d "
+                "allow_llm_expansion=%s can_expand=%s content_mode=%s narrative_run=%s "
+                "grounded=%s story_material=%s api_available=%s",
                 final_chars,
                 min_chars,
+                allow_llm_expansion,
+                can_expand,
+                content_mode,
+                self._is_narrative_run(),
+                grounded,
+                self._has_story_material(data_report),
+                self.openai_service.available,
             )
 
         if final_chars < min_chars:

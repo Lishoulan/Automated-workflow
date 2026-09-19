@@ -23,18 +23,52 @@ jobs:
       - name: Probe reachability (direct)
         run: python scripts/probe_network_reach.py
 
+      - name: Install material-search dependencies
+        run: pip install --quiet httpx2 beautifulsoup4 lxml
+
       - name: Fetch a real article through Bing (same path as material search)
         run: |
           python - <<'PY'
+          import logging
           import sys
           sys.path.insert(0, "src")
-          from toutiao_content_factory.services.material_search_service import collect_material
+
+          logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(name)s: %(message)s")
+
+          from toutiao_content_factory.services import material_search_service as mss
+
+          print("BROWSER_HEADERS UA:", mss.BROWSER_HEADERS.get("User-Agent", "")[:80])
 
           for title in ("老人在家摔倒后，子女才发现没人知道他的日常情况",
                         "张雪回应打车被认出忽悠司机"):
-              bundle = collect_material(title, max_sources=3, min_body_chars=400)
-              print(f"--- {title}")
-              print(f"    usable={len(bundle.usable)} total_chars={bundle.total_chars}")
-              for src in bundle.sources[:3]:
-                  print(f"    source: {str(src)[:140]}")
+              print(f"\n===== {title}")
+              try:
+                  hits = mss.search_web(title, limit=5)
+              except Exception as exc:
+                  print("  search_web 抛错:", type(exc).__name__, exc)
+                  hits = []
+              print(f"  搜索命中 {len(hits)} 条")
+              for hit in hits[:5]:
+                  url = hit.get("url") if isinstance(hit, dict) else hit
+                  print("    -", str(url)[:150])
+
+              for hit in hits[:3]:
+                  url = hit.get("url") if isinstance(hit, dict) else hit
+                  try:
+                      page_html, final_url = mss.fetch_text(url)
+                  except Exception as exc:
+                      print(f"    fetch 抛错 {str(url)[:60]}: {type(exc).__name__}: {exc}")
+                      continue
+                  print(f"    fetch ok html={len(page_html or '')} final={str(final_url)[:70]}")
+                  try:
+                      body = mss.extract_article_body(page_html, min_chars=400)
+                  except Exception as exc:
+                      print(f"    extract 抛错: {type(exc).__name__}: {exc}")
+                      body = ""
+                  print(f"    extract body={len(body or '')}")
+
+              bundle = mss.collect_material(title, max_sources=3, min_body_chars=400)
+              print(f"  usable={len(bundle.usable)} total_chars={bundle.total_chars}")
+              for src in getattr(bundle, "sources", [])[:4]:
+                  print("    src:", str(src)[:150])
           PY

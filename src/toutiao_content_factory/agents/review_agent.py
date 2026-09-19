@@ -274,13 +274,27 @@ class ReviewAgent(BaseAgent):
             ]
         )[:6]
 
+    #: 社会故事标题的「冲突/关系/后果」抓手 —— 相当于产业稿里的数字与公司。
+    STORY_TITLE_HOOKS = (
+        "索赔", "赔偿", "起诉", "判", "拒", "翻脸", "争执", "离", "赡养", "继承",
+        "过户", "摔倒", "受伤", "去世", "报警", "破门", "赶出", "欠", "骗",
+        "难", "为何", "怎么办", "凭什么", "该不该", "誰", "谁",
+    )
+
     def _score_title(self, title: str) -> int:
         score = 56
         if any(char.isdigit() for char in title):
             score += 10
         if "？" in title or "?" in title:
             score += 6
+        # ⚠️ 2026-09-20：这个 +12 的「判断感」词表是**产业稿**的
+        # （真正/背后/为什么/不是/利润/订单/交付/毛利）。社会故事标题一个都不沾，
+        # 于是稳定吃不到这 12 分 —— 实测「家政服务边界模糊，老人摔伤索赔为何难」
+        # 被打了 20 分（满分 100），直接拖垮 overall_score 并卡住自动发布。
+        # 叙事体裁下改用"冲突/关系/后果"抓手，这才是故事标题的信息量来源。
         if any(token in title for token in ("真正", "背后", "为什么", "不是", "利润", "订单", "交付", "毛利")):
+            score += 12
+        elif any(token in title for token in self.STORY_TITLE_HOOKS):
             score += 12
         if any(token in title for token in super().SCENE_TOKENS):
             score += 8
@@ -288,23 +302,50 @@ class ReviewAgent(BaseAgent):
             score += 10
         elif len(title) > self.settings.publishing.title_max_length:
             score -= 12
+        # 故事标题天然偏长（要交代"谁遇到了什么事"），超过 28 但仍在上限内
+        # 不该一分不给：放宽到上限给 6 分。
+        elif len(title) > min(28, self.settings.publishing.title_max_length):
+            score += 6
         if any(token in title for token in ("看懂", "机会", "又火了", "开始进入兑现筛选期", "更该看订单还是毛利")):
             score -= 14
         return max(20, min(95, score))
 
     def _score_information_density(self, content: GeneratedContent, data_report: DataReport) -> int:
         score = 50
-        score += min(18, len(data_report.growth_numbers) * 4)
-        score += min(12, len(data_report.key_points) * 3)
-        score += min(10, len(data_report.companies[:4]) * 2)
-        score += min(10, len(data_report.evidence_notes[:4]) * 2)
-        score += min(8, data_report.evidence_strength // 10)
+        # ⚠️ 2026-09-20：这一段加分全是**产业要素** ——
+        # 数字（growth_numbers）、关键判断、公司、证据条目、证据强度。
+        # 社会故事稿这些几乎全为 0（一条民生新闻没有"公司"和"可引用数字"），
+        # 于是 information_density 被系统性压在 56 分左右，
+        # 而它占 overall_score 的 1/5、且 `_determine_pass_status` 里
+        # `information_density <= 68` 直接判 needs_revision。
+        # 结果：叙事稿永远够不到自动发布门槛（实测 overall 56~64 < 要求 70）。
+        # 叙事体裁改用「人物处境 + 冲突 + 处境细节 + 来源感」来衡量信息量。
+        narrative = False
+        try:
+            narrative = self._content_mode(data_report) == "social_story"
+        except Exception:  # noqa: BLE001 - 判定不了就按产业稿算（保守）
+            narrative = False
+
+        if not narrative:
+            score += min(18, len(data_report.growth_numbers) * 4)
+            score += min(12, len(data_report.key_points) * 3)
+            score += min(10, len(data_report.companies[:4]) * 2)
+            score += min(10, len(data_report.evidence_notes[:4]) * 2)
+            score += min(8, data_report.evidence_strength // 10)
+        else:
+            # 故事体裁：来源条数 = 可核对的事实来源，等价于产业稿的证据条目
+            score += min(16, len(data_report.evidence_notes[:4]) * 4)
+            # 具体细节（时间/地点/身份/金额）是故事信息量的真身
+            score += min(14, self._count_story_details(content) * 3)
+            score += min(10, len(getattr(data_report, "source_facts", []) or []) * 2)
+            score += min(8, data_report.evidence_strength // 10)
+
         score += min(8, content.validation_score // 12)
         article = self._clean_article(content)
         if self._has_scene_anchor(article):
             score += 6
         if self._has_conflict_shape(article):
-            score += 6
+            score += 10 if narrative else 6
         if self._has_benefit_shift_signal(article):
             score += 6
         # 实时热榜二创：标题型热点没有完整原文/证据链是正常形态，
@@ -316,6 +357,34 @@ class ReviewAgent(BaseAgent):
             if self._has_tracking_variable_close(article):
                 score += 6
         return min(98, score)
+
+    #: 故事里的具体细节标记 —— 时间、地点、身份、金额、判决结果。
+    #: 这些才是民生故事"信息量"的载体（产业稿靠数字与公司）。
+    STORY_DETAIL_PATTERNS = (
+        r"\d{1,2}月\d{1,2}[日号]",
+        r"（?(?:广东|北京|上海|江苏|浙江|山东|河南|四川|湖南|湖北|福建|安徽|江西|河北|"
+        r"陕西|辽宁|吉林|黑龙江|山西|云南|贵州|广西|甘肃|新疆|内蒙古|天津|重庆|海南|宁夏|青海|西藏)"
+        r"[\u4e00-\u9fff]{0,6}(?:市|县|区|镇|村)",
+        r"\d+(?:\.\d+)?\s*(?:元|万元|万|亿元)",
+        r"(?:法院|法官|民警|消防|社区|居委会|民政|物业|医院)[\u4e00-\u9fff]{0,6}(?:判|认定|调解|回应|介入|表示)",
+        r"(?:判决|调解|赔偿|补偿|承担)[\u4e00-\u9fff]{0,8}(?:责任|义务|损失)",
+        r"(?:独居|高龄|退休|失业|外来|留守|残疾)[\u4e00-\u9fff]{0,4}",
+    )
+
+    def _count_story_details(self, content: GeneratedContent) -> int:
+        """数一数正文里有多少「具体细节」。
+
+        用于叙事体裁的信息密度：一条民生故事的信息量体现在
+        「9月17日、广东佛山、80岁、赔偿400元、法院认定」这类可核对的具体信息上，
+        而不是靠公司名和可引用数字。
+        """
+        article = self._clean_article(content)
+        if not article:
+            return 0
+        hits = 0
+        for pattern in self.STORY_DETAIL_PATTERNS:
+            hits += len(re.findall(pattern, article))
+        return hits
 
     def _score_save_potential(self, content: GeneratedContent, data_report: DataReport) -> int:
         article = self._clean_article(content)
@@ -674,10 +743,37 @@ class ReviewAgent(BaseAgent):
         suggestions: list[str] = []
         target_patterns = self._target_self_benchmark_patterns(self_benchmark_context)
         matched = matched_patterns or []
+        # ⚠️ 2026-09-20：下面这一串建议全是产业稿口径 ——
+        # 实测一条「保姆照看老人期间摔伤」的故事稿收到的建议是
+        # 「补充家政行业相关数据，如纠纷率、赔付金额」「细化产业链分析，
+        # 说明各环节利润分配」「增加具体公司、项目或订单主体」。
+        # 这些建议对故事稿不仅无用，还会被 writer 当成改写方向，把稿子带偏。
+        try:
+            narrative = self._content_mode(data_report) == "social_story"
+        except Exception:  # noqa: BLE001
+            narrative = False
+
         if not self._has_source_anchor(article):
             suggestions.append("在首段或第二段补一句“从公开材料看”或具体公告/报告出处，增强证据感。")
         if max((len(item) for item in self._paragraphs(article)), default=0) >= 180:
             suggestions.append("拆短长段落，每段尽量控制在 2 到 3 句，首屏不要堆太满。")
+
+        if narrative:
+            if paragraphs and not self._has_strong_judgment_opening(paragraphs[0]):
+                suggestions.append("重写前三句：第一段先把“发生了什么”讲清楚（时间、地点、涉及的人、结果）。")
+            if self._count_story_details(content) < 4:
+                suggestions.append("补进可核对的具体信息：时间、地点、当事人身份、金额或处理结果。")
+            if not self._has_conflict_shape(article):
+                suggestions.append("把当事人的处境和两难写出来：他当时能怎么选、哪一步本可以不一样。")
+            if not self._has_tracking_variable_close(article):
+                suggestions.append("最后一段给读者一句具体可用的提醒（该留什么证据、找谁、走什么流程）。")
+            unsupported_tokens = self._unsupported_numeric_tokens(content, data_report)
+            if unsupported_tokens:
+                suggestions.append("删掉素材里没有明确出现的新数字和细节，证据不够就留白。")
+            if not suggestions:
+                suggestions.append("保持当前主线不变，重点再压一压首段句长即可。")
+            return suggestions[:4]
+
         if paragraphs and not self._has_strong_judgment_opening(paragraphs[0]):
             suggestions.append("重写前三句，先写判断，再写数据，再点出谁先受益或哪一环先兑现。")
         if not any(company in article for company in data_report.companies[:3]):

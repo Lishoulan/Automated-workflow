@@ -155,7 +155,11 @@ def test_narrative_floor_matches_between_the_two_places() -> None:
     """两处下限必须一致，否则一边放行一边拦。
 
     `app_service._minimum_article_chars` 里是字面量（没有导出常量），
-    所以这里按源码里那条 return 校验；改了任一处都会让用例失败。
+    所以这里按源码校验：**两条分支（自动发布 / 人工审核）都必须是 750**。
+    ⚠️ 这一条有实际意义：`scripts/verify_content_drypublish.py` 会关掉发布开关，
+    跑的是人工审核分支。两条分支不一致时，本地验证的下限（850）与云端生产
+    的下限（750）就不是同一个数，实测一篇 838 字的稿子在本地判 review_required、
+    而云端会放行 —— 验证结果无法代表云端。
     """
     from toutiao_content_factory.services import app_service as app_module
     from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
@@ -166,8 +170,13 @@ def test_narrative_floor_matches_between_the_two_places() -> None:
     assert f"return {narrative}\n" in source, (
         f"agent_workflow 的 {narrative} 与 app_service 里的下限不一致"
     )
-    # 同一个函数里产业分支必须仍是 1750
+    # app_service 里叙事分支出现两次（自动发布 / 人工审核），必须都是 750
+    assert source.count(f"return {narrative}\n") >= 2, (
+        "app_service 的两条分支（自动发布 / 人工审核）没有都按叙事下限走"
+    )
+    # 产业分支必须仍保留原值
     assert "return 1750" in source
+    assert "return 850 if is_hot_topic else 800" in source
 
 
 # ---------------------------------------------------------------------------

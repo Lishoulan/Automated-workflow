@@ -2793,6 +2793,14 @@ class ContentFactoryAppService:
         )
         is_hot_topic = bool(snapshot.get("is_hot_topic", 0))
         if not auto_publish_mode:
+            # 非自动发布（人工审核路径）：叙事体裁同样按 750。
+            # ⚠️ 2026-09-19：这里原来一律 850。而 `scripts/verify_content_drypublish.py`
+            # 为了"不真的发出去"会把发布开关关掉，于是验证跑的是这条人工审核路径，
+            # 报出来的下限（850）与云端生产路径（750）**不是同一个数** ——
+            # 实测一篇 838 字的稿子在这里判 review_required，而云端实际会放行。
+            # 两条路径对同一体裁必须用同一个下限，否则本地验证无法代表云端。
+            if self._run_uses_narrative_domain(snapshot):
+                return 750
             return 850 if is_hot_topic else 800
         if self._run_uses_narrative_domain(snapshot):
             # 故事体裁：叙事写法不需要产业稿那么长。

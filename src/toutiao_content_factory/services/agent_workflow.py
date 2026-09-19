@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 import logging
@@ -47,11 +47,20 @@ class AgentWorkflowService:
     # quality gate evaluates the public article, not the generated draft.
     AUTO_PUBLISH_ARTICLE_MIN_CHARS = 1750
     #: 叙事类（社会故事）自动发布的正文下限。
-    #: 与 `AppService._minimum_article_chars` 的 750 保持一致，改一处必须改另一处。
+    #: 与 `AppService.NARRATIVE_ARTICLE_MIN_CHARS` 保持一致（有测试锁住）。
     NARRATIVE_ARTICLE_MIN_CHARS = 700
     # 整个 workflow 生命周期内 LLM expansion 最大调用次数
     # DeepSeek-V4-Flash 单次 expansion 耗时 5-7 分钟，多次累计会导致云端 30 分钟超时
     MAX_LLM_EXPANSION_CALLS = 1
+    #: 叙事体裁允许的扩展次数（比产业稿多一次）。
+    #:
+    #: ⚠️ 2026-09-20：云端实测换模型后三条候选是 650 / 670 / 732 字，
+    #: 前两条**只差 50 / 30 字**（差 4%~7%）。这种"差一点点"正是单次扩展
+    #: 最擅长的场景（一次能补 200~400 字），但原来 `MAX_LLM_EXPANSION_CALLS = 1`
+    #: 已被首次生成前的扩展用掉，到最终闸门时反而没机会补 ——
+    #: 于是两条本该能发的稿子被判 review_required、白白轮到下一条候选。
+    #: 给叙事体裁多一次机会，把"差一点点"直接转成"能发"。
+    NARRATIVE_MAX_LLM_EXPANSION_CALLS = 2
 
     def __init__(
         self,
@@ -802,12 +811,18 @@ class AgentWorkflowService:
         # 一次扩展（单次上限约 800 字且常失败）根本补不上，纯属白烧一次大 prompt
         # 又不解决问题，还把这轮运行拖长到接近 workflow 的 45 分钟上限。
         # 差距 > 40% 时直接跳过，把状态如实交给上层判定。
+        #
+        # ⚠️ 2026-09-20：叙事体裁放宽到 60%。实测换模型后云端三条候选是
+        # 650 / 670 / 732 字，前两条距 700 只差 50 / 30 字（4%~7%）——
+        # 这种"差一点点"正是单次扩展最擅长的场景，不该被 40% 这条为产业稿
+        # 设的线挡掉（产业稿目标 1750，40% 缺口意味着差 700 字，确实补不上）。
         gap_ratio = 0.0 if min_chars <= 0 else (min_chars - result_chars) / float(min_chars)
+        gap_limit = 0.6 if self._uses_narrative_domain() else 0.4
         if (
             result_chars < min_chars
             and self.openai_service.available
             and self._has_grounded_evidence(data_report)
-            and gap_ratio <= 0.4
+            and gap_ratio <= gap_limit
         ):
             self.logger.info(
                 "Supplementary paragraphs brought article to %d chars, still below %d. Attempting grounded LLM expansion.",
@@ -824,6 +839,10 @@ class AgentWorkflowService:
             )
         return clean_article_text(result, min_word_count=0)
 
+    def _max_expansion_calls(self) -> int:
+        """本次运行允许的扩展次数上限。"""
+        return self.NARRATIVE_MAX_LLM_EXPANSION_CALLS if self._uses_narrative_domain() else self.MAX_LLM_EXPANSION_CALLS
+
     def _legacy_expand_article_via_llm(self, article: str, data_report, min_chars: int) -> str:
         current_chars = len(article.replace("\n", "").replace(" ", ""))
         deficit = min_chars - current_chars
@@ -831,11 +850,12 @@ class AgentWorkflowService:
             return article
         # 限制整个 workflow 生命周期内的 LLM expansion 调用次数
         # 避免 writer/polish/second_polish 阶段反复触发导致云端 30 分钟超时
-        if self._llm_expansion_call_count >= self.MAX_LLM_EXPANSION_CALLS:
+        max_calls = self._max_expansion_calls()
+        if self._llm_expansion_call_count >= max_calls:
             self.logger.warning(
                 "LLM expansion 已达上限（%d/%d），跳过本次调用，当前文章 %d 字符（目标 %d）",
                 self._llm_expansion_call_count,
-                self.MAX_LLM_EXPANSION_CALLS,
+                max_calls,
                 current_chars,
                 min_chars,
             )

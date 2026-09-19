@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import ast
 
@@ -2736,6 +2736,21 @@ class WriterAgent(BaseAgent):
             (content_mode == "hot_topic" and hot_topic_rich)
             or (content_mode != "hot_topic" and grounded)
         )
+        # ⚠️ 2026-09-20：叙事体裁下必须**允许扩展**，否则"差几字"的稿子被白白丢掉。
+        #
+        # `grounded` 来自 `_has_grounded_evidence()`，判据是
+        # 「公司 / 可引用数字 / ≥2 条证据 / evidence_strength≥70」——
+        # 这是产业稿的"有没有事实可写"。社会故事稿这些几乎全为 0
+        # （一条民生新闻没有公司、没有可引用数字），于是 `grounded=False`
+        # → `can_expand=False`，即使正文只差 6 个字（实测日志：
+        # `Skipping LLM expansion because the topic is not eligible for grounded
+        # expansion. current=694 target=700`）也不给补。
+        #
+        # 故事稿能不能扩，判据应该是"有没有素材正文可依据"——
+        # `asset_facts`/`evidence_notes`/`source_facts` 非空即可，
+        # 而不是要求"公司+数字"。
+        if content_mode == "social_story" and not can_expand:
+            can_expand = self._has_story_material(data_report)
         if final_chars < min_chars and allow_llm_expansion and can_expand and self.openai_service.available:
             logger.info(
                 "Supplementary paragraphs brought article to %d chars, still below %d. Attempting grounded LLM expansion.",
@@ -2785,6 +2800,25 @@ class WriterAgent(BaseAgent):
             min_chars=0 if min_chars is None else int(min_chars),
         )
         return "\n\n".join(item.strip() for item in ensured if item.strip()).strip()
+
+    @staticmethod
+    def _has_story_material(data_report: "DataReport") -> bool:
+        """叙事体裁的扩展资格：**有素材正文可依据**就够了。
+
+        与 `_has_grounded_evidence()` 的区别：后者要求"公司 / 可引用数字 / 证据强度"，
+        是产业稿的判据；一条民生故事没有这些，但它有真实的报道正文可引用，
+        就该允许在此基础上补足篇幅。
+        """
+        for field_name in ("source_facts", "evidence_notes", "core_data", "key_points"):
+            items = [
+                str(item).strip()
+                for item in (getattr(data_report, field_name, None) or [])
+                if str(item).strip()
+            ]
+            if len(items) >= 2:
+                return True
+        snippet = str(getattr(data_report, "snippet", "") or "").strip()
+        return len(snippet) >= 400
 
     def _build_supplementary_paragraphs(
         self,

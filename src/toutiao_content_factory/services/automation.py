@@ -271,7 +271,23 @@ class TopicAutomationService:
         rank: int | None = None,
         title_query: str | None = None,
         allow_generated_duplicates: bool = False,
+        allow_material_retry: bool = False,
     ) -> TopicSelectionResult | None:
+        """选定本次要写的选题，并补齐真实素材。
+
+        `allow_material_retry`：抓不到素材时**是否允许换成别的选题**。
+        调用方要按"这条题是谁选的"来决定：
+
+        - 用户直接给的（CLI `--topic-title` / `--topic-rank`）：**不要**打开这个开关，
+          尊重人的选择，抓不到就放弃。
+        - 机器自己挑的（`AppService` 的候选循环，逐条把 `candidate["title"]` 传进来）：
+          **必须**打开。否则每条候选都被当成"用户指定"，**换题逻辑永远不生效**。
+
+        ⚠️ 2026-09-19 实测（云端 run 35430893194）：候选循环传的就是 `topic_title=`，
+        于是 `requested_title` 恒为真，榜首那条抓不到素材就整次运行放弃 ——
+        云端当天一篇都发不出去。这个参数的默认值 `False` 是刻意选的：
+        默认保持"尊重显式指定"的语义，只有明确知道自己在做候选择优的调用方才打开。
+        """
         report = self._load_daily_topics()
         topic = self._select_topic(
             report,
@@ -303,14 +319,15 @@ class TopicAutomationService:
         #   - **自动选题**：抓不到就**继续试后面几条**，全试完才放弃。
         #     `_select_topic` 返回的只是"排序第一"，它不代表"唯一可用的题"。
         requested_title = bool(str(title_query or "").strip())
+        retry_allowed = allow_material_retry or not requested_title
         if not self._hydrate_topic_material(topic):
-            if requested_title:
+            if not retry_allowed:
                 self.logger.error(
                     "[素材] 指定选题抓不到正文素材，放弃本次运行（不发布）: %s",
                     topic.title,
                 )
                 return None
-            if rank is not None:
+            if rank is not None and not allow_material_retry:
                 self.logger.warning(
                     "[素材] 指定序号（rank=%s）的选题抓不到正文素材，按用户指定处理，不换题: %s",
                     rank,

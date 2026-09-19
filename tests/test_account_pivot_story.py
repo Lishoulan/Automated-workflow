@@ -441,6 +441,65 @@ def test_explicit_topic_title_is_never_silently_swapped(
     assert automation.prepare_auto_run(title_query=blocked.title) is None
 
 
+# ---------------------------------------------------------------------------
+# 9. 候选循环必须给 prepare_auto_run 打开「换题许可」
+# ---------------------------------------------------------------------------
+#
+# 实测（云端 run 35430893194）：`AppService` 的候选循环逐条把
+# `candidate["title"]` 当 `topic_title=` 传进 `auto_run`，于是 `requested_title`
+# 恒为真 → 换题逻辑**永远不生效** → 榜首那条抓不到素材就整次运行放弃，
+# 云端当天一篇都发不出去（`Daily workflow did not produce any runnable candidates`）。
+#
+# 修法是给 `prepare_auto_run` 加 `allow_material_retry`，由候选循环打开。
+# 这里锁住"循环确实打开了它"，因为漏掉这一处透传，前面所有换题修复都等于没写。
+
+
+def test_candidate_loop_authorises_material_retry() -> None:
+    source = Path(__file__).resolve().parents[1] / (
+        "src/toutiao_content_factory/services/app_service.py"
+    )
+    text = source.read_text(encoding="utf-8")
+
+    assert "allow_material_retry=True" in text, (
+        "候选循环必须打开 allow_material_retry，否则换题逻辑不生效"
+    )
+    # 参数必须一路透传到 prepare_auto_run
+    assert text.count("allow_material_retry=allow_material_retry") >= 3
+
+
+def test_material_retry_flag_reaches_prepare_auto_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """行为验证：打开许可后，机器挑的题抓不到素材会换题；关掉则不换。"""
+    import toutiao_content_factory.services.material_search_service as mss
+
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    blocked = _hot_topic("张雪回应打车被认出忽悠司机")
+    good = _hot_topic("男子高空作业绳子被2楼老人剪断")
+    good.snippet = "据报道，" + "详细经过。" * 200
+
+    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _StubBundle(usable=False))
+    monkeypatch.setattr(
+        automation, "_material_retry_candidates", lambda report: [blocked, good]
+    )
+    report = _daily_report([blocked, good])
+    monkeypatch.setattr(automation, "_load_daily_topics", lambda: report)
+    monkeypatch.setattr(
+        automation,
+        "_select_topic",
+        lambda report, rank, title_query, allow_generated_duplicates=False: blocked,
+    )
+
+    # 关掉许可（模拟"用户显式指定"）→ 放弃
+    assert automation.prepare_auto_run(title_query=blocked.title) is None
+    # 打开许可（模拟候选循环）→ 换到能抓到素材的那条
+    selected = automation.prepare_auto_run(
+        title_query=blocked.title, allow_material_retry=True
+    )
+    assert selected is not None
+    assert selected.topic.title == good.title
+
+
 def test_retry_candidates_stay_inside_the_account_track() -> None:
     """重试范围只许比 `_select_topic` 更窄，不许更宽。
 

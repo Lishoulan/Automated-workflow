@@ -483,6 +483,7 @@ class ContentFactoryAppService:
         force_collect: bool = False,
         no_archive: bool = False,
         fast_mode: bool = False,
+        allow_material_retry: bool = False,
     ) -> dict[str, str]:
         # 轻量级健康检查：blocking 时优雅退出，warnings 时继续执行
         if not dry_run:
@@ -520,6 +521,7 @@ class ContentFactoryAppService:
                 rank=topic_rank,
                 title_query=topic_title,
                 allow_generated_duplicates=refresh_cache or dry_run,
+                allow_material_retry=allow_material_retry,
             )
         except (FileNotFoundError, ValueError) as exc:
             if not self._should_retry_topic_collection(exc, already_collected=should_collect):
@@ -530,6 +532,7 @@ class ContentFactoryAppService:
                 rank=topic_rank,
                 title_query=topic_title,
                 allow_generated_duplicates=refresh_cache or dry_run,
+                allow_material_retry=allow_material_retry,
             )
         if selection is None:
             self.logger.warning("No eligible topics found. Attempting to recollect.")
@@ -539,6 +542,7 @@ class ContentFactoryAppService:
                     rank=topic_rank,
                     title_query=topic_title,
                     allow_generated_duplicates=True,
+                    allow_material_retry=allow_material_retry,
                 )
             if selection is None:
                 self.notification_service._broadcast(
@@ -885,6 +889,11 @@ class ContentFactoryAppService:
                     force_collect=False,
                     no_archive=no_archive,
                     fast_mode=fast_mode,
+                    # ⚠️ 2026-09-19：候选循环传的 `topic_title` 是**机器自己挑的**，
+                    # 不是用户指定的。必须打开换题许可，否则每条候选都被当成
+                    # "用户指定"，抓不到素材就整次运行放弃（实测云端 run 35430893194
+                    # 因此当天一篇都没发出去）。
+                    allow_material_retry=True,
                 )
             except LowQualityAbortException as exc:
                 self.logger.info(

@@ -231,8 +231,41 @@ class ReviewAgent(BaseAgent):
             "content_score": score,
         }
 
+    def _narrative_review_note(self) -> str:
+        """叙事体裁（社会故事）的评分指引。
+
+        ⚠️ 2026-09-20：`_hot_topic_review_note` 在**长青题**上返回空串
+        （长青题的 `is_hot_topic=False`），于是模型**完全不知道**自己在评一篇
+        人情故事，就按"产业分析稿"的标准打分 —— 实测一篇 1333 字的完整故事稿收到：
+
+            title_attraction = 20   information_density = 66   overall = 63
+
+        而门槛是 70。标题本身（「护学岗4人全是高龄老人最大67岁」）并不差，
+        只是没有"公司名/产业链/订单"这些产业稿抓手。
+        这段指引明确告诉模型：换一套尺子，并说明"缺公司名和行业数据不是缺陷"。
+        """
+        return (
+            "\n\n【本次为「人间故事」社会民生账号，请按叙事体裁评分】\n"
+            "1. title_attraction：看**人物 + 冲突/处境 + 读者的代入感**，"
+            "不要因为没有公司名、产业链或订单金额而扣分；"
+            "纯产业口吻的标题在这类账号上反而更低分。\n"
+            "2. information_density：看**具体细节**（时间、地点、当事人身份、金额、"
+            "处理结果、各方说法）以及处境是否讲透，"
+            "不要因为没有行业数据、市占率、技术路线而扣分。\n"
+            "3. completion_rate_potential：看开篇是否直接进入现场、段落是否适合手机阅读。\n"
+            "4. ai_generated_risk：看句式套话、万能话术（如「引人深思」「值得我们反思」）、"
+            "段落重复，而不是看有没有硬数据。\n"
+            "5. 结论仍必须守住事实边界：证据不足时建议收窄，"
+            "但**不得**要求补写输入里不存在的公司、订单或行业数据。"
+        )
+
     def _hot_topic_review_note(self, data_report: DataReport) -> str:
         """Return a review brief whose length contract matches the run mode."""
+        # ⚠️ 2026-09-20：叙事体裁**优先**给出评分尺子 —— 它与是否热榜无关。
+        # 实测社会故事号的候选大多来自长青兜底池（`is_hot_topic=False`），
+        # 原来这里直接返回空串，模型就按产业稿标准打分，overall 卡在 63~66（门槛 70）。
+        if self._is_narrative_domain():
+            return self._narrative_review_note()
         if not bool(getattr(data_report, "is_hot_topic", False)):
             return ""
         if self._auto_publish_mode():

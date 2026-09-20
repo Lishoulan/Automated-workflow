@@ -592,6 +592,18 @@ class BaseAgent:
         return normalized in self.INTERNAL_LABEL_MAP.keys() or normalized in self.INTERNAL_LABEL_MAP.values()
 
     # 共享的辅助方法
+    def _is_narrative_domain(self) -> bool:
+        """当前账号是否叙事体裁（社会故事）。
+
+        权威判据是**账号配置里的 `content_domain`** —— 见 `_content_mode` 的说明：
+        按报告内容关键字判定会漏（实测云端 `focus_industry='家庭服务'` 就不含关键字）。
+        各 agent 需要"换一套尺子"时都应该用这个，而不是自己再判一遍。
+        """
+        return (
+            str(getattr(self.settings, "content_domain", "industry") or "industry").strip().lower()
+            == "narrative"
+        )
+
     def _content_mode(self, data_report):
         if data_report is None:
             return "generic"

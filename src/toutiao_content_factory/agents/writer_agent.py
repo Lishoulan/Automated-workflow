@@ -26,10 +26,25 @@ class WriterAgent(BaseAgent):
     SHORT_CONTENT_FORMATS = frozenset(("quick_commentary", "short_comment", "news_flash"))
     AUTO_PUBLISH_ARTICLE_TARGET = 1800
     AUTO_PUBLISH_ARTICLE_MIN_CHARS = 1750
-    #: 叙事类（社会故事）自动发布的正文下限。
+    #: 叙事类（社会故事）**发布侧的硬下限**。
     #: 与 `AgentWorkflowService.NARRATIVE_ARTICLE_MIN_CHARS`、
-    #: `AppService._minimum_article_chars` 的叙事分支必须一致（三处，750）。
+    #: `AppService._minimum_article_chars` 的叙事分支必须一致（三处，700）。
+    #:
+    #: ⚠️ 2026-09-21：这个值**故意不与首发线（1500）对齐**，两者是不同的东西：
+    #:   - 发布硬下限 700：低于它直接判不合格、当天可能一篇都发不出去。
+    #:     免费模型实测产出 1000~1862 字，把它抬到 1500 等于把"能否发行"
+    #:     押在模型当天的状态上。
+    #:   - 首发资格线 1500：低于它只是**不声明头条首发**（少赚），仍然正常发布。
+    #: 首发靠"生成目标"去够（见 `NARRATIVE_ARTICLE_IDEAL_CHARS`），
+    #: 而不是靠把发布门槛顶到首发线上 —— 后者只会把"少赚"变成"发不出去"。
     NARRATIVE_ARTICLE_MIN_CHARS = 700
+    #: 叙事类（社会故事）的**生成目标**：头条首发激励要求正文不少于 1500 字。
+    #: 取 1700 是留出余量 —— 快照实测该免费模型在 JSON 模式下能稳定产出
+    #: 1665~1862 字，但低于 1650 的要求时会落到 1500 以下。
+    NARRATIVE_ARTICLE_IDEAL_CHARS = 1700
+    #: 提示词里给模型的"最低字数"：高于首发线 1500，但低于目标 1700。
+    #: 这样即使模型少写一点，也仍然拿得到首发资格。
+    NARRATIVE_ARTICLE_PROMPT_FLOOR = 1550
     REQUIRED_HEADING_COUNT = (3, 4)
     INTERNAL_ARTICLE_MARKERS = (
         "manual_paste",
@@ -674,13 +689,20 @@ class WriterAgent(BaseAgent):
         if not self._auto_publish_mode():
             return ""
         if self._is_narrative_run():
-            # ⚠️ 2026-09-19：这里原来是软要求（「目标约1100字，最低950字」+ 一堆"不要"），
-            # 实测模型只写 436 字就收尾，然后整条链路开始救火：
-            # 补段 → 扩展（只到 724）→ 润色把 724 砍成 184~299 → 最终 846 字卡在门槛上
-            # 判 review_required。产业稿那条指令措辞强硬得多，所以这里也要给出**结构要求**，
-            # 而不是只给一个字数。素材有 3800+ 字时，正文必须把里面的具体事实用起来。
+            # ⚠️ 2026-09-21：目标从「约1100字，最低950字」提到
+            # 「约1700字，最低1550字」—— 因为**头条首发激励要求正文不少于 1500 字**
+            # （见 `publish_service`：不足 1500 会自动取消首发声明）。
+            # 原先的 1100 字目标等于把首发资格直接放弃掉了。
+            #
+            # 依据：同一模型（glm-4-flash-250414）在 JSON 模式下的实测产出
+            #   要求 1600 字 → 1665 字
+            #   要求 2000 字 → 1848 字
+            #   要求 2400 字 → 1862 字
+            # 也就是说它**本来就能写够**，之前只写 1000 出头是因为提示词只要 1100。
             return (
-                "当前是自动发布候选：正文目标约1100字，最低950字，最少写6段。"
+                "当前是自动发布候选：正文目标约1700字，最低1550字，最少写10段。"
+                "**字数不足1550字就拿不到头条首发激励，这一篇的推荐量会明显吃亏，"
+                "所以必须写够。**"
                 "结构要求：第1段直接讲发生了什么（时间、地点、人物、动作、结果）；"
                 "中间每段讲一个侧面——当事人的处境、他当时能怎么选、各方说法、"
                 "已经公开的处理进展、这类事通常卡在哪一步；最后一段给读者一句具体可用的提醒。"
@@ -688,6 +710,8 @@ class WriterAgent(BaseAgent):
                 "每一段都必须用到其中的具体信息，不许只写「安全意识」「社会问题」这类放到任何"
                 "一件事上都成立的空话。**字数不够时，回去材料里找还没用上的细节继续写，"
                 "而不是用感慨和反问凑。"
+                "填充篇幅要靠**有用的内容**：这类事牵涉的法律常识、办理流程、"
+                "不同立场的合理考虑、普通人容易忽略的步骤、类似的常见情形对比。"
                 "只能用输入材料里的事实，缺的地方留白；严禁编造当事人姓名、身份、对话、"
                 "心理活动或现场细节，严禁写成第一人称亲历。证据不足时收窄结论，不得套话凑字数。"
             )
@@ -702,8 +726,8 @@ class WriterAgent(BaseAgent):
         target = int(getattr(data_report, "word_target", 0) or self.settings.article_word_target or 0)
         if self._auto_publish_mode():
             if self._is_narrative_run():
-                # 故事体裁：目标 1100 字（对比产业分析稿的 1800）
-                return "1100"
+                # 故事体裁：目标 1700 字（头条首发激励要求 ≥1500 字，留余量）
+                return str(self.NARRATIVE_ARTICLE_IDEAL_CHARS)
             target = max(self.AUTO_PUBLISH_ARTICLE_TARGET, target)
         return str(target)
 
@@ -1564,12 +1588,15 @@ class WriterAgent(BaseAgent):
         """根据内容体裁计算提示词中的最低字数要求。
 
         热点快评 / 快讯点评：600~900 字；叙事类（社会故事）：见
-        `NARRATIVE_ARTICLE_MIN_CHARS`（750，与另外两处门槛一致）；
+        `NARRATIVE_ARTICLE_PROMPT_FLOOR`（1550，高于头条首发的 1500 资格线）；
         其余体裁维持 1500 字长文标准。
+
+        ⚠️ 这里给的是**生成用的最低要求**，不是发布门槛。发布侧的硬下限是
+        `NARRATIVE_ARTICLE_MIN_CHARS`（700）—— 两者故意不同，理由见该常量的注释。
         """
         if self._auto_publish_mode():
             if self._is_narrative_run():
-                return str(self.NARRATIVE_ARTICLE_MIN_CHARS)
+                return str(self.NARRATIVE_ARTICLE_PROMPT_FLOOR)
             return str(self.AUTO_PUBLISH_ARTICLE_TARGET)
         content_format = str(getattr(data_report, "content_format", "") or "")
         word_target = int(getattr(data_report, "word_target", 0) or 0)

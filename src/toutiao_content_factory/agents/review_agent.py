@@ -14,6 +14,12 @@ from toutiao_content_factory.services.openai_service import OpenAIContentService
 class ReviewAgent(BaseAgent):
     agent_name = "ReviewAgent"
 
+    #: 叙事稿（人情故事）的评分字数区间。
+    #: 下限取头条首发激励的资格线 1500（低于它只是拿不到首发，不算"篇幅不合格"）；
+    #: 上限取写作目标 1700 上方一点，避免正常发挥被判"过长"。
+    NARRATIVE_WORD_FLOOR = 1500
+    NARRATIVE_WORD_CEILING = 2100
+
     def _auto_publish_mode(self) -> bool:
         publishing = getattr(self.settings, "publishing", None)
         return bool(
@@ -491,6 +497,12 @@ class ReviewAgent(BaseAgent):
 
     def _word_bounds(self, data_report: DataReport) -> tuple[int, int]:
         if self._auto_publish_mode():
+            # ⚠️ 2026-09-21：叙事稿原来也落到下面那条「最低 1750」，而它的写作目标是
+            # 1700 字（首发线 1500）—— 区间下限比目标还高，1550~1700 字的合格稿
+            # 会被扣掉那 14 分。改为按体裁给区间：叙事稿以**首发线 1500**为下限，
+            # 产业稿保持 1750。
+            if self._is_narrative_domain():
+                return self.NARRATIVE_WORD_FLOOR, self.NARRATIVE_WORD_CEILING
             target = max(int(data_report.word_target or 0), 1800)
             return 1750, target + 300
         if bool(getattr(data_report, "is_hot_topic", False)):

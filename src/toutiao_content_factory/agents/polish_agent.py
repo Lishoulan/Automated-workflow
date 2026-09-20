@@ -16,6 +16,14 @@ class PolishAgent(BaseAgent):
     agent_name = "PolishAgent"
     SHORT_CONTENT_FORMATS = frozenset(("quick_commentary", "short_comment", "news_flash"))
     AUTO_PUBLISH_ARTICLE_TARGET = 1800
+
+    #: 头条首发激励的正文资格线。低于它的稿子**仍然正常发布**，
+    #: 只是拿不到首发激励（平台会由发布服务自动取消首发声明）。
+    NARRATIVE_FIRST_RELEASE_LINE = 1500
+    #: 叙事稿润色后的目标区间。上限与 `WriterAgent.NARRATIVE_ARTICLE_IDEAL_CHARS`
+    #: 同一量级：低于资格线允许补写，高于目标上限允许精简。
+    NARRATIVE_POLISH_TARGET_MIN = 1500
+    NARRATIVE_POLISH_TARGET_MAX = 1800
     UNSUPPORTED_ORDER_CLAIM_RES = (
         re.compile(
             r"(?:获得|拿到|签下|形成|已有|已经有|已获|转化为|落实|落地|接到|收到|拿下|确认)"
@@ -294,17 +302,24 @@ class PolishAgent(BaseAgent):
         if not self._auto_publish_mode():
             return ""
         if self._is_narrative_domain():
-            # ⚠️ 2026-09-19：这里原来**无条件**要求「润色后仍需保持约1800字，最低1750字」。
-            # 而叙事稿的上游指令是「目标约1100字，最低950字」—— 两条互相矛盾的硬指标
-            # 同时压给模型，模型两边都满足不了，就交出一份残稿：
-            # 实测润色把 843 字砍成 187 / 413 / 166 字（砍掉 50%~80%），
-            # 触发「Polish was too aggressive, keeping original」一次次空跑，
-            # 白烧 token 又拖长运行。叙事稿的润色是**轻度编辑**，不是扩写。
+            # ⚠️ 2026-09-21：原来这里写着「不得为了凑字数扩写到 1500 字以上」，
+            # 而 1500 字正是**头条首发激励的资格线** —— 润色指令等于主动放弃首发。
+            # 上游的写作目标已提到 1700 字（见 WriterAgent 的
+            # `NARRATIVE_ARTICLE_IDEAL_CHARS`），这里必须跟着放开：
+            # 低于 1500 字时允许补写，高于 1700 字时可以精简。
+            #
+            # 保留原有的"轻度编辑"约束（此前无条件要求 1800 字，导致润色把
+            # 843 字砍成 187~413 字，触发「Polish was too aggressive」反复空跑）。
             return (
-                "当前是自动发布候选：这是人情故事观察稿，篇幅约1000到1200字。"
+                f"当前是自动发布候选：这是人情故事观察稿，篇幅约"
+                f"{self.NARRATIVE_POLISH_TARGET_MIN}到{self.NARRATIVE_POLISH_TARGET_MAX}字。"
                 "润色只做「理顺句子、删掉重复表达、补上遗漏的事实细节」，"
-                "**不得把正文压短到原文的 80% 以下，也不得为了凑字数扩写到 1500 字以上**；"
-                "只能重组输入材料已有事实，缺证据处收窄结论，不得新增编造的人物、对话或情节。"
+                "不得把正文压短到原文的 80% 以下。"
+                f"**若原文不足{self.NARRATIVE_FIRST_RELEASE_LINE}字，必须补写到达标 —— "
+                "不足这个字数就拿不到头条首发激励，推荐量会明显吃亏。**"
+                f"也不得为了凑字数扩写到 {self.NARRATIVE_POLISH_TARGET_MAX} 字以上；"
+                "补写只能用输入材料已有事实与公开的法律/常识依据，"
+                "不得新增编造的人物、对话或情节。"
             )
         return (
             "当前是自动发布候选：润色后正文仍需保持约1800字，最低1750字。不得为了简洁把完整分析压缩成800字短评；"

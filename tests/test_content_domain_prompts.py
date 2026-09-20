@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from toutiao_content_factory.agents.polish_agent import PolishAgent
 from toutiao_content_factory.agents.writer_agent import WriterAgent
 from toutiao_content_factory.config import (
     StyleProfile,
@@ -109,16 +110,44 @@ def _polish_agent(account_key: str):
     )
 
 
-def test_narrative_polish_directive_does_not_demand_1800_chars() -> None:
+def test_narrative_polish_directive_keeps_a_bounded_target() -> None:
+    """叙事稿润色要给**区间**，不能无条件要求 1800/1750。
+
+    ⚠️ 2026-09-19 的教训：这里原来无条件要求「润色后仍需保持约1800字，最低1750字」，
+    而叙事稿上游只写 1100 字 —— 两条互相矛盾的硬指标同时压给模型，模型交残稿，
+    实测润色把 843 字砍成 187~413 字，触发「Polish was too aggressive」反复空跑。
+
+    ⚠️ 2026-09-21 的修正：但也不能像中间那版那样禁止「扩写到 1500 字以上」——
+    1500 字正是**头条首发激励的资格线**，那句禁令等于主动放弃首发。
+    现在的口径是：给一个区间（下限=首发资格线，上限=写作目标上方），
+    低于下限必须补写，高于上限可以精简。
+    """
     agent = _polish_agent("robot_notes")
 
     directive = agent._auto_publish_directive()
 
     assert directive, "自动发布模式下必须有润色指令"
-    assert "1800" not in directive
-    assert "1750" not in directive
+    # 必须给出下限，且下限就是首发资格线 —— 否则又回到"放弃首发"
+    assert str(PolishAgent.NARRATIVE_FIRST_RELEASE_LINE) in directive
+    assert str(PolishAgent.NARRATIVE_POLISH_TARGET_MIN) in directive
     # 必须明确禁止把正文压短
     assert "80%" in directive
+    # 不得再出现"无条件 1750"这种把叙事稿当产业稿的要求
+    assert "1750" not in directive
+
+
+def test_narrative_polish_directive_asks_for_the_first_release_line() -> None:
+    """润色指令必须明确要求补到首发资格线，否则首发永远开不起来。"""
+    agent = _polish_agent("robot_notes")
+
+    directive = agent._auto_publish_directive()
+
+    assert str(agent.NARRATIVE_FIRST_RELEASE_LINE) in directive, (
+        "润色指令没有提到首发资格线，模型补写时不知道要补到多少"
+    )
+    assert "首发" in directive
+    # 上限必须存在，避免"为了凑字数扩写"（这正是 09-19 踩过的坑）
+    assert str(agent.NARRATIVE_POLISH_TARGET_MAX) in directive
 
 
 def test_industry_polish_directive_keeps_its_own_target() -> None:

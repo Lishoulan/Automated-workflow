@@ -1491,10 +1491,16 @@ class TopicAutomationService:
     def _build_word_target(self, topic: TopicCandidate) -> int:
         topic_mode = self._topic_mode(topic)
         if topic_mode == "social_story":
-            # 故事体裁写不到 1800 字。实测 glm-4-flash 在人情故事题材上稳定产出
-            # 1000-1300 字，硬要 1750 会把模型逼向注水或编造细节，而自动发布的
-            # 字数下限是 1750 —— 结果是永远发不出去（dry-run 实测正文 1202 字被拦）。
-            return max(1000, 800)
+            # ⚠️ 2026-09-21：从 1000 提到 1700 —— **头条首发激励要求正文不少于 1500 字**，
+            # 低于 1500 会被 `publish_service` 自动取消首发声明（只影响收益，不影响发布）。
+            #
+            # 原先返回 1000 的理由是「故事体裁写不到 1800 字，硬要会逼模型注水」。
+            # 那个顾虑对**旧模型**成立，但对当前免费模型不成立：实测
+            # glm-4-flash-250414 在 JSON 模式下要求 1600/2000/2400 字时，
+            # 实际产出 1665/1848/1862 字，finish_reason=stop，无截断。
+            # 之前只写 1000 出头，是因为提示词只要 1100 —— 是"没要求"，不是"写不出"。
+            # 取 1700 给 1500 的资格线留出余量（模型欠一点也仍能达标）。
+            return max(1700, 800)
         if topic_mode == "hot_topic":
             return max(800, 600)
         if topic_mode == "sports":

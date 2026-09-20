@@ -568,7 +568,48 @@ writer 的扩展资格、review 的信息密度评分、具象钩子放宽、人
   （模型名、原始错误、全部判据）—— 这类"标志位静默改变行为"的地方，
   日志必须自证，否则只能靠猜。
 
-### 4.20 仍待观察
+### 4.20 评分翻转：叙事体裁必须给模型一套"故事尺子"（2026-09-20 08:5x）
+
+用**真实运行**（16 次模型调用）跑出的一篇 1333 字完整故事稿，评分曾经是：
+
+    title_attraction = 20   information_density = 66   overall = 63
+    （自动发布门槛 70；`information_density <= 68` 还会判 needs_revision）
+    → review_status = pending / revise_before_publish
+
+### 根因：模型拿不到体裁说明，就按产业稿打分
+
+`ReviewAgent` 的两条评分路径里，**只要模型返回了合法 JSON 就用模型的分数** ——
+所以问题不在打分函数（我上一轮改的 `_score_title` / `_score_information_density`
+只在"模型输出无效"时兜底），而在**给模型的评分指引**。
+
+而 `_hot_topic_review_note()` 对**长青题返回空串**
+（判据是 `data_report.is_hot_topic`，而长青题为 False），
+于是模型完全不知道自己在评一篇人情故事：标题没有公司名/产业链/订单 → 20 分。
+
+### 修法与效果
+
+新增 `_narrative_review_note()` 并在 `_hot_topic_review_note()` 里**优先**返回它
+（体裁判据与是否热榜无关），明确告诉模型换尺子：标题看**人物+冲突+代入感**，
+并写明"**不要因为没有公司名、产业链或订单金额而扣分**"；信息密度看**具体细节**。
+
+同一篇稿子的评分变化：
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| `overall_score` | 63 | **93** |
+| `title_attraction` | 20 | **98** |
+| `information_density` | 66 | **96** |
+| `pass_status` | ready_with_light_edit | **ready** |
+| `review_status` | pending / revise_before_publish | **approved** |
+
+同时把 `_is_narrative_domain()` 提到 `BaseAgent`（权威判据 = 账号配置），
+各 agent 需要"换尺子"时统一用它。
+
+> **这是本轮最有价值的发现**：前面几轮我一直在改**打分函数**，
+> 但模型给分时根本不走那些函数。判断"评分体系是否按体裁分流"，
+> 要看**给模型的提示词里有没有体裁说明**，而不是看本地启发式函数。
+
+### 4.21 仍待观察
 
 | # | 问题 | 说明 |
 |---|---|---|

@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlencode
 from toutiao_content_factory.config import AppSettings, RPAResilienceSettings
 from toutiao_content_factory.constants.selectors import TOUTIAO_EDITOR_PAGE, TOUTIAO_WEITOUTIAO_PAGE
 from toutiao_content_factory.models import PublishRecord
+from toutiao_content_factory.services.automation import TOPIC_DEDUP_WINDOW_DAYS
 from toutiao_content_factory.services.article_sanitizer import (
     clean_article_text,
     looks_like_html_document,
@@ -5794,13 +5795,20 @@ class PublishService:
         去重窗口从“仅当天”扩展到“近7天”，与 RULE_009 对齐。
         历史数据表明：'日本机场成中国机器人试验场' 在6天内被发布3次，
         单篇展现从11.7万降至548，跨天重复发布是核心泄漏点。
+
+        ⚠️ 2026-09-21：窗口天数改为引用 `TOPIC_DEDUP_WINDOW_DAYS`，
+        与选题层 `TopicAutomationService._load_published_keys_for_today` 共用同一常量。
+        这两层曾经各写各的（这里 7 天、那里只有当天），后果是选题层放行的题
+        会在写完稿之后才被这里拦下，当天一篇都发不出去（云端 run 35523301070）。
         """
         normalized_title = self._normalize(topic_title)
-        cutoff = (datetime.now() - timedelta(days=7)).date().isoformat()
+        cutoff = (
+            datetime.now().date() - timedelta(days=TOPIC_DEDUP_WINDOW_DAYS - 1)
+        ).isoformat()
         for record in self._load_history():
             if record.status not in self.SUCCESS_HISTORY_STATUSES:
                 continue
-            if not record.published_at or record.published_at < cutoff:
+            if not record.published_at or record.published_at[:10] < cutoff:
                 continue
             if topic_url and record.topic_url and topic_url == record.topic_url:
                 return True
@@ -5808,7 +5816,9 @@ class PublishService:
                 return True
         return False
 
-    def _was_article_title_published_recently(self, article_title: str, *, days: int = 7) -> bool:
+    def _was_article_title_published_recently(
+        self, article_title: str, *, days: int = TOPIC_DEDUP_WINDOW_DAYS
+    ) -> bool:
         """检查近7天是否已发布过相同或高度相似的最终文章标题。
 
         基于 RULE_009 的编辑距离≤3 阈值进行模糊匹配。
@@ -5819,7 +5829,9 @@ class PublishService:
         normalized_target = self._normalize(article_title)
         if not normalized_target:
             return False
-        cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
+        cutoff = (
+            datetime.now().date() - timedelta(days=TOPIC_DEDUP_WINDOW_DAYS - 1)
+        ).isoformat()
         for record in self._load_history():
             if record.status not in self.SUCCESS_HISTORY_STATUSES:
                 continue
@@ -5882,7 +5894,9 @@ class PublishService:
         target_skeleton = self._title_structural_skeleton(normalized_target)
         if len(target_skeleton) < 6:
             return False
-        cutoff = (datetime.now() - timedelta(days=7)).date().isoformat()
+        cutoff = (
+            datetime.now().date() - timedelta(days=TOPIC_DEDUP_WINDOW_DAYS - 1)
+        ).isoformat()
         for record in self._load_history():
             if record.status not in self.SUCCESS_HISTORY_STATUSES:
                 continue

@@ -201,6 +201,15 @@ class TopicCollectionService:
         "肇事",
         "撞人",
         "被撞",
+        # 消费/服务纠纷 —— 同属民生，但常不带人物称谓也不带事故词。
+        # ⚠️ 2026-09-21：新增这些是因为长青池扩到 36 条时，「办了预付卡的美容店
+        # 突然关门，几十位顾客起诉维权」被判成"没有人的生活处境"而遭边界过滤。
+        # 「预付卡/关店/退款/维权」正是这类消费纠纷的主体，普通人维权故事的核心。
+        "预付卡",
+        "关店",
+        "退款",
+        "维权",
+        "消费者",
     )
     SOCIAL_STORY_LOW_SIGNAL_TOKENS = (
         # 体育
@@ -940,6 +949,39 @@ class TopicCollectionService:
             return now_local - timedelta(days=1)
         if value.startswith("前天"):
             return now_local - timedelta(days=2)
+
+        # ⚠️ 2026-09-21：**必须**先按 ISO-8601 解析带偏移量的时间戳。
+        #
+        # 热榜采集器写的是 `datetime.now(timezone.utc).isoformat()`，形如
+        # `2026-09-20T17:21:55+00:00`。而下面 `parsedate_to_datetime` 只认 RFC 2822
+        # （`parsedate_to_datetime('2026-09-20T17:21:55+00:00')` 直接抛 ValueError），
+        # 于是这个值一路掉到最底下的**仅日期**分支，被 `value[:10]` 截成 `2026-09-20`，
+        # 时刻则被填成"当前时钟"（`hour=now_local.hour, ...`）。
+        #
+        # 后果实测（2026-09-21 01:22 本地）：一条**刚刚**发布的头条热榜题
+        #     真实时刻：2026-09-20 17:22 UTC = 2026-09-21 01:22 +08:00
+        #     解析结果：2026-09-19 17:22 UTC = 2026-09-20 01:22 +08:00
+        # 恰好被算成"24 小时零几分钟前"，而 `max_topic_age_hours=24` ——
+        # **56 条热榜题里 48 条被判 stale 丢掉**，只剩 8 条，再被赛道过滤清空，
+        # 最终 `daily_topics.json` 里 0 条选题。
+        #
+        # 于是整条链路降级成："热榜题池永远为空 → 长青兜底 → 长青题发过就撞 7 天
+        # 去重 → 当天一条都发不出去"。表面上像"网络抓不到热点"，
+        # 实际是这一个时区解析错误。
+        #
+        # 偏移量里的 `+00:00` 表示**绝对时刻**，必须原样保留，不能再套本地时区。
+        try:
+            parsed_iso = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        else:
+            # 无偏移量时 `fromisoformat` 给的是 naive datetime，而下游
+            # `_filter_by_freshness` 会做 `astimezone(timezone.utc)` 比较 ——
+            # naive 值混进去要么抛 TypeError，要么被静默按本地时区解释。
+            # 本模块其余分支（date_only / chinese_datetime）都统一用 local_tz，
+            # 这里保持一致：无偏移量即按本地时间理解。
+            return parsed_iso if parsed_iso.tzinfo else parsed_iso.replace(tzinfo=local_tz)
+
         try:
             return parsedate_to_datetime(value)
         except (TypeError, ValueError):
@@ -976,9 +1018,17 @@ class TopicCollectionService:
         for pattern in date_only_patterns:
             try:
                 parsed = datetime.strptime(value[:10], pattern)
+                # ⚠️ 2026-09-21：这里原来把时刻填成"当前时钟"
+                # （`hour=now_local.hour, minute=now_local.minute`），
+                # 于是"仅日期"来源的条目，其判定年龄会随当天时刻漂移：
+                #   03:00 采集 → 年龄 ≈ 27 小时 → 判 stale 丢掉
+                #   23:00 采集 → 年龄 ≈ 23 小时 → 保留
+                # 同一篇文章的结果取决于**几点跑**，这没有道理。
+                # 按当天 00:00 折算，则"今天的文章"年龄恒在 0~24 小时之间，
+                # 恒被保留；"昨天的文章"恒被丢弃。这才是日期粒度应有的语义。
                 return parsed.replace(
-                    hour=now_local.hour,
-                    minute=now_local.minute,
+                    hour=0,
+                    minute=0,
                     second=0,
                     microsecond=0,
                     tzinfo=local_tz,
@@ -1071,6 +1121,11 @@ class TopicCollectionService:
                 keep.append(topic)
                 continue
 
+            # 防御：解析器若回退出 naive datetime，`astimezone` 会**静默**按本地时区
+            # 解释它（不报错），从而又引入一次隐式时区换算。这里显式补上本地时区，
+            # 让行为可预期，而不是依赖 `astimezone` 的隐含语义。
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=datetime.now().astimezone().tzinfo)
             published_utc = published.astimezone(timezone.utc)
             if published_utc < cutoff:
                 filtered_out["stale"] += 1

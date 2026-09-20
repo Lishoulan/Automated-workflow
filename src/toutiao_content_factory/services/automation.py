@@ -6,7 +6,7 @@ import re
 from difflib import SequenceMatcher
 import shutil
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,11 @@ from toutiao_content_factory.config import AppSettings, sanitize_account_slug
 from toutiao_content_factory.models import DailyTopicsReport, TopicCandidate
 from toutiao_content_factory.services.schema_guard_service import SchemaGuardService
 from toutiao_content_factory.services.topic_pool_service import TopicPoolService
+
+
+# 选题去重窗口（天）。必须与 `PublishService._was_topic_published` 的 7 天窗口一致：
+# 选题层允许的选题，发布层也必须允许；否则会出现"写完才被重复拦截、当天报废"。
+TOPIC_DEDUP_WINDOW_DAYS = 7
 
 
 # 内部选题池标识 → 面向 LLM 的人类可读来源名
@@ -1704,7 +1709,33 @@ class TopicAutomationService:
                     return True
         return False
 
+    def _recent_run_name_prefixes(self, days: int) -> tuple[str, ...]:
+        """近 `days` 天（含今天）的运行目录名前缀，形如 ``("20260920", "20260919", ...)``。
+
+        运行目录名以 ``YYYYMMDD-HHMMSS_选题`` 开头，用前缀匹配即可按天筛选。
+        """
+        today = datetime.now().date()
+        return tuple(
+            (today - timedelta(days=offset)).strftime("%Y%m%d")
+            for offset in range(max(1, days))
+        )
+
     def _load_published_keys_for_today(self) -> dict[str, set[str]]:
+        """近期已发布选题的标题/链接指纹。
+
+        ⚠️ 2026-09-21：窗口从"仅当天"放宽到 `TOPIC_DEDUP_WINDOW_DAYS` 天。
+        原先这里只看当天，而发布层 `PublishService._was_topic_published` 看 **7 天** ——
+        两层判据不一致的后果实测如下（云端 run 35523301070）：
+
+            07:00 定时运行发布「独居老人摔倒」→ 成功
+            选题层：当天记录里没有它 → 明天照样把它排在第一
+            发布层：7 天记录里有它   → Duplicate publish blocked
+            → 整天一篇都发不出去，而且是"写完了才被拦"，白烧一遍模型调用
+
+        去重的目的（RULE_009：同一选题 6 天内发 3 次，单篇展现从 11.7 万掉到 548）
+        只有在**选题阶段**生效才有意义 —— 发布阶段才拦等于当天报废。
+        所以这里必须与发布层取同一个窗口，宁可早一点换题，不要写完才发现发不出去。
+        """
         history_path = self.settings.output_dir / self.settings.publishing.history_filename
         result = {"titles": set(), "urls": set()}
         if not history_path.exists():
@@ -1712,12 +1743,16 @@ class TopicAutomationService:
         payload = json.loads(history_path.read_text(encoding="utf-8"))
         if not isinstance(payload, list):
             return result
-        today = datetime.now().date().isoformat()
+        cutoff = (
+            datetime.now().date() - timedelta(days=TOPIC_DEDUP_WINDOW_DAYS - 1)
+        ).isoformat()
         for item in payload:
             if not isinstance(item, dict):
                 continue
             published_at = str(item.get("published_at", ""))
-            if not published_at.startswith(today):
+            # `published_at` 是 ISO 时间戳，按日期部分做**字典序**比较即可；
+            # 空值视为未知、不参与去重（旧记录里存在缺字段的历史条目）。
+            if not published_at or published_at[:10] < cutoff:
                 continue
             topic_title = str(item.get("topic_title", ""))
             topic_url = str(item.get("topic_url", ""))
@@ -1728,14 +1763,20 @@ class TopicAutomationService:
         return result
 
     def _load_generated_keys_for_today(self) -> dict[str, set[str]]:
+        """近期**已经生成过稿件**的选题指纹（无论最终是否发布）。
+
+        窗口同样取 `TOPIC_DEDUP_WINDOW_DAYS` 天。已生成但没发出去的选题
+        （被字数门槛/评分拦下、或被去重拦下的那些）如果不计入，明天还会被再选一次，
+        于是"同一选题反复写、反复发不出去"会一直空转。
+        """
         result = {"titles": set(), "urls": set()}
         runs_root = self.settings.output_dir / self.settings.automation.archive_dirname
         if not runs_root.exists():
             return result
 
-        today = datetime.now().strftime("%Y%m%d")
+        prefixes = self._recent_run_name_prefixes(TOPIC_DEDUP_WINDOW_DAYS)
         for run_dir in runs_root.iterdir():
-            if not run_dir.is_dir() or not run_dir.name.startswith(today):
+            if not run_dir.is_dir() or not run_dir.name.startswith(prefixes):
                 continue
             topic_path = run_dir / f"{self.settings.automation.selected_topic_basename}.json"
             if not topic_path.exists():
@@ -1757,7 +1798,9 @@ class TopicAutomationService:
 
     def _load_cross_account_published_keys_for_today(self) -> dict[str, set[str]]:
         result = {"titles": set(), "urls": set()}
-        today = datetime.now().date().isoformat()
+        cutoff = (
+            datetime.now().date() - timedelta(days=TOPIC_DEDUP_WINDOW_DAYS - 1)
+        ).isoformat()
         for account_key in self._iter_other_enabled_account_keys():
             history_path = self._resolve_output_dir_for_account(account_key) / self.settings.publishing.history_filename
             if not history_path.exists():
@@ -1772,7 +1815,7 @@ class TopicAutomationService:
                 if not isinstance(item, dict):
                     continue
                 published_at = str(item.get("published_at", "")).strip()
-                if not published_at.startswith(today):
+                if not published_at or published_at[:10] < cutoff:
                     continue
                 topic_title = str(item.get("topic_title", "")).strip()
                 topic_url = str(item.get("topic_url", "")).strip()
@@ -1784,13 +1827,13 @@ class TopicAutomationService:
 
     def _load_cross_account_generated_keys_for_today(self) -> dict[str, set[str]]:
         result = {"titles": set(), "urls": set()}
-        today = datetime.now().strftime("%Y%m%d")
+        prefixes = self._recent_run_name_prefixes(TOPIC_DEDUP_WINDOW_DAYS)
         for account_key in self._iter_other_enabled_account_keys():
             runs_root = self._resolve_output_dir_for_account(account_key) / self.settings.automation.archive_dirname
             if not runs_root.exists():
                 continue
             for run_dir in runs_root.iterdir():
-                if not run_dir.is_dir() or not run_dir.name.startswith(today):
+                if not run_dir.is_dir() or not run_dir.name.startswith(prefixes):
                     continue
                 topic_path = run_dir / f"{self.settings.automation.selected_topic_basename}.json"
                 if not topic_path.exists():

@@ -1249,36 +1249,62 @@ class PublishService:
                                     "No further publish attempt was made; result marked publish_uncertain."
                                 )
                                 publish_verified = False
+                                return {
+                                    "status": "publish_uncertain",
+                                    "published_at": datetime.now().isoformat(timespec="seconds"),
+                                    "external_url": page.url,
+                                    "notes": self._finalize_notes(notes),
+                                    "cover_mode": cover_mode,
+                                    "inline_images": inline_image_summary,
+                                    "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
+                                    "backend_response_summary": self._compact_backend_response(response_json),
+                                    "publish_request_summary": {
+                                        "url": str(submitted_event.get("url", page.url)),
+                                        "save_mode": "draft_auto_submitted",
+                                        "pgc_id": pgc_id,
+                                        "media_payload": draft_media_payload,
+                                    },
+                                    "publish_verified": False,
+                                }
+
+                            # ⚠️⚠️ 2026-09-21 关键修复：save=1 的 pgc_id **不等于已发布**。
+                            #
+                            # 这里原来直接 `return status=submitted_for_review`，
+                            # 注释写着「Draft save auto-submitted article for review on
+                            # Toutiao. Skipping manual publish click.」—— 那个判断是错的。
+                            #
+                            # 实测证据（scripts/list_recent_works.py / verify_works_visibility.py
+                            # 读头条后台真实口径）：
+                            #
+                            #     全部 177 条 / 已发布 0 条 / 仅我可见 176 条 / 审核未通过 1 条
+                            #
+                            #   gid=7687678730147316251 老人去世，房产过户：兄弟姐妹为何反目  → 仅我可见
+                            #   gid=7687304540994978358 独居老人摔倒两天，邻居报警破门…        → 仅我可见
+                            #   gid=7687264638244831784 养老困境：独居老人摔倒…                → 仅我可见
+                            #
+                            # 三条「历史发布成功」全是仅我可见。也就是说：**一次都不曾真正发布**，
+                            # 而这条捷径正是原因 —— 它把「草稿已持久化（头条对存草稿同样回 pgc_id）」
+                            # 当成了「文章已提交」，真正的发布按钮从来没被点过。
+                            #
+                            # 同一份 notes 里其实早有反证，只是当时没被当成失败信号：
+                            #     "Draft footer after no-cover selection: 草稿已保存"
+                            #     "Publish verification: article not found in content list.
+                            #      May need manual check."
+                            #
+                            # 现在的口径：save=1 只证明**草稿已落库、编辑器内容可安全提交**，
+                            # 它是发布的前置条件，不是发布本身。拿到 pgc_id 后继续往下走，
+                            # 去点真正的发布按钮。
+                            if draft_save_confirmed:
+                                notes.append(
+                                    "Draft persisted via save=1 override (pgc_id=%s); "
+                                    "proceeding to the real publish action." % pgc_id
+                                )
                             else:
-                                if draft_save_confirmed:
-                                    notes.append(
-                                        "Draft save auto-submitted article for review on Toutiao. "
-                                        "Skipping manual publish click."
-                                    )
-                                else:
-                                    notes.append(
-                                        "Toutiao accepted the save=1 submission with a pgc_id and complete "
-                                        "media payload although the draft footer remained in a saving state. "
-                                        "Treating the article as submitted_for_review and skipping a duplicate click."
-                                    )
-                                publish_verified = self._verify_toutiao_publish_success(page, title, notes)
-                            return {
-                                "status": "publish_uncertain" if submission_uncertain else "submitted_for_review",
-                                "published_at": datetime.now().isoformat(timespec="seconds"),
-                                "external_url": page.url,
-                                "notes": self._finalize_notes(notes),
-                                "cover_mode": cover_mode,
-                                "inline_images": inline_image_summary,
-                                "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
-                                "backend_response_summary": self._compact_backend_response(response_json),
-                                "publish_request_summary": {
-                                    "url": str(submitted_event.get("url", page.url)),
-                                    "save_mode": "draft_auto_submitted",
-                                    "pgc_id": pgc_id,
-                                    "media_payload": draft_media_payload,
-                                },
-                                "publish_verified": publish_verified,
-                            }
+                                notes.append(
+                                    "Toutiao accepted the save=1 submission with a pgc_id although the "
+                                    "draft footer remained in a saving state. Proceeding to the real "
+                                    "publish action; the draft payload is already persisted."
+                                )
 
                     self._dismiss_ai_assistant_drawer(page, notes)
                     page.wait_for_timeout(700)

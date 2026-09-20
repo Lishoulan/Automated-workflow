@@ -725,6 +725,97 @@ ISO 时间戳解析错 8 小时
 **注意**："守卫失败"与"云端今天没发"在日志里长得几乎一样，
 都只是 `Cross-channel state unavailable` 一行 INFO。这类**静默降级**是本项目最难查的故障类型。
 
+### 4.25 ⚠️⚠️ 最严重的一个：一次都不曾真正发布（2026-09-21 发现）
+
+**用户的原话：「为什么发布的内容都是仅我可见」。** 这一句直接指向了真因，
+而在此之前所有"发布成功"的结论都是错的。
+
+#### 实测证据
+
+用头条自己的接口读真实可见性（`scripts/verify_works_visibility.py`，
+`GET /mp/agw/creator_center/list/v2`，`status` 就是可见性分类）：
+
+```
+全部 177 条 / 已发布 0 条 / 仅我可见 176 条 / 审核未通过 1 条
+```
+
+那些被当成"发布成功"的记录，pgc_id 一个不缺，但可见性全是 `status=4 仅我可见`：
+
+| gid | 标题 | 真实状态 |
+|---|---|---|
+| 7687678730147316251 | 老人去世，房产过户：兄弟姐妹为何反目 | 仅我可见 |
+| 7687304540994978358 | 独居老人摔倒两天，邻居报警破门揭示照护盲区 | 仅我可见 |
+| 7687264638244831784 | 养老困境：独居老人摔倒，家庭责任与社区服务如何结合 | 仅我可见 |
+
+**「有 pgc_id」被当成了「已发布」。** 这是整件事的根源，也是为什么收益一直是 0。
+
+#### 根因：把「存草稿」当成了「已发布」
+
+`_publish_to_toutiao` 里有一个必要的 save 覆盖路由 —— 头条会以 7050 拒收
+编辑器的首个 `save=0` 请求，所以必须把它改写成 `save=1` 才能落库。
+但改完之后原代码在这里**直接 return**：
+
+```python
+notes.append("Draft save auto-submitted article for review on Toutiao. "
+             "Skipping manual publish click.")
+return {"status": "submitted_for_review", ...}      # ← 发布按钮从未被点过
+```
+
+**头条对存草稿同样返回 `pgc_id`**，所以"响应里有 pgc_id"根本不能证明文章已提交。
+`_has_accepted_submission_evidence` 当时只校验「成功码 + 非零 pgc_id」，
+而 `pgc_id` 对草稿也成立 —— 两个错误的假设叠加，让"跳过发布点击"看起来有充分依据。
+
+同一份 `publish_result.json` 里其实早有反证，只是没被当成失败信号：
+
+```
+"Draft footer after no-cover selection: 草稿已保存"
+"Publish verification: article not found in content list. May need manual check."
+```
+
+第 28 条明说了「在内容列表里找不到文章」，而代码却把这一条当作 debug 提示放过了。
+
+#### 另两条同时存在的质量缺陷
+
+1. **取消了「头条首发」声明**：765 字 < 1500 字，代码自动 `Cleared publish
+   options: 头条首发`。首发激励是初期最重要的推荐量来源。
+2. **预检早已给出可疑标记**，但只是 warning（`blocking_flags` 为空）：
+   `article/new.media.content_cache.source=third-auto-douyin_sync_xigua`、
+   `not_claim_origin_cnt=1`。
+
+#### 修法
+
+- 把 save 覆盖分支的 early return 去掉：`save=1` 只证明**草稿已落库、
+  编辑器内容可安全提交**，它是发布的前置条件而不是发布本身；拿到 pgc_id 后
+  继续往下走，去点真正的发布按钮。
+- 保留唯一允许的早退：证据不完整时返回 `publish_uncertain`（保守失败，
+  绝不谎报成功）。
+- 确认覆盖器不会拦截真正的发布请求：`state["consumed"]` 保证它只改一次，
+  第二次 `save=0` 会被 `passed_save_0_after_consumed` 正常放行。
+
+#### 验证手段
+
+`scripts/list_recent_works.py`（只读）按 gid 查真实状态；
+`scripts/verify_works_visibility.py` 给出分类计数。
+另用 `.runtime/probe_unhide.py` 做了一个**可逆**实验确认可见性开关可控：
+
+```
+cancel=1   → 200 {"code":0,"data":{"itemStatus":20}}  → status=2 已发布
+cancel 留空 → 200 {"code":0,"data":{"itemStatus":40}}  → status=4 仅我可见
+```
+
+需要把已发作品放回公域时，用 `POST /mp/agw/creator_center/hide` 带 `cancel=1`，
+完全可逆。
+
+回归测试：`tests/test_publish_actually_publishes.py`（4 项），
+用 AST 断言控制流形状 —— 「以已提交身份返回」的 return 必须排在发布点击之后。
+已验证：还原旧行为时该套测试变红 2 项。
+
+> **教训**：这个项目里"成功"的定义必须来自**平台侧的真实状态**，
+> 而不是我们自己写入的 `status` 字段。我们写的 `submitted_for_review`
+> 一路都在说"成功"，而平台侧一直是"仅我可见"。
+> 判断发布是否真的发生，只有一个可靠来源：
+> `verify_works_visibility.py` 读到的 `status=2 已发布`。
+
 
 
 
@@ -747,9 +838,25 @@ ISO 时间戳解析错 8 小时
 `.runtime/account_profile_backup.json`；改后重新读页面确认生效）。
 原值已备份，随时可改回。
 
-### 2. 旧内容处理 🔄 进行中
+### 2. 旧内容处理 ✅ 已完成（2026-09-21 复核）
 
-**共 167 条内容**（每页 10 条，共 17 页）。采用「**设为仅我可见**」而不是删除，
+**平台真实口径：全部 177 条 → 仅我可见 176 条、已发布 0 条、审核未通过 1 条。**
+
+那 1 条审核未通过稿（`gid=1865334859104512`「日本机场成中国机器人试验场…」）
+的 `menu_list.show_hide=false`，即**平台自己不允许隐藏它**，属正常残留，
+且它本来就不在公域可见。**已发布作品为 0 = 旧内容清理完成。**
+
+> ⚠️ **执行方式的重要变更**：`scripts/set_works_private.py`（Playwright 版）
+> **在本沙箱内无法运行**——Chromium 的 Mojo IPC 需要可写的具名管道，沙箱一律
+> 拒绝（`WinError 5` / `spawn EPERM`）。同目录 `scripts/_asyncio_pipe_shim.py`
+> 记录了完整排查过程与边界（playwright / selenium / 纯 CDP 皆然）。
+> 因此改走**平台 HTTP 接口**，功能等价、无需浏览器：
+> - 执行：`scripts/set_works_private_http.py`（`POST /mp/agw/creator_center/hide`）
+> - 复核：`scripts/verify_works_visibility.py`（**全程只读**）
+> - 进度：`.runtime/visibility_progress.json`（gid 口径，已含平台最终状态），
+>   原始记录在 `.runtime/visibility_progress_http.json`。
+
+**原方案说明（共 167 条，每页 10 条，共 17 页）**：采用「**设为仅我可见**」而不是删除，
 理由：一次性删除上百篇在平台看是异常操作、对账号权重影响未知，
 而「仅我可见」已能让旧内容从公域与主页消失，且**可逆**。
 
@@ -770,8 +877,9 @@ ISO 时间戳解析错 8 小时
 .venv\Scripts\python.exe scripts\set_works_private.py --start-page 2 --limit 40
 ```
 
-> 状态：第 1 页 10 条已确认完成，第 2 页部分完成，**其余约 155 条待处理**。
-> 中断后重跑会跳过已完成的。
+> 状态：**已全部完成**（2026-09-21）。改用 HTTP 版后共处理 176 条，
+> 本轮新增 9 条（已发布 9 → 0）。如上所述，浏览器版仅作历史记录保留。
+> **本项自动化可以暂停了。**
 
 ### 3. 新内容持续更新 ⏸️ 管道已就绪，云端定时**暂时关闭**
 
@@ -790,7 +898,7 @@ ISO 时间戳解析错 8 小时
 |---|---|
 | 全量测试 | **880 passed, 3 skipped** |
 | 账号名 / 简介 | ✅ 已改并复核 |
-| 旧内容下架 | ⏸️ **已放弃**（用户明确表示手动处理，让自动化专注自动运营） |
+| 旧内容下架 | ✅ **已完成**（2026-09-21）：仅我可见 176 / 已发布 0 |
 | 选题采集 | ✅ 采到真实社会新闻，无科技噪声 |
 | 素材抓取（关键依赖） | ⚠️ **偶发**：同一选题一次 0 字失败、一次 3822 字成功 |
 | 无素材时的行为 | ✅ 换题重试，全失败则**不发**（2026-09-19 新增） |

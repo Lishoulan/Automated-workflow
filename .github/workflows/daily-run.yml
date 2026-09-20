@@ -1,4 +1,4 @@
-﻿name: Daily Run
+name: Daily Run
 
 on:
   # ✅ 定时已恢复（2026-09-19）。停用期间（09-19 凌晨）列出的两个障碍都已解决：
@@ -339,6 +339,40 @@ jobs:
           SECRET_DEFAULT_FAST_MODE="${{ secrets.CLOUD_FAST_MODE }}"
           SECRET_DEFAULT_PUBLISH_TOUTIAO="${{ secrets.CLOUD_TOUTIAO_AUTOPUBLISH }}"
 
+          # ⚠️ 2026-09-21：定时的账号原来**只**由 Secret `CLOUD_DEFAULT_ACCOUNT`
+          # 决定，而它是 `default`。后果是：云端定时一直在给 `default`（手蓝数据笔记）
+          # 发文，`robot_notes`（手蓝人间故事）在云端**从来没有被定时跑过** ——
+          # 它那些"云端运行成功"全部来自手动 workflow_dispatch。
+          #
+          # 而 Secret 的值在仓库里读不到、也审不了（`gh secret list` 只给名字），
+          # 于是"云端到底在给哪个账号发文"这件事一直不透明。实测发现它的方式很偶然：
+          # 看 publish-state 分支里的 entry key —— `2026-09-21::default`，
+          # 而 robot_notes 是 `2026-09-19::robot-notes`。
+          #
+          # 现在改为：**仓库变量 `CLOUD_SCHEDULE_ACCOUNTS` 优先**（值可见、可审、可改），
+          # 逗号分隔的账号列表；定时运行的账号数按 `github.run_number` 轮转，
+          # 于是多个账号都能各自拿到定时名额，而 Secret 退化为兜底。
+          #
+          # 未设置该变量时行为与以前完全一致（用 Secret 里的 default account）。
+          SCHEDULE_ACCOUNTS_RAW="${{ vars.CLOUD_SCHEDULE_ACCOUNTS }}"
+
+          pick_schedule_account() {
+            # 把逗号分隔列表规范化后，按 run_number 轮转取一个。
+            local raw="$1"
+            local normalized
+            normalized="$(echo "$raw" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' || true)"
+            if [ -z "$normalized" ]; then
+              return 1
+            fi
+            local count
+            count="$(echo "$normalized" | wc -l | tr -d ' ')"
+            if [ "$count" -le 0 ]; then
+              return 1
+            fi
+            local index=$(( ${GITHUB_RUN_NUMBER:-0} % count ))
+            echo "$normalized" | sed -n "$((index + 1))p"
+          }
+
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             RUN_ACCOUNT="$(first_non_empty "$INPUT_ACCOUNT" "$SECRET_DEFAULT_ACCOUNT" "default")"
             RUN_DRY_RUN="$(normalize_bool "$(first_non_empty "$INPUT_DRY_RUN" "$SECRET_DEFAULT_DRY_RUN" "false")")"
@@ -346,11 +380,13 @@ jobs:
             RUN_PUBLISH_TOUTIAO="$(normalize_bool "$(first_non_empty "$INPUT_PUBLISH_TOUTIAO" "$SECRET_DEFAULT_PUBLISH_TOUTIAO" "true")")"
             RUN_TOPIC_TITLE="${WORKFLOW_TOPIC_TITLE:-}"
           else
-            RUN_ACCOUNT="$(first_non_empty "$SECRET_DEFAULT_ACCOUNT" "default")"
+            SCHEDULED_ACCOUNT="$(pick_schedule_account "$SCHEDULE_ACCOUNTS_RAW" || true)"
+            RUN_ACCOUNT="$(first_non_empty "$SCHEDULED_ACCOUNT" "$SECRET_DEFAULT_ACCOUNT" "default")"
             RUN_DRY_RUN="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_DRY_RUN" "false")")"
             RUN_FAST_MODE="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_FAST_MODE" "true")")"
             RUN_PUBLISH_TOUTIAO="$(normalize_bool "$(first_non_empty "$SECRET_DEFAULT_PUBLISH_TOUTIAO" "true")")"
             RUN_TOPIC_TITLE=""
+            echo "Scheduled account resolution: CLOUD_SCHEDULE_ACCOUNTS='${SCHEDULE_ACCOUNTS_RAW}' run_number=${GITHUB_RUN_NUMBER:-0} -> RUN_ACCOUNT='${RUN_ACCOUNT}'"
           fi
 
           # 135 Editor is retired for this workflow. Keep the legacy dispatch

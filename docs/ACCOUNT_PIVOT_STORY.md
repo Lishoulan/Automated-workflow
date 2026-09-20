@@ -623,6 +623,109 @@ writer 的扩展资格、review 的信息密度评分、具象钩子放宽、人
 | 8 | 收益的可见节奏 | 头条 **T-1 结算、T 日可见 T-2** 数据，所以当天看到的数字反映前两天的表现。账号 `credit_score=95 article_revenue_benefit=True`（创作收益已开），`--collect-performance` 每日采集 |
 | 9 | 长青题素材天花板 | 见 4.12：必应不给长青查询返回新鲜新闻，最多只能拿到摘要拼出的 550~900 字。**这是架构性限制，不要再试图靠改标题解决** |
 
+### 4.22 ⚠️ 最隐蔽的一次故障：ISO 时间戳被"仅日期"分支吞掉（2026-09-21 01:xx）
+
+**症状**：云端运行"成功"，但当天一条都发不出去。日志里最像根因的两行是
+
+```
+[Topic Engine] 今日热点选题不足，已启用长青选题兜底: 老人去世后房产过户给儿子，其他子女起诉要回
+daily_topics.json is missing or empty for account=robot_notes. Falling back to local topic pool / evergreen topics.
+```
+
+看起来像"网络抓不到热点"。**不是。** 采集本身完全正常：
+
+```
+source_stats = {"baidu_hot": 24, "toutiao_hot": 24, "sina_social": 8}   # 56 条，全部 status=ok
+total_raw_items = 56
+total_selected_items = 0
+filtered_out = {"stale": 48, ...}
+```
+
+56 条里 **48 条被判"过期"丢掉**，剩 8 条又都是体育/时政/娱乐，被赛道判据清空。
+
+**根因**：热榜采集器写的时间戳是 `datetime.now(timezone.utc).isoformat()`，
+形如 `2026-09-20T17:21:55+00:00`。而 `_parse_datetime` 只认 RFC 2822 ——
+`parsedate_to_datetime('2026-09-20T17:21:55+00:00')` **直接抛 ValueError** ——
+于是这个值一路掉到最底下的"仅日期"分支：
+
+```python
+datetime.strptime(value[:10], "%Y-%m-%d")   # "2026-09-20"
+    .replace(hour=now_local.hour, minute=now_local.minute, ...)   # 时刻填"当前时钟"
+```
+
+实测（01:22 本地，`max_topic_age_hours=24`）：
+
+| | 值 |
+|---|---|
+| 真实时刻 | `2026-09-20 17:22 UTC` = `2026-09-21 01:22 +08:00`（刚刚发布） |
+| 解析结果 | `2026-09-20 01:22 +08:00` = `2026-09-19 17:22 UTC` |
+| 判定年龄 | 24 小时零几分钟 → **stale，丢掉** |
+
+**因果链**（每一环单独看都"合理"，合起来当天报废）：
+
+```
+ISO 时间戳解析错 8 小时
+  → 热榜题几乎全被判 stale
+  → 题池里只剩非社会故事题，被赛道判据清空
+  → 永远走长青兜底
+  → 长青题昨天刚发过，撞 7 天去重
+  → 写完稿才在发布层被拦 → 当天 0 篇
+```
+
+**修法**（`services/topic_collection.py`）：
+
+1. 新增 ISO-8601 优先解析（`datetime.fromisoformat`，兼容 `Z` 后缀）。
+   带偏移量时**原样保留绝对时刻**；无偏移量时补 `local_tz`，不返回 naive 值
+   （naive 值会让下游 `astimezone` 比较抛 `TypeError`）。
+2. "仅日期"分支不再把时刻填成"当前时钟"——那样同一篇文章 03:00 跑会被丢掉、
+   23:00 跑会被保留，**结果取决于几点跑**。改按当天 00:00 折算：
+   "今天"恒在窗口内，"昨天"恒在窗口外。
+3. `_filter_by_freshness` 对 naive 值显式补时区，不再依赖 `astimezone` 的隐含语义。
+
+**教训**：这套流水线的失效方式经常是"**降级路径正常执行**"而不是报错。
+`stale: 48` 这个数字一直就打在 `filtered_out` 里，但没人看——
+因为紧接着的一行"已启用长青选题兜底"看起来像在正常工作。
+**排查顺序应该是先读 `filtered_out`，再怀疑网络。**
+
+### 4.23 去重判据存在两份且窗口不同（2026-09-21）
+
+`PublishService._was_topic_published` 用 **7 天**窗口，而选题层
+`TopicAutomationService._load_published_keys_for_today` 只看**当天**。
+两层各写各的、都"看起来合理"，语义上却互相矛盾。后果（run 35523301070）：
+
+```
+07:00 定时运行发布「独居老人摔倒」→ 成功
+次日选题层：当天记录里没有它 → 照样排第一，模型跑完写作+评分
+发布层：7 天记录里有它 → "Duplicate publish blocked"
+→ 当天一篇都发不出去，而且是写完才被拦，整套模型调用全部白烧
+```
+
+**修法**：抽出 `automation.TOPIC_DEDUP_WINDOW_DAYS = 7`，发布层 `import` 它，
+删掉发布层硬编码的 `timedelta(days=7)`。测试**直接断言两层引用同一个常量**，
+并检查发布层源码里不再出现 `timedelta(days=7)`——让下次改一处忘另一处时立刻变红。
+
+> 这类"同源判据存在多份"在本项目里反复出现：标题闸门有三份
+> （`TitleAgent.validate_title_candidate` / `AgentWorkflowService._filter_titles_by_quality`
+> / `ReviewWorkflowService.select_auto_title`），去重窗口有两份。
+> **改动任何一条判据时，先搜它在几处被复制过。**
+
+### 4.24 跨通道守卫因全量 fetch 超时而静默失效（2026-09-21）
+
+云端与本地是两条独立通道，靠 `state/daily_publish_state.json`（`publish-state` 分支）
+互斥。`read_remote_state` 原来做**无深度限制**的 `git fetch origin publish-state`，
+这个仓库全量取一次要 **12 秒以上**，而调用方是每次 `daily_run` 开头的**同步**守卫——
+网络稍慢就撞上 `GIT_TIMEOUT_SECONDS`，函数返回 `{}`，守卫拿到 `None`，**静默失效**。
+
+后果（2026-09-20 实测）：云端 07:00 已发一篇，本地 21:35 那次没读到云端状态，
+**又发了一篇**——同一天两条图文，正是这个守卫存在的唯一目的。
+
+**修法**：加 `--depth=1`（我们只要一个文件的当前版本），耗时从 12 秒级降到亚秒级。
+已验证浅取后 `git log` / `git rev-list` / `git push` 均正常。
+
+**注意**："守卫失败"与"云端今天没发"在日志里长得几乎一样，
+都只是 `Cross-channel state unavailable` 一行 INFO。这类**静默降级**是本项目最难查的故障类型。
+
+
 
 
 ---

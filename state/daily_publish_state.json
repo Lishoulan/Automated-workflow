@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-09-21T02:01:56",
+  "updated_at": "2026-09-21T06:55:08",
   "entries": {
     "2026-09-16": {
       "toutiao": {
@@ -118,6 +118,14 @@
         "title": "老人去世，房产过户：兄弟姐妹为何反目",
         "publish_url": "",
         "recorded_at": "2026-09-21T02:01:56"
+      },
+      "toutiao_weitoutiao": {
+        "channel": "cloud",
+        "status": "submitted_for_review",
+        "pgc_id": "",
+        "title": "「老爹房过户给大儿子后，小弟小妹告赢了」",
+        "publish_url": "",
+        "recorded_at": "2026-09-21T06:55:08"
       }
     }
   }

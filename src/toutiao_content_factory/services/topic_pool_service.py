@@ -532,7 +532,22 @@ class TopicPoolService:
     # 类常量定义
     DEFAULT_MAX_AGE_HOURS = 48
     DEFAULT_PENDING_LIMIT = 24
-    DEFAULT_FALLBACK_LIMIT = 6
+    # ⚠️ 2026-09-21：`6` → `24`。
+    #
+    # `build_fallback_report` 每天取「pending 热点题 + 前 N 条长青题」组成兜底池。
+    # 而 `_load_evergreen_topics` 按「上次被用过的时间」升序排 —— **用过的排在前面**。
+    # 于是 N=6 时，池子前 6 个槽位恰好就是最近用过的那 6 条长青题；一旦它们落进
+    # 7 天去重窗口，这 6 个槽位**全部作废**，而后面 30 条没用过的题根本进不了池子。
+    #
+    # 实测（2026-09-21 云端 robot_notes）：图文虽然发出去了（选题层在候选循环里
+    # 还能继续往下试），但微头条补发直接 `no_topics` —— 它的补发池同样取这 6 条，
+    # 且没有候选循环可退，于是「No eligible topics were available for the
+    # WeiToutiao batch」，整次运行被判 `partial_success` → workflow **失败**。
+    #
+    # 取 24 是与 `DEFAULT_PENDING_LIMIT` 保持一致的自洽值：两类题源用同一档
+    # 取样规模，不会出现「热点题能取 24 条、长青题只能取 6 条」这种不对称。
+    # 单条题在提示词里只占十几个字段（约 200 字），24 条仍在可控范围内。
+    DEFAULT_FALLBACK_LIMIT = 24
     MAX_NUMBERS_EXTRACTED = 6
     MIN_FRESHNESS_SCORE = 35
     MAX_EVERGREEN_RANK = 12

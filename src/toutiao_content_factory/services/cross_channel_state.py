@@ -62,7 +62,21 @@ def read_remote_state(
 ) -> dict[str, Any]:
     """从远端分支读共享状态。任何失败都返回 `{}`（**不要当成「今天没发」的肯定证据**）。"""
     if refresh:
-        fetched = _run_git(project_root, ["fetch", "--quiet", remote, branch])
+        # ⚠️ 2026-09-21：加 `--depth=1`。
+        #
+        # 这里原来是无深度限制的 `git fetch origin publish-state`，实测这个仓库
+        # 拉完整历史要 **12 秒以上**，而调用方是每次 `daily_run` 开头的同步守卫 ——
+        # 网络稍慢就超过 `GIT_TIMEOUT_SECONDS`，于是 `read_remote_state` 返回 `{}`，
+        # `_cloud_published_today()` 拿到 None，守卫**静默失效**。
+        #
+        # 后果实测（2026-09-20）：云端 07:00 已发一篇，本地 21:35 那次守卫没读到
+        # 云端状态，又发了一篇 —— 同一天两条图文，正是这个守卫要防的事。
+        # 而"守卫失败"与"云端今天没发"在日志里长得几乎一样，很难发现。
+        #
+        # 我们只要这一个文件的当前版本，浅取一条提交即可，耗时从 12 秒降到亚秒级。
+        fetched = _run_git(
+            project_root, ["fetch", "--quiet", "--depth=1", remote, branch]
+        )
         if fetched is None or fetched.returncode != 0:
             logger.info(
                 "Cross-channel state unavailable (fetch %s/%s failed): %s",

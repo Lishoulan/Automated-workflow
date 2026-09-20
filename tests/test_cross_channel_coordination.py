@@ -258,6 +258,39 @@ def test_read_remote_state_degrades_to_empty(app_settings, monkeypatch) -> None:
     assert xstate.read_remote_state(app_settings.project_root) == {}
 
 
+def test_read_remote_state_uses_a_shallow_fetch(app_settings, monkeypatch) -> None:
+    """守卫必须用 `--depth=1` 取状态，不能用全量 fetch。
+
+    ⚠️ 2026-09-21：这个仓库全量 fetch 要 12 秒以上，而调用方是每次 `daily_run`
+    开头的**同步**守卫 —— 网络稍慢就超过 `GIT_TIMEOUT_SECONDS`，
+    `read_remote_state` 返回 `{}`，`_cloud_published_today()` 拿到 None，
+    守卫**静默失效**。实测后果（2026-09-20）：云端 07:00 已发一篇，
+    本地 21:35 那次没读到云端状态，又发了一篇 —— 同一天两条图文。
+
+    我们只要一个文件的当前版本，浅取一条提交即可。
+    """
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+        stdout = '{"schema": 1, "entries": {}}'
+        stderr = ""
+
+    def _fake_git(_root, args):
+        calls.append(list(args))
+        return _Result()
+
+    monkeypatch.setattr(xstate, "_run_git", _fake_git)
+    xstate.read_remote_state(app_settings.project_root, refresh=True)
+
+    fetch_calls = [args for args in calls if args and args[0] == "fetch"]
+    assert fetch_calls, "read_remote_state 应该发起一次 fetch"
+    fetch_args = fetch_calls[0]
+    assert "--depth=1" in fetch_args, (
+        f"守卫仍在做全量 fetch（{fetch_args}），会因超时而静默失效"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 3b. 多账号不得串号（2026-09-18）
 # ---------------------------------------------------------------------------

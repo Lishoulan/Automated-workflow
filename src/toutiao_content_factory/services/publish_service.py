@@ -245,6 +245,10 @@ class PublishService:
             account=settings.account_key, logger=logger,
         )
         self._last_inline_image_assets: list[Path] = []
+        # 2026-09-25：本次发布是否已经点过「发布」按钮。
+        # 只要点过一次，重试就绝不能再点 —— 否则同一篇文章会被提交多次。
+        # 详见 docs/重复发布根因_20260925.md
+        self._publish_button_clicked_this_article = False
         self._save_override_state: dict[str, Any] | None = None
 
     def _launch_persistent_browser(self, playwright, *, profile_dir: Path):
@@ -549,8 +553,24 @@ class PublishService:
 
         max_publish_retries = 2
         last_publish_exc: Exception | None = None
+        self._publish_button_clicked_this_article = False
         for attempt in range(1 + max_publish_retries):
             if attempt > 0:
+                # ⚠️ 2026-09-25 新增，优先级高于下面的历史检查：
+                # 只要「发布」按钮已经被点过一次，就绝不再点第二次。
+                # 点完按钮之后若只是「没捕获到提交响应」，文章其实已经提交了，
+                # 再重试就会产生重复发布。线上实测：同一标题被提交 3 次
+                # （= 1 + max_publish_retries），平台侧据此判重降权。
+                # 证据：docs/重复发布根因_20260925.md
+                if self._publish_button_clicked_this_article:
+                    self.logger.error(
+                        "Retry aborted: the publish button was already clicked in a previous "
+                        "attempt. A second click would submit the same article twice."
+                    )
+                    raise RuntimeError(
+                        "Duplicate publish prevented on retry: the publish button was already "
+                        "clicked in a previous attempt. Refusing to submit the same article twice."
+                    )
                 # 重试前重新检查发布历史，防止“第一次实际已提交但前端验证失败”
                 # 导致重复点击发布按钮造成真正的重复发布。
                 if not bool(self.settings.publishing.draft_only) and not self.settings.publishing.allow_duplicate_topics:
@@ -1334,6 +1354,13 @@ class PublishService:
                     ):
                         debug_dir2 = self._capture_debug_artifacts(page, extra_payload={"notes": notes, "button_click_notes": notes[-20:]})
                         raise RuntimeError(f"Publish button not found. Update selectors in config.yaml. Debug: {debug_dir2}")
+
+                    # ⚠️ 2026-09-25：发布按钮一旦点下去，文章就可能已经到达服务端。
+                    # 从这一刻起禁止任何重试 —— 后面若因为「没捕获到提交响应」而抛异常，
+                    # 外层重试会再点一次按钮，把同一篇文章提交多次。
+                    # 线上实测：同一标题 3 条，正是 1 + max_publish_retries 次提交。
+                    # 详见 docs/重复发布根因_20260925.md
+                    self._publish_button_clicked_this_article = True
 
                     page.wait_for_timeout(600)
                     publish_start_index = self._complete_publish_confirmation_flow(

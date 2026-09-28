@@ -618,7 +618,7 @@ class ArticleQualityChecker:
     _BODY_FRAGMENT_PATTERN = re.compile(
         r"、[为是](?!否)"
         r"|(?:并且|而且|同时|因此|所以|以及|或者|但是|不过|因为|如果|由于|虽然|即使|"
-        r"只要|随着|并|但|或|与|和|是|为)[ \t]*"
+        r"只要|随着)[ \t]*"
         r"(?:\r?\n[ \t]*\r?\n|[ \t]*\Z)"
     )
 

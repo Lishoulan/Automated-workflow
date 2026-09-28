@@ -403,6 +403,21 @@ def test_fetched_hot_article_body_reaches_the_writing_evidence(monkeypatch: pyte
     assert extra == ""
 
 
+def test_verified_hot_material_without_url_is_saved_for_copy_check(tmp_path: Path) -> None:
+    settings = _settings(STORY_ACCOUNT)
+    settings.output_dir = tmp_path
+    automation = TopicAutomationService(settings, logging.getLogger("test_pivot"))
+    topic = _hot_topic("老人拍照半分钟被弹窗近20次")
+    topic.url = ""
+    topic.snippet = "已抓取的报道正文。" * 100
+    topic._verified_source_material = True
+
+    path = automation._capture_source_material(topic)
+
+    assert path is not None
+    assert path.read_text(encoding="utf-8") == topic.snippet
+
+
 def test_all_topics_without_material_yield_no_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

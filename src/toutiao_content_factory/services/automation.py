@@ -1138,7 +1138,7 @@ class TopicAutomationService:
             "selected_topic_json": json_path,
             "selected_topic_markdown": md_path,
         }
-        material_path = self._capture_source_material(enriched_topic)
+        material_path = self._capture_source_material(topic)
         if material_path is not None:
             exported["source_material_full"] = material_path
         return exported
@@ -1153,6 +1153,9 @@ class TopicAutomationService:
         只抓被选中的这一条，且全程兜底：抓不到就退回摘要，绝不阻断主流程。
         """
         target = self.settings.output_dir / "source_material_full.txt"
+        if getattr(topic, "_verified_source_material", False):
+            target.write_text(topic.snippet, encoding="utf-8")
+            return target
         url = str(getattr(topic, "url", "") or "").strip()
         if not url.startswith(("http://", "https://")):
             # 热榜选题没有素材源。必须清掉上一轮残留，否则归档时会把

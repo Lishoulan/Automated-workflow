@@ -342,7 +342,7 @@ class TestBlocker2LayeredIntegrity:
             # 项目既有夹具（RULE 早已认定这是残句），必须继续被捕获：
             "<!doctype html>优必选、为最主要的增长驱动力出现在现有材料中。",
             "公开信息提到小鹏、是因为以前那些机器人。",
-            "这批订单能否兑现，最终还是要看交付节奏并",
+            "这批订单能否兑现，最终还是要看交付节奏并且",
             "样品验证结果决定了后续能否放量以及",
         ],
     )
@@ -366,7 +366,7 @@ class TestBlocker2LayeredIntegrity:
 
     def test_non_terminal_paragraph_tail_is_detected(self) -> None:
         """段落以连接词收尾（后面是空行）同样属于悬空残句。"""
-        article = "先说结论：这轮行情的关键变量是订单兑现。\n\n接下来真正要看的是交付节奏并\n\n以上。"
+        article = "先说结论：这轮行情的关键变量是订单兑现。\n\n接下来真正要看的是交付节奏并且\n\n以上。"
 
         body = self.checker.check_body_integrity(article)
 
@@ -375,7 +375,7 @@ class TestBlocker2LayeredIntegrity:
 
     def test_existing_word_suffix_is_not_a_dangling_preposition(self) -> None:
         body = self.checker.check_body_integrity(
-            "这些因素共同导致了App广告乱象的持续存在\n\n据公开材料显示，弹窗影响操作。"
+            "这些因素共同导致了App广告乱象的持续存在\n\n王五新认为\n\n据公开材料显示，弹窗影响操作。"
         )
 
         assert body.passed is True

@@ -151,6 +151,27 @@ def test_story_account_accepts_a_real_social_story() -> None:
     assert automation._topic_matches_account_boundary(topic) is True
 
 
+def test_story_topic_does_not_inherit_industry_writing_metadata() -> None:
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    topic = _hot_topic("老人拍照半分钟被弹窗近20次")
+    topic.title_playbook_track = "科技商业"
+    topic.topic_type = "industry_event"
+    topic.content_mix = "professional"
+    topic.cta_variant = "newsletter"
+    topic.cta_source_code = "科技商业_medium_newsletter"
+
+    prompt = automation._build_input_text(topic)
+    enriched = automation._enrich_topic_revenue_metadata(topic)
+
+    assert "选题类型：social_story" in prompt
+    assert "标题打法赛道：社会故事" in prompt
+    assert enriched.title_playbook_track == "社会故事"
+    assert enriched.topic_type == "social_story"
+    assert enriched.content_mix == "traffic"
+    assert enriched.cta_variant == "discussion"
+    assert enriched.cta_source_code.endswith("_discussion")
+
+
 @pytest.mark.parametrize(
     "title",
     [

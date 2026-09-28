@@ -123,6 +123,25 @@ def test_select_auto_title_picks_best_passing_candidate_not_the_first(app_settin
     assert selection["selected_title_index"] == 2
 
 
+def test_story_title_prefers_raw_gate_pass_over_exempted_generic_title(
+    app_settings, tmp_path, monkeypatch
+) -> None:
+    article = "老人拍照半分钟被弹窗近20次。App广告弹窗影响老人拍照。"
+    titles = [
+        "黄山老人App弹窗困局，广告设计该反思了",
+        "30秒近20次弹窗，老人拍照为何这么难",
+    ]
+    run_dir = tmp_path / "run"
+    _write_run_dir(run_dir, article=article, titles=titles)
+    service = _service(app_settings)
+    monkeypatch.setattr(service, "_narrative_exempt_title_markers", lambda bundle: ("RULE_009",))
+
+    selection = service.select_auto_title(run_dir)
+
+    assert selection["selected_title"] == titles[1]
+    assert selection["passed_count"] == 2
+
+
 def test_select_auto_title_marks_poison_candidates_as_failed(app_settings, tmp_path) -> None:
     article = "工信部提出机器人密度目标80%，具身智能进入交付验证阶段。"
     titles = ["工信部推动机器人80%：具身智能如何实测", "具身智能交付进度才是关键"]

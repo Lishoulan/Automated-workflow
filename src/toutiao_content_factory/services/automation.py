@@ -730,7 +730,7 @@ class TopicAutomationService:
             f"匹配关键词：{keywords}\n"
             f"可确认数字：{numbers}\n"
             f"平台热度值：{topic.heat_value}\n\n"
-            f"选题类型：{topic.topic_type}\n"
+            f"选题类型：{'social_story' if topic_mode == 'social_story' else topic.topic_type}\n"
             f"内容体裁：{topic.recommended_format}\n"
             f"体裁要求：{format_brief}\n"
             f"段落要求：{paragraph_instruction}\n"
@@ -906,6 +906,8 @@ class TopicAutomationService:
 
     def _resolve_prompt_track(self, topic: TopicCandidate, primary_industry: str) -> str:
         mode = self._topic_mode(topic)
+        if mode == "social_story":
+            return "社会故事"
         if mode == "sports":
             return "体育赛事"
         if mode == "international":
@@ -1176,6 +1178,7 @@ class TopicAutomationService:
 
     def _enrich_topic_revenue_metadata(self, topic: TopicCandidate) -> TopicCandidate:
         """为选题补齐收益优化所需的元数据。"""
+        story_mode = self._topic_mode(topic) == "social_story"
         commercial_intent = str(getattr(topic, "commercial_intent", "")).strip()
         if not commercial_intent:
             commercial_intent = self._infer_commercial_intent(topic)
@@ -1185,8 +1188,13 @@ class TopicAutomationService:
         cta_variant = str(getattr(topic, "cta_variant", "")).strip()
         if not cta_variant:
             cta_variant = self._infer_cta_variant(content_mix_value)
+        if story_mode:
+            content_mix_value = "traffic"
+            cta_variant = "discussion"
         cta_source_code = str(getattr(topic, "cta_source_code", "")).strip()
-        if not cta_source_code:
+        if story_mode:
+            cta_source_code = f"社会故事_{commercial_intent}_{cta_variant}"
+        elif not cta_source_code:
             cta_source_code = self._build_cta_source_code(topic, cta_variant)
         title_variant = str(getattr(topic, "title_variant", "")).strip()
         if not title_variant:
@@ -1226,13 +1234,13 @@ class TopicAutomationService:
             discussion_score=topic.discussion_score,
             total_score=topic.total_score,
             title_potential_score=topic.title_potential_score,
-            title_playbook_track=topic.title_playbook_track,
+            title_playbook_track="社会故事" if story_mode else topic.title_playbook_track,
             title_potential_reasons=list(topic.title_potential_reasons),
             is_high_read=topic.is_high_read,
             is_high_save=topic.is_high_save,
             is_high_discussion=topic.is_high_discussion,
-            topic_type=topic.topic_type,
-            topic_type_label=topic.topic_type_label,
+            topic_type="social_story" if story_mode else topic.topic_type,
+            topic_type_label="社会故事" if story_mode else topic.topic_type_label,
             evidence_strength=topic.evidence_strength,
             quality_score=topic.quality_score,
             quality_flags=list(topic.quality_flags),

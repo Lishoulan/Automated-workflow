@@ -299,7 +299,7 @@ class ReviewWorkflowService:
                 str(getattr(selected_topic, "url", "")),
             )
 
-        passed: list[tuple[int, int, str]] = []
+        passed: list[tuple[int, int, int, str]] = []
         reason_summary: dict[str, int] = {}
         # ⚠️ 2026-09-19：叙事体裁必须与另外两个入口用**同一份豁免清单**。
         #
@@ -322,6 +322,7 @@ class ReviewWorkflowService:
             )
             result = checker._check_title(title, bundle.article)
             issues = [str(item) for item in result.get("issues", []) if str(item).strip()]
+            has_raw_title_issue = bool(issues)
             if exempt_markers:
                 issues = [
                     item
@@ -347,7 +348,7 @@ class ReviewWorkflowService:
             }
             evaluations.append(evaluation)
             if not issues:
-                passed.append((-checker.title_click_preference(title), index, title))
+                passed.append((int(has_raw_title_issue), -checker.title_click_preference(title), index, title))
 
         # D2：`status` 让上层能区分「通过」「部分通过」「一个都没有」。
         # 尤其是 all_rejected —— 它必须是**可观测的失败**，而不是静默跳过闸门。
@@ -362,7 +363,7 @@ class ReviewWorkflowService:
 
         if passed:
             passed.sort(key=lambda item: (item[0], item[1]))
-            best_preference, best_index, best_title = passed[0]
+            _, best_preference, best_index, best_title = passed[0]
             self.logger.info(
                 "Auto title selection: %d/%d candidates passed the gate; picked index=%s "
                 "(preference=%s) %s",

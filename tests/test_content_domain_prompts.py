@@ -562,6 +562,27 @@ def test_content_mode_falls_back_to_the_account_domain() -> None:
     assert agent._content_mode(_generic_report()) == "social_story"
 
 
+def test_story_auto_publish_prompt_does_not_request_industry_analysis(monkeypatch) -> None:
+    story_settings = _settings("robot_notes")
+    agent = WriterAgent(
+        story_settings,
+        PromptRepository(Path.cwd() / "prompts"),
+        _StubOpenAIService(story_settings),
+        logging.getLogger("test_domain"),
+    )
+    agent._current_content_domain = "narrative"
+    monkeypatch.setattr(agent, "_auto_publish_mode", lambda: True)
+    report = _generic_report()
+
+    paragraph_instruction = agent._paragraph_instruction_for_prompt(report)
+    directive = agent._auto_publish_directive()
+
+    assert "已核实" in paragraph_instruction
+    assert "产业链、订单和商业化套话" in paragraph_instruction
+    assert "当事人、其他子女、经办机构" not in directive
+    assert "材料没有涉及法律或办理流程时" in directive
+
+
 def test_content_mode_stays_industry_for_industry_accounts() -> None:
     """对照：产业账号的报告不会被误判成 social_story。"""
     from toutiao_content_factory.agents.writer_agent import WriterAgent

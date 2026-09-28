@@ -373,6 +373,14 @@ class TestBlocker2LayeredIntegrity:
         assert body.passed is False
         assert body.matched_fragments
 
+    def test_existing_word_suffix_is_not_a_dangling_preposition(self) -> None:
+        body = self.checker.check_body_integrity(
+            "这些因素共同导致了App广告乱象的持续存在\n\n据公开材料显示，弹窗影响操作。"
+        )
+
+        assert body.passed is True
+        assert body.matched_fragments == []
+
     # ---------- Case C：正文层 fail / 标题层 pass 必须可区分 ----------
     def test_case_c_body_failure_and_title_consistency_are_distinguishable(self) -> None:
         """正文有硬伤，但标题本身与正文主体一致 —— 两层结论必须分开。"""

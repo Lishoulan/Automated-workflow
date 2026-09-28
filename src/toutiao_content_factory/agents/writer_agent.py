@@ -704,9 +704,9 @@ class WriterAgent(BaseAgent):
                 "交稿前请自己数一遍字数；不足1600字就是不合格稿，必须继续写到达标为止，"
                 "不要提前收尾。**字数不足1550字就拿不到头条首发激励，这一篇的推荐量会明显吃亏。**"
                 "最少写10段。"
-                "\n填充篇幅只能靠**有用的内容**，不许用空话和感慨凑数：这类事牵涉的法律常识、"
-                "办理流程与时限、不同立场的合理考虑（当事人、其他子女、经办机构）、"
-                "普通人容易忽略的步骤、类似的常见情形对比、以及读者可以照着做的具体做法。"
+                "\n补足篇幅只能靠**有用且有出处的内容**，不许用空话和感慨凑数："
+                "交代事件经过、当事人遇到的具体障碍、公开回应和实际影响；"
+                "材料没有涉及法律或办理流程时，不要自行添加。"
                 "\n结构要求：第1段直接讲发生了什么（时间、地点、人物、动作、结果）；"
                 "中间每段讲一个侧面——当事人的处境、他当时能怎么选、各方说法、"
                 "已经公开的处理进展、这类事通常卡在哪一步；最后一段给读者一句具体可用的提醒。"
@@ -734,6 +734,8 @@ class WriterAgent(BaseAgent):
 
     def _format_brief_for_prompt(self, data_report: DataReport) -> str:
         brief = str(getattr(data_report, "format_brief", "") or "写成完整产业分析稿。").strip()
+        if self._auto_publish_mode() and self._is_narrative_run():
+            return brief if brief != "写成完整产业分析稿。" else "围绕已核实的事件经过、人物处境和实际影响写成完整故事观察稿。"
         if self._auto_publish_mode() and data_report.content_format in self.SHORT_CONTENT_FORMATS:
             return "写成可自动发布的完整产业分析稿，围绕事实、机制、影响和风险边界展开，不得把快讯压缩成短评。"
         return brief
@@ -741,6 +743,8 @@ class WriterAgent(BaseAgent):
     def _paragraph_instruction_for_prompt(self, data_report: DataReport) -> str:
         instruction = str(getattr(data_report, "paragraph_instruction", "") or "5到7段，每段2到3句。").strip()
         if self._auto_publish_mode():
+            if self._is_narrative_run():
+                return "至少10段，每段围绕一个已核实的细节或不同当事人的处境推进；只用素材中的事实，避免产业链、订单和商业化套话。"
             if data_report.content_format in self.SHORT_CONTENT_FORMATS:
                 return "7到10段，每段1到3句，先判断，再写事实和机制，最后保留风险边界与一个具体问题；全文至少1800字。"
             return "7到10段，每段1到3句，围绕事实、机制、影响、主体和风险边界推进；全文至少1800字。"

@@ -383,6 +383,26 @@ def test_long_hot_search_digest_still_requires_article_material(monkeypatch: pyt
     assert calls == [topic.title]
 
 
+def test_fetched_hot_article_body_reaches_the_writing_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    import toutiao_content_factory.services.material_search_service as mss
+
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    topic = _hot_topic("老人拍照半分钟被弹窗近20次")
+    topic.source_type = "baidu_hot"
+    topic.snippet = "【来源：搜索摘要】老人拍照半分钟被弹窗近20次。" * 35
+    source_body = "【来源：公开报道】\n黄山老人想拍鱼灯表演，打开相机时弹窗连续跳出。" + "已核实经过。" * 120
+    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _StubBundle(True, source_body))
+
+    raw_summary, _ = automation._build_prompt_evidence(topic)
+    assert len(raw_summary) <= 160
+    assert automation._hydrate_topic_material(topic) is True
+    summary, extra = automation._build_prompt_evidence(topic)
+
+    assert summary.startswith("黄山老人想拍鱼灯表演")
+    assert len(summary) > 600
+    assert extra == ""
+
+
 def test_all_topics_without_material_yield_no_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

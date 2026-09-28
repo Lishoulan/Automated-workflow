@@ -483,6 +483,8 @@ class TopicAutomationService:
             return False
         body = bundle.combined_text.strip()
         topic.snippet = body
+        # Keep this run-local marker separate from persisted search digests.
+        topic._verified_source_material = True
         # 摘要直接取自素材正文的首段（`_summarize_topic` 属于 TopicCollectionService，
         # 本类没有该方法；而且这里已经有真实正文，用正文开头的句子比模板句更贴题）。
         topic.summary = self._material_lead_sentence(body) or topic.summary
@@ -796,6 +798,9 @@ class TopicAutomationService:
 
     def _build_prompt_evidence(self, topic: TopicCandidate) -> tuple[str, str]:
         """Keep useful source context while avoiding duplicated summary blocks."""
+        if getattr(topic, "_verified_source_material", False):
+            material = re.sub(r"(?m)^【来源：[^】]+】\s*$", "", topic.snippet or "").strip()
+            return material[: self.PROMPT_EVIDENCE_CONTEXT_LENGTH], ""
         summary = self._preferred_topic_summary(topic).strip()
         snippet = self._preferred_topic_snippet(topic, summary).strip()
         if not snippet:

@@ -924,6 +924,11 @@ jobs:
           python main.py --collect-performance --account "$RUN_ACCOUNT"
         continue-on-error: true
 
+      - name: Snapshot published-work growth
+        if: always()
+        run: python scripts/collect_growth_snapshot.py --account "${RUN_ACCOUNT:-robot_notes}"
+        continue-on-error: true
+
       - name: Publish precheck report
         if: always()
         shell: bash
@@ -1085,8 +1090,9 @@ jobs:
             logs/
             .runtime/*/debug/
             .runtime/debug/
-            .runtime/automation/
-            .runtime/accounts/
+            .runtime/automation/*report*.json
+            .runtime/accounts/*/debug/
+            .runtime/accounts/*/automation/*report*.json
           retention-days: 7
 
       - name: Update browser profile seed
@@ -1377,8 +1383,9 @@ jobs:
             logs/
             .runtime/*/debug/
             .runtime/debug/
-            .runtime/automation/
-            .runtime/accounts/
+            .runtime/automation/*report*.json
+            .runtime/accounts/*/debug/
+            .runtime/accounts/*/automation/*report*.json
           retention-days: 7
 
   # 每日统一通知任务：只读取通知账本并发送一条汇总，不生成内容、不调用模型。

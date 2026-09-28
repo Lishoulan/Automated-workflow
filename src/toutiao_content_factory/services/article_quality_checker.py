@@ -590,6 +590,11 @@ class ArticleQualityChecker:
         r"(?i)(?:\b(?:todo|tbd|placeholder)\b|占位符|占位文本|待补充(?:数据|来源|内容)?|"
         r"请补充(?:数据|来源|内容)?|此处(?:补充|填写))"
     )
+    # These are instructions to the writer, observed verbatim in published copy.
+    # Keep the list narrow so ordinary reporting language remains publishable.
+    _BODY_EDITORIAL_LEAK_PATTERN = re.compile(
+        r"把素材里能确认的部分列一下|这些是目前能核实的范围|报道没有交代的部分不补"
+    )
     # ⚠️ 2026-09-17（Blocker 2）：旧规则是
     #   `[\u4e00-\u9fffA-Za-z0-9]{2,24}、(?:为|是|在|与|和|并|但|或)`
     # 在 457 篇去重后的真实正文上实测：**命中 101 篇（22.10%）、114 次，
@@ -710,7 +715,7 @@ class ArticleQualityChecker:
 
     @classmethod
     def check_body_integrity(cls, content: str) -> BodyIntegrityResult:
-        """只看**正文自身**是否有硬伤（HTML 泄漏 / 占位文本 / 悬空残句）。"""
+        """只看正文自身是否有硬伤，包括编辑指令泄漏和长段重复。"""
         article = str(content or "").strip()
         if not article:
             return BodyIntegrityResult(passed=True, issues=[], matched_fragments=[])
@@ -723,6 +728,10 @@ class ArticleQualityChecker:
             issues.append("正文疑似泄露模板占位语法，必须补全真实内容后再发布。")
         if cls._BODY_PLACEHOLDER_PATTERN.search(article):
             issues.append("正文仍包含待补充或占位文本，不能作为成稿发布。")
+        if cls._BODY_EDITORIAL_LEAK_PATTERN.search(article):
+            issues.append("正文泄露了写作或事实核对指令，必须改成面向读者的成稿。")
+        if cls._repeated_long_span(article):
+            issues.append("正文存在重复的长段表述，请合并或重写后再发布。")
         matched_fragments = [
             match.group(0) for match in cls._BODY_FRAGMENT_PATTERN.finditer(article)
         ]
@@ -732,6 +741,18 @@ class ArticleQualityChecker:
         return BodyIntegrityResult(
             passed=not issues, issues=issues, matched_fragments=matched_fragments
         )
+
+    @staticmethod
+    def _repeated_long_span(content: str, span_length: int = 70) -> str | None:
+        """Find a repeated, non-overlapping prose span while ignoring spacing."""
+        compact = re.sub(r"[\W_]+", "", content, flags=re.UNICODE)
+        seen: dict[str, int] = {}
+        for index in range(len(compact) - span_length + 1):
+            span = compact[index:index + span_length]
+            previous = seen.setdefault(span, index)
+            if index - previous >= span_length:
+                return span
+        return None
 
     @classmethod
     def _check_body_integrity(cls, content: str) -> list[str]:

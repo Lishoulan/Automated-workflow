@@ -593,7 +593,8 @@ class ArticleQualityChecker:
     # These are instructions to the writer, observed verbatim in published copy.
     # Keep the list narrow so ordinary reporting language remains publishable.
     _BODY_EDITORIAL_LEAK_PATTERN = re.compile(
-        r"把素材里能确认的部分列一下|这些是目前能核实的范围|报道没有交代的部分不补"
+        r"把素材里能确认的部分列一下|这些是目前能核实的范围|报道没有交代的部分不补|"
+        r"主体层面可以先看.{0,80}订单或收入已经兑现|更硬的验证要落在"
     )
     # ⚠️ 2026-09-17（Blocker 2）：旧规则是
     #   `[\u4e00-\u9fffA-Za-z0-9]{2,24}、(?:为|是|在|与|和|并|但|或)`

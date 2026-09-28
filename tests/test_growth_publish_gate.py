@@ -19,6 +19,17 @@ def test_published_editorial_instruction_is_a_hard_blocker() -> None:
     assert any("写作或事实核对指令" in issue for issue in result.issues)
 
 
+def test_published_industry_prompt_residue_is_blocked() -> None:
+    body = (
+        "老人拍照时遇到弹窗。"
+        "主体层面可以先看美国放缓电动汽车，但现有材料还不足以据此判断订单或收入已经兑现。"
+    )
+
+    result = ArticleQualityChecker.check_body_integrity(body)
+
+    assert any("写作或事实核对指令" in issue for issue in result.issues)
+
+
 def test_repeated_long_prose_is_blocked_but_short_refrain_is_not() -> None:
     repeated = (
         "当事人先向社区求助，随后联系家属核对情况，工作人员记录了发现时间和处理经过。"

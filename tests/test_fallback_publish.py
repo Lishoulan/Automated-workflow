@@ -165,6 +165,32 @@ def test_sequence_artifact_blocks_fallback(tmp_path: Path) -> None:
     assert any("序列化残留" in r for r in reasons)
 
 
+def test_editorial_instruction_leak_blocks_fallback(tmp_path: Path) -> None:
+    service = _service()
+    run_dir = _make_run(tmp_path, article=CLEAN_ARTICLE + "\n把素材里能确认的部分列一下。")
+
+    safe, reasons, _ = service._fallback_safety_check(run_dir)
+
+    assert safe is False
+    assert any("写作或事实核对指令" in reason for reason in reasons)
+
+
+def test_failed_platform_is_not_reported_as_fallback_published(tmp_path: Path) -> None:
+    service = _service()
+    run_dir = _make_run(tmp_path)
+    service._fallback_safety_check = MagicMock(return_value=(True, [], []))
+    service._fallback_title_for = MagicMock(return_value="优必选柳州工厂投产，万台级量产能不能变成订单")
+    service.approve_run = MagicMock(return_value={})
+    service._run_daily_platform_automation = MagicMock(
+        return_value=({}, {"toutiao": {"status": "failed"}}, ["Toutiao publish failed"])
+    )
+
+    result = service._try_fallback_publish([{"run_dir": str(run_dir)}])
+
+    assert result is not None
+    assert result["attempt_fields"]["status"] == "platform_publish_failed"
+
+
 def test_serialized_dict_residue_blocks_fallback(tmp_path: Path) -> None:
     """修复会把 `', '` 换成段落分隔，掩盖原始特征——残留的引号键名必须仍被拦截。"""
     service = _service()

@@ -1228,6 +1228,7 @@ class ContentFactoryAppService:
                         }
                         break
             fallback_attempt.update(fallback_result["attempt_fields"])
+            fallback_status = str(fallback_attempt.get("status") or "fallback_published")
             exported_files.update(dict(best_attempt.get("exported_files", {})))
             exported_files.update(fallback_result["exports"])
             if published_dir:
@@ -1239,7 +1240,7 @@ class ContentFactoryAppService:
                 # 图文已 submitted_for_review 且拿到 pgc_id，摘要却写「头条: -」）。
                 exported_files["archive_root"] = published_dir
             report_exports = self._write_daily_workflow_report(
-                status="fallback_published",
+                status=fallback_status,
                 final_attempt=fallback_attempt,
                 attempts=[*skipped_attempts, fallback_attempt],
                 supporting_exports=benchmark_refresh_exports,
@@ -3074,6 +3075,9 @@ class ContentFactoryAppService:
         meta_narration = ("下面只按现有材料", "明确保留为推测", "只按现有材料展开")
         if any(token in article for token in meta_narration):
             reasons.append("正文含提示词元叙述")
+        from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
+
+        reasons.extend(ArticleQualityChecker.check_body_integrity(article).issues)
 
         # AI 生成风险：平台会直接对「疑似AI生成」降权，因此这是运营方配置的
         # 硬性上限（非热点 40 / 热点 50），不属于「模型软指控」，兜底也必须
@@ -3286,10 +3290,11 @@ class ContentFactoryAppService:
             skip_wait=False,
         )
         exports.update(platform_exports)
+        workflow_status = self._summarize_platform_workflow_status(platform_results, platform_errors)
         return {
             "run_dir": str(run_dir),
             "attempt_fields": {
-                "status": "fallback_published",
+                "status": "fallback_published" if workflow_status == "success" else workflow_status,
                 "run_dir": str(run_dir),
                 "fallback_reason": "no_candidate_passed_strict_gate",
                 "fallback_notes": notes,

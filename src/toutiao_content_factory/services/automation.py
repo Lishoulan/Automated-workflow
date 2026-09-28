@@ -457,7 +457,9 @@ class TopicAutomationService:
         if not title:
             return False
         existing = str(topic.snippet or "").strip()
-        if len(existing) >= self.MATERIAL_MIN_CHARS:
+        # Hot-list snippets can be long search-result digests, not article bodies.
+        # Re-fetch a source for those topics before treating the text as evidence.
+        if len(existing) >= self.MATERIAL_MIN_CHARS and topic.source_type not in {"baidu_hot", "hot_board"}:
             return True
         try:
             from toutiao_content_factory.services.material_search_service import (

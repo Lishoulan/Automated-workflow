@@ -364,6 +364,25 @@ def test_no_material_switches_to_the_next_topic(monkeypatch: pytest.MonkeyPatch)
     assert calls == [first.title, second.title]
 
 
+def test_long_hot_search_digest_still_requires_article_material(monkeypatch: pytest.MonkeyPatch) -> None:
+    import toutiao_content_factory.services.material_search_service as mss
+
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    topic = _hot_topic("老人拍照半分钟被弹窗近20次")
+    topic.source_type = "baidu_hot"
+    topic.snippet = "【来源：搜索摘要】老人拍照半分钟被弹窗近20次。" * 35
+    calls: list[str] = []
+
+    def fake_collect(title, **_kwargs):
+        calls.append(title)
+        return _StubBundle(usable=False)
+
+    monkeypatch.setattr(mss, "collect_material", fake_collect)
+
+    assert automation._hydrate_topic_material(topic) is False
+    assert calls == [topic.title]
+
+
 def test_all_topics_without_material_yield_no_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -416,10 +435,12 @@ def test_auto_selection_retries_the_next_topic_when_material_is_missing(
     automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
     blocked = _hot_topic("张雪回应打车被认出忽悠司机")
     good = _hot_topic("男子高空作业绳子被2楼老人剪断")
-    # 已带足够素材（> MATERIAL_MIN_CHARS=600），无需联网即可通过素材门槛
-    good.snippet = "据报道，" + "详细经过。" * 200
+    def fake_collect(title, **_kwargs):
+        if title == good.title:
+            return _StubBundle(usable=True, text="据报道，" + "详细经过。" * 200)
+        return _StubBundle(usable=False)
 
-    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _StubBundle(usable=False))
+    monkeypatch.setattr(mss, "collect_material", fake_collect)
     monkeypatch.setattr(automation, "_select_topic", lambda *a, **k: blocked)
     monkeypatch.setattr(
         automation, "_material_retry_candidates", lambda report: [blocked, good]
@@ -497,9 +518,12 @@ def test_material_retry_flag_reaches_prepare_auto_run(
     automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
     blocked = _hot_topic("张雪回应打车被认出忽悠司机")
     good = _hot_topic("男子高空作业绳子被2楼老人剪断")
-    good.snippet = "据报道，" + "详细经过。" * 200
+    def fake_collect(title, **_kwargs):
+        if title == good.title:
+            return _StubBundle(usable=True, text="据报道，" + "详细经过。" * 200)
+        return _StubBundle(usable=False)
 
-    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _StubBundle(usable=False))
+    monkeypatch.setattr(mss, "collect_material", fake_collect)
     monkeypatch.setattr(
         automation, "_material_retry_candidates", lambda report: [blocked, good]
     )

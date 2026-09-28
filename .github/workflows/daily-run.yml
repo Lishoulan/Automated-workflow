@@ -988,6 +988,8 @@ jobs:
             echo "workflow-status=$WORKFLOW_STATUS" >> $GITHUB_OUTPUT
             echo "RUN_STATUS=$STATUS" >> "$GITHUB_ENV"
             echo "RUN_WORKFLOW_STATUS=$WORKFLOW_STATUS" >> "$GITHUB_ENV"
+            echo "RUN_PUBLISH_STATUS=$PUBLISH_STATUS" >> "$GITHUB_ENV"
+            echo "RUN_PUBLISH_PGC_ID=$PUBLISH_PGC_ID" >> "$GITHUB_ENV"
             if [ "$STATUS" = "degraded_to_draft" ]; then
               echo "::warning::定时任务降级为草稿模式（publish_status=draft_saved），文章未发布到头条公域。请检查 precheck_report.json 确认降级原因。"
             fi
@@ -1069,6 +1071,10 @@ jobs:
           if [ "$RUN_PUBLISH_TOUTIAO" != "true" ] && [ "$RUN_PUBLISH_WECHAT_VIA_135" != "true" ]; then
             echo "No automatic platform publish was requested; content-only run is allowed."
             exit 0
+          fi
+          if [ "$RUN_PUBLISH_TOUTIAO" = "true" ] && { [ "${RUN_PUBLISH_STATUS:-}" != "submitted_for_review" ] || [ -z "${RUN_PUBLISH_PGC_ID:-}" ]; }; then
+            echo "::error::Toutiao publish was requested but no accepted submission with pgc_id was recorded: status=${RUN_PUBLISH_STATUS:-missing}"
+            exit 1
           fi
           case "${RUN_STATUS:-unknown}" in
             failed|partial_success|publish_login_required|publish_uncertain|degraded_to_draft)

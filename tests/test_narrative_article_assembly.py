@@ -41,6 +41,7 @@ INDUSTRY_ACCOUNT = "default"
 
 class _StubOpenAI:
     model = "stub-model"
+    available = False
 
 
 def _story_agent() -> WriterAgent:
@@ -131,6 +132,62 @@ def test_generic_supplement_paragraphs_are_capped() -> None:
 
     hits = [item for item in agent.NARRATIVE_SUPPLEMENT_PARAGRAPHS if item in joined]
     assert len(hits) <= agent.NARRATIVE_GENERIC_SUPPLEMENT_LIMIT
+
+
+def test_narrative_fallback_never_uses_the_industry_article_template() -> None:
+    agent = _story_agent()
+    report = _story_report()
+    report.content_format = "quick_commentary"
+    report.watch_metrics = ["后续处理结果", "当事人的处境是否变化"]
+
+    content = agent._fallback(
+        TrendReport(),
+        report,
+        agent.settings.get_style(None),
+        CacheContext(),
+    )
+
+    assert "9月19日" in content.article
+    assert "换成是你遇到这种情况，会怎么处理？" in content.article
+    for marker in ("IPO", "资本市场", "市场份额", "出货量", "毛利率", "订单", "回款", "产能"):
+        assert marker not in content.article
+
+
+def test_narrative_finalizer_does_not_insert_a_company_or_order_anchor() -> None:
+    agent = _story_agent()
+    report = _story_report()
+    report.content_format = "quick_commentary"
+
+    article = agent._finalize_article(
+        "9月19日，当事人通过公开视频说明婚姻关系已经结束。",
+        TrendReport(),
+        report,
+        comment_prompt="换成是你遇到这种情况，会怎么处理？",
+    )
+
+    for marker in ("订单", "交付", "利润", "回款", "毛利"):
+        assert marker not in article
+
+
+def test_narrative_fallback_does_not_repeat_truncated_search_snippets() -> None:
+    agent = _story_agent()
+    report = _story_report()
+    report.content_format = "quick_commentary"
+    report.source_facts.extend(
+        [
+            "网红张凯毅官宣离婚了吗",
+            "有网友提到当事人曾经回应过这件事,但完整经过还要等待...",
+        ]
+    )
+
+    article = agent._build_local_narrative_article(
+        TrendReport(),
+        report,
+        "换成是你遇到这种情况，会怎么处理？",
+    )
+
+    assert "等待..." not in article
+    assert "官宣离婚了吗" not in article
 
 
 # ---------------------------------------------------------------------------

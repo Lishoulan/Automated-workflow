@@ -372,7 +372,15 @@ class WriterAgent(BaseAgent):
             self._default_comment_prompt(data_report),
             data_report,
         )
-        if self._should_use_local_source_fallback(data_report):
+        if self._is_narrative_run():
+            article = self._build_local_narrative_article(
+                trend_report,
+                data_report,
+                comment_prompt,
+                benchmark_track=benchmark_track,
+                self_benchmark_context=self_benchmark_context,
+            )
+        elif self._should_use_local_source_fallback(data_report):
             article = self._build_local_source_article(
                 trend_report,
                 data_report,
@@ -531,6 +539,24 @@ class WriterAgent(BaseAgent):
             len(facts) >= self.HOT_TOPIC_SOURCE_FACT_MIN_COUNT
             and fact_chars >= self.HOT_TOPIC_SOURCE_FACT_MIN_CHARS
         )
+
+    def _clean_narrative_source_facts(self, data_report: DataReport) -> list[str]:
+        """Keep complete story facts and drop title echoes or search snippets."""
+        title = self.clean_publish_text(data_report.topic_title).rstrip("。！？!? ")
+        normalized_title = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9%]+", "", title).casefold()
+        facts: list[str] = []
+        for fact in self._clean_hot_topic_source_facts(data_report):
+            if "..." in fact or "…" in fact:
+                continue
+            normalized = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9%]+", "", fact).casefold()
+            title_similarity = (
+                SequenceMatcher(None, normalized, normalized_title).ratio()
+                if normalized and normalized_title
+                else 0.0
+            )
+            if normalized and normalized != normalized_title and title_similarity < 0.78:
+                facts.append(fact)
+        return facts
 
     def _build_hot_topic_supplements(
         self,
@@ -915,6 +941,72 @@ class WriterAgent(BaseAgent):
             article = "\n\n".join(article_paragraphs).strip()
         return clean_article_text(article, min_word_count=0)
 
+    def _build_local_narrative_article(
+        self,
+        trend_report: TrendReport,
+        data_report: DataReport,
+        comment_prompt: str,
+        benchmark_track: str = "",
+        self_benchmark_context: dict[str, object] | None = None,
+    ) -> str:
+        """Build a grounded story draft when the primary model returns no draft.
+
+        Narrative accounts used to fall through to the industry fallback above,
+        which unconditionally added IPO, market-share and margin analysis.  This
+        fallback stays within the reported event, the people affected and the
+        limits of the available material.
+        """
+        title = self.clean_publish_text(data_report.topic_title).rstrip("。！？!? ") or "这件事"
+        facts = self._clean_narrative_source_facts(data_report)
+
+        paragraphs = [
+            f"{title}引起讨论。先把公开材料能够确认的经过说清楚，再看当事人面对的具体处境。"
+        ]
+        leads = (
+            "现有材料提到，",
+            "从已经公开的信息看，",
+            "事情的另一个细节是，",
+            "把前后信息放在一起看，",
+        )
+        boundaries = (
+            "这部分说明了事情发生的背景，材料没有交代的细节暂不作推断。",
+            "这能确认事件的一部分，后续结果仍要以新的公开信息为准。",
+            "这个细节关系到当事人的实际处境，不能用概括性的判断替代。",
+            "目前能下的结论只到这里，更完整的经过仍需后续信息补充。",
+        )
+        for index, fact in enumerate(facts[:6]):
+            paragraphs.append(
+                f"{leads[index % len(leads)]}{fact.rstrip('。！？!?')}。"
+                f"{boundaries[index % len(boundaries)]}"
+            )
+
+        if len(paragraphs) == 1:
+            paragraphs.append(
+                "目前公开材料提供的细节有限，时间、人物、处理过程和最终结果还不能完整对应。"
+                "在这些信息补齐之前，不把网络讨论直接写成已经确认的事实。"
+            )
+
+        metrics = self.clean_publish_list(getattr(data_report, "watch_metrics", []) or [], limit=3)
+        if metrics:
+            paragraphs.append(
+                "接下来真正值得留意的是"
+                + "、".join(metrics)
+                + "。这些变化能帮助判断事情是否得到处理，也能避免只凭标题作结论。"
+            )
+
+        paragraphs.append(
+            "对普通读者来说，遇到相似情况时，应先把时间、通知、沟通和处理记录保存完整，"
+            "再根据已经确认的信息决定下一步。公开材料没有涉及的责任和处理结果，不在这里提前判断。"
+        )
+        return self._finalize_article(
+            "\n\n".join(paragraphs),
+            trend_report,
+            data_report,
+            comment_prompt=comment_prompt,
+            benchmark_track=benchmark_track,
+            self_benchmark_context=self_benchmark_context,
+        )
+
     def _build_local_service_robot_article(
         self,
         trend_report: TrendReport,
@@ -1181,6 +1273,15 @@ class WriterAgent(BaseAgent):
         self_benchmark_context: dict[str, object] | None = None,
     ) -> list[str]:
         primary = self._primary_keyword(data_report)
+        if self._is_narrative_run():
+            title = self.clean_publish_text(data_report.topic_title).rstrip("。！？!? ") or "这件事"
+            return self._normalize_opening_lines(
+                [
+                    f"{title}引起讨论",
+                    "先看公开材料能够确认的经过，再看当事人面对的具体处境",
+                    "没有公开的细节暂不推断，后续结果以新的公开信息为准",
+                ]
+            )
         company = self._primary_company(data_report)
         number = data_report.growth_numbers[0] if data_report.growth_numbers else ""
         angle = self._article_angle(trend_report, data_report)
@@ -1454,23 +1555,27 @@ class WriterAgent(BaseAgent):
         paragraphs = [block for block in paragraphs if block]
 
         if not paragraphs:
-            paragraphs = [
-                self._normalize_paragraph(
-                    " ".join(
-                        self._build_opening_lines(
-                            trend_report,
-                            data_report,
-                            self.settings.get_style(None),
-                            benchmark_track=benchmark_track,
-                            self_benchmark_context=self_benchmark_context,
-                        )
+            opening = self._normalize_paragraph(
+                " ".join(
+                    self._build_opening_lines(
+                        trend_report,
+                        data_report,
+                        self.settings.get_style(None),
+                        benchmark_track=benchmark_track,
+                        self_benchmark_context=self_benchmark_context,
                     )
-                ),
-                self._build_company_or_order_anchor(data_report),
-                self._build_metrics_paragraph(self._pick_items(data_report.watch_metrics, 4)),
-            ]
+                )
+            )
+            if self._is_narrative_run():
+                paragraphs = [opening]
+            else:
+                paragraphs = [
+                    opening,
+                    self._build_company_or_order_anchor(data_report),
+                    self._build_metrics_paragraph(self._pick_items(data_report.watch_metrics, 4)),
+                ]
 
-        if not self._has_concrete_anchor("\n\n".join(paragraphs), data_report):
+        if not self._is_narrative_run() and not self._has_concrete_anchor("\n\n".join(paragraphs), data_report):
             anchor = self._build_company_or_order_anchor(data_report)
             if anchor:
                 insert_at = 3 if len(paragraphs) >= 3 else len(paragraphs)
@@ -1928,6 +2033,8 @@ class WriterAgent(BaseAgent):
         content_format = data_report.content_format if data_report is not None else ""
         content_mix = str(getattr(data_report, "content_mix", "")).strip().lower() if data_report is not None else ""
         cta_variant = str(getattr(data_report, "cta_variant", "")).strip().lower() if data_report is not None else ""
+        if self._is_narrative_run():
+            return "换成是你遇到这种情况，会怎么处理？"
         if cta_variant == "consultation":
             return self._varied_consultation_cta(primary)
         if cta_variant == "newsletter":
@@ -2194,6 +2301,17 @@ class WriterAgent(BaseAgent):
 
     def _article_angle(self, trend_report: TrendReport, data_report: DataReport) -> str:
         content_mode = self._content_mode(data_report)
+        if self._is_narrative_run():
+            for candidate in (
+                data_report.suggested_angle,
+                trend_report.recommended_angle,
+                *data_report.key_points[:3],
+            ):
+                text = self.clean_publish_text(str(candidate).strip())
+                if text and len(text) <= 160 and not self._looks_like_instruction_text(text):
+                    return text.rstrip("。")
+            primary = self._primary_keyword(data_report, fallback="这件事")
+            return f"把{primary}的公开经过、当事人处境和后续处理分别说清楚"
         if content_mode in {"sports", "international"}:
             for candidate in (
                 data_report.suggested_angle,
@@ -3331,7 +3449,7 @@ class WriterAgent(BaseAgent):
                     continue
                 supplements.append(block)
 
-        facts = self._clean_hot_topic_source_facts(data_report)
+        facts = self._clean_narrative_source_facts(data_report)
         # ⚠️ 2026-09-19：引导句和边界句各自只有 3 条，而事实最多 6 条，
         # 原来按 `index % len(...)` 取用，第 4 条起必然重复。实测正文里
         # 「把素材里能确认的部分列一下」出现 3 次、「这些是目前能核实的范围，

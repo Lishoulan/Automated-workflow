@@ -221,11 +221,11 @@ def test_published_on_matches_only_same_day_and_success_status() -> None:
 
 
 def test_published_on_ignores_unsuccessful_statuses() -> None:
-    for status in ("failed", "draft_saved", "publish_uncertain", ""):
+    for status in ("failed", "draft_saved", ""):
         state = _state_for("2026-09-16", status=status)
-        # 只有真正提交成功的状态才算当天名额已用。
+        # 未提交的失败或草稿不占用当天名额。
         assert xstate.published_on(state, "2026-09-16") is None
-    for status in ("submitted_for_review", "published", "success"):
+    for status in ("submitted_for_review", "published", "success", "publish_uncertain"):
         assert xstate.published_on(_state_for("2026-09-16", status=status), "2026-09-16") is not None
 
 

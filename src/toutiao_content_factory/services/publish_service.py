@@ -1103,6 +1103,10 @@ class PublishService:
                             inline_image_paths,
                             notes,
                         )
+                    # Image insertion moves the ProseMirror caret. A click followed by
+                    # End can land at the end of a wrapped line and discard the rest
+                    # of that paragraph. Stop before save=1 can reach the server.
+                    self._assert_editor_text_complete(page.locator(editor_selector).first, article)
                     self._update_save_mode_override_gate(
                         expected_inline_images=inline_image_inserted,
                         expected_refs=(),
@@ -1141,6 +1145,7 @@ class PublishService:
                         cover_mode=cover_mode,
                         expected_inline_images=inline_image_inserted,
                     )
+                    self._assert_editor_text_complete(page.locator(editor_selector).first, article)
                     self._update_save_mode_override_gate(
                         expected_inline_images=inline_image_inserted,
                         expected_refs=list(media_state.get("refs", [])),
@@ -1326,6 +1331,41 @@ class PublishService:
                                     "publish action; the draft payload is already persisted."
                                 )
 
+                    def result_from_platform_list(item: dict[str, Any] | None, stage: str) -> dict[str, Any]:
+                        is_published = bool(item and item.get("status") == 2)
+                        media_verified = inline_image_inserted <= 0 or bool(draft_media_payload.get("verified"))
+                        notes.append(
+                            f"Platform list reconciliation ({stage}): "
+                            f"pgc_id={draft_pgc_id}, status={(item or {}).get('status', 'unknown')}."
+                        )
+                        return {
+                            "status": "submitted_for_review" if is_published and media_verified else "publish_uncertain",
+                            "published_at": datetime.now().isoformat(timespec="seconds"),
+                            "external_url": page.url,
+                            "notes": self._finalize_notes(notes),
+                            "cover_mode": cover_mode,
+                            "inline_images": inline_image_summary,
+                            "publish_diagnostics": self._compact_publish_diagnostics(diagnostics),
+                            "backend_response_summary": self._compact_backend_response(draft_response_json),
+                            "publish_request_summary": {
+                                "url": page.url,
+                                "save_mode": stage,
+                                "pgc_id": draft_pgc_id,
+                                "media_payload": draft_media_payload,
+                            },
+                            "publish_verified": is_published and media_verified,
+                        }
+
+                    if draft_pgc_id != "0":
+                        platform_item = self._lookup_toutiao_article_by_id(
+                            page, pgc_id=draft_pgc_id, title=title
+                        )
+                        if platform_item is None or platform_item.get("status") != 4:
+                            # A save=1 response alone is ambiguous: it can be a private
+                            # draft or an already published item. Click only after the
+                            # platform confirms the draft is still private.
+                            return result_from_platform_list(platform_item, "before_publish_click")
+
                     self._dismiss_ai_assistant_drawer(page, notes)
                     page.wait_for_timeout(700)
                     try:
@@ -1370,9 +1410,22 @@ class PublishService:
                         fallback_start_index=preview_start_index,
                     )
 
-                    publish_event = self._wait_for_publish_submit(page, publish_events, publish_start_index)
+                    try:
+                        publish_event = self._wait_for_publish_submit(page, publish_events, publish_start_index)
+                    except RuntimeError:
+                        # The response listener can miss a successful submission.
+                        # Resolve by exact id and title before reporting failure.
+                        platform_item = self._lookup_toutiao_article_by_id(
+                            page, pgc_id=draft_pgc_id, title=title
+                        ) if draft_pgc_id != "0" else None
+                        return result_from_platform_list(platform_item, "after_missing_response")
                     response_payload = publish_event.get("response_json")
                     if not self._publish_response_is_success(response_payload):
+                        platform_item = self._lookup_toutiao_article_by_id(
+                            page, pgc_id=draft_pgc_id, title=title
+                        ) if draft_pgc_id != "0" else None
+                        if platform_item and platform_item.get("status") == 2:
+                            return result_from_platform_list(platform_item, "after_rejected_response")
                         diagnostics = self._build_publish_diagnostics(diagnostic_events)
                         debug_dir = self._capture_debug_artifacts(
                             page,
@@ -2380,16 +2433,25 @@ class PublishService:
         except Exception:
             return False
 
-        expected = re.sub(r"\s+", "", "".join(paragraphs))
         actual = re.sub(r"\s+", "", editor_text)
-        if not actual:
+        if not actual or not paragraphs:
             return False
+        position = 0
+        for paragraph in paragraphs:
+            expected = re.sub(r"\s+", "", paragraph)
+            position = actual.find(expected, position)
+            if position < 0:
+                return False
+            position += len(expected)
+        return True
 
-        preview = expected[:40]
-        if preview and preview not in actual:
-            return False
-
-        return len(actual) >= min(len(expected), 80)
+    def _assert_editor_text_complete(self, locator, article: str) -> None:
+        paragraphs = self._split_article_paragraphs(article)
+        if not self._editor_content_matches(locator, paragraphs):
+            raise RuntimeError(
+                "Editor article text was changed or truncated before submission; "
+                "publishing was blocked."
+            )
 
     def _try_apply_article_images(
         self,
@@ -2903,14 +2965,6 @@ class PublishService:
             return actual_index or 1
 
         target_index = min(max(target_paragraph, 1), max(paragraph_count, 1))
-        if self._place_editor_caret_via_click(
-            page,
-            editor_locator,
-            target_index=target_index,
-            insert_before=False,
-        ):
-            return target_index
-
         try:
             actual_index = int(
                 editor_locator.evaluate(
@@ -2928,6 +2982,7 @@ class PublishService:
                             target.scrollIntoView({ block: 'center', inline: 'nearest' });
                         }
 
+                        node.focus();
                         const range = document.createRange();
                         range.selectNodeContents(target);
                         range.collapse(false);
@@ -2938,7 +2993,6 @@ class PublishService:
                             selection.addRange(range);
                         }
 
-                        node.focus();
                         return blocks.indexOf(target) + 1;
                     }""",
                     {"targetIndex": target_index},
@@ -2948,19 +3002,7 @@ class PublishService:
             actual_index = 0
 
         if actual_index <= 0:
-            for key in ("Control+End", "End"):
-                try:
-                    page.keyboard.press(key)
-                    page.wait_for_timeout(120)
-                    break
-                except Exception:
-                    continue
-            try:
-                page.keyboard.press("Enter")
-                page.wait_for_timeout(120)
-            except Exception:
-                pass
-            return max(1, paragraph_count)
+            raise RuntimeError("Could not place inline image after a complete paragraph.")
 
         try:
             page.keyboard.press("Enter")
@@ -4170,6 +4212,58 @@ class PublishService:
             self.logger.info("Cover verification screenshot saved: %s", screenshot_path)
         except Exception as exc:
             self.logger.debug("Failed to save cover verification screenshot: %s", exc)
+
+    def _lookup_toutiao_article_by_id(
+        self, page, *, pgc_id: str, title: str
+    ) -> dict[str, Any] | None:
+        """Read the creator-center status for this exact item after an ambiguous save."""
+        expected_id = str(pgc_id or "").strip()
+        if expected_id in {"", "0"}:
+            return None
+        last_match: dict[str, Any] | None = None
+        for attempt in range(3):
+            cursor = None
+            try:
+                for _ in range(3):
+                    params: dict[str, Any] = {
+                        "type": 0, "status": 0, "page_num": 1, "page_size": 20,
+                    }
+                    if cursor:
+                        params["cursor"] = cursor
+                    response = page.context.request.get(
+                        "https://mp.toutiao.com/mp/agw/creator_center/list/v2",
+                        params=params,
+                        timeout=10000,
+                    )
+                    if not response.ok:
+                        break
+                    payload = response.json()
+                    if not isinstance(payload, dict):
+                        break
+                    for content in payload.get("contents") or []:
+                        item = content.get("article_attr") or {}
+                        if str(item.get("gid", "")) != expected_id:
+                            continue
+                        if str(item.get("title", "")).strip() != title.strip():
+                            self.logger.warning(
+                                "Platform item id matched but title differed; refusing to reconcile pgc_id=%s",
+                                expected_id,
+                            )
+                            return None
+                        last_match = item
+                        if item.get("status") == 2:
+                            return item
+                        break
+                    if last_match or not payload.get("has_more"):
+                        break
+                    cursor = payload.get("end_cursor")
+                    if not cursor:
+                        break
+            except Exception as exc:
+                self.logger.warning("Platform list reconciliation attempt failed: %s", exc)
+            if attempt < 2:
+                page.wait_for_timeout(1000)
+        return last_match
 
     def _verify_toutiao_publish_success(self, page, title: str, notes: list[str]) -> bool:
         """发布状态双重校验 — API 响应 + DOM 状态

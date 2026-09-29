@@ -25,7 +25,9 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from toutiao_content_factory.services import cross_channel_state as xstate  # noqa: E402
 
-SUCCESS_STATUSES = {"submitted_for_review", "published", "success"}
+# An uncertain submission may already be public. Share it as a same-day hold
+# so another runner cannot publish a duplicate while evidence is incomplete.
+SUCCESS_STATUSES = {"submitted_for_review", "published", "success", "publish_uncertain"}
 
 
 def _read_json(path: Path) -> Any:

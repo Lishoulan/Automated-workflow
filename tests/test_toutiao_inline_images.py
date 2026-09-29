@@ -4,8 +4,10 @@ import logging
 import importlib
 from pathlib import Path
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
+import pytest
 from PIL import Image
 
 from toutiao_content_factory.config import PublishSettings
@@ -16,6 +18,52 @@ from toutiao_content_factory.services.publish_service import PublishService
 publish_service_module = importlib.import_module(
     "toutiao_content_factory.services.publish_service"
 )
+
+
+def test_editor_integrity_rejects_image_insertion_truncation(app_settings) -> None:
+    service = PublishService(app_settings, logging.getLogger("editor-integrity-test"))
+    article = (
+        "A long opening paragraph that must remain complete.\n\n"
+        "A second paragraph that continues after the image insertion point."
+    )
+    locator = MagicMock()
+    locator.inner_text.return_value = (
+        "A long opening paragraph that must remain complete.\n"
+        "A second paragraph that continues after"
+    )
+
+    assert not service._editor_content_matches(locator, service._split_article_paragraphs(article))
+    with pytest.raises(RuntimeError, match="changed or truncated"):
+        service._assert_editor_text_complete(locator, article)
+
+    locator.inner_text.return_value = article
+    service._assert_editor_text_complete(locator, article)
+
+
+def test_platform_reconciliation_requires_exact_id_title_and_published_status(app_settings) -> None:
+    service = PublishService(app_settings, logging.getLogger("platform-reconciliation-test"))
+    response = MagicMock()
+    response.ok = True
+    response.json.return_value = {
+        "contents": [{"article_attr": {
+            "gid": "12345", "title": "Exact title", "status": 2,
+        }}],
+        "has_more": False,
+    }
+    request = SimpleNamespace(get=MagicMock(return_value=response))
+    page = SimpleNamespace(
+        context=SimpleNamespace(request=request),
+        wait_for_timeout=MagicMock(),
+    )
+
+    item = service._lookup_toutiao_article_by_id(page, pgc_id="12345", title="Exact title")
+    assert item is not None and item["status"] == 2
+    assert request.get.call_count == 1
+    assert service._lookup_toutiao_article_by_id(page, pgc_id="12345", title="Other title") is None
+
+    response.json.return_value["contents"][0]["article_attr"]["status"] = 4
+    item = service._lookup_toutiao_article_by_id(page, pgc_id="12345", title="Exact title")
+    assert item is not None and item["status"] == 4
 
 
 def _write_png(path: Path, color: tuple[int, int, int]) -> None:

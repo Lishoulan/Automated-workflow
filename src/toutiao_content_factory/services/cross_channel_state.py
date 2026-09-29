@@ -142,9 +142,9 @@ def published_on(
         record = day_entry.get(platform)
         if not isinstance(record, dict):
             continue
-        # 只有真正提交成功的状态才算「已发」，避免把 failed / draft 当成当天名额已用。
+        # publish_uncertain 可能已到达平台，当天先占用名额以防重复提交。
         status = str(record.get("status", "")).strip().lower()
-        if status not in {"submitted_for_review", "published", "success"}:
+        if status not in {"submitted_for_review", "published", "success", "publish_uncertain"}:
             continue
         return record
     return None

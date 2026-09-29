@@ -132,8 +132,8 @@ def test_draft_save_branch_does_not_return_before_the_publish_button() -> None:
     )
 
 
-def test_only_the_uncertain_branch_may_short_circuit() -> None:
-    """允许的早退只有一个：证据不完整时的 publish_uncertain（保守失败）。"""
+def test_incomplete_save_evidence_still_short_circuits_uncertain() -> None:
+    """save=1 证据不足时仍应保守退出；平台列表确认已发布是另一条独立证据。"""
     source = inspect.cleandoc(_method_source("_publish_to_toutiao"))
     tree = ast.parse(source)
     func = next(

@@ -33,6 +33,11 @@ class MonetizationService:
             return ""
         if not getattr(self.settings, "monetization_enabled", False):
             return clean_article + "\n"
+        if str(getattr(self.settings, "content_domain", "industry") or "industry").lower() == "narrative":
+            # The default revenue block advertises industry reports and
+            # consulting.  It is off-topic for the social-story account and is
+            # intentionally rejected by the public publish guard.
+            return clean_article + "\n"
         if self.CTA_MARKER in clean_article:
             return clean_article + "\n"
 

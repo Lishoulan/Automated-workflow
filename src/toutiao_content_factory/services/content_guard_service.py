@@ -611,7 +611,7 @@ class ContentGuardService:
         if not target_text or not corpus:
             report = self._empty_report(mode="run")
             report["run_dir"] = str(run_dir)
-            report["blocked"] = bool(domain_issues)
+            report["blocked"] = bool(editorial_blockers)
             report["writing_integrity"] = editorial_integrity
             report["blocking_flags"] = editorial_blockers
             report["human_review_required"] = bool(editorial_blockers)
@@ -624,7 +624,7 @@ class ContentGuardService:
         blocked = bool(best_match and best_score >= self.RUN_SIMILARITY_THRESHOLD) or (
             best_hamming <= self.SIMHASH_HAMMING_THRESHOLD
         )
-        blocked = blocked or bool(domain_issues)
+        blocked = blocked or bool(editorial_blockers)
         warnings = self._build_similarity_warnings(best_match, best_score, self.RUN_SIMILARITY_THRESHOLD)
         if best_hamming <= self.SIMHASH_HAMMING_THRESHOLD:
             warnings.append(

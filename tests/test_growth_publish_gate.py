@@ -56,6 +56,7 @@ def test_publish_guard_rejects_editorial_leak(app_settings, logger, tmp_path) ->
 
     report = ContentGuardService(app_settings, logger).build_publish_guard_report(run_dir)
 
+    assert report["blocked"] is True
     assert any("写作或事实核对指令" in item for item in report["blocking_flags"])
 
 

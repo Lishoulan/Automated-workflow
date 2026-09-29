@@ -493,6 +493,21 @@ def test_weitoutiao_topup_still_runs_when_cloud_has_not_published(app_settings) 
     assert calls == ["toutiao_weitoutiao"]
 
 
+def test_cloud_runner_can_continue_toward_multi_post_target(
+    app_settings, monkeypatch
+) -> None:
+    stub, calls = _weitoutiao_stub(
+        app_settings,
+        {"title": "Earlier cloud WeiToutiao", "status": "submitted_for_review"},
+    )
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    result = stub._top_up_standalone_weitoutiao(max_count=0)
+
+    assert result.get("standalone_topup_status") != "skipped_cloud_already_published"
+    assert calls == ["toutiao_weitoutiao"]
+
+
 def test_cloud_guard_forwards_explicit_platform(app_settings, monkeypatch) -> None:
     seen: list[str] = []
     monkeypatch.setattr(

@@ -21,8 +21,13 @@ LIST_URL = "https://mp.toutiao.com/mp/agw/creator_center/list/v2"
 
 
 def _counter(stat: dict, label: str, fallback: str) -> int:
+    aliases = {
+        "impression_count": {"展示", "展现"},
+        "go_detail_count": {"阅读"},
+        "comment_count": {"评论"},
+    }.get(fallback, set())
     for item in stat.get("counters") or []:
-        if item.get("Name") == label:
+        if item.get("Name") == label or item.get("Name") in aliases:
             return int(item.get("Count") or 0)
     return int(stat.get(fallback) or 0)
 
@@ -70,6 +75,102 @@ def build_snapshot(contents: list[dict], observed_at: datetime, days: int) -> di
         "summary": summary,
         "works": works,
     }
+
+
+def update_checkpoints(
+    snapshot: dict,
+    previous: dict | None,
+    observed_at: datetime,
+) -> tuple[dict, dict]:
+    """Persist the first observation at or after 24h and 72h for every work."""
+    previous_works = previous.get("works") if isinstance(previous, dict) else {}
+    works_by_gid = dict(previous_works) if isinstance(previous_works, dict) else {}
+    captured_now = {"24h": 0, "72h": 0}
+
+    for work in snapshot.get("works", []):
+        gid = str(work.get("gid") or "").strip()
+        if not gid:
+            continue
+        entry = works_by_gid.get(gid)
+        entry = dict(entry) if isinstance(entry, dict) else {}
+        entry.update(
+            {
+                "gid": gid,
+                "type": str(work.get("type") or "unknown"),
+                "title": str(work.get("title") or ""),
+                "created_at": str(work.get("created_at") or ""),
+                "last_observed_at": observed_at.isoformat(timespec="seconds"),
+                "latest": {
+                    "age_hours": float(work.get("age_hours") or 0),
+                    "impressions": int(work.get("impressions") or 0),
+                    "reads": int(work.get("reads") or 0),
+                    "comments": int(work.get("comments") or 0),
+                },
+            }
+        )
+        checkpoints = entry.get("checkpoints")
+        checkpoints = dict(checkpoints) if isinstance(checkpoints, dict) else {}
+        age_hours = float(work.get("age_hours") or 0)
+        for label, threshold in (("24h", 24), ("72h", 72)):
+            if age_hours < threshold or label in checkpoints:
+                continue
+            impressions = int(work.get("impressions") or 0)
+            reads = int(work.get("reads") or 0)
+            checkpoints[label] = {
+                "captured_at": observed_at.isoformat(timespec="seconds"),
+                "observed_age_hours": age_hours,
+                "capture_delay_hours": round(age_hours - threshold, 1),
+                "impressions": impressions,
+                "reads": reads,
+                "comments": int(work.get("comments") or 0),
+                "read_rate_pct": round(reads * 100 / impressions, 3) if impressions else 0.0,
+            }
+            captured_now[label] += 1
+        if "24h" in checkpoints and "72h" in checkpoints:
+            first = checkpoints["24h"]
+            last = checkpoints["72h"]
+            entry["change_24h_to_72h"] = {
+                "impressions": int(last.get("impressions") or 0) - int(first.get("impressions") or 0),
+                "reads": int(last.get("reads") or 0) - int(first.get("reads") or 0),
+                "comments": int(last.get("comments") or 0) - int(first.get("comments") or 0),
+            }
+        entry["checkpoints"] = checkpoints
+        works_by_gid[gid] = entry
+
+    summary: dict[str, dict[str, int]] = {}
+    for entry in works_by_gid.values():
+        if not isinstance(entry, dict):
+            continue
+        content_type = str(entry.get("type") or "unknown")
+        bucket = summary.setdefault(
+            content_type,
+            {"works": 0, "captured_24h": 0, "captured_72h": 0},
+        )
+        bucket["works"] += 1
+        checkpoints = entry.get("checkpoints") or {}
+        bucket["captured_24h"] += int("24h" in checkpoints)
+        bucket["captured_72h"] += int("72h" in checkpoints)
+
+    ledger = {
+        "schema": 1,
+        "updated_at": observed_at.isoformat(timespec="seconds"),
+        "works": works_by_gid,
+    }
+    return ledger, {"captured_now": captured_now, "by_type": summary}
+
+
+def _load_json(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
 
 
 def fetch_published(cookie_path: Path, *, max_pages: int, cutoff: datetime) -> list[dict]:
@@ -144,9 +245,23 @@ def main() -> int:
         print(f"Toutiao growth snapshot unavailable: {type(exc).__name__}", file=sys.stderr)
         return 2
     output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = output_dir / "growth_checkpoints.json"
+    checkpoints, checkpoint_summary = update_checkpoints(
+        snapshot,
+        _load_json(checkpoint_path),
+        observed_at,
+    )
+    _write_json_atomic(checkpoint_path, checkpoints)
+    snapshot["checkpoint_summary"] = checkpoint_summary
+    snapshot["checkpoint_file"] = str(checkpoint_path)
     target = output_dir / "growth_snapshot.json"
-    target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_atomic(target, snapshot)
     print(f"Growth snapshot: {target}")
+    print(
+        "Growth checkpoints: "
+        f"24h+={checkpoint_summary['captured_now']['24h']} "
+        f"72h+={checkpoint_summary['captured_now']['72h']} file={checkpoint_path}"
+    )
     for content_type, metrics in snapshot["summary"].items():
         print(
             f"{content_type}: works={metrics['works']} impressions={metrics['impressions']} "

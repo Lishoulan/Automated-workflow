@@ -97,6 +97,8 @@ def test_generate_for_run_writes_independent_evidence_backed_infographics(
     assert payload["infographic_prompts"]
     assert "Verified metrics" in payload["infographic_prompts"][0]
     assert payload["infographic_specs"][0]["source_note"]
+    assert payload["creative_score"]["cover"]["width"] == 900
+    assert (run_dir / "publish" / "title_cover_score.json").exists()
 
 
 def test_statistical_chart_uses_only_explicit_share_and_same_metric_comparison(app_settings) -> None:

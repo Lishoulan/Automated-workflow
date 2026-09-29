@@ -411,6 +411,8 @@ class PublishSettings:
     # 超出部分由「独立微头条选题+写作」能力补齐（weitoutiao_standalone_enabled 时生效）。
     weitoutiao_daily_target: int = 1
     weitoutiao_standalone_enabled: bool = False
+    # Publish one standalone WeiToutiao before the heavier article pipeline in each slot.
+    weitoutiao_priority_enabled: bool = False
     # 微头条错峰（2026-09-04）：图文发布成功后是否「立即」发伴生微头条。
     # 关闭后伴生动作交给后续时段的 standalone top-up（already_published 分支），
     # 图文与微头条之间天然拉开 8-12 小时，避免同一窗口连发触发灌水风控。
@@ -459,6 +461,7 @@ class PublishSettings:
             weitoutiao_selectors=weitoutiao_selectors,
             weitoutiao_daily_target=int(payload.get("weitoutiao_daily_target", 1)),
             weitoutiao_standalone_enabled=bool(payload.get("weitoutiao_standalone_enabled", False)),
+            weitoutiao_priority_enabled=bool(payload.get("weitoutiao_priority_enabled", False)),
             weitoutiao_companion_enabled=bool(payload.get("weitoutiao_companion_enabled", True)),
             weitoutiao_local_fallback_enabled=bool(payload.get("weitoutiao_local_fallback_enabled", True)),
             weitoutiao_personas=personas,
@@ -1488,6 +1491,10 @@ def _load_publishing_config_final(
             "TOUTIAO_WEITOUTIAO_STANDALONE_ENABLED",
             publishing_config.weitoutiao_standalone_enabled,
         ),
+        weitoutiao_priority_enabled=_env_flag(
+            "TOUTIAO_WEITOUTIAO_PRIORITY_ENABLED",
+            publishing_config.weitoutiao_priority_enabled,
+        ),
         weitoutiao_companion_enabled=_env_flag(
             "TOUTIAO_WEITOUTIAO_COMPANION_ENABLED",
             publishing_config.weitoutiao_companion_enabled,
@@ -2010,6 +2017,7 @@ def _default_config_payload() -> dict[str, Any]:
             "weitoutiao_publish_url": "https://mp.toutiao.com/profile_v4/weitoutiao/publish",
             "weitoutiao_daily_target": 1,
             "weitoutiao_standalone_enabled": False,
+            "weitoutiao_priority_enabled": False,
             "weitoutiao_local_fallback_enabled": True,
             "weitoutiao_personas": ["hot_comment", "warm"],
             "weitoutiao_selectors": {

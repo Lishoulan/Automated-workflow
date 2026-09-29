@@ -276,6 +276,7 @@ publishing:
   weitoutiao_publish_url: https://mp.toutiao.com/profile_v4/weitoutiao/publish
   weitoutiao_daily_target: 1
   weitoutiao_standalone_enabled: true
+  weitoutiao_priority_enabled: false
   weitoutiao_companion_enabled: false
   weitoutiao_local_fallback_enabled: true
   weitoutiao_personas:
@@ -410,6 +411,7 @@ accounts:
       weitoutiao_personas:
       - story_comment
       weitoutiao_daily_target: 3
+      weitoutiao_priority_enabled: true
     topic_collection:
       max_topic_age_hours: 24
       drop_topics_without_timestamp: false

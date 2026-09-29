@@ -16,6 +16,7 @@ from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.monetization_service import MonetizationService
 from toutiao_content_factory.services.publish_service import PublishService
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
+from toutiao_content_factory.services.creative_scoring_service import CreativeScoringService
 from toutiao_content_factory.agents.base import BaseAgent
 
 
@@ -44,6 +45,7 @@ class ReviewWorkflowService:
         self.publish_service = PublishService(settings, logger)
         self.growth_ops_service = GrowthOpsService(settings, logger)
         self.monetization_service = MonetizationService(settings, logger)
+        self.creative_scoring_service = CreativeScoringService()
         self._text_cleaner = BaseAgent.__new__(BaseAgent)
         self._text_cleaner.settings = settings
 
@@ -232,6 +234,21 @@ class ReviewWorkflowService:
         experiment_tags_path = publish_dir / "experiment_tags.json"
         experiment_tags_path.write_text(json.dumps(experiment_tags, ensure_ascii=False, indent=2), encoding="utf-8")
         meta_payload["experiment_tags"] = experiment_tags
+        try:
+            content_domain = str(self.settings.get_style(bundle.style_key).content_domain)
+        except (KeyError, AttributeError):
+            content_domain = str(getattr(self.settings, "content_domain", "industry"))
+        creative_score = self.creative_scoring_service.score_title(
+            clean_title,
+            cover_variant=cover_variant_value,
+            content_domain=content_domain,
+        )
+        creative_score_path = publish_dir / "title_cover_score.json"
+        creative_score_path.write_text(
+            json.dumps({"title": creative_score, "cover": None}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        meta_payload["creative_score"] = creative_score
         SchemaGuardService.validate_publish_meta(meta_payload)
         meta_path.write_text(json.dumps(meta_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -262,6 +279,7 @@ class ReviewWorkflowService:
             "publish_tags": tags_path,
             "publish_meta": meta_path,
             "experiment_tags": experiment_tags_path,
+            "title_cover_score": creative_score_path,
         }
         if auto_publish:
             result.update(self.publish_service.publish_run(run_dir))
@@ -285,6 +303,12 @@ class ReviewWorkflowService:
         bundle, selected_topic = self._load_bundle(run_dir)
         candidates = self._title_candidates(bundle)
         checker = ArticleQualityChecker()
+        selected_topic_payload = selected_topic.__dict__ if selected_topic is not None else {}
+        cover_variant = str(selected_topic_payload.get("cover_variant", "")).strip()
+        try:
+            content_domain = str(self.settings.get_style(bundle.style_key).content_domain)
+        except (KeyError, AttributeError):
+            content_domain = str(getattr(self.settings, "content_domain", "industry"))
         evaluations: list[dict[str, object]] = []
         publishing = self.settings.publishing
         duplicate_guard_enabled = (
@@ -299,7 +323,7 @@ class ReviewWorkflowService:
                 str(getattr(selected_topic, "url", "")),
             )
 
-        passed: list[tuple[int, int, int, str]] = []
+        passed: list[tuple[int, int, int, int, str]] = []
         reason_summary: dict[str, int] = {}
         # ⚠️ 2026-09-19：叙事体裁必须与另外两个入口用**同一份豁免清单**。
         #
@@ -346,9 +370,23 @@ class ReviewWorkflowService:
                 "issues": issues,
                 "suggestions": [str(item) for item in result.get("suggestions", [])],
             }
+            creative_score = self.creative_scoring_service.score_title(
+                title,
+                cover_variant=cover_variant,
+                content_domain=content_domain,
+            )
+            evaluation["creative_score"] = creative_score
             evaluations.append(evaluation)
             if not issues:
-                passed.append((int(has_raw_title_issue), -checker.title_click_preference(title), index, title))
+                passed.append(
+                    (
+                        int(has_raw_title_issue),
+                        -int(creative_score["score"]),
+                        -checker.title_click_preference(title),
+                        index,
+                        title,
+                    )
+                )
 
         # D2：`status` 让上层能区分「通过」「部分通过」「一个都没有」。
         # 尤其是 all_rejected —— 它必须是**可观测的失败**，而不是静默跳过闸门。
@@ -363,13 +401,14 @@ class ReviewWorkflowService:
 
         if passed:
             passed.sort(key=lambda item: (item[0], item[1]))
-            _, best_preference, best_index, best_title = passed[0]
+            _, best_creative_score, best_preference, best_index, best_title = passed[0]
             self.logger.info(
                 "Auto title selection: %d/%d candidates passed the gate; picked index=%s "
-                "(preference=%s) %s",
+                "(creative_score=%s preference=%s) %s",
                 len(passed),
                 len(evaluations),
                 best_index,
+                -best_creative_score,
                 -best_preference,
                 best_title,
             )
@@ -385,6 +424,7 @@ class ReviewWorkflowService:
                 "status": status,
                 "reason_summary": reason_summary,
                 "top_reasons": top_reasons,
+                "selected_creative_score": -best_creative_score,
             }
 
         self.logger.warning(

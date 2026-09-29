@@ -125,6 +125,14 @@ def test_story_account_gets_a_higher_weitoutiao_target(clean_persona_env: None) 
     assert story.publishing.weitoutiao_daily_target > vertical.publishing.weitoutiao_daily_target
 
 
+def test_story_account_publishes_weitoutiao_before_article_pipeline(clean_persona_env: None) -> None:
+    story = load_settings(Path.cwd(), account_key="robot_notes")
+    vertical = load_settings(Path.cwd(), account_key="default")
+
+    assert story.publishing.weitoutiao_priority_enabled is True
+    assert vertical.publishing.weitoutiao_priority_enabled is False
+
+
 def test_every_configured_persona_has_a_template(clean_persona_env: None) -> None:
     """配置里写了但模板里没有的人设会被静默回退成 hot_comment。"""
     for account_key in ("sports_notes", "robot_notes", "default"):

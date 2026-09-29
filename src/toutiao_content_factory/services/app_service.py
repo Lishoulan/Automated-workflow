@@ -800,8 +800,11 @@ class ContentFactoryAppService:
                         "; ".join(str(w) for w in warnings[:5]),
                     )
 
+        priority_weitoutiao_exports = self._publish_priority_weitoutiao(dry_run=dry_run)
+
         self._cleanup_stale_runs()
-        exported_files = self.collect_topics()
+        exported_files = dict(priority_weitoutiao_exports)
+        exported_files.update(self.collect_topics())
         self._heartbeat_daily_run_lock()
         benchmark_refresh_exports: dict[str, str] = {}
         try:
@@ -871,6 +874,7 @@ class ContentFactoryAppService:
                 return {
                     "status": "no_topics",
                     "message": "No eligible topics available. Will retry at next scheduled time.",
+                    **priority_weitoutiao_exports,
                 }
 
         losing_attempts: list[dict[str, object]] = []
@@ -1403,11 +1407,13 @@ class ContentFactoryAppService:
         if not publishing.weitoutiao_enabled or not publishing.weitoutiao_standalone_enabled:
             return {"standalone_topup_status": "disabled"}
 
-        # 跨通道互斥（2026-09-16 补）：跨通道守卫原先只查 `publishing.platform`（= 图文），
-        # 微头条有独立计数，于是两个通道同一天各补发一条（9-16 实况：本地 1 条 + 云端 1 条）。
-        # 微头条同样要「每日一篇」，所以这里也读一次共享状态。
+        # The shared state protects a local runner from duplicating a cloud post.
+        # A GitHub Actions runner is the cloud channel itself and restores its
+        # publish history cache between slots, so it must be allowed to continue
+        # toward a configured target greater than one.
         cloud_weitoutiao = self._cloud_published_today(platform=CLOUD_WEITOUTIAO_PLATFORM_KEY)
-        if cloud_weitoutiao is not None:
+        is_cloud_runner = os.getenv("GITHUB_ACTIONS", "").strip().lower() == "true"
+        if cloud_weitoutiao is not None and not is_cloud_runner:
             self.logger.info(
                 "Cross-channel guard: the cloud channel already published a WeiToutiao today; "
                 "skipping the local top-up. cloud_title=%s",
@@ -1450,6 +1456,33 @@ class ContentFactoryAppService:
             f"status={result.get('status', '')} accepted={result.get('accepted', 0)} "
             f"skipped={result.get('skipped_count', len(result.get('skipped', [])))}"
         )
+        return exports
+
+    def _publish_priority_weitoutiao(self, *, dry_run: bool) -> dict[str, Any]:
+        publishing = self.settings.publishing
+        if (
+            dry_run
+            or not publishing.enabled
+            or not publishing.auto_publish
+            or publishing.draft_only
+            or not publishing.weitoutiao_enabled
+            or not publishing.weitoutiao_standalone_enabled
+            or not getattr(publishing, "weitoutiao_priority_enabled", False)
+        ):
+            return {}
+        try:
+            exports = self._top_up_standalone_weitoutiao(max_count=1)
+        except Exception as exc:
+            self.logger.warning(
+                "Priority WeiToutiao publish failed; continuing with the article pipeline: %s",
+                exc,
+            )
+            return {
+                "standalone_priority_status": "failed",
+                "standalone_priority_summary": str(exc),
+            }
+        exports["standalone_priority_status"] = str(exports.get("standalone_topup_status", ""))
+        exports["standalone_priority_summary"] = str(exports.get("standalone_topup_summary", ""))
         return exports
 
     @staticmethod
@@ -3554,6 +3587,11 @@ class ContentFactoryAppService:
                         self._is_accepted_publish_status(toutiao_status)
                         and self.settings.publishing.weitoutiao_enabled
                         and self.settings.publishing.weitoutiao_standalone_enabled
+                        and not getattr(
+                            self.settings.publishing,
+                            "weitoutiao_priority_enabled",
+                            False,
+                        )
                     ):
                         try:
                             topup_exports = self._top_up_standalone_weitoutiao(max_count=2)

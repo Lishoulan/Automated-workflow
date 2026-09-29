@@ -633,6 +633,8 @@ jobs:
             output/automation/last_daily_run_result.json
             output/accounts/*/daily_topics.json
             output/daily_topics.json
+            output/accounts/*/growth_checkpoints.json
+            output/growth_checkpoints.json
           key: daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-${{ github.run_id }}
           restore-keys: |
             daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-

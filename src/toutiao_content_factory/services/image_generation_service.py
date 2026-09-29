@@ -16,6 +16,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.services.creative_scoring_service import CreativeScoringService
 
 
 GRADIENT_PRESETS = [
@@ -613,9 +614,47 @@ class ImageGenerationService:
             "inline_ready": bool(publish_infographic_paths),
             "infographic_specs": successful_infographic_specs,
         }
+        selected_topic = pm.get("selected_topic") if isinstance(pm.get("selected_topic"), dict) else {}
+        cover_variant = str(selected_topic.get("cover_variant", "")).strip()
+        style_key = str(pm.get("style_key", "")).strip()
+        try:
+            content_domain = str(self.settings.get_style(style_key).content_domain)
+        except (KeyError, AttributeError):
+            content_domain = str(getattr(self.settings, "content_domain", "industry"))
+        title_score_payload = pm.get("creative_score") if isinstance(pm.get("creative_score"), dict) else {}
+        scorer = CreativeScoringService()
+        if not title_score_payload:
+            title_score_payload = scorer.score_title(
+                title,
+                cover_variant=cover_variant,
+                content_domain=content_domain,
+            )
+        cover_score_payload = scorer.score_cover(
+            cr,
+            title_score=int(title_score_payload.get("score", 0) or 0),
+            title=title,
+            cover_variant=cover_variant,
+            content_domain=content_domain,
+        )
+        creative_score_payload = {
+            "generated_at": self._now(),
+            "title": title_score_payload,
+            "cover": cover_score_payload,
+            "combined_score": cover_score_payload["combined_score"],
+        }
+        creative_score_path = publish_dir / "title_cover_score.json"
+        creative_score_path.write_text(
+            json.dumps(creative_score_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        result["creative_score"] = creative_score_payload
         rp = publish_dir / "image_generation_result.json"
         rp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        out = {"cover_image": cr, "image_generation_result": rp}
+        out = {
+            "cover_image": cr,
+            "image_generation_result": rp,
+            "title_cover_score": creative_score_path,
+        }
         for idx, p in enumerate(ips, start=1):
             out["infographic_" + str(idx)] = p
         return out

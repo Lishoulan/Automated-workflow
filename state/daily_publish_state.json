@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-09-21T18:21:07",
+  "updated_at": "2026-09-29T09:11:53",
   "entries": {
     "2026-09-16": {
       "toutiao": {
@@ -126,6 +126,18 @@
         "title": "「老爹房过户给大儿子后，小弟小妹告赢了」",
         "publish_url": "",
         "recorded_at": "2026-09-21T18:21:07"
+      }
+    },
+    "2026-09-29::robot-notes": {
+      "toutiao": {
+        "channel": "cloud",
+        "status": "submitted_for_review",
+        "pgc_id": "7690646872964317723",
+        "title": "App广告设计引争议，老人拍照被弹窗20次",
+        "publish_url": "",
+        "visibility": "private",
+        "recorded_at": "2026-09-29T09:11:53",
+        "note": "Platform accepted submission in run 36461021836; article later set private after content review."
       }
     }
   }

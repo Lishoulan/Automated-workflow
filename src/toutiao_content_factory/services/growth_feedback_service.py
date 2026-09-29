@@ -17,6 +17,12 @@ TOPIC_TAGS: dict[str, tuple[str, ...]] = {
     "独居安全": ("独居", "摔倒", "邻居", "求助", "报警"),
     "婚恋家庭": ("相亲", "婚介", "夫妻", "婚姻", "离婚", "育儿"),
 }
+CHECKPOINT_TOLERANCE_HOURS = {"24h": 12, "72h": 24}
+
+
+def classify_checkpoint_capture(label: str, delay_hours: float) -> str:
+    tolerance = CHECKPOINT_TOLERANCE_HOURS.get(str(label), 0)
+    return "on_schedule" if float(delay_hours) <= tolerance else "late"
 
 
 def normalize_title(value: str) -> str:
@@ -60,6 +66,10 @@ def _checkpoint_rows(checkpoints: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         impressions = int(sample.get("impressions") or 0)
         reads = int(sample.get("reads") or 0)
+        delay = float(sample.get("capture_delay_hours") or 0)
+        capture_quality = str(sample.get("capture_quality") or "").strip()
+        if capture_quality not in {"on_schedule", "late"}:
+            capture_quality = classify_checkpoint_capture(label, delay)
         rows.append(
             {
                 "gid": str(entry.get("gid") or ""),
@@ -69,7 +79,8 @@ def _checkpoint_rows(checkpoints: dict[str, Any]) -> list[dict[str, Any]]:
                 "reads": reads,
                 "comments": int(sample.get("comments") or 0),
                 "read_rate_pct": round(reads * 100 / impressions, 3) if impressions else 0.0,
-                "capture_delay_hours": float(sample.get("capture_delay_hours") or 0),
+                "capture_delay_hours": delay,
+                "capture_quality": capture_quality,
                 "checkpoint": label,
             }
         )
@@ -103,7 +114,11 @@ def build_growth_feedback(
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     rows = _checkpoint_rows(checkpoints)
-    checkpoint_used = "72h优先，缺失时使用24h"
+    on_schedule_count = sum(row["capture_quality"] == "on_schedule" for row in rows)
+    late_count = len(rows) - on_schedule_count
+    checkpoint_used = (
+        f"72h优先，缺失时使用24h；准时 {on_schedule_count} 条，迟到回收 {late_count} 条"
+    )
     benchmarks = _format_benchmarks(rows)
 
     evaluated: list[dict[str, Any]] = []
@@ -157,11 +172,33 @@ def build_growth_feedback(
         (item for item in evaluated if item["status"] == "stop"),
         key=lambda item: item["performance_index"],
     )
-    stop_titles = [
-        normalize_title(item["title"])
-        for item in stopped
-        if item["type"] == "weitoutiao" and item["title"]
-    ]
+    stop_titles = list(
+        dict.fromkeys(
+            normalize_title(item["title"])
+            for item in stopped
+            if item["type"] == "weitoutiao" and item["title"]
+        )
+    )
+    stopped_for_report: list[dict[str, Any]] = []
+    stopped_by_title: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in stopped:
+        key = (item["type"], normalize_title(item["title"]) or item["gid"])
+        existing = stopped_by_title.get(key)
+        if existing is None:
+            grouped = dict(item)
+            grouped["repeat_count"] = 1
+            grouped["gids"] = [item["gid"]]
+            stopped_by_title[key] = grouped
+            stopped_for_report.append(grouped)
+            continue
+        existing["repeat_count"] += 1
+        existing["gids"].append(item["gid"])
+        existing["impressions"] += item["impressions"]
+        existing["reads"] += item["reads"]
+        existing["comments"] += item["comments"]
+        existing["read_rate_pct"] = round(
+            existing["reads"] * 100 / existing["impressions"], 3
+        ) if existing["impressions"] else 0.0
     return {
         "schema": 1,
         "generated_at": generated_at or datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -187,7 +224,7 @@ def build_growth_feedback(
             "mature_article_samples": sum(item["type"] == "article" for item in evaluated),
         },
         "winners": winners[:10],
-        "stop_loss": stopped[:20],
+        "stop_loss": stopped_for_report[:20],
         "current_summary": snapshot.get("summary", {}) if isinstance(snapshot, dict) else {},
     }
 
@@ -239,9 +276,10 @@ def render_daily_growth_report(feedback: dict[str, Any]) -> str:
     stopped = feedback.get("stop_loss") or []
     if stopped:
         for item in stopped[:5]:
+            repeat_note = f"，重复发布 {item.get('repeat_count')} 次" if item.get("repeat_count", 1) > 1 else ""
             lines.append(
                 f"- 暂停复用：{item.get('title', '')}（展现 {item.get('impressions', 0)}，"
-                f"阅读 {item.get('reads', 0)}）"
+                f"阅读 {item.get('reads', 0)}{repeat_note}）"
             )
     else:
         lines.append("- 暂无触发止损阈值的成熟样本。")
@@ -261,18 +299,18 @@ def write_growth_outputs(output_dir: Path, feedback: dict[str, Any]) -> dict[str
     output_dir.mkdir(parents=True, exist_ok=True)
     feedback_path = output_dir / "growth_feedback.json"
     calibration_path = output_dir / "creative_score_calibration.json"
-    report_json_path = output_dir / "daily_growth_report.json"
     report_md_path = output_dir / "daily_growth_report.md"
     feedback_path.write_text(json.dumps(feedback, ensure_ascii=False, indent=2), encoding="utf-8")
     calibration_path.write_text(
         json.dumps(feedback.get("creative_calibration") or {}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    report_json_path.write_text(json.dumps(feedback, ensure_ascii=False, indent=2), encoding="utf-8")
+    duplicate_report_path = output_dir / "daily_growth_report.json"
+    if duplicate_report_path.exists():
+        duplicate_report_path.unlink()
     report_md_path.write_text(render_daily_growth_report(feedback), encoding="utf-8")
     return {
         "feedback": feedback_path,
         "calibration": calibration_path,
-        "report_json": report_json_path,
         "report_md": report_md_path,
     }

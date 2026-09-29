@@ -72,6 +72,39 @@ def test_behavior_verbs_count_as_a_social_signal(collector) -> None:
     assert collector._has_social_story_signal(_topic("男子冒充房东骗取押金")) is True
 
 
+@pytest.mark.parametrize(
+    "title",
+    [
+        "李现在闲鱼买相机被骗2000元",
+        "交警称没牵绳的狗一律按野狗处理",
+        "充电器忘拔烧毁整个家",
+    ],
+)
+def test_current_life_story_hot_topics_pass_the_complete_focus_gate(
+    collector, title: str
+) -> None:
+    collector.topic_settings = collector.topic_settings.model_copy(
+        update={"focus_industries": ["social_story"]}
+    )
+    topic = _topic(title)
+    topic.heat_value = 6_000_000
+    enriched = collector._enrich_topic(topic)
+    filtered = {"weak_focus": 0, "low_quality": 0}
+
+    assert collector._passes_topic_focus(enriched, filtered) is True
+
+
+def test_relaxed_story_candidates_still_require_a_story_signal(collector) -> None:
+    collector.topic_settings = collector.topic_settings.model_copy(
+        update={"focus_industries": ["social_story"]}
+    )
+    false_positive = _topic("李想回应去XX化争议")
+    false_positive.matched_industries = ["social_story"]
+    false_positive.matched_keywords = ["回应"]
+
+    assert collector._build_relaxed_candidates([false_positive]) == []
+
+
 # --- 应当丢弃：靠一个「人味词」蒙进来的财经/宏观题 ---
 #
 # 背景（2026-09-19 实测）：热榜上出现「巴菲特：时间老人已对我十分慷慨」。

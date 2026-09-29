@@ -46,3 +46,68 @@ def test_growth_checkpoints_capture_24h_then_72h_and_compute_delta() -> None:
         "reads": 30,
         "comments": 0,
     }
+
+
+def test_first_late_observation_only_captures_72h() -> None:
+    created = datetime(2026, 9, 20, 8, tzinfo=timezone(timedelta(hours=8)))
+    observed = created + timedelta(hours=120)
+    snapshot = build_snapshot([_work(created, 900, 20)], observed, 14)
+
+    ledger, summary = update_checkpoints(snapshot, {}, observed)
+    entry = ledger["works"][snapshot["works"][0]["gid"]]
+
+    assert summary["captured_now"] == {"24h": 0, "72h": 1}
+    assert set(entry["checkpoints"]) == {"72h"}
+    assert entry["checkpoints"]["72h"]["capture_quality"] == "late"
+    assert "change_24h_to_72h" not in entry
+
+
+def test_schema_one_duplicate_backfill_is_repaired() -> None:
+    created = datetime(2026, 9, 20, 8, tzinfo=timezone(timedelta(hours=8)))
+    observed = created + timedelta(hours=121)
+    captured_at = observed.isoformat(timespec="seconds")
+    snapshot = build_snapshot([_work(created, 900, 20)], observed, 14)
+    gid = snapshot["works"][0]["gid"]
+    sample = {
+        "captured_at": captured_at,
+        "observed_age_hours": 120,
+        "capture_delay_hours": 96,
+        "impressions": 900,
+        "reads": 20,
+        "comments": 0,
+    }
+    previous = {
+        "schema": 1,
+        "works": {
+            gid: {
+                "gid": gid,
+                "checkpoints": {"24h": dict(sample), "72h": dict(sample)},
+                "change_24h_to_72h": {"impressions": 0, "reads": 0, "comments": 0},
+            }
+        },
+    }
+
+    ledger, _ = update_checkpoints(snapshot, previous, observed)
+    entry = ledger["works"][gid]
+
+    assert ledger["schema"] == 2
+    assert set(entry["checkpoints"]) == {"72h"}
+    assert entry["checkpoints"]["72h"]["capture_quality"] == "late"
+    assert "change_24h_to_72h" not in entry
+
+
+def test_late_24h_and_72h_observations_do_not_claim_an_exact_window_delta() -> None:
+    created = datetime(2026, 9, 20, 8, tzinfo=timezone(timedelta(hours=8)))
+    first_observed = created + timedelta(hours=60)
+    first = build_snapshot([_work(created, 300, 5)], first_observed, 14)
+    ledger, _ = update_checkpoints(first, {}, first_observed)
+
+    second_observed = created + timedelta(hours=110)
+    second = build_snapshot([_work(created, 900, 20)], second_observed, 14)
+    ledger, _ = update_checkpoints(second, ledger, second_observed)
+    entry = ledger["works"][second["works"][0]["gid"]]
+
+    assert set(entry["checkpoints"]) == {"24h", "72h"}
+    assert entry["checkpoints"]["24h"]["capture_quality"] == "late"
+    assert entry["checkpoints"]["72h"]["capture_quality"] == "late"
+    assert "change_24h_to_72h" not in entry

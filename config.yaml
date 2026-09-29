@@ -493,7 +493,6 @@ accounts:
           same_domain_only: true
           urls:
           - https://news.sina.com.cn/society/
-          - https://www.thepaper.cn/
     enabled: true
   politics_notes:
     label: 手蓝政治笔记

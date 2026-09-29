@@ -228,7 +228,10 @@ class TitleAgent(BaseAgent):
         _title_model = os.getenv("OPENAI_TITLE_MODEL", "").strip()
         if _title_model and _title_model != openai_service.model:
             self.openai_service = OpenAIContentService(
-                settings, logger, model_override=_title_model
+                settings,
+                logger,
+                force_mock=openai_service.force_mock,
+                model_override=_title_model,
             )
             logger.info(
                 "TitleAgent 使用独立模型: %s（正文仍用 %s）",

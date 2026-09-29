@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 
 from toutiao_content_factory.services.growth_feedback_service import (
     build_growth_feedback,
+    classify_checkpoint_capture,
     write_growth_outputs,
 )
 
@@ -87,7 +88,12 @@ def update_checkpoints(
     previous: dict | None,
     observed_at: datetime,
 ) -> tuple[dict, dict]:
-    """Persist the first observation at or after 24h and 72h for every work."""
+    """Persist the first real observation for each due checkpoint.
+
+    One observation may represent only one checkpoint.  If collection starts
+    after 72h, the current counters are a late 72h snapshot; they cannot also
+    reconstruct what the counters were at 24h.
+    """
     previous_works = previous.get("works") if isinstance(previous, dict) else {}
     works_by_gid = dict(previous_works) if isinstance(previous_works, dict) else {}
     captured_now = {"24h": 0, "72h": 0}
@@ -115,30 +121,64 @@ def update_checkpoints(
         )
         checkpoints = entry.get("checkpoints")
         checkpoints = dict(checkpoints) if isinstance(checkpoints, dict) else {}
+        # Repair ledgers produced by schema 1, which could write the same late
+        # observation into both windows and then report a fake zero delta.
+        first = checkpoints.get("24h")
+        last = checkpoints.get("72h")
+        if isinstance(first, dict) and isinstance(last, dict):
+            same_capture = str(first.get("captured_at") or "") == str(last.get("captured_at") or "")
+            same_counters = all(
+                int(first.get(field) or 0) == int(last.get(field) or 0)
+                for field in ("impressions", "reads", "comments")
+            )
+            if same_capture and same_counters:
+                checkpoints.pop("24h", None)
+                entry.pop("change_24h_to_72h", None)
         age_hours = float(work.get("age_hours") or 0)
-        for label, threshold in (("24h", 24), ("72h", 72)):
-            if age_hours < threshold or label in checkpoints:
-                continue
+        due = [
+            (label, threshold)
+            for label, threshold in (("24h", 24), ("72h", 72))
+            if age_hours >= threshold
+            and label not in checkpoints
+            and not (label == "24h" and "72h" in checkpoints)
+        ]
+        # Pick the latest due window.  A later run can still add 72h when a
+        # genuine 24h observation already exists.
+        for label, threshold in due[-1:]:
             impressions = int(work.get("impressions") or 0)
             reads = int(work.get("reads") or 0)
+            capture_delay = round(age_hours - threshold, 1)
             checkpoints[label] = {
                 "captured_at": observed_at.isoformat(timespec="seconds"),
                 "observed_age_hours": age_hours,
-                "capture_delay_hours": round(age_hours - threshold, 1),
+                "capture_delay_hours": capture_delay,
+                "capture_quality": classify_checkpoint_capture(label, capture_delay),
                 "impressions": impressions,
                 "reads": reads,
                 "comments": int(work.get("comments") or 0),
                 "read_rate_pct": round(reads * 100 / impressions, 3) if impressions else 0.0,
             }
             captured_now[label] += 1
+        for label, sample in checkpoints.items():
+            if not isinstance(sample, dict):
+                continue
+            delay = float(sample.get("capture_delay_hours") or 0)
+            sample["capture_quality"] = classify_checkpoint_capture(label, delay)
         if "24h" in checkpoints and "72h" in checkpoints:
             first = checkpoints["24h"]
             last = checkpoints["72h"]
-            entry["change_24h_to_72h"] = {
-                "impressions": int(last.get("impressions") or 0) - int(first.get("impressions") or 0),
-                "reads": int(last.get("reads") or 0) - int(first.get("reads") or 0),
-                "comments": int(last.get("comments") or 0) - int(first.get("comments") or 0),
-            }
+            if (
+                str(first.get("captured_at") or "") != str(last.get("captured_at") or "")
+                and first.get("capture_quality") == "on_schedule"
+                and last.get("capture_quality") == "on_schedule"
+            ):
+                entry["change_24h_to_72h"] = {
+                    "impressions": int(last.get("impressions") or 0) - int(first.get("impressions") or 0),
+                    "reads": int(last.get("reads") or 0) - int(first.get("reads") or 0),
+                    "comments": int(last.get("comments") or 0) - int(first.get("comments") or 0),
+                }
+            else:
+                entry.pop("change_24h_to_72h", None)
         entry["checkpoints"] = checkpoints
         works_by_gid[gid] = entry
 
@@ -157,7 +197,7 @@ def update_checkpoints(
         bucket["captured_72h"] += int("72h" in checkpoints)
 
     ledger = {
-        "schema": 1,
+        "schema": 2,
         "updated_at": observed_at.isoformat(timespec="seconds"),
         "works": works_by_gid,
     }

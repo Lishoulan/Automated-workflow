@@ -210,6 +210,9 @@ class TopicCollectionService:
         "退款",
         "维权",
         "消费者",
+        "烧毁",
+        "起火",
+        "牵绳",
     )
     SOCIAL_STORY_LOW_SIGNAL_TOKENS = (
         # 体育
@@ -1641,6 +1644,11 @@ class TopicCollectionService:
                 continue
             if focus_set and not any(industry in focus_set for industry in topic.matched_industries):
                 continue
+            # 社会故事赛道的宽松补位仍要满足同一份领域判据。此前这里只检查
+            # keyword_map，导致「李想回应…」「充电器…」之类字面撞词的题被补进来，
+            # 随后又在账号边界过滤中清空，最终出现 relaxed_added > 0 但导出 0 条。
+            if "social_story" in focus_set and not self._has_social_story_signal(topic):
+                continue
             if topic.source_type not in self.HOT_SOURCE_TYPES and not self._has_concrete_industry_keyword(topic):
                 continue
             if self._has_blocking_quality_issue(topic):
@@ -1732,6 +1740,9 @@ class TopicCollectionService:
             if not self._has_social_story_signal(topic):
                 filtered_out["weak_focus"] += 1
                 return False
+            # 专题判据已经完成领域匹配。不能再要求命中通用 keyword_map；否则
+            # 「被骗」「牵绳」等真实民生热点会因 matched_keywords 为空被二次否决。
+            return True
         title_hits = self._keyword_hits_in_title(topic)
         keyword_hits = len(topic.matched_keywords)
         macro_penalty = self._macro_noise_penalty(topic)

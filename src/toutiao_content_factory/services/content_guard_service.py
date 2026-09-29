@@ -581,6 +581,10 @@ class ContentGuardService:
             require_body=True,
         )
         editorial_blockers = self._editorial_integrity_flags(editorial_integrity)
+        domain_issues = self.quality_checker.check_topic_domain_consistency(
+            article, self._selected_topic_type(run_dir)
+        )
+        editorial_blockers.extend(f"题材一致性硬拦截：{issue}" for issue in domain_issues)
 
         raw_text = "\n".join(part for part in (title, article) if part)
         target_text = self._normalize_text(raw_text)
@@ -607,6 +611,7 @@ class ContentGuardService:
         if not target_text or not corpus:
             report = self._empty_report(mode="run")
             report["run_dir"] = str(run_dir)
+            report["blocked"] = bool(domain_issues)
             report["writing_integrity"] = editorial_integrity
             report["blocking_flags"] = editorial_blockers
             report["human_review_required"] = bool(editorial_blockers)
@@ -619,6 +624,7 @@ class ContentGuardService:
         blocked = bool(best_match and best_score >= self.RUN_SIMILARITY_THRESHOLD) or (
             best_hamming <= self.SIMHASH_HAMMING_THRESHOLD
         )
+        blocked = blocked or bool(domain_issues)
         warnings = self._build_similarity_warnings(best_match, best_score, self.RUN_SIMILARITY_THRESHOLD)
         if best_hamming <= self.SIMHASH_HAMMING_THRESHOLD:
             warnings.append(
@@ -759,7 +765,15 @@ class ContentGuardService:
         if bool(report.get("bad_words_blocked")):
             matched_words = ", ".join(report.get("matched_bad_words", [])[:10])
             blockers.append(f"命中本地敏感词/违禁词，已强制拦截自动发布：{matched_words}")
-        if bool(report.get("blocked")) and not bool(report.get("bad_words_blocked")):
+        similarity_threshold = float(report.get("threshold", 0.0) or 0.0)
+        similarity_blocked = (
+            similarity_threshold > 0
+            and float(report.get("similarity", 0.0) or 0.0) >= similarity_threshold
+        ) or (
+            int(report.get("simhash_hamming_distance", SimHashIndex.BITS))
+            <= int(report.get("simhash_hamming_threshold", self.SIMHASH_HAMMING_THRESHOLD))
+        )
+        if similarity_blocked and not bool(report.get("bad_words_blocked")):
             blockers.append("Content is too similar to a recently published run and should be revised before publishing.")
         if float(report.get("ai_risk_score", 0.0) or 0.0) >= self.AI_RISK_THRESHOLD:
             blockers.append("AI-style risk is high. Add more concrete facts, quotes, and human edits before publishing.")
@@ -1373,6 +1387,18 @@ class ContentGuardService:
             if normalize_number(num) not in normalized_source_numbers:
                 warnings.append(f"数字'{num}'在原始素材中未找到对应出处，可能存在引用错误")
         return warnings
+
+    @staticmethod
+    def _selected_topic_type(run_dir: Path) -> str:
+        path = Path(run_dir) / "selected_topic.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        topic = payload.get("selected_topic", payload)
+        return str(topic.get("topic_type", "")).strip() if isinstance(topic, dict) else ""
 
     def _write_report(self, payload: dict[str, Any], *, run_dir: Path | None = None) -> None:
         self.report_path.parent.mkdir(parents=True, exist_ok=True)

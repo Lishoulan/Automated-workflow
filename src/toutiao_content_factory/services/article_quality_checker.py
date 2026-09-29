@@ -56,6 +56,26 @@ class TitleBodyConsistencyResult:
 class ArticleQualityChecker:
     """文章质量预检器"""
 
+    _STORY_BUSINESS_DRIFT_MARKERS = (
+        "ipo", "出货量", "市场份额", "毛利率", "经营现金流", "估值",
+        "产能", "订单落地", "商业化", "产品交付", "资本市场",
+    )
+
+    @classmethod
+    def check_topic_domain_consistency(cls, content: str, topic_type: str) -> list[str]:
+        """Require human review when a social story turns into company analysis."""
+        if str(topic_type or "").strip().lower() not in {"social_story", "narrative"}:
+            return []
+        folded = str(content or "").casefold()
+        hits = [marker for marker in cls._STORY_BUSINESS_DRIFT_MARKERS if marker in folded]
+        if len(hits) < 3:
+            return []
+        return [
+            "社会故事稿混入企业经营或资本市场分析："
+            + "、".join(hits[:4])
+            + "。需核对选题与正文后重写。"
+        ]
+
     # 首发激励计划要求的五大质量标准关键词
     QUALITY_KEYWORDS = {
         "首发时效": ["第一时间", "及时", "最新", "刚刚", "刚刚发布", "最新消息", "今日", "昨日"],

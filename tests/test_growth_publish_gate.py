@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from scripts.collect_growth_snapshot import build_snapshot
@@ -56,6 +57,31 @@ def test_publish_guard_rejects_editorial_leak(app_settings, logger, tmp_path) ->
     report = ContentGuardService(app_settings, logger).build_publish_guard_report(run_dir)
 
     assert any("写作或事实核对指令" in item for item in report["blocking_flags"])
+
+
+def test_social_story_business_drift_is_a_publish_blocker(app_settings, logger, tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    publish_dir = run_dir / "publish"
+    publish_dir.mkdir(parents=True)
+    (run_dir / "selected_topic.json").write_text(
+        json.dumps({"selected_topic": {"topic_type": "social_story"}}), encoding="utf-8"
+    )
+    (publish_dir / "title.txt").write_text("养老金制度优化引发讨论", encoding="utf-8")
+    article = (
+        "专家讨论养老保险制度。出货量和市场份额并不能证明毛利率改善，"
+        "赴港IPO之后还要看经营现金流与行业估值。"
+    )
+    (publish_dir / "article.md").write_text(article, encoding="utf-8")
+
+    report = ContentGuardService(app_settings, logger).build_publish_guard_report(run_dir)
+
+    assert report["blocked"] is True
+    assert any("题材一致性硬拦截" in item for item in report["blocking_flags"])
+    assert not any("too similar" in item for item in report["blocking_flags"])
+    assert ArticleQualityChecker.check_topic_domain_consistency(article, "industry") == []
+    assert ArticleQualityChecker.check_topic_domain_consistency(
+        "专家讨论养老保险制度和企业年金覆盖问题。", "social_story"
+    ) == []
 
 
 def _work(created: datetime, title: str, kind: str, impressions: int, reads: int) -> dict:

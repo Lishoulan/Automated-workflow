@@ -622,7 +622,9 @@ class ImageGenerationService:
         except (KeyError, AttributeError):
             content_domain = str(getattr(self.settings, "content_domain", "industry"))
         title_score_payload = pm.get("creative_score") if isinstance(pm.get("creative_score"), dict) else {}
-        scorer = CreativeScoringService()
+        scorer = CreativeScoringService(
+            self.settings.output_dir / "creative_score_calibration.json"
+        )
         if not title_score_payload:
             title_score_payload = scorer.score_title(
                 title,

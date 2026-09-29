@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 from PIL import Image, ImageFilter, ImageStat
 
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
+from toutiao_content_factory.services.growth_feedback_service import title_signals
 
 
 class CreativeScoringService:
@@ -26,8 +28,19 @@ class CreativeScoringService:
     )
     _WEAK_TOKENS = ("震惊", "惊呆", "速看", "必看", "重磅", "彻底炸了", "你绝对想不到")
 
-    def __init__(self) -> None:
+    def __init__(self, calibration_path: Path | None = None) -> None:
         self.quality_checker = ArticleQualityChecker()
+        self.calibration = self._load_calibration(calibration_path)
+
+    @staticmethod
+    def _load_calibration(path: Path | None) -> dict[str, Any]:
+        if path is None:
+            return {}
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     def score_title(
         self,
@@ -98,6 +111,17 @@ class CreativeScoringService:
         else:
             pair_reasons.append("封面类型与标题没有明显冲突")
 
+        adjustments = self.calibration.get("signal_adjustments")
+        adjustments = adjustments if isinstance(adjustments, dict) else {}
+        matched_signals = title_signals(text)
+        calibration_adjustment = max(
+            -10,
+            min(10, sum(int(adjustments.get(signal) or 0) for signal in matched_signals)),
+        )
+        if calibration_adjustment:
+            score += calibration_adjustment
+            reasons.append(f"历史24/72小时表现校准 {calibration_adjustment:+d}")
+
         title_score = max(0, min(100, score))
         pair_score = max(0, min(100, pair_score))
         total = round(title_score * 0.8 + pair_score * 0.2)
@@ -108,6 +132,8 @@ class CreativeScoringService:
             "title_cover_fit_score": pair_score,
             "click_preference": click_preference,
             "cover_variant": variant or "unspecified",
+            "calibration_adjustment": calibration_adjustment,
+            "calibration_signals": matched_signals,
             "reasons": reasons,
             "pair_reasons": pair_reasons,
         }

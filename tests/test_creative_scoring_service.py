@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -46,3 +47,19 @@ def test_cover_score_reports_mobile_dimensions_and_visual_signals(tmp_path: Path
     assert result["aspect_ratio"] == 1.778
     assert 0 <= result["score"] <= 100
     assert 0 <= result["combined_score"] <= 100
+
+
+def test_title_score_applies_persisted_performance_calibration(tmp_path: Path) -> None:
+    calibration_path = tmp_path / "creative_score_calibration.json"
+    calibration_path.write_text(
+        json.dumps({"signal_adjustments": {"question_gap": 4, "concrete_subject": 2}}),
+        encoding="utf-8",
+    )
+    title = "老人家里发生了什么？"
+
+    baseline = CreativeScoringService().score_title(title)
+    calibrated = CreativeScoringService(calibration_path).score_title(title)
+
+    assert calibrated["calibration_adjustment"] == 6
+    assert calibrated["title_score"] == baseline["title_score"] + 6
+    assert "question_gap" in calibrated["calibration_signals"]

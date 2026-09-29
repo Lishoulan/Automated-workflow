@@ -183,6 +183,31 @@ def test_incomplete_topic_pool_with_all_selected_items_accepted_is_success(app_s
     assert "No additional eligible topics" in result["message"]
 
 
+def test_topic_ranking_uses_72_hour_feedback(app_settings) -> None:
+    object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
+    feedback = {
+        "topic_feedback": {
+            "weights": {"房产继承": 18, "借贷纠纷": -24},
+            "stop_titles": [],
+        }
+    }
+    app_settings.output_dir.mkdir(parents=True, exist_ok=True)
+    (app_settings.output_dir / "growth_feedback.json").write_text(
+        json.dumps(feedback, ensure_ascii=False), encoding="utf-8"
+    )
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
+    weak = _topic()
+    weak.title = "老人借钱给亲戚没打借条"
+    weak.rank = 1
+    strong = _topic()
+    strong.title = "老人房产继承最后怎么处理"
+    strong.rank = 10
+
+    ranked = generator._rank_topics([weak, strong])
+
+    assert ranked[0].title == strong.title
+
+
 def test_fallback_report_merges_pending_and_evergreen_topics(app_settings) -> None:
     service = TopicPoolService(app_settings, logging.getLogger("test.topic_pool"))
     pending = _topic()

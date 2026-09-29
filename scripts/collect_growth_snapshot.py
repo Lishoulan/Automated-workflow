@@ -15,6 +15,11 @@ from statistics import median
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from toutiao_content_factory.services.growth_feedback_service import (
+    build_growth_feedback,
+    write_growth_outputs,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 BEIJING = timezone(timedelta(hours=8))
 LIST_URL = "https://mp.toutiao.com/mp/agw/creator_center/list/v2"
@@ -256,12 +261,19 @@ def main() -> int:
     snapshot["checkpoint_file"] = str(checkpoint_path)
     target = output_dir / "growth_snapshot.json"
     _write_json_atomic(target, snapshot)
+    feedback = build_growth_feedback(
+        snapshot,
+        checkpoints,
+        generated_at=observed_at.isoformat(timespec="seconds"),
+    )
+    growth_outputs = write_growth_outputs(output_dir, feedback)
     print(f"Growth snapshot: {target}")
     print(
         "Growth checkpoints: "
         f"24h+={checkpoint_summary['captured_now']['24h']} "
         f"72h+={checkpoint_summary['captured_now']['72h']} file={checkpoint_path}"
     )
+    print(f"Growth operations report: {growth_outputs['report_md']}")
     for content_type, metrics in snapshot["summary"].items():
         print(
             f"{content_type}: works={metrics['works']} impressions={metrics['impressions']} "

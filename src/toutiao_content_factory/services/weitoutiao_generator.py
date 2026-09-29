@@ -23,6 +23,7 @@ from toutiao_content_factory.models import TopicCandidate
 from toutiao_content_factory.services.automation import TopicAutomationService
 from toutiao_content_factory.services.article_sanitizer import looks_like_html_document
 from toutiao_content_factory.services.compliance_service import count_today_published_by_platform
+from toutiao_content_factory.services.growth_feedback_service import topic_feedback_score
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.services.publish_service import PublishService
 
@@ -278,11 +279,23 @@ class WeiToutiaoStandaloneGenerator:
         url = str(topic.url or "").strip().lower()
         return f"{title}|{url}"
 
-    @staticmethod
-    def _rank_topics(topics: list[TopicCandidate]) -> list[TopicCandidate]:
+    def _load_growth_feedback(self) -> dict[str, Any]:
+        output_dir = getattr(self.settings, "output_dir", None)
+        if output_dir is None:
+            return {}
+        path = Path(output_dir) / "growth_feedback.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _rank_topics(self, topics: list[TopicCandidate]) -> list[TopicCandidate]:
+        feedback = self._load_growth_feedback()
         return sorted(
             [topic for topic in topics if topic],
             key=lambda topic: (
+                -topic_feedback_score(topic.title, feedback)[0],
                 topic.rank if topic.rank and topic.rank > 0 else 10_000,
                 -int(topic.total_score or 0),
             ),

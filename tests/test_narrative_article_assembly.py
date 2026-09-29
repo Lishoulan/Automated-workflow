@@ -123,6 +123,18 @@ def test_supplementary_paragraphs_are_unique() -> None:
     assert len(paragraphs) == len(set(paragraphs))
 
 
+def test_supplementary_paragraphs_do_not_leak_editorial_guard_phrases() -> None:
+    from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
+
+    agent = _story_agent()
+    paragraphs = agent._build_narrative_supplementary_paragraphs(_story_report())
+
+    integrity = ArticleQualityChecker.check_body_integrity("\n\n".join(paragraphs))
+    assert integrity.passed is True
+    assert "把素材里能确认的部分列一下" not in "\n".join(paragraphs)
+    assert "这些是目前能核实的范围" not in "\n".join(paragraphs)
+
+
 def test_generic_supplement_paragraphs_are_capped() -> None:
     """通用模板句（对任何故事都成立的那种）最多插 2 条，避免"两套稿子缝合"。"""
     agent = _story_agent()
@@ -149,6 +161,9 @@ def test_narrative_fallback_never_uses_the_industry_article_template() -> None:
 
     assert "9月19日" in content.article
     assert "换成是你遇到这种情况，会怎么处理？" in content.article
+    from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
+
+    assert ArticleQualityChecker.check_body_integrity(content.article).passed is True
     for marker in ("IPO", "资本市场", "市场份额", "出货量", "毛利率", "订单", "回款", "产能"):
         assert marker not in content.article
 

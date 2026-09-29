@@ -45,7 +45,9 @@ class ReviewWorkflowService:
         self.publish_service = PublishService(settings, logger)
         self.growth_ops_service = GrowthOpsService(settings, logger)
         self.monetization_service = MonetizationService(settings, logger)
-        self.creative_scoring_service = CreativeScoringService()
+        self.creative_scoring_service = CreativeScoringService(
+            settings.output_dir / "creative_score_calibration.json"
+        )
         self._text_cleaner = BaseAgent.__new__(BaseAgent)
         self._text_cleaner.settings = settings
 

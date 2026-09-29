@@ -635,6 +635,10 @@ jobs:
             output/daily_topics.json
             output/accounts/*/growth_checkpoints.json
             output/growth_checkpoints.json
+            output/accounts/*/growth_feedback.json
+            output/growth_feedback.json
+            output/accounts/*/creative_score_calibration.json
+            output/creative_score_calibration.json
           key: daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-${{ github.run_id }}
           restore-keys: |
             daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-
@@ -928,7 +932,13 @@ jobs:
 
       - name: Snapshot published-work growth
         if: always()
-        run: python scripts/collect_growth_snapshot.py --account "${RUN_ACCOUNT:-robot_notes}"
+        shell: bash
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python scripts/collect_growth_snapshot.py --account "${RUN_ACCOUNT:-robot_notes}"
+          REPORT_FILE="$ACCOUNT_OUTPUT_DIR/daily_growth_report.md"
+          if [ -f "$REPORT_FILE" ]; then
+            cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
+          fi
         continue-on-error: true
 
       - name: Publish precheck report

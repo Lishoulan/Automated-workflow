@@ -1,0 +1,278 @@
+from __future__ import annotations
+
+import json
+import re
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+from statistics import median
+from typing import Any
+
+
+TOPIC_TAGS: dict[str, tuple[str, ...]] = {
+    "房产继承": ("房产", "房子", "继承", "遗产", "过户", "居住权"),
+    "养老赡养": ("养老", "赡养", "子女", "老人", "退休", "养老院"),
+    "借贷纠纷": ("借钱", "借条", "欠款", "亲戚", "还钱"),
+    "家政照护": ("保姆", "家政", "照护", "护工"),
+    "独居安全": ("独居", "摔倒", "邻居", "求助", "报警"),
+    "婚恋家庭": ("相亲", "婚介", "夫妻", "婚姻", "离婚", "育儿"),
+}
+
+
+def normalize_title(value: str) -> str:
+    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", str(value or "")).casefold()
+
+
+def infer_topic_tags(text: str) -> list[str]:
+    value = str(text or "")
+    return [tag for tag, markers in TOPIC_TAGS.items() if any(marker in value for marker in markers)]
+
+
+def title_signals(title: str) -> list[str]:
+    text = str(title or "").strip()
+    signals: list[str] = []
+    length = len(text)
+    if 14 <= length <= 24:
+        signals.append("mobile_length")
+    if re.search(r"\d", text):
+        signals.append("number")
+    if "？" in text or "?" in text or any(token in text for token in ("为何", "为什么", "怎么", "如何")):
+        signals.append("question_gap")
+    if any(token in text for token in ("结果", "最后", "后来", "判决", "认定", "解决")):
+        signals.append("outcome")
+    if any(token in text for token in ("老人", "夫妻", "儿子", "女儿", "邻居", "法院", "公司")):
+        signals.append("concrete_subject")
+    return signals
+
+
+def _checkpoint_rows(checkpoints: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    works = checkpoints.get("works") if isinstance(checkpoints, dict) else {}
+    if not isinstance(works, dict):
+        return rows
+    for entry in works.values():
+        if not isinstance(entry, dict):
+            continue
+        samples = entry.get("checkpoints")
+        label = "72h" if isinstance(samples, dict) and isinstance(samples.get("72h"), dict) else "24h"
+        sample = samples.get(label) if isinstance(samples, dict) else None
+        if not isinstance(sample, dict):
+            continue
+        impressions = int(sample.get("impressions") or 0)
+        reads = int(sample.get("reads") or 0)
+        rows.append(
+            {
+                "gid": str(entry.get("gid") or ""),
+                "type": str(entry.get("type") or "unknown"),
+                "title": str(entry.get("title") or "").strip(),
+                "impressions": impressions,
+                "reads": reads,
+                "comments": int(sample.get("comments") or 0),
+                "read_rate_pct": round(reads * 100 / impressions, 3) if impressions else 0.0,
+                "capture_delay_hours": float(sample.get("capture_delay_hours") or 0),
+                "checkpoint": label,
+            }
+        )
+    return rows
+
+
+def _format_benchmarks(rows: list[dict[str, Any]]) -> dict[str, dict[str, float | int]]:
+    result: dict[str, dict[str, float | int]] = {}
+    for content_type in sorted({row["type"] for row in rows}):
+        group = [row for row in rows if row["type"] == content_type]
+        result[content_type] = {
+            "samples": len(group),
+            "median_impressions": round(float(median(row["impressions"] for row in group)), 2),
+            "median_read_rate_pct": round(float(median(row["read_rate_pct"] for row in group)), 3),
+        }
+    return result
+
+
+def _performance_index(row: dict[str, Any], benchmark: dict[str, Any]) -> float:
+    impression_base = max(1.0, float(benchmark.get("median_impressions") or 0))
+    rate_base = max(0.25, float(benchmark.get("median_read_rate_pct") or 0))
+    impression_index = min(3.0, float(row["impressions"]) / impression_base)
+    rate_index = min(3.0, float(row["read_rate_pct"]) / rate_base)
+    return round(impression_index * 0.6 + rate_index * 0.4, 3)
+
+
+def build_growth_feedback(
+    snapshot: dict[str, Any],
+    checkpoints: dict[str, Any],
+    *,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    rows = _checkpoint_rows(checkpoints)
+    checkpoint_used = "72h优先，缺失时使用24h"
+    benchmarks = _format_benchmarks(rows)
+
+    evaluated: list[dict[str, Any]] = []
+    tag_scores: dict[str, list[float]] = defaultdict(list)
+    signal_scores: dict[str, list[float]] = defaultdict(list)
+    for row in rows:
+        benchmark = benchmarks.get(row["type"], {})
+        index = _performance_index(row, benchmark)
+        tags = infer_topic_tags(row["title"])
+        signals = title_signals(row["title"])
+        status = "watch"
+        if (
+            row["reads"] > 0
+            and index >= 1.25
+            and row["impressions"] >= float(benchmark.get("median_impressions") or 0)
+        ):
+            status = "winner"
+        elif row["checkpoint"] == "72h" and (row["reads"] == 0 or index <= 0.45):
+            status = "stop"
+        item = {**row, "performance_index": index, "status": status, "topic_tags": tags, "title_signals": signals}
+        evaluated.append(item)
+        if row["type"] == "weitoutiao":
+            for tag in tags:
+                tag_scores[tag].append(index)
+        if row["type"] == "article" and row["reads"] > 0:
+            for signal in signals:
+                signal_scores[signal].append(index)
+
+    topic_weights: dict[str, int] = {}
+    topic_evidence: dict[str, dict[str, Any]] = {}
+    for tag, scores in sorted(tag_scores.items()):
+        average = sum(scores) / len(scores)
+        weight = max(-30, min(20, round((average - 1.0) * 20))) if len(scores) >= 2 else 0
+        topic_weights[tag] = weight
+        topic_evidence[tag] = {"samples": len(scores), "average_performance_index": round(average, 3)}
+
+    signal_adjustments: dict[str, int] = {}
+    signal_evidence: dict[str, dict[str, Any]] = {}
+    for signal, scores in sorted(signal_scores.items()):
+        average = sum(scores) / len(scores)
+        adjustment = max(-6, min(6, round((average - 1.0) * 5))) if len(scores) >= 3 else 0
+        signal_adjustments[signal] = adjustment
+        signal_evidence[signal] = {"samples": len(scores), "average_performance_index": round(average, 3)}
+
+    winners = sorted(
+        (item for item in evaluated if item["status"] == "winner"),
+        key=lambda item: item["performance_index"],
+        reverse=True,
+    )
+    stopped = sorted(
+        (item for item in evaluated if item["status"] == "stop"),
+        key=lambda item: item["performance_index"],
+    )
+    stop_titles = [
+        normalize_title(item["title"])
+        for item in stopped
+        if item["type"] == "weitoutiao" and item["title"]
+    ]
+    return {
+        "schema": 1,
+        "generated_at": generated_at or datetime.now().astimezone().isoformat(timespec="seconds"),
+        "checkpoint_used": checkpoint_used,
+        "sample_count": len(evaluated),
+        "benchmarks": benchmarks,
+        "topic_feedback": {
+            "weights": topic_weights,
+            "evidence": topic_evidence,
+            "stop_titles": stop_titles,
+            "winning_titles": [
+                normalize_title(item["title"])
+                for item in winners
+                if item["type"] == "weitoutiao" and item["title"]
+            ],
+        },
+        "creative_calibration": {
+            "signal_adjustments": signal_adjustments,
+            "evidence": signal_evidence,
+            "article_samples": sum(
+                item["type"] == "article" and item["reads"] > 0 for item in evaluated
+            ),
+            "mature_article_samples": sum(item["type"] == "article" for item in evaluated),
+        },
+        "winners": winners[:10],
+        "stop_loss": stopped[:20],
+        "current_summary": snapshot.get("summary", {}) if isinstance(snapshot, dict) else {},
+    }
+
+
+def topic_feedback_score(title: str, feedback: dict[str, Any]) -> tuple[int, list[str]]:
+    section = feedback.get("topic_feedback") if isinstance(feedback, dict) else {}
+    section = section if isinstance(section, dict) else {}
+    normalized = normalize_title(title)
+    if normalized and normalized in set(section.get("stop_titles") or []):
+        return -100, ["72小时低表现标题停止复用"]
+    weights = section.get("weights") if isinstance(section.get("weights"), dict) else {}
+    reasons: list[str] = []
+    score = 0
+    for tag in infer_topic_tags(title):
+        weight = int(weights.get(tag) or 0)
+        score += weight
+        if weight:
+            reasons.append(f"{tag}{weight:+d}")
+    return max(-100, min(40, score)), reasons
+
+
+def render_daily_growth_report(feedback: dict[str, Any]) -> str:
+    lines = [
+        "# 今日头条增长运营日报",
+        "",
+        f"生成时间：{feedback.get('generated_at', '')}",
+        f"使用数据：{feedback.get('checkpoint_used', '')} 检查点，共 {feedback.get('sample_count', 0)} 条成熟样本",
+        "",
+        "## 当前表现",
+        "",
+    ]
+    summary = feedback.get("current_summary") or {}
+    for content_type, metrics in summary.items():
+        lines.append(
+            f"- {content_type}：{metrics.get('works', 0)} 条，{metrics.get('impressions', 0)} 展现，"
+            f"{metrics.get('reads', 0)} 阅读，零阅读 {metrics.get('zero_read_works', 0)} 条。"
+        )
+    lines.extend(["", "## 继续放大", ""])
+    winners = feedback.get("winners") or []
+    if winners:
+        for item in winners[:5]:
+            lines.append(
+                f"- {item.get('title', '')}（{item.get('type', '')}，展现 {item.get('impressions', 0)}，"
+                f"阅读率 {item.get('read_rate_pct', 0)}%）"
+            )
+    else:
+        lines.append("- 暂无达到放大阈值的成熟样本。")
+    lines.extend(["", "## 自动止损", ""])
+    stopped = feedback.get("stop_loss") or []
+    if stopped:
+        for item in stopped[:5]:
+            lines.append(
+                f"- 暂停复用：{item.get('title', '')}（展现 {item.get('impressions', 0)}，"
+                f"阅读 {item.get('reads', 0)}）"
+            )
+    else:
+        lines.append("- 暂无触发止损阈值的成熟样本。")
+    lines.extend(["", "## 明日动作", ""])
+    weights = (feedback.get("topic_feedback") or {}).get("weights") or {}
+    positive = sorted(weights.items(), key=lambda item: item[1], reverse=True)
+    negative = sorted(weights.items(), key=lambda item: item[1])
+    if positive and positive[0][1] > 0:
+        lines.append(f"- 微头条优先测试“{positive[0][0]}”相关选题。")
+    if negative and negative[0][1] < 0:
+        lines.append(f"- 降低“{negative[0][0]}”相关选题频次，等待新角度或新事实。")
+    lines.append("- 新作品继续在 24 小时和 72 小时回收展现、阅读与评论数据。")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_growth_outputs(output_dir: Path, feedback: dict[str, Any]) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    feedback_path = output_dir / "growth_feedback.json"
+    calibration_path = output_dir / "creative_score_calibration.json"
+    report_json_path = output_dir / "daily_growth_report.json"
+    report_md_path = output_dir / "daily_growth_report.md"
+    feedback_path.write_text(json.dumps(feedback, ensure_ascii=False, indent=2), encoding="utf-8")
+    calibration_path.write_text(
+        json.dumps(feedback.get("creative_calibration") or {}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    report_json_path.write_text(json.dumps(feedback, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_md_path.write_text(render_daily_growth_report(feedback), encoding="utf-8")
+    return {
+        "feedback": feedback_path,
+        "calibration": calibration_path,
+        "report_json": report_json_path,
+        "report_md": report_md_path,
+    }

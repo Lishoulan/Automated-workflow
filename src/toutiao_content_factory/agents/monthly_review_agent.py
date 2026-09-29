@@ -1,6 +1,6 @@
 """MonthlyReviewAgent - 月度回顾分析 Agent。
 
-读取过去 30 天的发布数据（来自 performance_ledger.json），
+读取过去 30 天的发布数据（优先 performance_ledger.json，缺失时使用 growth_checkpoints.json），
 生成结构化回顾报告（top_performers / bottom_performers / topic_hit_rate /
 time_slot_performance），为内容迭代提供数据支持。
 
@@ -106,7 +106,7 @@ OPPOSITION_KEYWORDS: tuple[str, ...] = (
 class MonthlyReviewAgent:
     """月度回顾 Agent。
 
-    读取 ``performance_ledger.json`` 中过去 30 天的发布记录，计算综合排名，
+    读取绩效账本或 24/72 小时增长账本中过去 30 天的发布记录，计算综合排名，
     分析 TOP5 共性特征与 BOTTOM5 共性问题，统计选题命中率和发布时段表现，
     输出 ``monthly_review_report.json`` 供内容迭代参考。
 
@@ -140,7 +140,7 @@ class MonthlyReviewAgent:
         ledger_path = self._resolve_ledger_path()
         if ledger_path is None:
             self.logger.warning(
-                "%s 跳过：未找到 %s。请先运行 growth_ops 流程生成账本。",
+                "%s 跳过：未找到 %s 或 growth_checkpoints.json。请先运行表现数据回收。",
                 self.agent_name,
                 LEDGER_FILENAME,
             )
@@ -222,20 +222,32 @@ class MonthlyReviewAgent:
     # ------------------------------------------------------------------
 
     def _resolve_ledger_path(self) -> Path | None:
-        """按优先级查找 performance_ledger.json 路径。
+        """按优先级查找表现账本或 24/72 小时增长账本。
 
         候选路径：
             1. ``.runtime/accounts/{account}/performance_ledger.json`` （任务规范主路径）
-            2. ``output/growth_ops/performance/performance_ledger.json`` （默认账号实际路径）
-            3. ``output/accounts/{account}/growth_ops/performance/performance_ledger.json``
-               （非默认账号实际路径）
+            2. ``output/accounts/{account-slug}/growth_ops/performance/performance_ledger.json``
+            3. ``output/accounts/{account-slug}/growth_checkpoints.json``
+            4. 默认账号对应的 ``output`` 路径
         """
         project_root = self._find_project_root()
-        candidates: list[Path] = [
-            project_root / ".runtime" / "accounts" / self.account / LEDGER_FILENAME,
-            project_root / "output" / "growth_ops" / "performance" / LEDGER_FILENAME,
-            project_root / "output" / "accounts" / self.account / "growth_ops" / "performance" / LEDGER_FILENAME,
-        ]
+        account_slugs = list(dict.fromkeys((self.account, self.account.replace("_", "-"))))
+        candidates: list[Path] = []
+        for slug in account_slugs:
+            candidates.extend(
+                [
+                    project_root / ".runtime" / "accounts" / slug / LEDGER_FILENAME,
+                    project_root / "output" / "accounts" / slug / "growth_ops" / "performance" / LEDGER_FILENAME,
+                    project_root / "output" / "accounts" / slug / "growth_checkpoints.json",
+                ]
+            )
+        if self.account == "default":
+            candidates.extend(
+                [
+                    project_root / "output" / "growth_ops" / "performance" / LEDGER_FILENAME,
+                    project_root / "output" / "growth_checkpoints.json",
+                ]
+            )
         for candidate in candidates:
             if candidate.exists():
                 return candidate
@@ -273,11 +285,47 @@ class MonthlyReviewAgent:
         if isinstance(payload, list):
             return [item for item in payload if isinstance(item, dict)]
         if isinstance(payload, dict):
+            works = payload.get("works")
+            if isinstance(works, dict):
+                return self._records_from_growth_checkpoints(works)
             for key in ("records", "articles", "items"):
                 if isinstance(payload.get(key), list):
                     return [item for item in payload[key] if isinstance(item, dict)]
             return [payload]
         return []
+
+    def _records_from_growth_checkpoints(
+        self, works: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Convert the account's 24/72h ledger into monthly-review records."""
+        records: list[dict[str, Any]] = []
+        for entry in works.values():
+            if not isinstance(entry, dict):
+                continue
+            checkpoints = entry.get("checkpoints")
+            checkpoints = checkpoints if isinstance(checkpoints, dict) else {}
+            # 月度结论只使用成熟窗口；刚发布作品的 latest 值会把零展现、零阅读
+            # 错当成垫底样本，并污染 TOP/BOTTOM 与时段判断。
+            sample = checkpoints.get("72h") or checkpoints.get("24h")
+            if not isinstance(sample, dict):
+                continue
+            content_type = str(entry.get("type") or "unknown")
+            records.append(
+                {
+                    "content_id": str(entry.get("gid") or ""),
+                    "title": str(entry.get("title") or ""),
+                    "published_at": str(entry.get("created_at") or ""),
+                    "platform": "toutiao_weitoutiao" if content_type == "weitoutiao" else "toutiao",
+                    "topic_type": content_type,
+                    "metrics_latest": {
+                        "impression_count": int(sample.get("impressions") or 0),
+                        "read_count": int(sample.get("reads") or 0),
+                        "comment_count": int(sample.get("comments") or 0),
+                        "like_count": 0,
+                    },
+                }
+            )
+        return records
 
     def _filter_recent_records(
         self, records: list[dict[str, Any]], lookback_days: int
@@ -287,12 +335,13 @@ class MonthlyReviewAgent:
         支持解析 ISO 8601 / ``YYYY-MM-DD`` / ``YYYY-MM-DD HH:MM:SS`` 等格式。
         缺少 published_at 或解析失败的记录将被剔除。
         """
-        cutoff = datetime.now() - timedelta(days=lookback_days)
         recent: list[dict[str, Any]] = []
         for item in records:
             published_at = self._parse_datetime(item.get("published_at") or item.get("timestamp"))
             if published_at is None:
                 continue
+            now = datetime.now(published_at.tzinfo) if published_at.tzinfo is not None else datetime.now()
+            cutoff = now - timedelta(days=lookback_days)
             if published_at >= cutoff:
                 recent.append(item)
         return recent

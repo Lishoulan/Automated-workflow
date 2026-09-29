@@ -200,7 +200,9 @@ def fetch_income_apis(
             except Exception as exc:  # pragma: no cover - 网络/运行时相关
                 last = {"status": None, "error": str(exc)}
             if logger is not None and attempt < attempts:
-                logger.warning(
+                # 该汇总接口已确认会间歇性 404；重试是正常恢复路径，只在全部
+                # 尝试失败后记 warning，避免一次采集刷出多条误报警。
+                logger.info(
                     "Income API %s attempt %s/%s failed (%s); retrying.",
                     name,
                     attempt,

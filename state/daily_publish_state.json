@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-09-29T09:11:53",
+  "updated_at": "2026-09-29T10:45:54",
   "entries": {
     "2026-09-16": {
       "toutiao": {
@@ -138,6 +138,14 @@
         "visibility": "private",
         "recorded_at": "2026-09-29T09:11:53",
         "note": "Platform accepted submission in run 36461021836; article later set private after content review."
+      },
+      "toutiao_weitoutiao": {
+        "channel": "cloud",
+        "status": "submitted_for_review",
+        "pgc_id": "",
+        "title": "「老王拒交物业费，最后怎么解决的」",
+        "publish_url": "",
+        "recorded_at": "2026-09-29T10:45:54"
       }
     }
   }

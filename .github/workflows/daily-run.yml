@@ -35,7 +35,7 @@ on:
       dry_run:
         description: 'Dry run mode (true/false)'
         required: false
-        default: 'false'
+        default: 'true'
       fast_mode:
         description: 'Fast mode (true/false)'
         required: false
@@ -43,7 +43,7 @@ on:
       publish_toutiao:
         description: 'Publish to Toutiao instead of draft-only (true/false)'
         required: false
-        default: 'true'
+        default: 'false'
       publish_wechat_via_135:
         description: 'Legacy input retained for compatibility; 135 Editor is disabled'
         required: false
@@ -388,6 +388,12 @@ jobs:
             RUN_TOPIC_TITLE=""
             echo "Scheduled account resolution: CLOUD_SCHEDULE_ACCOUNTS='${SCHEDULE_ACCOUNTS_RAW}' run_number=${GITHUB_RUN_NUMBER:-0} -> RUN_ACCOUNT='${RUN_ACCOUNT}'"
           fi
+
+          # Account offline kill switch. Keep scheduled collection and content
+          # validation available, but never submit a Toutiao or WeChat post.
+          # Remove this override only when the account is explicitly brought online.
+          RUN_DRY_RUN="true"
+          RUN_PUBLISH_TOUTIAO="false"
 
           # 135 Editor is retired for this workflow. Keep the legacy dispatch
           # input and Secret names compatible, but never enable the route.

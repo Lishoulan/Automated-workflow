@@ -64,6 +64,7 @@ def test_real_social_news_keeps_its_signal(collector, title: str) -> None:
         "比亚迪召回18.32万辆汽车",
         "某公司发布财报 净利润同比增长30%",
         "某明星官宣恋情",
+        "穆欣月成首位亚运电竞女子冠军",
     ],
 )
 def test_off_topic_hot_topics_are_rejected(collector, title: str) -> None:

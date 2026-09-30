@@ -590,7 +590,7 @@ def test_explicit_topic_title_is_never_silently_swapped(
 
 
 # ---------------------------------------------------------------------------
-# 9. 候选循环必须给 prepare_auto_run 打开「换题许可」
+# 9. 候选循环只允许一层换题
 # ---------------------------------------------------------------------------
 #
 # 实测（云端 run 35430893194）：`AppService` 的候选循环逐条把
@@ -598,19 +598,17 @@ def test_explicit_topic_title_is_never_silently_swapped(
 # 恒为真 → 换题逻辑**永远不生效** → 榜首那条抓不到素材就整次运行放弃，
 # 云端当天一篇都发不出去（`Daily workflow did not produce any runnable candidates`）。
 #
-# 修法是给 `prepare_auto_run` 加 `allow_material_retry`，由候选循环打开。
-# 这里锁住"循环确实打开了它"，因为漏掉这一处透传，前面所有换题修复都等于没写。
+# 现在外层 candidate_specs 已经逐条换题，内层再打开全池重试会形成 N×N 次搜索。
+# 因此日更循环应关闭内层许可；`prepare_auto_run` 自身的换题能力仍保留给其他调用方。
 
 
-def test_candidate_loop_authorises_material_retry() -> None:
+def test_candidate_loop_avoids_nested_material_retry() -> None:
     source = Path(__file__).resolve().parents[1] / (
         "src/toutiao_content_factory/services/app_service.py"
     )
     text = source.read_text(encoding="utf-8")
 
-    assert "allow_material_retry=True" in text, (
-        "候选循环必须打开 allow_material_retry，否则换题逻辑不生效"
-    )
+    assert "allow_material_retry=False" in text
     # 参数必须一路透传到 prepare_auto_run
     assert text.count("allow_material_retry=allow_material_retry") >= 3
 

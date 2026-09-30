@@ -539,8 +539,8 @@ class ContentFactoryAppService:
                 allow_material_retry=allow_material_retry,
             )
         if selection is None:
-            self.logger.warning("No eligible topics found. Attempting to recollect.")
-            if not should_collect:
+            if not should_collect and collect_if_missing:
+                self.logger.warning("No eligible topics found. Attempting to recollect.")
                 exported_files.update(self.collect_topics())
                 selection = self.topic_automation.prepare_auto_run(
                     rank=topic_rank,
@@ -548,6 +548,8 @@ class ContentFactoryAppService:
                     allow_generated_duplicates=True,
                     allow_material_retry=allow_material_retry,
                 )
+            else:
+                self.logger.warning("No eligible topics found for the requested candidate.")
             if selection is None:
                 self.notification_service._broadcast(
                     "【自动运行】无可用选题",
@@ -916,11 +918,9 @@ class ContentFactoryAppService:
                     force_collect=False,
                     no_archive=no_archive,
                     fast_mode=fast_mode,
-                    # ⚠️ 2026-09-19：候选循环传的 `topic_title` 是**机器自己挑的**，
-                    # 不是用户指定的。必须打开换题许可，否则每条候选都被当成
-                    # "用户指定"，抓不到素材就整次运行放弃（实测云端 run 35430893194
-                    # 因此当天一篇都没发出去）。
-                    allow_material_retry=True,
+                    # 外层 candidate_specs 已经负责逐条换题。这里关闭内层全池重试，
+                    # 避免每个候选再次遍历全部候选，形成 N×N 次重复搜索。
+                    allow_material_retry=False,
                 )
             except LengthFloorAbortException as exc:
                 # 保留这条分支是为了兼容**直接抛出长度异常**的调用方（例如
@@ -1203,7 +1203,18 @@ class ContentFactoryAppService:
             losing_attempts.append(attempt_record)
 
         if best_attempt is None:
-            raise ValueError("Daily workflow did not produce any runnable candidates.")
+            self.logger.warning(
+                "Daily workflow found no candidate with publishable evidence; "
+                "ending this slot without an article."
+            )
+            return {
+                **exported_files,
+                "status": "no_topics",
+                "message": (
+                    "No candidate passed the source-material and safety gates. "
+                    "Will retry at the next scheduled time."
+                ),
+            }
 
         skipped_attempts = [item for item in losing_attempts if item.get("run_dir") != best_attempt.get("run_dir")]
 

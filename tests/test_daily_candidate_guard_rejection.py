@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from toutiao_content_factory.services.app_service import ContentFactoryAppService
 
 BAD_WORD_REJECTION = (
@@ -50,13 +48,13 @@ def test_bad_word_rejection_of_one_candidate_does_not_abort_the_day(
     app = _prepare_app(app_settings, logger)
     app.auto_run = MagicMock(side_effect=ValueError(BAD_WORD_REJECTION))
 
-    with pytest.raises(ValueError) as excinfo:
-        app._daily_run_impl(dry_run=True)
+    result = app._daily_run_impl(dry_run=True)
 
     assert app.auto_run.call_count == 2, (
         "第一个候选被否决后必须继续尝试下一个候选，而不是直接冒泡"
     )
-    assert "did not produce any runnable candidates" in str(excinfo.value)
+    assert result["status"] == "no_topics"
+    assert "source-material and safety gates" in result["message"]
 
 
 def test_all_candidates_rejected_reports_no_runnable_candidates(
@@ -74,8 +72,7 @@ def test_all_candidates_rejected_reports_no_runnable_candidates(
     )
     app.auto_run = MagicMock(side_effect=ValueError(BAD_WORD_REJECTION))
 
-    with pytest.raises(ValueError) as excinfo:
-        app._daily_run_impl(dry_run=True)
+    result = app._daily_run_impl(dry_run=True)
 
     assert app.auto_run.call_count == 3
-    assert "did not produce any runnable candidates" in str(excinfo.value)
+    assert result["status"] == "no_topics"

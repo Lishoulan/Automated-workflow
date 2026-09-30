@@ -45,6 +45,9 @@ def _topic(title: str, summary: str = "", snippet: str = "") -> TopicCandidate:
         "男子30层高空作业绳子被2楼老人剪断",
         "9万买的马车祸身亡 主人获赔13.5万",
         "儿媳拒绝赡养公婆被起诉",
+        "妈妈拿巨型碗劝2米01儿子好好吃饭",
+        "女子下班途中帮迷路老人联系家人",
+        "游客捡到钱包原地等失主两小时",
     ],
 )
 def test_real_social_news_keeps_its_signal(collector, title: str) -> None:
@@ -156,3 +159,15 @@ def test_story_account_declares_the_social_story_industry(collector) -> None:
     settings = load_settings(__import__("pathlib").Path.cwd(), account_key="robot_notes")
 
     assert settings.topic_collection.focus_industries == ["social_story"]
+
+
+def test_story_topic_metadata_does_not_fall_back_to_technology(collector) -> None:
+    collector.topic_settings = collector.topic_settings.model_copy(
+        update={"focus_industries": ["social_story"]}
+    )
+
+    enriched = collector._enrich_topic(_topic("妈妈拿巨型碗劝2米01儿子好好吃饭"))
+
+    assert enriched.topic_type == "social_story"
+    assert enriched.topic_type_label == "社会故事"
+    assert enriched.title_playbook_track == "社会故事"

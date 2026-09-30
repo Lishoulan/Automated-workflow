@@ -158,6 +158,30 @@ class TopicCollectionService:
         "快递员",
         "保洁",
         "司机",
+        "妈妈",
+        "爸爸",
+        "母亲",
+        "父亲",
+        "爷爷",
+        "奶奶",
+        "男子",
+        "女子",
+        "小伙",
+        "姑娘",
+        "学生",
+        "老师",
+        "医生",
+        "护士",
+        "游客",
+        "乘客",
+        "顾客",
+        "店主",
+        "家长",
+        "村民",
+        "市民",
+        "情侣",
+        "男友",
+        "女友",
         # 处境与冲突
         "赡养",
         "养老",
@@ -867,6 +891,13 @@ class TopicCollectionService:
         topic.title_potential_reasons = [
             str(item).strip() for item in title_potential.get("reasons", []) if str(item).strip()
         ]
+        if (
+            "social_story" in set(self.topic_settings.focus_industries)
+            and self._has_social_story_signal(topic)
+        ):
+            topic.topic_type = "social_story"
+            topic.topic_type_label = "社会故事"
+            topic.title_playbook_track = "社会故事"
         base_total = round(
             topic.heat_score * 0.35
             + topic.read_score * 0.2

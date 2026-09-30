@@ -603,6 +603,50 @@ def test_daily_candidates_prioritize_grounded_material_before_hot_title_only_top
     ]
 
 
+def test_daily_candidates_skip_bad_words_before_material_search(
+    app_settings,
+    logger,
+) -> None:
+    topics = [
+        TopicCandidate(
+            title="警方破获跨国制毒案",
+            url="",
+            source="hot",
+            source_type="baidu_hot",
+            total_score=95,
+        ),
+        TopicCandidate(
+            title="女子下班途中帮迷路老人联系家人",
+            url="",
+            source="hot",
+            source_type="baidu_hot",
+            total_score=90,
+        ),
+    ]
+    report = DailyTopicsReport(
+        generated_at="2026-10-01T08:00:00",
+        lookback_days=2,
+        max_topic_age_hours=24,
+        focus_industries=["social_story"],
+        total_raw_items=len(topics),
+        total_selected_items=len(topics),
+        topics=topics,
+    )
+    app = ContentFactoryAppService(app_settings, logger)
+    app.content_guard_service.add_sensitive_word("制毒")
+    app.topic_automation._load_daily_topics = MagicMock(return_value=report)
+    app.topic_automation._available_topics = MagicMock(return_value=topics)
+
+    specs = app._build_daily_candidate_specs(
+        topic_rank=None,
+        topic_title=None,
+        refresh_cache=False,
+        dry_run=True,
+    )
+
+    assert [item["title"] for item in specs] == ["女子下班途中帮迷路老人联系家人"]
+
+
 def test_title_primary_company_uses_shared_company_validation(
     app_settings,
     mock_openai_service,

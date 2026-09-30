@@ -2690,6 +2690,23 @@ class ContentFactoryAppService:
                 }
             ]
 
+        safe_topics: list[TopicCandidate] = []
+        for topic in available_topics:
+            bad_word_result = self.content_guard_service.scan_text(
+                " ".join(part for part in (topic.title, topic.url) if str(part).strip())
+            )
+            if bad_word_result.get("blocked"):
+                self.logger.info(
+                    "Daily candidate skipped before material search: %s | matched bad words: %s",
+                    topic.title,
+                    "、".join(str(item) for item in bad_word_result.get("matched_words", [])[:5]),
+                )
+                continue
+            safe_topics.append(topic)
+        available_topics = safe_topics
+        if not available_topics:
+            return []
+
         max_attempts = max(1, int(self.settings.automation.max_daily_topic_attempts))
         # Prefer candidates that can support a grounded article.  Hot-board
         # items are often title-only and should remain a fallback, otherwise

@@ -117,18 +117,14 @@ def test_narrative_polish_directive_keeps_a_bounded_target() -> None:
     而叙事稿上游只写 1100 字 —— 两条互相矛盾的硬指标同时压给模型，模型交残稿，
     实测润色把 843 字砍成 187~413 字，触发「Polish was too aggressive」反复空跑。
 
-    ⚠️ 2026-09-21 的修正：但也不能像中间那版那样禁止「扩写到 1500 字以上」——
-    1500 字正是**头条首发激励的资格线**，那句禁令等于主动放弃首发。
-    现在的口径是：给一个区间（下限=首发资格线，上限=写作目标上方），
-    低于下限必须补写，高于上限可以精简。
+    当前口径是给出内部质量区间，并且只允许用已有事实、来源、因果解释和
+    具体提醒补足，避免为了字数注水或编造。
     """
     agent = _polish_agent("robot_notes")
 
     directive = agent._auto_publish_directive()
 
     assert directive, "自动发布模式下必须有润色指令"
-    # 必须给出下限，且下限就是首发资格线 —— 否则又回到"放弃首发"
-    assert str(PolishAgent.NARRATIVE_FIRST_RELEASE_LINE) in directive
     assert str(PolishAgent.NARRATIVE_POLISH_TARGET_MIN) in directive
     # 必须明确禁止把正文压短
     assert "80%" in directive
@@ -136,16 +132,16 @@ def test_narrative_polish_directive_keeps_a_bounded_target() -> None:
     assert "1750" not in directive
 
 
-def test_narrative_polish_directive_asks_for_the_first_release_line() -> None:
-    """润色指令必须明确要求补到首发资格线，否则首发永远开不起来。"""
+def test_narrative_polish_directive_asks_for_five_incentive_standards() -> None:
+    """润色必须补质量维度，不能把首发激励简化成字数要求。"""
     agent = _polish_agent("robot_notes")
 
     directive = agent._auto_publish_directive()
 
-    assert str(agent.NARRATIVE_FIRST_RELEASE_LINE) in directive, (
-        "润色指令没有提到首发资格线，模型补写时不知道要补到多少"
-    )
     assert "首发" in directive
+    for standard in ("近期进展", "原创判断", "信息增量", "来源表达", "读者价值"):
+        assert standard in directive
+    assert "材料不足时保留原长度并收窄结论" in directive
     # 上限必须存在，避免"为了凑字数扩写"（这正是 09-19 踩过的坑）
     assert str(agent.NARRATIVE_POLISH_TARGET_MAX) in directive
 

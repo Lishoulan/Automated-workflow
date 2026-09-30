@@ -1,98 +1,72 @@
-"""「头条首发」声明只由**正文实际字数**决定，且边界必须是 1500。
-
-## 这条规则为什么值得单独锁住
-
-`PublishService._publish_run_locked` 里的判定是：
-
-```python
-article_char_count = len(article 去空白)
-if article_char_count < 1500:
-    declare_first_release = False
-    notes_warning = f"质量检查：字数不足1500字（当前{article_char_count}字），自动取消头条首发声明"
-```
-
-它有三个容易写错的地方，而写错任何一个的代价都是"首发永远开不起来"或"首发被违规声明"：
-
-1. **计数口径**：必须去掉换行和空格再数。用 `len(article)` 会把排版空白算进去，
-   1500 字的稿子可能实际只有 1400 多 → 系统以为达标、平台判定不达标。
-2. **边界方向**：不足 1500 才取消，**正好 1500 应当保留**（`<` 而不是 `<=`）。
-3. **不得被上游覆盖**：生成侧的目标/下限（1700/1550）只是"提示词里的数字"，
-   不能反过来让发布侧跳过自己的实测 —— 模型可能少写。
-
-这份测试直接对着源码断言，因为要跑通真实浏览器发布才能触发它，
-而它一旦回归，损失是**每条内容的推荐量**（首发激励是初期最大的曝光来源）。
-"""
+"""头条首发声明由当前平台门槛与五项质量评估共同决定。"""
 
 from __future__ import annotations
 
-import ast
 import inspect
-import re
 
+from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 from toutiao_content_factory.services.publish_service import PublishService
 
-FIRST_RELEASE_LINE = 1500
+
+def _qualified_content(char_count: int) -> str:
+    seed = "今日根据公开数据显示，我的判断是这件事背后的原因会产生影响，也提醒读者如何处理。"
+    assert len(seed) <= char_count
+    return seed + "甲" * (char_count - len(seed))
 
 
-def _publish_run_source() -> str:
-    return inspect.getsource(PublishService._publish_run_locked)
+def test_current_platform_boundary_is_more_than_100_chars() -> None:
+    checker = ArticleQualityChecker()
+
+    below = checker.assess_first_release(_qualified_content(100))
+    boundary = checker.assess_first_release(_qualified_content(101))
+
+    assert checker.FIRST_RELEASE_MIN_CHARS == 101
+    assert below.eligible is False
+    assert any("超过100字" in reason for reason in below.reasons)
+    assert boundary.eligible is True
 
 
-def test_first_release_line_is_1500() -> None:
-    source = _publish_run_source()
-    assert "1500" in source, "首发资格线 1500 在发布判定里找不到"
-    assert "declare_first_release = False" in source, (
-        "「不足首发线就取消声明」这条逻辑不见了 —— 首发会在不达标时被错误声明"
+def test_char_count_ignores_all_whitespace() -> None:
+    checker = ArticleQualityChecker()
+    content = _qualified_content(101)
+
+    assessment = checker.assess_first_release(content[:50] + " \n\t" + content[50:])
+
+    assert assessment.char_count == 101
+    assert assessment.eligible is True
+
+
+def test_long_but_shallow_content_does_not_enable_first_release() -> None:
+    assessment = ArticleQualityChecker().assess_first_release("普通叙述。" * 300)
+
+    assert assessment.char_count > 100
+    assert assessment.eligible is False
+    assert assessment.standards_covered < assessment.minimum_standards
+    assert "原创深度" in assessment.missing_standards
+
+
+def test_internal_source_marker_blocks_first_release() -> None:
+    assessment = ArticleQualityChecker().assess_first_release(
+        _qualified_content(101) + " benchmark_hotspot"
     )
 
-
-def test_char_count_ignores_whitespace() -> None:
-    """计数口径必须是"去空白"。"""
-    source = _publish_run_source()
-    assert re.search(
-        r'article_char_count\s*=\s*len\(\s*article\.replace\("\\n",\s*""\)\.replace\(" ",\s*""\)\s*\)',
-        source,
-    ), (
-        "正文计数口径被改动：必须是 len(article.replace('\\n','').replace(' ',''))。"
-        "直接用 len(article) 会把排版空白算进字数，导致首发在不达标时被声明"
-    )
+    assert assessment.eligible is False
+    assert "正文仍含内部来源标记" in assessment.reasons
 
 
-def test_comparison_is_strictly_less_than() -> None:
-    """边界方向：`< 1500` 才取消，正好 1500 保留首发。"""
-    # 用 inspect.signature 拿不到函数体，这里改用模块源码里的函数片段；
-    # 注意不能 cleandoc —— 那会破坏方法体的相对缩进，导致 ast.parse 失败。
-    source = inspect.getsource(PublishService)
-    tree = ast.parse(source)
+def test_publish_service_uses_quality_assessment_before_checkbox() -> None:
+    source = inspect.getsource(PublishService._publish_run_locked)
+    class_source = inspect.getsource(PublishService)
 
-    comparisons = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Compare)
-        and isinstance(node.left, ast.Name)
-        and node.left.id == "article_char_count"
-    ]
-    assert comparisons, "找不到以 article_char_count 为左值的比较 —— 判定被重写了？"
-
-    ops = {type(op) for node in comparisons for op in node.ops}
-    assert ast.Lt in ops, "边界不再是 `<`：`<=` 会把正好 1500 字的稿子也取消首发"
-    assert ast.LtE not in ops, "出现了 `<=`，边界右边被写宽了"
+    assert 'first_release_assessment.get("eligible") is not True' in source
+    assert "declare_first_release = False" in source
+    assert "declare_first_release=declare_first_release" in source
+    assert "label.byte-checkbox:has-text('头条首发')" in class_source
 
 
-def test_first_release_flag_is_passed_through_to_the_checkbox() -> None:
-    """判定结果必须一路传到勾选动作，中间不能被写死。"""
-    source = inspect.getsource(PublishService)
-    assert "declare_first_release=declare_first_release" in source, (
-        "declare_first_release 没有传到 `_apply_safe_publish_options`，勾选动作会拿到默认值"
-    )
-    assert "label.byte-checkbox:has-text('头条首发')" in source, (
-        "「头条首发」勾选器的定位符不见了"
-    )
+def test_publish_result_records_first_release_decision() -> None:
+    source = inspect.getsource(PublishService._publish_run_locked)
 
-
-def test_quality_warning_names_the_actual_count() -> None:
-    """警告里必须带上实际字数，否则线上排查时无法区分"差一点"和"差很多"。"""
-    source = _publish_run_source()
-    assert "字数不足1500字（当前" in source, (
-        "取消首发的警告没有带实际字数，排查时看不到差多少"
-    )
+    assert 'result_payload["first_release_requested"]' in source
+    assert 'result_payload["first_release_option_enabled"]' in source
+    assert 'result_payload["first_release_assessment"]' in source

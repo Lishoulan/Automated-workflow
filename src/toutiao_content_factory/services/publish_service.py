@@ -434,6 +434,8 @@ class PublishService:
         if not self.settings.publishing.enabled:
             raise RuntimeError("Publishing is disabled. Set TOUTIAO_PUBLISH_ENABLED=1 first.")
 
+        requested_first_release = bool(declare_first_release)
+
         publish_dir = run_dir / self.settings.review.publish_dirname
         if not publish_dir.exists():
             raise FileNotFoundError(f"Publish package not found: {publish_dir}")
@@ -486,18 +488,24 @@ class PublishService:
             )
 
         article = self._sanitize_article_for_publish(self._read_text(publish_dir / "article.md").strip())
-        article_char_count = len(article.replace("\n", "").replace(" ", ""))
         article_quality_warnings: list[str] = []
-        if article_char_count < 1500:
-            self.logger.warning(
-                "Article has only %d chars after sanitization (minimum 1500 for Toutiao first-release incentive). "
-                "Proceeding with publish but quality check will flag this.",
-                article_char_count,
-            )
-            declare_first_release = False
-            notes_warning = f"质量检查：字数不足1500字（当前{article_char_count}字），自动取消头条首发声明"
-            article_quality_warnings.append(notes_warning)
         platform_preflight_summary = self._collect_preflight_summary_locked()
+        content_guard_report = self.content_guard_service.build_publish_guard_report(run_dir)
+        first_release_assessment = (
+            self.content_guard_service.quality_checker.assess_first_release(article).as_dict()
+        )
+        content_guard_report["first_release_assessment"] = first_release_assessment
+        if requested_first_release and first_release_assessment.get("eligible") is not True:
+            declare_first_release = False
+            reasons = [
+                str(item).strip()
+                for item in first_release_assessment.get("reasons", [])
+                if str(item).strip()
+            ]
+            reason_text = "；".join(reasons) or "首发质量评估未通过"
+            notes_warning = f"质量检查：{reason_text}，自动取消头条首发声明"
+            article_quality_warnings.append(notes_warning)
+            self.logger.warning(notes_warning)
         if article_quality_warnings:
             platform_preflight_summary = {
                 **platform_preflight_summary,
@@ -506,7 +514,6 @@ class PublishService:
                     + article_quality_warnings
                 ),
             }
-        content_guard_report = self.content_guard_service.build_publish_guard_report(run_dir)
         preflight_summary = self._merge_content_guard_summary(platform_preflight_summary, content_guard_report)
         quality_check = content_guard_report.get("quality_check", {})
         if (
@@ -679,6 +686,9 @@ class PublishService:
         result_payload = self._normalize_publish_result_payload(result_payload)
         result_payload["requested_draft_only"] = bool(self.settings.publishing.draft_only)
         result_payload["effective_draft_only"] = bool(effective_draft_only)
+        result_payload["first_release_requested"] = requested_first_release
+        result_payload["first_release_option_enabled"] = bool(declare_first_release)
+        result_payload["first_release_assessment"] = first_release_assessment
         publish_result_path.write_text(
             json.dumps(
                 {

@@ -124,7 +124,50 @@ def test_short_article_does_not_raise_undefined_notes_error(
     assert result["publish_result"].exists()
     payload = json.loads(result["publish_result"].read_text(encoding="utf-8"))
     assert payload["status"] == "submitted_for_review"
-    assert any("字数不足1500字" in item for item in payload["preflight_summary"]["warnings"])
+    assert any("正文需超过100字" in item for item in payload["preflight_summary"]["warnings"])
+    assert payload["first_release_requested"] is True
+    assert payload["first_release_option_enabled"] is False
+    assert payload["first_release_assessment"]["char_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("article", "expected"),
+    [
+        (
+            "今日根据公开数据显示，我的判断是这件事背后的原因会产生影响，"
+            "也提醒读者如何处理。" + "补充事实。" * 100,
+            True,
+        ),
+        ("普通叙述。" * 300, False),
+    ],
+)
+def test_first_release_quality_gate_controls_checkbox_flag(
+    app_settings, tmp_path: Path, monkeypatch, article: str, expected: bool
+) -> None:
+    service = _make_service(app_settings, monkeypatch)
+    run_dir = _prepare_approved_run(tmp_path)
+    (run_dir / "publish" / "article.md").write_text(article, encoding="utf-8")
+    monkeypatch.setattr(
+        service.content_guard_service,
+        "build_publish_guard_report",
+        lambda _run_dir: {
+            "blocking_flags": [],
+            "warnings": [],
+            "quality_check": {"is_passed": True, "issues": []},
+        },
+    )
+    monkeypatch.setattr(service.precheck_service, "run_precheck", lambda *_args, **_kwargs: {"status": "passed"})
+    calls: list[dict] = []
+
+    def fake_publish(**kwargs):
+        calls.append(kwargs)
+        return {"status": "submitted_for_review", "external_url": "https://example.test/article"}
+
+    monkeypatch.setattr(service, "_publish_to_toutiao", fake_publish)
+
+    service._publish_run_locked(run_dir)
+
+    assert calls[0]["declare_first_release"] is expected
 
 
 def test_toutiao_final_sanitizer_removes_external_source_metadata(

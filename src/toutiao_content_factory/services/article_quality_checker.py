@@ -25,6 +25,34 @@ class QualityCheckResult:
     engagement_attractiveness_score: int = 0
 
 
+@dataclass(frozen=True)
+class FirstReleaseAssessment:
+    """发布前可审计的头条首发激励质量评估。"""
+
+    eligible: bool
+    char_count: int
+    minimum_char_count: int
+    standards_covered: int
+    minimum_standards: int
+    quality_score: int
+    covered_standards: tuple[str, ...]
+    missing_standards: tuple[str, ...]
+    reasons: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "eligible": self.eligible,
+            "char_count": self.char_count,
+            "minimum_char_count": self.minimum_char_count,
+            "standards_covered": self.standards_covered,
+            "minimum_standards": self.minimum_standards,
+            "quality_score": self.quality_score,
+            "covered_standards": list(self.covered_standards),
+            "missing_standards": list(self.missing_standards),
+            "reasons": list(self.reasons),
+        }
+
+
 @dataclass
 class BodyIntegrityResult:
     """**正文自身**的完整性结论，与标题无关。
@@ -56,6 +84,11 @@ class TitleBodyConsistencyResult:
 class ArticleQualityChecker:
     """文章质量预检器"""
 
+    # 2026-05-25 版平台规则要求首发正文超过 100 字。平台资格线只负责
+    # 判断能否申报；内部仍以 1500 字左右的完整叙事稿作为深度目标。
+    FIRST_RELEASE_MIN_CHARS = 101
+    FIRST_RELEASE_MIN_STANDARDS = 4
+
     _STORY_BUSINESS_DRIFT_MARKERS = (
         "ipo", "出货量", "市场份额", "毛利率", "经营现金流", "估值",
         "产能", "订单落地", "商业化", "产品交付", "资本市场",
@@ -78,11 +111,11 @@ class ArticleQualityChecker:
 
     # 首发激励计划要求的五大质量标准关键词
     QUALITY_KEYWORDS = {
-        "首发时效": ["第一时间", "及时", "最新", "刚刚", "刚刚发布", "最新消息", "今日", "昨日"],
+        "首发时效": ["第一时间", "及时", "最新", "刚刚", "刚刚发布", "最新消息", "今日", "今天", "昨日", "近日", "本周"],
         "原创深度": ["观点", "视角", "思考", "判断", "分析", "见解", "洞察"],
         "信息增量": ["原因", "影响", "意义", "背后", "深层", "实质", "核心"],
-        "创作规范": ["根据", "基于", "数据", "显示", "统计", "来源"],
-        "用户价值": ["共鸣", "连接", "触动", "启发", "收获", "价值", "意义"]
+        "创作规范": ["根据", "据", "基于", "数据", "显示", "统计", "来源", "回应", "通报", "报道"],
+        "用户价值": ["共鸣", "连接", "触动", "启发", "收获", "价值", "提醒", "建议", "可以", "如何"]
     }
 
     # 需要避免的模板化表达
@@ -267,20 +300,11 @@ class ArticleQualityChecker:
             issues.extend(compliance_result["issues"])
             suggestions.extend(compliance_result["suggestions"])
 
-            # ⚠️ 2026-09-19：1500 字是**「头条首发激励」的资格线**，不是"能不能发布"的门槛。
-            # 原来把它算成 `issues`（非建议类问题），于是：
-            #   787 字的稿子 → 「字数不足1500字」+「首发激励要求文章字数不少于1500字」
-            #   +「内容质量标准覆盖不足」= 3 条 issues > 2 → is_passed=False
-            #   → `publish_service` 直接抛
-            #   「Publish quality gate blocked: 字数不足1500字 | 内容质量标准覆盖不足 |
-            #     首发激励要求文章字数不少于1500字」→ **一个字都发不出去**。
-            # 而同一段逻辑的上游（`publish_service`）在字数不足时**已经自动取消首发声明**
-            # 并继续发布 —— 两处自相矛盾。
-            # 现在的口径：字数不足 1500 只降级为建议（等于"这篇拿不到首发激励"），
-            # 不阻断发布；真正的发布下限由 `AppService._minimum_article_chars` 把关。
-            if word_count < 1500:
+            # 平台当前的首发正文门槛是“超过 100 字”。低于资格线只取消
+            # 首发声明；普通发布下限仍由 AppService 按内容体裁判断。
+            if word_count < self.FIRST_RELEASE_MIN_CHARS:
                 suggestions.append(
-                    f"字数{word_count}字，未达头条首发激励的1500字要求，本篇将不声明首发"
+                    f"字数{word_count}字，未达到头条首发正文超过100字的要求，本篇将不声明首发"
                     "（不影响正常发布与阅读收益）"
                 )
             has_data_ref = self._has_any_keyword(content_lower, self._DATA_KEYWORDS)
@@ -383,6 +407,41 @@ class ArticleQualityChecker:
         hits = sum(1 for marker in self.NARRATIVE_MARKERS if marker in sample)
         return hits >= 2
 
+    def _covered_quality_standards(self, content_lower: str) -> tuple[str, ...]:
+        return tuple(
+            standard
+            for standard, keywords in self.QUALITY_KEYWORDS.items()
+            if any(keyword in content_lower for keyword in keywords)
+        )
+
+    def assess_first_release(self, content: str) -> FirstReleaseAssessment:
+        """判断正文是否值得启用首发声明，并返回具体缺项。"""
+        normalized = re.sub(r"\s+", "", str(content or ""))
+        covered = self._covered_quality_standards(str(content or "").lower())
+        missing = tuple(standard for standard in self.QUALITY_KEYWORDS if standard not in covered)
+        reasons: list[str] = []
+        if len(normalized) < self.FIRST_RELEASE_MIN_CHARS:
+            reasons.append(
+                f"正文需超过100字（当前{len(normalized)}字）"
+            )
+        if len(covered) < self.FIRST_RELEASE_MIN_STANDARDS:
+            reasons.append(
+                f"五项首发质量标准仅覆盖{len(covered)}项，至少需要{self.FIRST_RELEASE_MIN_STANDARDS}项"
+            )
+        if self._check_source_markers(content):
+            reasons.append("正文仍含内部来源标记")
+        return FirstReleaseAssessment(
+            eligible=not reasons,
+            char_count=len(normalized),
+            minimum_char_count=self.FIRST_RELEASE_MIN_CHARS,
+            standards_covered=len(covered),
+            minimum_standards=self.FIRST_RELEASE_MIN_STANDARDS,
+            quality_score=len(covered) * 20,
+            covered_standards=covered,
+            missing_standards=missing,
+            reasons=tuple(reasons),
+        )
+
     def _check_compliance(self, content: str, content_lower: str) -> dict:
         """检查首发激励合规性"""
         issues = []
@@ -391,10 +450,7 @@ class ArticleQualityChecker:
         narrative = self._looks_like_narrative(content)
 
         # 检查五大质量标准覆盖情况
-        standards_covered = 0
-        for standard, keywords in self.QUALITY_KEYWORDS.items():
-            if any(kw in content_lower for kw in keywords):
-                standards_covered += 1
+        standards_covered = len(self._covered_quality_standards(content_lower))
 
         if standards_covered >= 4:
             score += 30

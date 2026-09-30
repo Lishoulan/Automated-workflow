@@ -17,11 +17,8 @@ class PolishAgent(BaseAgent):
     SHORT_CONTENT_FORMATS = frozenset(("quick_commentary", "short_comment", "news_flash"))
     AUTO_PUBLISH_ARTICLE_TARGET = 1800
 
-    #: 头条首发激励的正文资格线。低于它的稿子**仍然正常发布**，
-    #: 只是拿不到首发激励（平台会由发布服务自动取消首发声明）。
-    NARRATIVE_FIRST_RELEASE_LINE = 1500
     #: 叙事稿润色后的目标区间。上限与 `WriterAgent.NARRATIVE_ARTICLE_IDEAL_CHARS`
-    #: 同一量级：低于资格线允许补写，高于目标上限允许精简。
+    #: 同一量级，为首发质量标准留出事实与分析空间。
     NARRATIVE_POLISH_TARGET_MIN = 1500
     NARRATIVE_POLISH_TARGET_MAX = 1800
     UNSUPPORTED_ORDER_CLAIM_RES = (
@@ -302,12 +299,6 @@ class PolishAgent(BaseAgent):
         if not self._auto_publish_mode():
             return ""
         if self._is_narrative_domain():
-            # ⚠️ 2026-09-21：原来这里写着「不得为了凑字数扩写到 1500 字以上」，
-            # 而 1500 字正是**头条首发激励的资格线** —— 润色指令等于主动放弃首发。
-            # 上游的写作目标已提到 1700 字（见 WriterAgent 的
-            # `NARRATIVE_ARTICLE_IDEAL_CHARS`），这里必须跟着放开：
-            # 低于 1500 字时允许补写，高于 1700 字时可以精简。
-            #
             # 保留原有的"轻度编辑"约束（此前无条件要求 1800 字，导致润色把
             # 843 字砍成 187~413 字，触发「Polish was too aggressive」反复空跑）。
             return (
@@ -315,8 +306,9 @@ class PolishAgent(BaseAgent):
                 f"{self.NARRATIVE_POLISH_TARGET_MIN}到{self.NARRATIVE_POLISH_TARGET_MAX}字。"
                 "润色只做「理顺句子、删掉重复表达、补上遗漏的事实细节」，"
                 "不得把正文压短到原文的 80% 以下。"
-                f"**若原文不足{self.NARRATIVE_FIRST_RELEASE_LINE}字，必须补写到达标 —— "
-                "不足这个字数就拿不到头条首发激励，推荐量会明显吃亏。**"
+                f"若原文不足{self.NARRATIVE_POLISH_TARGET_MIN}字，只能用材料中已有的事实、"
+                "来源、因果解释和具体提醒补足；材料不足时保留原长度并收窄结论。"
+                "首发质量必须覆盖近期进展、原创判断、信息增量、来源表达和读者价值。"
                 f"也不得为了凑字数扩写到 {self.NARRATIVE_POLISH_TARGET_MAX} 字以上；"
                 "补写只能用输入材料已有事实与公开的法律/常识依据，"
                 "不得新增编造的人物、对话或情节。"

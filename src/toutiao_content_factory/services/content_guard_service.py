@@ -752,8 +752,10 @@ class ContentGuardService:
             if str(item).strip()
         )
         quality_result = None
+        first_release_assessment = None
         if title and article:
             quality_result = self.quality_checker.check_article(title, article)
+            first_release_assessment = self.quality_checker.assess_first_release(article)
         if quality_result is not None:
             warnings.extend(
                 f"质量检查：{issue}" for issue in quality_result.issues[:5]
@@ -793,6 +795,9 @@ class ContentGuardService:
                 "issues": quality_result.issues if quality_result else [],
                 "suggestions": quality_result.suggestions if quality_result else [],
             } if quality_result else {},
+            "first_release_assessment": (
+                first_release_assessment.as_dict() if first_release_assessment else {}
+            ),
             "writing_integrity": editorial_integrity,
         }
         if payload["blocking_flags"]:

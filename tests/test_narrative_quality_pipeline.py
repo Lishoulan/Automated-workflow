@@ -8,8 +8,10 @@ from toutiao_content_factory.agents.data_agent import DataAgent
 from toutiao_content_factory.agents.publish_review_agent import PublishReviewAgent
 from toutiao_content_factory.agents.quality_review_council_agent import QualityReviewCouncilAgent
 from toutiao_content_factory.agents.review_agent import ReviewAgent
+from toutiao_content_factory.agents.title_agent import TitleAgent
 from toutiao_content_factory.config import load_settings
-from toutiao_content_factory.models import ContentScore, DataReport, ExtractionResult, GeneratedContent
+from toutiao_content_factory.models import CacheContext, ContentScore, DataReport, ExtractionResult, GeneratedContent
+from toutiao_content_factory.services.exporter import ExportService
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 
 
@@ -137,3 +139,61 @@ def test_narrative_quality_council_does_not_apply_industry_requirements() -> Non
     assert "互动吸引力不足" not in findings
     assert "反方或失效条件" not in findings
     assert "公司/数字" not in findings
+
+
+def test_narrative_prompts_do_not_load_industry_benchmarks() -> None:
+    settings = _settings()
+    review = ReviewAgent(
+        settings,
+        _prompts(),
+        MagicMock(available=False, model="stub"),
+        logging.getLogger("test_narrative_benchmark"),
+    )
+    title = TitleAgent(
+        settings,
+        _prompts(),
+        MagicMock(available=False, model="stub", force_mock=True),
+        logging.getLogger("test_narrative_title_benchmark"),
+    )
+
+    digest = review.brand_digest()
+    playbook = title._build_title_playbook_context(_story_report())
+
+    assert "事件经过和人物关系" in digest
+    assert "先下判断，再给数据" not in digest
+    assert review.benchmark_strategy_digest(purpose="review", track_hint="social_story") == ""
+    assert playbook["track"] == "社会故事"
+    assert playbook["title_templates"] == []
+    assert playbook["example_titles"] == []
+
+
+def test_narrative_review_notes_do_not_request_industry_metrics() -> None:
+    settings = _settings()
+    agent = ReviewAgent(
+        settings,
+        _prompts(),
+        MagicMock(available=False, model="stub"),
+        logging.getLogger("test_narrative_review_notes"),
+    )
+    content = GeneratedContent(article=_story_article(760), polished_article=_story_article(760))
+
+    notes = agent._build_review_notes(content, _story_report(), CacheContext())
+    combined = " ".join(notes)
+
+    assert notes
+    assert all(token not in combined for token in ("补一句订单", "毛利指标", "利润向哪一环", "公司或订单主体"))
+
+
+def test_exported_narrative_benchmark_strategy_is_story_specific() -> None:
+    settings = _settings()
+    exporter = ExportService(settings, logging.getLogger("test_narrative_export"))
+    result = MagicMock()
+    result.created_at = "2026-10-01T12:00:00+08:00"
+    result.data_report = _story_report()
+
+    strategy = exporter._build_benchmark_strategy(result)
+
+    assert strategy["track"] == "社会故事"
+    assert strategy["benchmark_accounts"] == []
+    assert strategy["example_titles"] == []
+    assert "人物处境" in strategy["voice_summary"]

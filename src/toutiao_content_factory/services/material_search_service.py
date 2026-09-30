@@ -506,15 +506,13 @@ def _filter_relevant_hits(backend_name: str, query: str, hits: list[dict]) -> li
     搜「老人在家摔倒后…」返回「47 Homemade Pizza Recipes」，
     搜「张雪回应打车…」返回 Reddit 板块。这些条目抓下来全是 403，
     白白耗掉抓取预算，还会让人误以为"搜索引擎是通的"。
-    判据：标题或 URL 里必须出现查询中的中文片段（取最长的 2-4 字词）。
+    判据：优先接受完整查询；否则标题/摘要至少覆盖一半查询二元组，且长查询
+    至少命中 4 个二元组。不能因为“父亲”“邻居”这类常见词就放行另一条故事。
     """
-    tokens = [
-        token
-        for token in re.findall(r"[\u4e00-\u9fff]{2,4}", query)
-        if token
-    ]
-    if not tokens:
+    query_text = "".join(re.findall(r"[\u4e00-\u9fff]", str(query or "")))
+    if not query_text:
         return hits
+    query_bigrams = {query_text[index : index + 2] for index in range(len(query_text) - 1)}
     kept: list[dict] = []
     for hit in hits:
         title = str(hit.get("title", "") or "").strip()
@@ -522,8 +520,23 @@ def _filter_relevant_hits(backend_name: str, query: str, hits: list[dict]) -> li
         # unrelated headlines.  It is not evidence for the selected story.
         if _looks_like_multi_topic_digest(title):
             continue
-        haystack = f"{title} {hit.get('url', '')}"
-        if any(token in haystack for token in tokens):
+        haystack = " ".join(
+            str(value or "")
+            for value in (title, hit.get("snippet", ""), hit.get("description", ""))
+        )
+        haystack_text = "".join(re.findall(r"[\u4e00-\u9fff]", haystack))
+        if query_text in haystack_text:
+            kept.append(hit)
+            continue
+        if len(query_text) < 4 or not query_bigrams:
+            continue
+        haystack_bigrams = {
+            haystack_text[index : index + 2]
+            for index in range(len(haystack_text) - 1)
+        }
+        overlap = query_bigrams & haystack_bigrams
+        minimum_overlap = 2 if len(query_bigrams) <= 5 else 4
+        if len(overlap) >= minimum_overlap and len(overlap) / len(query_bigrams) >= 0.5:
             kept.append(hit)
     return kept
 

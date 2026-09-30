@@ -185,8 +185,13 @@ class WriterAgent(BaseAgent):
             data_report.supply_chain_keywords,
             trend_report.recommended_angle,
         )
-        self_benchmark_context = self.growth_ops_service.get_self_benchmark_track_context(benchmark_track)
-        benchmark_digest = self.growth_ops_service.build_benchmark_digest(benchmark_track, purpose="writer")
+        narrative = self._is_narrative_domain()
+        self_benchmark_context = (
+            {} if narrative else self.growth_ops_service.get_self_benchmark_track_context(benchmark_track)
+        )
+        benchmark_digest = (
+            "" if narrative else self.growth_ops_service.build_benchmark_digest(benchmark_track, purpose="writer")
+        )
         tone_directive = self._tone_directive(style)
         viral_template_instruction = self._viral_template_instruction(style, self_benchmark_context)
         kol_voice_instruction = self._kol_voice_instruction()
@@ -278,8 +283,13 @@ class WriterAgent(BaseAgent):
             data_report.supply_chain_keywords,
             trend_report.recommended_angle,
         )
-        self_benchmark_context = self.growth_ops_service.get_self_benchmark_track_context(benchmark_track)
-        benchmark_digest = self.growth_ops_service.build_benchmark_digest(benchmark_track, purpose="writer")
+        narrative = self._is_narrative_domain()
+        self_benchmark_context = (
+            {} if narrative else self.growth_ops_service.get_self_benchmark_track_context(benchmark_track)
+        )
+        benchmark_digest = (
+            "" if narrative else self.growth_ops_service.build_benchmark_digest(benchmark_track, purpose="writer")
+        )
         tone_directive = self._tone_directive(style)
         viral_template_instruction = self._viral_template_instruction(style, self_benchmark_context)
         kol_voice_instruction = self._kol_voice_instruction()

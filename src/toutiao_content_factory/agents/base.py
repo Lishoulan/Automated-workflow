@@ -451,13 +451,22 @@ class BaseAgent:
         return "\n".join(lines).strip()
 
     def brand_digest(self, extra_sections: list[str] | None = None) -> str:
-        lines = [
-            "写法节奏: 先下判断，再给数据，再拆产业链位置，再落到公司主体和跟踪变量，最后只留一小段风险边界。",
-            "成文禁忌: 不写泛新闻播报，不堆空形容词，不做无根据拔高。",
-            "输出禁令: 标题、正文、摘要、评论引导中不得出现账号名、栏目名、作者自称、品牌口号、运营指令。",
-            f"赛道主线: {self.settings.industry_focus}",
-            f"账号定位: {self.settings.brand_positioning}",
-        ]
+        if self._is_narrative_domain():
+            lines = [
+                "写法节奏: 先讲清事件经过和人物关系，再写当事人的处境、选择与结果，最后给读者一条具体提醒或问题。",
+                "成文禁忌: 不虚构人物、对话、心理和现场细节，不套用与事件无关的商业分析框架。",
+                "输出禁令: 标题、正文、摘要、评论引导中不得出现账号名、栏目名、作者自称、品牌口号、运营指令。",
+                f"故事主线: {self.settings.industry_focus}",
+                f"账号定位: {self.settings.brand_positioning}",
+            ]
+        else:
+            lines = [
+                "写法节奏: 先下判断，再给数据，再拆产业链位置，再落到公司主体和跟踪变量，最后只留一小段风险边界。",
+                "成文禁忌: 不写泛新闻播报，不堆空形容词，不做无根据拔高。",
+                "输出禁令: 标题、正文、摘要、评论引导中不得出现账号名、栏目名、作者自称、品牌口号、运营指令。",
+                f"赛道主线: {self.settings.industry_focus}",
+                f"账号定位: {self.settings.brand_positioning}",
+            ]
         for section in extra_sections or []:
             section_text = str(section or "").strip()
             if section_text:
@@ -489,6 +498,8 @@ class BaseAgent:
         angle_hint: str = "",
         extra_text: str = "",
     ) -> str:
+        if self._is_narrative_domain():
+            return ""
         track = str(track_hint).strip() or self.infer_benchmark_track(
             title_hint,
             focus_industry,

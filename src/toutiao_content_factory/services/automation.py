@@ -1437,7 +1437,7 @@ class TopicAutomationService:
         if topic_mode == "social_story":
             return (
                 "写成人情故事观察稿：先把事情本身讲清楚，再讲当事人的处境和选择，"
-                "最后给读者一句具体可用的提醒。不要拆产业链、不要写订单毛利、不要做行业判断，"
+                "最后给读者一句具体可用的提醒。不要套用与事件无关的商业分析框架，"
                 "也不要编造人物对话或写成第一人称亲历。"
             )
         if topic_mode == "sports":

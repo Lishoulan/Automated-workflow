@@ -763,26 +763,25 @@ class TitleAgent(BaseAgent):
         #   「老人在家摔倒后，子女才发现没人知道他的日常情况」→「老人在家摔倒后」
         # 这样既够具体，又留得下后半句句式的字数。
         topic_head = self._topic_head_phrase(topic)
-        scene = self._primary_scene(content, data_report)
-        keyword = self._primary_topic_label(data_report)
-        subject = ""
-        for candidate in (topic_head, scene, keyword):
-            text = str(candidate or "").strip()
-            if text and len(text) <= 14:
-                subject = text
-                break
-        if not subject:
-            subject = topic  # 实在裁不出来就用原标题，宁长不空
+        has_natural_head = bool(
+            topic_head
+            and len(topic_head) < len(topic)
+            and topic[len(topic_head)] in "，,：:；;。！!？?"
+        )
+        subject = topic if len(topic) <= 14 else (topic_head if has_natural_head else "")
 
-        push(f"{subject}这件事，最后是怎么处理的")
-        push(f"{subject}之后，当事人面临的是什么")
-        push(f"{subject}：换成你该先做什么")
-        push(f"{subject}给普通人提了个醒")
+        # 无标点的长新闻标题不能按字符硬截后继续套句式。云端实测会生成
+        # “女子父亲突然离世邻居1分钟赶这件事……”这类病句；这种场景只保留原标题。
+        if subject:
+            push(f"{subject}这件事，最后是怎么处理的")
+            push(f"{subject}之后，当事人面临的是什么")
+            push(f"{subject}：换成你该先做什么")
+            push(f"{subject}给普通人提了个醒")
 
         # 数字锚点：社会新闻里的金额/时长/年龄往往是最抓人的信息
         for number in list(getattr(data_report, "growth_numbers", []) or [])[:2]:
             value = self.clean_publish_text(number)
-            if value and len(value) <= 16:
+            if subject and value and len(value) <= 16:
                 push(f"{subject}，{value}这个数字说明了什么")
 
         return titles[: self.settings.title_count]
@@ -1140,6 +1139,17 @@ class TitleAgent(BaseAgent):
         return ["：".join([parts[0], "，".join(parts[1:])])]
 
     def _build_title_playbook_context(self, data_report: DataReport) -> dict[str, object]:
+        if self._is_narrative_mode():
+            return {
+                "track": "社会故事",
+                "top_keywords": [],
+                "title_templates": [],
+                "topic_imitation_pool": [],
+                "example_titles": [],
+                "self_benchmark_titles": [],
+                "self_benchmark_patterns": [],
+                "note": "叙事账号只依据当前事件生成标题，不使用产业标题对标库。",
+            }
         track_label = self._infer_track_label(data_report)
         selected = self.growth_ops_service.get_title_playbook_track_context(track_label)
         benchmark_accounts = [str(item).strip() for item in selected.get("benchmark_accounts", []) if str(item).strip()]

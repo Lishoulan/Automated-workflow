@@ -111,13 +111,20 @@ class ExportService:
             content.polished_article or content.article
         ).strip()
         # 文章已在 writer_agent._finalize_article 中清洗过，不再重复清洗
+        reference_accounts = "、".join(benchmark_strategy.get("benchmark_accounts", [])[:4])
+        if not reference_accounts:
+            reference_accounts = (
+                "无（按当前事件素材独立成稿）"
+                if benchmark_strategy.get("track") == "社会故事"
+                else "当前赛道高质量分析号"
+            )
 
         return (
             "# 编辑包\n\n"
             f"- 风格：{result.style_label}\n"
             f"- 切入角度：{content.article_angle}\n"
             f"- 对标赛道：{benchmark_strategy.get('track', '') or '未命中'}\n"
-            f"- 参考账号：{'、'.join(benchmark_strategy.get('benchmark_accounts', [])[:4]) or '当前赛道高质量分析号'}\n"
+            f"- 参考账号：{reference_accounts}\n"
             f"- 自有高表现样本：{'；'.join(benchmark_strategy.get('self_benchmark_titles', [])[:2]) or '暂无'}\n"
             f"- 缓存状态：{result.cache_status}\n"
             f"- 缓存说明：{content.cache_note or '无'}\n\n"
@@ -204,6 +211,31 @@ class ExportService:
         }
 
     def _build_benchmark_strategy(self, result: WorkflowResult) -> dict[str, object]:
+        narrative = (
+            str(getattr(self.settings, "content_domain", "industry") or "industry").strip().lower()
+            == "narrative"
+            or str(result.data_report.focus_industry or "").strip().lower() == "social_story"
+        )
+        if narrative:
+            return {
+                "generated_at": result.created_at,
+                "track": "社会故事",
+                "benchmark_accounts": [],
+                "voice_summary": "把事件经过、人物处境和结果讲清楚，再给读者一个具体提醒。",
+                "reader_value": "快速弄清发生了什么、当事人面临什么，以及遇到类似情况可以先做什么。",
+                "top_keywords": [],
+                "opening_rules": ["首段交代事件、人物关系和目前结果", "明确公开来源与尚未披露的信息"],
+                "structure_rules": ["事件经过", "人物处境与选择", "结果", "具体提醒或相关问题"],
+                "angle_rules": ["聚焦当事人的选择与后果", "只写素材能够支持的事实"],
+                "review_focus": ["来源是否清楚", "人物关系是否准确", "是否混入无关故事"],
+                "avoid_patterns": ["虚构对话、心理或现场细节", "套用与事件无关的商业分析框架"],
+                "example_titles": [],
+                "self_benchmark_titles": [],
+                "self_benchmark_patterns": [],
+                "self_benchmark_notes": [],
+                "self_benchmark_hits": [],
+                "self_benchmark_summary": {},
+            }
         focus_track = str(result.data_report.focus_industry or "").strip()
         combined = " ".join(
             [

@@ -30,8 +30,13 @@ class PublishReviewAgent(BaseAgent):
             data_report.supply_chain_keywords,
             content.article_angle,
         )
-        self_benchmark_context = self.growth_ops_service.get_self_benchmark_track_context(benchmark_track)
-        benchmark_digest = self.growth_ops_service.build_benchmark_digest(benchmark_track, purpose="review")
+        narrative = self._is_narrative_domain()
+        self_benchmark_context = (
+            {} if narrative else self.growth_ops_service.get_self_benchmark_track_context(benchmark_track)
+        )
+        benchmark_digest = (
+            "" if narrative else self.growth_ops_service.build_benchmark_digest(benchmark_track, purpose="review")
+        )
         prompt = self.render_prompt(
             "publish_review_prompt.md",
             platform=self.settings.platform,

@@ -336,6 +336,38 @@ def test_search_results_drop_multi_topic_news_digests() -> None:
     assert [item["url"] for item in kept] == ["https://example.com/story"]
 
 
+def test_search_results_drop_different_stories_with_generic_word_overlap() -> None:
+    """云端真实样本：只共享“父亲/邻居/帮忙”不能算同一事件。"""
+    from toutiao_content_factory.services.material_search_service import _filter_relevant_hits
+
+    hits = [
+        {
+            "title": "1岁儿子凭空消失，15天后父亲在女邻居家的柴房找到",
+            "snippet": "孩子失踪后，家人和警方持续寻找。",
+            "url": "https://example.com/other-child",
+        },
+        {
+            "title": "谁家有事都愿帮忙的增叔，邻居提起他都说热心",
+            "snippet": "社区居民讲述多年邻里往来。",
+            "url": "https://example.com/other-neighbor",
+        },
+        {
+            "title": "罗庄一刚考上大学的女生被骗学费9900元",
+            "snippet": "家人发现后报警求助。",
+            "url": "https://example.com/other-fraud",
+        },
+        {
+            "title": "女子父亲突然离世，邻居1分钟赶到帮忙",
+            "snippet": "父亲离世后，邻居很快赶到现场协助处理。",
+            "url": "https://example.com/target-story",
+        },
+    ]
+
+    kept = _filter_relevant_hits("bing", "女子父亲突然离世邻居1分钟赶到帮忙", hits)
+
+    assert [item["url"] for item in kept] == ["https://example.com/target-story"]
+
+
 # ---------------------------------------------------------------------------
 # 7. 抓不到素材就不发（宁可不发，也不发垃圾）
 # ---------------------------------------------------------------------------

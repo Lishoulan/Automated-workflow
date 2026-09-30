@@ -42,8 +42,13 @@ class ReviewAgent(BaseAgent):
             data_report.supply_chain_keywords,
             content.article_angle,
         )
-        self_benchmark_context = self.growth_ops_service.get_self_benchmark_track_context(benchmark_track)
-        benchmark_digest = self.growth_ops_service.build_benchmark_digest(benchmark_track, purpose="review")
+        narrative = self._is_narrative_domain()
+        self_benchmark_context = (
+            {} if narrative else self.growth_ops_service.get_self_benchmark_track_context(benchmark_track)
+        )
+        benchmark_digest = (
+            "" if narrative else self.growth_ops_service.build_benchmark_digest(benchmark_track, purpose="review")
+        )
         prompt = self.render_prompt(
             "review_prompt.md",
             platform=self.settings.platform,
@@ -749,6 +754,28 @@ class ReviewAgent(BaseAgent):
         max_length = max((len(item) for item in paragraphs), default=0)
         target_patterns = self._target_self_benchmark_patterns(self_benchmark_context)
         matched = matched_patterns or []
+
+        if self._content_mode(data_report) == "social_story":
+            if not self._has_source_anchor(article):
+                notes.append("建议补一句公开报道、当事人回应或相关部门通报的出处，证据会更稳。")
+            if max_length >= 180:
+                notes.append("正文仍有长段落，建议单段控制在 2 到 3 句，提升移动端完读率。")
+            if paragraphs and not self._has_strong_judgment_opening(paragraphs[0]):
+                notes.append("首段先讲清发生了什么、涉及谁以及目前结果，不要先写泛化感想。")
+            if self._count_story_details(content) < 4:
+                notes.append("建议补进素材中可核对的时间、地点、人物关系或处理结果。")
+            if not self._has_conflict_shape(article):
+                notes.append("建议把当事人的处境和关键选择写清楚，让事件主线更完整。")
+            if not self._has_tracking_variable_close(article):
+                notes.append("结尾给读者一条具体提醒，或留下一个与事件直接相关的问题。")
+            unsupported_tokens = self._unsupported_numeric_tokens(content, data_report)
+            if unsupported_tokens:
+                notes.append(f"正文出现未锚定数字：{'、'.join(unsupported_tokens[:4])}，应删除或补足来源。")
+            if cache_context.similar_hit:
+                notes.append("这次题材和历史内容接近，发布前再确认叙事角度是否足够新。")
+            if not notes:
+                notes.append("事件主线已经清楚，发布前再核对人物关系、数字和来源即可。")
+            return notes[:4]
 
         if not self._has_source_anchor(article):
             notes.append("建议补一句公开材料、财报或机构统计的出处感表达，证据会更稳。")

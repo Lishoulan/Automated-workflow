@@ -196,6 +196,26 @@ def test_narrative_fallback_is_the_only_full_fallback_pool() -> None:
 
     assert titles, "兜底池不能为空"
     assert titles[0] == "男子高空作业绳子被2楼老人剪断"
+
+
+def test_narrative_fallback_does_not_template_a_hard_cut_long_title() -> None:
+    """无标点长标题只能保留原标题，不能把前 14 字硬切后继续拼句。"""
+    agent = _agent(_settings(STORY_ACCOUNT))
+    report = DataReport(
+        topic_title="女子父亲突然离世邻居1分钟赶到帮忙",
+        focus_industry="social_story",
+        focus_keywords=["父亲", "邻居", "帮忙"],
+        growth_numbers=["1分钟"],
+    )
+    content = GeneratedContent(
+        article="据公开报道，一名女子的父亲突然离世，邻居得知后很快赶来帮忙。",
+        polished_article="据公开报道，一名女子的父亲突然离世，邻居得知后很快赶来帮忙。",
+    )
+
+    titles = agent._narrative_fallback_titles(content, report)
+
+    assert titles == ["女子父亲突然离世邻居1分钟赶到帮忙"]
+    assert all("分钟赶这件事" not in title for title in titles)
     assert all(
         token not in title
         for title in titles

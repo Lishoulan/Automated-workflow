@@ -2326,13 +2326,10 @@ class _HotBoardTopicCollector(_BaseTopicCollector):
 
 
 class _BaiduHotTopicCollector(_BaseTopicCollector):
-    """百度实时热搜采集（HTML 内嵌 JSON）。
-
-    URL: https://top.baidu.com/board?tab=realtime
-    页面内嵌 "query":"标题" 与 "hotScore":"热度" 的 JSON 片段。
-    """
+    """百度实时热搜采集（HTML 内嵌 JSON）。"""
 
     BAIDU_HOT_URL = "https://top.baidu.com/board?tab=realtime"
+    EMBEDDED_DATA_MARKER = "<!--s-data:"
     QUERY_PATTERN = re.compile(r'"query":"((?:[^"\\]|\\.)*)"')
     HOTSCORE_PATTERN = re.compile(r'"hotScore":"?(\d+)"?')
 
@@ -2358,23 +2355,67 @@ class _BaiduHotTopicCollector(_BaseTopicCollector):
         )
 
     def _parse_hot_page(self, payload: str) -> list[TopicCandidate]:
+        embedded_items = self._parse_embedded_items(payload)
+        if embedded_items:
+            return self._build_candidates(embedded_items)
+
+        # Compatibility fallback for older page variants that exposed only
+        # loose query/hotScore fragments instead of one parseable JSON block.
         queries = self.QUERY_PATTERN.findall(payload)
         scores = [int(value) for value in self.HOTSCORE_PATTERN.findall(payload)]
+        legacy_items = [
+            {
+                "query": raw_title,
+                "hotScore": scores[index] if index < len(scores) else 0,
+            }
+            for index, raw_title in enumerate(queries)
+        ]
+        return self._build_candidates(legacy_items)
+
+    def _parse_embedded_items(self, payload: str) -> list[dict[str, object]]:
+        marker_index = payload.find(self.EMBEDDED_DATA_MARKER)
+        if marker_index < 0:
+            return []
+        data_start = marker_index + len(self.EMBEDDED_DATA_MARKER)
+        data_end = payload.find("-->", data_start)
+        if data_end < 0:
+            return []
+        try:
+            embedded = json.loads(payload[data_start:data_end])
+        except (TypeError, json.JSONDecodeError):
+            return []
+        data = embedded.get("data") if isinstance(embedded, dict) else None
+        cards = data.get("cards") if isinstance(data, dict) else None
+        if not isinstance(cards, list):
+            return []
+        for card in cards:
+            if not isinstance(card, dict) or card.get("component") != "hotList":
+                continue
+            content = card.get("content")
+            if isinstance(content, list):
+                return [item for item in content if isinstance(item, dict)]
+        return []
+
+    def _build_candidates(self, items: list[dict[str, object]]) -> list[TopicCandidate]:
         candidates: list[TopicCandidate] = []
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        for index, raw_title in enumerate(queries[: self.service.topic_settings.max_items_per_source]):
-            title = self.service._clean_text(raw_title)
+        for item in items[: self.service.topic_settings.max_items_per_source]:
+            title = self.service._clean_text(str(item.get("query") or item.get("word") or ""))
             if not title or len(title) < 6:
                 continue
-            heat_value = scores[index] if index < len(scores) else 0
+            snippet = self.service._clean_text(str(item.get("desc") or ""))
+            try:
+                heat_value = int(item.get("hotScore") or 0)
+            except (TypeError, ValueError):
+                heat_value = 0
             candidates.append(
                 TopicCandidate(
                     title=title,
-                    url="",
+                    url=str(item.get("rawUrl") or item.get("url") or "").strip(),
                     source=self.source_name,
                     source_type="baidu_hot",
                     published_at=now_iso,
-                    snippet="",
+                    snippet=snippet,
                     heat_value=heat_value,
                 )
             )

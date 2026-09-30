@@ -90,6 +90,13 @@ class QualityReviewCouncilAgent(BaseAgent):
         "在当今快节奏的世界里",
         "由此可见",
     )
+    _NARRATIVE_CHECKER_EXEMPTIONS = (
+        "RULE_006",
+        "RULE_009",
+        "信息密度不足",
+        "无法回指事实的模糊主体",
+        "字数不足1500字",
+    )
 
     def __init__(
         self,
@@ -244,11 +251,19 @@ class QualityReviewCouncilAgent(BaseAgent):
             ]
         )[:8]
         optional_improvements = self.unique(
-            [
-                "保留具体主体、时间点和数据来源表达，避免把推断写成事实。",
-                "让相邻段落之间有明确的因果、转折或递进关系。",
-                "结尾保留一个可继续观察的变量，避免口号式拔高。",
-            ]
+            (
+                [
+                    "保留具体人物、时间、地点和处理结果，避免把推断写成事实。",
+                    "按事件经过、当事人处境和读者提醒组织段落。",
+                    "结尾保留一个具体问题，方便读者表达自己的处理方式。",
+                ]
+                if self._content_mode(data_report) == "social_story"
+                else [
+                    "保留具体主体、时间点和数据来源表达，避免把推断写成事实。",
+                    "让相邻段落之间有明确的因果、转折或递进关系。",
+                    "结尾保留一个可继续观察的变量，避免口号式拔高。",
+                ]
+            )
         )[:5]
         if not needs_revision:
             required_revisions = []
@@ -294,6 +309,7 @@ class QualityReviewCouncilAgent(BaseAgent):
 
     def _local_snapshot(self, title: str, article: str, data_report: DataReport) -> dict[str, Any]:
         is_hot_topic = bool(getattr(data_report, "is_hot_topic", False))
+        narrative = self._content_mode(data_report) == "social_story"
         clean_article = re.sub(r"\s+", "", article)
         paragraphs = [item.strip() for item in article.split("\n\n") if item.strip()]
         checker = self.quality_checker.check_article(
@@ -309,6 +325,16 @@ class QualityReviewCouncilAgent(BaseAgent):
                 and not (is_hot_topic and "字数不足" in str(item))
             ]
         )
+        if narrative:
+            checker_issues = [
+                issue
+                for issue in checker_issues
+                if not any(marker in issue for marker in self._NARRATIVE_CHECKER_EXEMPTIONS)
+                and not (
+                    "互动吸引力不足" in issue
+                    and re.search(r"(?:你|换成是你|你会|怎么看|怎么处理).{0,40}[？?]", article)
+                )
+            ]
 
         expected_companies = [
             *(getattr(data_report, "focus_companies", []) or []),
@@ -347,7 +373,11 @@ class QualityReviewCouncilAgent(BaseAgent):
         logic_issues: list[str] = []
         if len(clean_article) >= 240 and not any(token in article for token in self._CAUSAL_TOKENS):
             logic_issues.append("正文缺少因果、转折或条件边界，论点之间可能只是并列。")
-        if len(paragraphs) >= 4 and not any(token in article for token in ("但", "然而", "风险", "前提", "如果")):
+        if (
+            not narrative
+            and len(paragraphs) >= 4
+            and not any(token in article for token in ("但", "然而", "风险", "前提", "如果"))
+        ):
             logic_issues.append("正文缺少反方或失效条件，建议补充边界讨论。")
 
         structure_issues: list[str] = []

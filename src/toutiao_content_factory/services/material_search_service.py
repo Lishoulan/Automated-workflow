@@ -517,10 +517,25 @@ def _filter_relevant_hits(backend_name: str, query: str, hits: list[dict]) -> li
         return hits
     kept: list[dict] = []
     for hit in hits:
-        haystack = f"{hit.get('title', '')} {hit.get('url', '')}"
+        title = str(hit.get("title", "") or "").strip()
+        # A news digest may mention the query as one item among several
+        # unrelated headlines.  It is not evidence for the selected story.
+        if _looks_like_multi_topic_digest(title):
+            continue
+        haystack = f"{title} {hit.get('url', '')}"
         if any(token in haystack for token in tokens):
             kept.append(hit)
     return kept
+
+
+def _looks_like_multi_topic_digest(title: str) -> bool:
+    """Return whether a result title lists several unrelated headlines."""
+    text = str(title or "").strip()
+    if not text:
+        return False
+    separator_count = len(re.findall(r"[;；|｜]", text))
+    digest_prefix = bool(re.match(r"^(?:早报|晚报|晨报|午报|新闻速览|今日要闻)[：:]", text))
+    return separator_count >= 2 or (digest_prefix and separator_count >= 1)
 
 
 def _search_phrases(title: str) -> list[str]:

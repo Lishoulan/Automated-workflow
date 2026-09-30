@@ -14,6 +14,7 @@ class PublishReviewAgent(BaseAgent):
     agent_name = "PublishReviewAgent"
     HOT_TOPIC_MANUAL_MIN_CHARS = 850
     AUTO_PUBLISH_ARTICLE_MIN_CHARS = 1750
+    NARRATIVE_PUBLISH_MIN_CHARS = 700
 
     def run(
         self,
@@ -83,6 +84,12 @@ class PublishReviewAgent(BaseAgent):
         """Return the publish contract for manual hot reviews or auto long-form."""
         if not self._is_hot_topic(data_report):
             return ""
+        if self._is_narrative_domain():
+            return (
+                "\n\n【本次为社会故事候选】清理后的正文最低700字。重点检查事件经过、"
+                "人物关系、处理结果和来源边界；不得要求补产业链、订单、利润或公司数据，"
+                "素材没有交代的细节必须留白。"
+            )
         if self._auto_publish_mode():
             return (
                 "\n\n【本次为自动发布长文候选】虽然选题来自热榜，正文仍必须按完整分析稿处理："
@@ -111,6 +118,8 @@ class PublishReviewAgent(BaseAgent):
         )
 
     def _required_article_length(self, data_report: DataReport) -> int:
+        if self._is_narrative_domain():
+            return self.NARRATIVE_PUBLISH_MIN_CHARS
         if self._auto_publish_mode():
             return self.AUTO_PUBLISH_ARTICLE_MIN_CHARS
         if self._is_hot_topic(data_report):
@@ -178,7 +187,11 @@ class PublishReviewAgent(BaseAgent):
         if content_score.ai_generated_risk <= 35:
             readiness += 10
         else:
-            publish_risk_flags.append("AI 痕迹偏重，建议发布前再加一句更具体的行业判断。")
+            publish_risk_flags.append(
+                "AI 痕迹偏重，建议补一个可核对的事件细节并压缩套话。"
+                if self._is_narrative_domain()
+                else "AI 痕迹偏重，建议发布前再加一句更具体的行业判断。"
+            )
 
         if data_report.risk_flags:
             publish_risk_flags.extend(data_report.risk_flags[:2])
@@ -222,11 +235,18 @@ class PublishReviewAgent(BaseAgent):
             readiness = 0
 
         if not publish_notes:
-            publish_notes = [
-                "发布前核对公司名、数字口径和时间点。",
-                "如有原始研报或公告，建议在文末补一句出处说明。",
-                "封面标题尽量与正文主标题保持一致。",
-            ]
+            if self._is_narrative_domain():
+                publish_notes = [
+                    "发布前核对时间、地点、人物关系和处理结果。",
+                    "关键事实以公开报道或官方回应为准。",
+                    "封面标题尽量与正文主标题保持一致。",
+                ]
+            else:
+                publish_notes = [
+                    "发布前核对公司名、数字口径和时间点。",
+                    "如有原始研报或公告，建议在文末补一句出处说明。",
+                    "封面标题尽量与正文主标题保持一致。",
+                ]
 
         recommendation = "ready_to_publish"
         if publish_risk_flags or readiness < 78:

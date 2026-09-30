@@ -181,8 +181,8 @@ def test_narrative_fallback_puts_the_original_topic_title_first() -> None:
     assert titles[0] == "男子高空作业绳子被2楼老人剪断"
 
 
-def test_narrative_fallback_is_prepended_in_the_full_fallback_pool() -> None:
-    """真正的修复点在 `_fallback_titles`：故事句式必须排在产业模板之前。"""
+def test_narrative_fallback_is_the_only_full_fallback_pool() -> None:
+    """故事标题不能再与产业模板混排，否则通用评分会把产业句式提到前面。"""
     agent = _agent(_settings(STORY_ACCOUNT))
 
     titles = agent._fallback_titles(
@@ -195,8 +195,12 @@ def test_narrative_fallback_is_prepended_in_the_full_fallback_pool() -> None:
     )
 
     assert titles, "兜底池不能为空"
-    # 故事句式占据了最前面几位（产业模板仍在池子里当陪衬，但排不到前面）
     assert titles[0] == "男子高空作业绳子被2楼老人剪断"
+    assert all(
+        token not in title
+        for title in titles
+        for token in INDUSTRY_TITLE_TOKENS
+    )
 
 
 # ---------------------------------------------------------------------------

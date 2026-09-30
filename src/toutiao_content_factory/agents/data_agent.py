@@ -943,6 +943,66 @@ class DataAgent(BaseAgent):
         focus_companies: list[str],
     ) -> tuple[str, list[str], list[str], list[str], list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
         mode = self._content_mode(extraction)
+        if mode == "social_story":
+            normalized_focus = self.clean_publish_text(focus_industry).strip() or "社会故事"
+            if any(token in normalized_focus for token in self.MODE_NOISE_TOKENS):
+                normalized_focus = "社会故事"
+            focus_keywords = self._clean_mode_list(
+                focus_keywords,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=[self.clean_publish_text(extraction.topic_title).strip()],
+                limit=6,
+            )
+            core_data = self._clean_mode_list(
+                core_data,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=self._extract_source_facts(extraction),
+                limit=6,
+            )
+            industry_trends = self._clean_mode_list(
+                industry_trends,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=[],
+                limit=4,
+            )
+            key_points = self._clean_mode_list(
+                key_points,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=[
+                    "先把事件经过和结果讲清楚，再解释当事人的处境。",
+                    "只给读者基于已确认事实的具体提醒，不替当事人补写细节。",
+                ],
+                limit=4,
+            )
+            watch_metrics = self._clean_mode_list(
+                watch_metrics,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=["事件后续处理结果", "当事人处境是否变化", "同类情况是否继续发生"],
+                limit=5,
+            )
+            risk_flags = self._clean_mode_list(
+                risk_flags,
+                blocked=self.MODE_NOISE_TOKENS,
+                fallback=[
+                    "公开材料未交代的责任和处理结果不能提前下结论。",
+                    "搜索摘要可能省略上下文，关键细节仍需以后续公开信息为准。",
+                ],
+                limit=4,
+            )
+            return (
+                normalized_focus,
+                focus_keywords,
+                [],
+                core_data,
+                industry_trends,
+                key_points,
+                watch_metrics,
+                evidence_notes,
+                risk_flags,
+                [],
+                [],
+            )
+
         if mode == "sports":
             normalized_focus = self.clean_publish_text(focus_industry).strip() or "体育赛事"
             if any(token in normalized_focus for token in self.MODE_NOISE_TOKENS):

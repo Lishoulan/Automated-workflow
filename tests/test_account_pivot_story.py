@@ -317,6 +317,25 @@ def test_real_material_is_still_used_as_evidence() -> None:
     assert automation._preferred_topic_summary(topic).startswith("据报道")
 
 
+def test_search_results_drop_multi_topic_news_digests() -> None:
+    from toutiao_content_factory.services.material_search_service import _filter_relevant_hits
+
+    hits = [
+        {
+            "title": "早报：央行四箭齐发；那英唱弯弯的月亮；充电器忘拔烧毁整个家；多地限高份子钱",
+            "url": "https://example.com/digest",
+        },
+        {
+            "title": "充电器忘拔烧毁整个家，消防部门提醒注意这些细节",
+            "url": "https://example.com/story",
+        },
+    ]
+
+    kept = _filter_relevant_hits("bing", "充电器忘拔烧毁整个家", hits)
+
+    assert [item["url"] for item in kept] == ["https://example.com/story"]
+
+
 # ---------------------------------------------------------------------------
 # 7. 抓不到素材就不发（宁可不发，也不发垃圾）
 # ---------------------------------------------------------------------------

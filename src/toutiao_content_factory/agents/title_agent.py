@@ -854,6 +854,15 @@ class TitleAgent(BaseAgent):
         cache_context: CacheContext,
         playbook_context: dict[str, object] | None = None,
     ) -> list[str]:
+        # Never rank narrative candidates together with industry templates.
+        # Merely prepending story titles still allowed the generic scorer to
+        # promote phrases such as "增速里先回款的是哪一环" above the event title.
+        if self._is_narrative_style(style):
+            return self._dedupe_titles(
+                self._narrative_fallback_titles(content, data_report),
+                cache_context,
+            )
+
         keyword = self._primary_topic_label(data_report)
         secondary = "关键环节"
         for candidate in self.clean_publish_list(data_report.focus_keywords[1:] + data_report.supply_chain_keywords[1:]):
@@ -950,20 +959,6 @@ class TitleAgent(BaseAgent):
                 f"{keyword}走到验证期，市场开始重选公司",
                 f"{keyword}背后，谁在改写竞争规则",
             ]
-
-        if self._is_narrative_style(style):
-            # ⚠️ 2026-09-19：上面那批兜底模板是**产业分析句式**（样机/交付/订单/产能/重估/
-            # 突围/热门公司）。社会故事号一旦走到兜底层，就会被拼出并且**选中**这种标题 ——
-            # 实测（2026-09-19 真实运行，titles.txt）：
-            #   「老人从样机走到交付，中间卡在哪一步」
-            #   「老人升温之后，先突围的不是热门公司」
-            #   「老人热度之外，谁在拿走真正订单」
-            # 关键字「老人」是对的，句式完全是科技号的，发出去会直接毁掉「人间故事」的定位。
-            # 这里把故事句式**放到最前面**：兜底层本来就只在模型候选全灭时启用，
-            # 既然必须兜底，就必须兜成"像这个号会发的标题"。
-            story_titles = self._narrative_fallback_titles(content, data_report)
-            if story_titles:
-                templates = story_titles + templates
 
         fact_titles = self._fallback_fact_titles(content, data_report)
         if fact_titles:

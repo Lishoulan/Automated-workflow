@@ -19,6 +19,7 @@ class ReviewAgent(BaseAgent):
     #: 上限取写作目标 1700 上方一点，避免正常发挥被判"过长"。
     NARRATIVE_WORD_FLOOR = 1500
     NARRATIVE_WORD_CEILING = 2100
+    NARRATIVE_PUBLISH_MIN_CHARS = 700
 
     def _auto_publish_mode(self) -> bool:
         publishing = getattr(self.settings, "publishing", None)
@@ -300,7 +301,10 @@ class ReviewAgent(BaseAgent):
         is_hot_topic = bool(getattr(data_report, "is_hot_topic", False))
         if not (is_hot_topic or self._auto_publish_mode()):
             return
-        minimum = 1750 if self._auto_publish_mode() else 850
+        if self._is_narrative_domain():
+            minimum = self.NARRATIVE_PUBLISH_MIN_CHARS
+        else:
+            minimum = 1750 if self._auto_publish_mode() else 850
         article_chars = len(re.sub(r"\s+", "", str(content.article or "")))
         if article_chars >= minimum:
             return
@@ -857,6 +861,9 @@ class ReviewAgent(BaseAgent):
             f"完读率潜力 {completion_rate_potential}，重点看首屏判断是否清楚、段落是否适合手机阅读。",
             f"AI 痕迹风险 {ai_generated_risk}，分数越高越像模板稿，通常需要继续压缩套话和长句。",
         ]
+        if self._is_narrative_domain():
+            lines[0] = f"标题吸引力 {title_attraction}，主要看事件主体、冲突或后果是否清楚。"
+            lines[1] = f"信息密度 {information_density}，主要看经过、处境、结果和来源是否具体。"
         target_patterns = self._target_self_benchmark_patterns(self_benchmark_context)
         matched = matched_patterns or []
         if target_patterns:

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-09-30T10:03:14",
+  "updated_at": "2026-09-30T18:56:03",
   "entries": {
     "2026-09-16": {
       "toutiao": {
@@ -161,9 +161,9 @@
         "channel": "cloud",
         "status": "submitted_for_review",
         "pgc_id": "",
-        "title": "「充电器忘拔烧毁整个家，这事最该说的是什么」",
+        "title": "「充电器忘拔烧毁整个家，这事最该提醒什么」",
         "publish_url": "",
-        "recorded_at": "2026-09-30T10:03:14"
+        "recorded_at": "2026-09-30T18:56:03"
       }
     }
   }

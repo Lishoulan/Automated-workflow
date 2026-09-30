@@ -2210,6 +2210,26 @@ class WriterAgent(BaseAgent):
         trend_report: TrendReport,
     ) -> list[str]:
         topics = self._clean_list(payload, 5) if isinstance(payload, list) else []
+        if self._is_narrative_run():
+            industry_markers = (
+                "产业链", "订单", "交付", "毛利", "产能", "科技制造", "国产替代", "公司研究",
+            )
+            story_topics = self.clean_publish_list(
+                topics + list(data_report.focus_keywords),
+                limit=5,
+            )
+            story_topics = [
+                item.lstrip("#")
+                for item in story_topics
+                if item
+                and not self.is_internal_label(item)
+                and not any(marker in item for marker in industry_markers)
+            ]
+            if not story_topics:
+                title = self.clean_publish_text(data_report.topic_title).strip()
+                if title:
+                    story_topics = [title]
+            return story_topics[:5]
         if not topics:
             topics = self.clean_publish_list(
                 data_report.focus_keywords + data_report.supply_chain_keywords + trend_report.platform_topics,
@@ -2318,9 +2338,14 @@ class WriterAgent(BaseAgent):
                 *data_report.key_points[:3],
             ):
                 text = self.clean_publish_text(str(candidate).strip())
-                if text and len(text) <= 160 and not self._looks_like_instruction_text(text):
+                if (
+                    text
+                    and len(text) <= 160
+                    and "social_story" not in text.lower()
+                    and not self._looks_like_instruction_text(text)
+                ):
                     return text.rstrip("。")
-            primary = self._primary_keyword(data_report, fallback="这件事")
+            primary = self.clean_publish_text(data_report.topic_title).strip() or "这件事"
             return f"把{primary}的公开经过、当事人处境和后续处理分别说清楚"
         if content_mode in {"sports", "international"}:
             for candidate in (
@@ -3671,6 +3696,10 @@ class WriterAgent(BaseAgent):
             raw_items = [str(item).strip().lstrip("#") for item in payload if str(item).strip()]
         else:
             raw_items = [str(item).strip().lstrip("#") for item in data_report.supply_chain_keywords[:6] if str(item).strip()]
+
+        if self._is_narrative_run() and not raw_items:
+            title = self.clean_publish_text(data_report.topic_title).strip()
+            raw_items = [item for item in (title, "社会热点") if item]
 
         result: list[str] = []
         seen: set[str] = set()

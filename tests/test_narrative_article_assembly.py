@@ -168,6 +168,27 @@ def test_narrative_fallback_never_uses_the_industry_article_template() -> None:
         assert marker not in content.article
 
 
+def test_narrative_metadata_does_not_fall_back_to_industry_topics() -> None:
+    agent = _story_agent()
+    report = _story_report()
+    report.focus_keywords = []
+    report.supply_chain_keywords = []
+    trend = TrendReport(
+        recommended_angle="把social_story这个处境讲清楚，不是行业趋势",
+        platform_topics=["科技制造产业链", "科技制造订单兑现", "国产替代"],
+    )
+
+    topics = agent._finalize_topics([], report, trend)
+    angle = agent._article_angle(trend, report)
+    tags = agent._sanitize_tags(None, report)
+
+    assert topics == [report.topic_title]
+    assert "social_story" not in angle
+    assert report.topic_title in angle
+    assert tags == [f"#{report.topic_title}", "#社会热点"]
+    assert all("科技制造" not in item and "产业链" not in item for item in topics)
+
+
 def test_narrative_finalizer_does_not_insert_a_company_or_order_anchor() -> None:
     agent = _story_agent()
     report = _story_report()

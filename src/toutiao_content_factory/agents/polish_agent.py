@@ -718,7 +718,10 @@ class PolishAgent(BaseAgent):
             score += 10
             notes.append(f"正文已落入 {evidence_hits} 个核心数字或增速信号。")
         else:
-            if content_mode == "sports":
+            if content_mode == "social_story":
+                score += 8
+                notes.append("社会故事不强制凑数字，重点核对时间、地点、人物关系和处理结果。")
+            elif content_mode == "sports":
                 notes.append("正文仍缺少更具体的事实锚点，建议补进技术路线、市场份额、关键企业动态或争议背景。")
             elif content_mode == "international":
                 notes.append("正文仍缺少更具体的事实锚点，建议补进政策动作、谈判节点或市场反应。")
@@ -727,7 +730,10 @@ class PolishAgent(BaseAgent):
 
         company_hits = self._count_hits(article_lower, self._company_candidates(data_report)[:4])
         order_hits = sum(1 for token in self.ORDER_ANCHOR_TOKENS if token in article)
-        if content_mode != "generic":
+        if content_mode == "social_story":
+            score += 8
+            notes.append("正文围绕人物关系和事件进展展开，主体与当前素材一致。")
+        elif content_mode != "generic":
             score += 8
             notes.append("正文主体已经围绕事件影响和后续变量展开，不需要强行补公司订单主体。")
         elif company_hits or order_hits >= 3:

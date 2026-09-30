@@ -481,6 +481,14 @@ class TopicAutomationService:
                 len(bundle.sources),
             )
             return False
+        if bundle.total_chars < self.MATERIAL_MIN_BODY_CHARS:
+            self.logger.warning(
+                "[素材] 选题只有 %d 字搜索摘要，低于 %d 字事实材料门槛，改试下一题: %s",
+                bundle.total_chars,
+                self.MATERIAL_MIN_BODY_CHARS,
+                title,
+            )
+            return False
         body = bundle.combined_text.strip()
         topic.snippet = body
         # Keep this run-local marker separate from persisted search digests.
@@ -940,7 +948,7 @@ class TopicAutomationService:
                 "3. 不要拆产业链、不要写订单与产能、不要做行业趋势或投资判断、不要出现毛利率这类词。"
                 "4. 结尾给读者一句具体可用的提醒（涉及钱、合同、赡养、就医时该留什么证据、找谁、走什么流程），"
                 "不要写成空泛的「引人深思」。"
-                "5. 全文600到1000字，4到6个短段，每段2到3句，不要用 #、## 小标题。"
+                "5. 全文700到1000字，4到6个短段，每段2到3句，不要用 #、## 小标题。"
             )
         if topic_mode == "sports":
             return (
@@ -1371,10 +1379,15 @@ class TopicAutomationService:
         topic_mode = self._topic_mode(topic)
         primary_keyword = primary_keywords.split("、")[0] if primary_keywords and primary_keywords != "关键词待补充" else primary_industry
         if topic_mode == "social_story":
+            story_subject = (
+                primary_keywords.split("、")[0]
+                if primary_keywords and primary_keywords != "关键词待补充"
+                else str(topic.title or "这件事").strip()
+            )
             return (
-                f"这件事真正值得写的，不是复述新闻，而是把{primary_keyword}这个处境讲清楚："
+                f"把{story_subject}的公开经过和人物处境讲清楚："
                 "当事人当时能怎么选、哪一步本可以不一样、结果给普通人什么提醒。"
-                "读者关心的是「换成我遇到这种情况该怎么办」，不是行业趋势。"
+                "读者更关心的是，换成自己遇到类似情况时可以怎么做。"
             )
         if topic_mode == "sports":
             return (

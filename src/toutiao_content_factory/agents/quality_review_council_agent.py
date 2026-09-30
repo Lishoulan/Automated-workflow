@@ -351,6 +351,10 @@ class QualityReviewCouncilAgent(BaseAgent):
         hard_blockers: list[str] = list(integrity.get("hard_blockers", []))
         if not clean_article:
             hard_blockers.append("正文为空，不能进入发布流程。")
+        elif narrative and len(clean_article) < 700:
+            hard_blockers.append(
+                f"社会故事正文仅{len(clean_article)}字，低于发布审核使用的700字底线。"
+            )
         if unsupported:
             hard_blockers.append(
                 f"正文存在未在数据报告中找到依据的数字：{'、'.join(unsupported[:6])}。"

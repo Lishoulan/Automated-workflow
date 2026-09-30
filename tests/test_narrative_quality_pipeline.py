@@ -141,6 +141,27 @@ def test_narrative_quality_council_does_not_apply_industry_requirements() -> Non
     assert "公司/数字" not in findings
 
 
+def test_narrative_quality_council_blocks_below_publish_floor() -> None:
+    settings = _settings()
+    agent = QualityReviewCouncilAgent(
+        settings,
+        MagicMock(),
+        MagicMock(available=False, model="stub"),
+        logging.getLogger("test_narrative_short_quality"),
+    )
+    article = _story_article(480)
+    content = GeneratedContent(
+        article=article,
+        polished_article=article,
+        recommended_titles=["充电器忘拔烧毁整个家"],
+    )
+
+    report = agent._fallback(content, _story_report())
+
+    assert report.verdict == "blocked"
+    assert any("700字底线" in item for item in report.hard_blockers)
+
+
 def test_narrative_prompts_do_not_load_industry_benchmarks() -> None:
     settings = _settings()
     review = ReviewAgent(

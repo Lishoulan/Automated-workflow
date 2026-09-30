@@ -415,6 +415,26 @@ def test_no_material_switches_to_the_next_topic(monkeypatch: pytest.MonkeyPatch)
     assert calls == [first.title, second.title]
 
 
+def test_thin_search_snippets_do_not_count_as_publishable_material(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """有搜索摘要不等于有足够事实；低于 400 字时必须继续换题。"""
+    import toutiao_content_factory.services.material_search_service as mss
+
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    topic = _hot_topic("妈妈拿巨型碗劝2米01儿子好好吃饭")
+    thin_material = "山东一位妈妈拿出巨型碗，劝身高2米01的13岁儿子好好吃饭。" * 3
+    monkeypatch.setattr(
+        mss,
+        "collect_material",
+        lambda *args, **kwargs: _StubBundle(True, thin_material),
+    )
+
+    assert len(thin_material) < automation.MATERIAL_MIN_BODY_CHARS
+    assert automation._hydrate_topic_material(topic) is False
+    assert getattr(topic, "_verified_source_material", False) is False
+
+
 def test_long_hot_search_digest_still_requires_article_material(monkeypatch: pytest.MonkeyPatch) -> None:
     import toutiao_content_factory.services.material_search_service as mss
 

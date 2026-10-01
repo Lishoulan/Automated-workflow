@@ -3257,7 +3257,7 @@ class ContentFactoryAppService:
                     break
             checker = ArticleQualityChecker()
             for candidate in candidates:
-                result = checker._check_title(candidate, article)
+                result = checker.check_title(candidate, article)
                 if not [item for item in result.get("issues", []) if str(item).strip()]:
                     return candidate
         except Exception:

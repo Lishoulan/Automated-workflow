@@ -32,6 +32,21 @@ def test_policy_prose_fragments_are_not_company_names() -> None:
     assert all(not is_valid_company_name(item) for item in invalid)
 
 
+def test_vehicle_policy_products_and_clause_fragments_are_not_company_names() -> None:
+    invalid = [
+        "动力电池",
+        "纯电动汽车",
+        "及关键材料",
+        "中国汽车工业",
+        "品质和智能",
+        "工信部明确支持重点企业加大技术",
+        "持续提升动力电池",
+        "期间将研究起草动力电池",
+    ]
+
+    assert all(not is_valid_company_name(item) for item in invalid)
+
+
 def test_data_agent_sanitizes_scene_and_source_labels_from_company_fields(
     app_settings,
     mock_openai_service,

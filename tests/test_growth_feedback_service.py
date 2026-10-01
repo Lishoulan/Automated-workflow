@@ -69,6 +69,9 @@ def test_feedback_builds_creative_calibration_only_with_enough_samples() -> None
     feedback = build_growth_feedback({}, {"works": works})
 
     calibration = feedback["creative_calibration"]
+    assert calibration["status"] == "active"
+    assert calibration["minimum_samples_per_signal"] == 3
+    assert "mobile_length" in calibration["ready_signals"]
     assert calibration["article_samples"] == 3
     assert "mobile_length" in calibration["signal_adjustments"]
     assert calibration["evidence"]["mobile_length"]["samples"] == 3
@@ -88,3 +91,5 @@ def test_feedback_marks_late_samples_and_groups_duplicate_stop_titles() -> None:
     assert feedback["stop_loss"][0]["repeat_count"] == 2
     assert feedback["stop_loss"][0]["impressions"] == 180
     assert len(feedback["topic_feedback"]["stop_titles"]) == 1
+    assert feedback["topic_feedback"]["weights"] == {}
+    assert feedback["creative_calibration"]["status"] == "collecting"

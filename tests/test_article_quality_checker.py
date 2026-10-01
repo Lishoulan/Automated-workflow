@@ -297,6 +297,17 @@ class TestCheckArticleIntegration:
 
         assert not any("RULE_006" in issue or "RULE_009" in issue for issue in result["issues"])
 
+    def test_shared_title_gate_applies_narrative_exemptions_once(self) -> None:
+        title = "关于日常生活的几点思考"
+        body = "这是一篇关于日常生活的完整故事。"
+
+        industry = self.checker.check_title(title, body)
+        narrative = self.checker.check_title(title, body, content_domain="narrative")
+
+        assert any("RULE_006" in item or "RULE_009" in item for item in industry["issues"])
+        assert narrative["issues"] == []
+        assert narrative["raw_issues"] == industry["issues"]
+
     def test_editorial_integrity_rejects_html_and_residual_sentence(self) -> None:
         result = self.checker.check_editorial_integrity(
             "优必选业务观察",

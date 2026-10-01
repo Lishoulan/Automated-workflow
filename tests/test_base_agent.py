@@ -150,6 +150,19 @@ def test_topic_subject_label_does_not_reuse_stale_industry_label(base_agent: Bas
     assert base_agent._topic_subject_label(report, fallback="相关主题") == "相关主题"
 
 
+def test_topic_subject_label_prefers_explicit_headline_subject_over_secondary_fact(
+    base_agent: BaseAgent,
+) -> None:
+    report = DataReport(
+        topic_title="刚刚，国家能源局连发两文，储能新利好来了！",
+        focus_industry="科技制造",
+        focus_keywords=["光伏"],
+        core_data=["全国光伏累计装机容量约7.9亿千瓦"],
+    )
+
+    assert base_agent._topic_subject_label(report) == "储能"
+
+
 class TestUnique:
     def test_deduplicates_strings(self, base_agent: BaseAgent) -> None:
         items = ["a", "b", "a", "c", "b"]

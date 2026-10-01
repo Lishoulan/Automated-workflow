@@ -1169,16 +1169,13 @@ class AgentWorkflowService:
         # 社会故事没有可量化数字（是「老人」「儿媳」这类人物主体），
         # 天然被判"信息密度不足"。叙事体裁下放开它，安全类检查一条不放。
         narrative = self._uses_narrative_domain()
-        exempt_codes = self._narrative_exempt_title_codes() if narrative else ()
         for title in original_titles:
-            result = self.quality_checker._check_title(title, article_text)
+            result = self.quality_checker.check_title(
+                title,
+                article_text,
+                content_domain=("narrative" if narrative else "industry"),
+            )
             issues = result.get("issues", []) if isinstance(result, dict) else []
-            if exempt_codes:
-                issues = [
-                    item
-                    for item in issues
-                    if not any(code in str(item) for code in exempt_codes)
-                ]
             # 只拦截 RULE_006/007/一致性问题（issues 中的硬性问题），suggestions 不拦截
             if issues:
                 rejected.append(f"{title} -> {'; '.join(str(item) for item in issues)}")
@@ -1247,12 +1244,7 @@ class AgentWorkflowService:
     #: **必须与 `TitleAgent.NARRATIVE_EXEMPT_TITLE_CODES` 保持同一口径** ——
     #: 两处不一致就会出现"生成侧合格、旁路过滤全灭"（实测云端 run 35453836286）。
     #: 有测试锁住这条一致性。
-    NARRATIVE_EXEMPT_TITLE_MARKERS = (
-        "RULE_009",
-        "信息密度不足",
-        "RULE_006",
-        "具象",
-    )
+    NARRATIVE_EXEMPT_TITLE_MARKERS = ArticleQualityChecker.NARRATIVE_EXEMPT_TITLE_MARKERS
 
     def _narrative_exempt_title_codes(self) -> tuple[str, ...]:
         return self.NARRATIVE_EXEMPT_TITLE_MARKERS

@@ -42,7 +42,9 @@ def title_signals(title: str) -> list[str]:
         signals.append("mobile_length")
     if re.search(r"\d", text):
         signals.append("number")
-    if "？" in text or "?" in text or any(token in text for token in ("为何", "为什么", "怎么", "如何")):
+    if "？" in text or "?" in text or any(
+        token in text for token in ("为何", "为什么", "怎么", "如何", "哪些")
+    ):
         signals.append("question_gap")
     if any(token in text for token in ("结果", "最后", "后来", "判决", "认定", "解决")):
         signals.append("outcome")
@@ -119,7 +121,10 @@ def build_growth_feedback(
     checkpoint_used = (
         f"72h优先，缺失时使用24h；准时 {on_schedule_count} 条，迟到回收 {late_count} 条"
     )
-    benchmarks = _format_benchmarks(rows)
+    on_schedule_rows = [row for row in rows if row["capture_quality"] == "on_schedule"]
+    # Late captures remain visible in the report, but they are not comparable
+    # enough to tune tomorrow's title and topic weights automatically.
+    benchmarks = _format_benchmarks(on_schedule_rows or rows)
 
     evaluated: list[dict[str, Any]] = []
     tag_scores: dict[str, list[float]] = defaultdict(list)
@@ -140,10 +145,14 @@ def build_growth_feedback(
             status = "stop"
         item = {**row, "performance_index": index, "status": status, "topic_tags": tags, "title_signals": signals}
         evaluated.append(item)
-        if row["type"] == "weitoutiao":
+        if row["capture_quality"] == "on_schedule" and row["type"] == "weitoutiao":
             for tag in tags:
                 tag_scores[tag].append(index)
-        if row["type"] == "article" and row["reads"] > 0:
+        if (
+            row["capture_quality"] == "on_schedule"
+            and row["type"] == "article"
+            and row["reads"] > 0
+        ):
             for signal in signals:
                 signal_scores[signal].append(index)
 
@@ -216,6 +225,9 @@ def build_growth_feedback(
             ],
         },
         "creative_calibration": {
+            "status": "active" if any(len(scores) >= 3 for scores in signal_scores.values()) else "collecting",
+            "minimum_samples_per_signal": 3,
+            "ready_signals": sorted(signal for signal, scores in signal_scores.items() if len(scores) >= 3),
             "signal_adjustments": signal_adjustments,
             "evidence": signal_evidence,
             "article_samples": sum(

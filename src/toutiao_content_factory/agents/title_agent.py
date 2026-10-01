@@ -398,7 +398,11 @@ class TitleAgent(BaseAgent):
     def _rule_gate_issues(self, title: str, body_text: str) -> list[str]:
         """RULE_006/007/009 那条闸门的 reason codes（与标题闸门同一入口内执行）。"""
         try:
-            result = ArticleQualityChecker()._check_title(title, body_text)
+            result = ArticleQualityChecker().check_title(
+                title,
+                body_text,
+                content_domain=("narrative" if self._is_narrative_mode() else "industry"),
+            )
         except Exception as exc:  # pragma: no cover - 规则闸门不应把标题链路带崩
             self.logger.warning("标题规则闸门执行失败，本次按未通过记录: %s", exc)
             return [f"rule_gate_error:{type(exc).__name__}"]
@@ -863,6 +867,14 @@ class TitleAgent(BaseAgent):
         if not action_match:
             return []
         action = action_match.group(1)
+        count_match = re.fullmatch(r"连发([一二三四五六七八九十两\d]+)文", action)
+        if count_match:
+            count = count_match.group(1)
+            chinese_counts = {
+                "一": "1", "二": "2", "两": "2", "三": "3", "四": "4",
+                "五": "5", "六": "6", "七": "7", "八": "8", "九": "9", "十": "10",
+            }
+            action = f"连发{chinese_counts.get(count, count)}文"
         detail = self._primary_topic_label(data_report)
         if not detail or detail == subject:
             detail = "相关政策"

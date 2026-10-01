@@ -92,6 +92,12 @@ class ArticleQualityChecker:
     # 判断能否申报；内部仍以 1500 字左右的完整叙事稿作为深度目标。
     FIRST_RELEASE_MIN_CHARS = 101
     FIRST_RELEASE_MIN_STANDARDS = 4
+    NARRATIVE_EXEMPT_TITLE_MARKERS = (
+        "RULE_009",
+        "信息密度不足",
+        "RULE_006",
+        "具象",
+    )
 
     _STORY_BUSINESS_DRIFT_MARKERS = (
         "ipo", "出货量", "市场份额", "毛利率", "经营现金流", "估值",
@@ -328,7 +334,7 @@ class ArticleQualityChecker:
         depth_score = self._check_depth(content)
 
         # 7. 标题检查（传入content用于标题-正文一致性校验）
-        title_issues = self._check_title(title, content)
+        title_issues = self.check_title(title, content)
         issues.extend(title_issues["issues"])
         suggestions.extend(title_issues["suggestions"])
 
@@ -913,6 +919,34 @@ class ArticleQualityChecker:
                 "issues": consistency.issues,
             },
         }
+
+    def check_title(
+        self,
+        title: str,
+        content: str = "",
+        expected_companies: Iterable[object] | None = None,
+        *,
+        content_domain: str = "industry",
+    ) -> dict:
+        """Run the shared title gate and apply domain-specific policy once.
+
+        ``raw_issues`` keeps the unfiltered result for ranking and audit logs;
+        ``issues`` is the publish decision for the requested content domain.
+        """
+        result = self._check_title(
+            title,
+            content,
+            expected_companies=expected_companies,
+        )
+        raw_issues = [str(item) for item in result.get("issues", []) if str(item).strip()]
+        issues = raw_issues
+        if str(content_domain or "industry").strip().lower() == "narrative":
+            issues = [
+                item
+                for item in raw_issues
+                if not any(marker in item for marker in self.NARRATIVE_EXEMPT_TITLE_MARKERS)
+            ]
+        return {**result, "raw_issues": raw_issues, "issues": issues}
 
     def _check_title(
         self,

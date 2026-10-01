@@ -63,3 +63,15 @@ def test_title_score_applies_persisted_performance_calibration(tmp_path: Path) -
     assert calibrated["calibration_adjustment"] == 6
     assert calibrated["title_score"] == baseline["title_score"] + 6
     assert "question_gap" in calibrated["calibration_signals"]
+
+
+def test_policy_title_with_numeric_action_matches_data_cover() -> None:
+    result = CreativeScoringService().score_title(
+        "国家能源局连发2文，储能政策影响哪些环节",
+        cover_variant="industry_data",
+        content_domain="industry",
+    )
+
+    assert result["score"] >= 80
+    assert result["title_cover_fit_score"] == 90
+    assert "给出结果、问题或信息缺口" in result["reasons"]

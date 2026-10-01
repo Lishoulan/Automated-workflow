@@ -940,7 +940,13 @@ class WriterAgent(BaseAgent):
             insert_at = max(0, len(article_paragraphs) - 1)
             article_paragraphs.insert(insert_at, paragraph)
             article = "\n\n".join(article_paragraphs).strip()
-        return clean_article_text(article, min_word_count=0)
+        article_paragraphs = self._ensure_min_char_count(
+            article_paragraphs,
+            data_report,
+            min_chars=self.LOCAL_SOURCE_ARTICLE_TARGET,
+            allow_llm_expansion=False,
+        )
+        return clean_article_text("\n\n".join(article_paragraphs), min_word_count=0)
 
     def _build_local_narrative_article(
         self,

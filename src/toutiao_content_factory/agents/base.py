@@ -708,8 +708,34 @@ class BaseAgent:
         if topic_matches:
             return max(topic_matches, key=len)
 
-        # Keep common compound scenes intact when upstream keywords are sparse.
-        for scene in ("充电站", "储能电站", "换电站", "虚拟电厂", "电厂", "电站", "园区", "工厂"):
+        # Recover an explicit topic subject before consulting facts from the
+        # body.  Upstream keywords can omit the word in the selected headline;
+        # in that case a secondary fact (for example 光伏) must not replace the
+        # headline subject (for example 储能).
+        for scene in (
+            "智能网联新能源汽车",
+            "智能网联汽车",
+            "新能源汽车",
+            "人形机器人",
+            "工业机器人",
+            "储能电站",
+            "虚拟电厂",
+            "充电站",
+            "换电站",
+            "半导体",
+            "大模型",
+            "机器人",
+            "储能",
+            "光伏",
+            "风电",
+            "锂电",
+            "芯片",
+            "电池",
+            "电厂",
+            "电站",
+            "园区",
+            "工厂",
+        ):
             if scene in topic_text:
                 return scene
 

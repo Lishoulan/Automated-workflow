@@ -153,6 +153,7 @@ GENERIC_COMPANY_EXCLUSIONS = frozenset(
         "核心零部件",
         "关键零部件",
         "电池材料",
+        "动力电池",
         "正极材料",
         "负极材料",
         "上游材料",
@@ -161,8 +162,11 @@ GENERIC_COMPANY_EXCLUSIONS = frozenset(
         "材料端",
         "智能汽车",
         "新能源汽车",
+        "纯电动汽车",
         "电动汽车",
         "汽车产业",
+        "中国汽车工业",
+        "品质和智能",
         "国内人形机器人",
         "柏林工厂",
         "汽车工厂",
@@ -340,7 +344,7 @@ COMPANY_GENERIC_SUBSTRINGS = (
 # Model extraction sometimes returns a clause or a product classification as
 # a company because it happens to end with a company-like suffix (for example
 # "为最主要的增长驱动力" or "其他行业定制智能机器人及智能机器人").
-COMPANY_SEMANTIC_PREFIX_NOISE = ("为", "其他")
+COMPANY_SEMANTIC_PREFIX_NOISE = ("为", "其他", "及")
 COMPANY_SEMANTIC_JOINER_NOISE = ("及",)
 COMPANY_CLAUSE_NOISE = (
     "的",
@@ -349,6 +353,12 @@ COMPANY_CLAUSE_NOISE = (
     "掌握",
     "运行",
     "成为",
+    "明确支持",
+    "重点企业",
+    "加大技术",
+    "持续提升",
+    "期间将",
+    "研究起草",
 )
 
 COMPANY_SUFFIXES = (

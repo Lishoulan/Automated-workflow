@@ -351,12 +351,14 @@ def test_narrative_rejection_is_exempted_in_the_bypass_path() -> None:
     service = AgentWorkflowService.__new__(AgentWorkflowService)  # 不跑 __init__
 
     class _Checker:
-        def _check_title(self, title, article):
+        def check_title(self, title, article, *, content_domain="industry"):
+            issues = [
+                "标题信息密度不足（RULE_009）。头条实测：同一事件完整标题"
+                "（主体+数字+后果）阅读1.3万，简略标题仅23阅读。"
+            ]
             return {
-                "issues": [
-                    "标题信息密度不足（RULE_009）。头条实测：同一事件完整标题"
-                    "（主体+数字+后果）阅读1.3万，简略标题仅23阅读。"
-                ]
+                "raw_issues": issues,
+                "issues": [] if content_domain == "narrative" else issues,
             }
 
     class _Content:

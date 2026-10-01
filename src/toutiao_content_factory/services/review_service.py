@@ -351,19 +351,14 @@ class ReviewWorkflowService:
             title = self.publish_service._clip_title(
                 self._text_cleaner.strip_prompt_leakage(candidate).strip()
             )
-            result = checker._check_title(
+            result = checker.check_title(
                 title,
                 bundle.article,
                 expected_companies=expected_companies,
+                content_domain=("narrative" if exempt_markers else "industry"),
             )
             issues = [str(item) for item in result.get("issues", []) if str(item).strip()]
-            has_raw_title_issue = bool(issues)
-            if exempt_markers:
-                issues = [
-                    item
-                    for item in issues
-                    if not any(marker in item for marker in exempt_markers)
-                ]
+            has_raw_title_issue = bool(result.get("raw_issues", issues))
             if duplicate_guard_enabled:
                 if topic_duplicate:
                     issues.append("选题与近7天已发布选题重复")
@@ -461,12 +456,7 @@ class ReviewWorkflowService:
     #: 叙事体裁下不作为拒绝理由的标题 issue 关键词。
     #: **必须与 `TitleAgent.NARRATIVE_EXEMPT_TITLE_CODES` 和
     #: `AgentWorkflowService.NARRATIVE_EXEMPT_TITLE_MARKERS` 同一口径。**
-    NARRATIVE_EXEMPT_TITLE_MARKERS = (
-        "RULE_009",
-        "信息密度不足",
-        "RULE_006",
-        "具象",
-    )
+    NARRATIVE_EXEMPT_TITLE_MARKERS = ArticleQualityChecker.NARRATIVE_EXEMPT_TITLE_MARKERS
 
     def _narrative_exempt_title_markers(self, bundle) -> tuple[str, ...]:
         """当前账号是否叙事体裁；是则返回要豁免的标题 issue 关键词。"""

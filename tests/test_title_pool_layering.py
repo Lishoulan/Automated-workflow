@@ -175,6 +175,9 @@ def test_policy_topic_fallback_keeps_the_named_agency_subject(
     assert result["selected_title_source"] == TITLE_SOURCE_FALLBACK
     assert any("影响哪些环节" in title for title in result["titles"])
     assert all(title.startswith("国家能源局") for title in result["titles"])
+    assert all("连发2文" in title for title in result["titles"])
+    assert all("储能" in title for title in result["titles"])
+    assert all("光伏政策" not in title for title in result["titles"])
     assert all("国网能源研究院经" not in title for title in result["titles"])
 
 

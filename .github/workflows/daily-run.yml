@@ -622,7 +622,7 @@ jobs:
           echo "DEERFLOW_ENABLED=${DEERFLOW_ENABLED} LETTA_ENABLED=${LETTA_ENABLED} PROMPT_OPTIMIZER_ENABLED=${PROMPT_OPTIMIZER_ENABLED}"
           echo "Content generation does not depend on any of them; the pipeline degrades gracefully."
 
-      - name: Restore publish history cache
+      - name: Restore account state cache
         # ⚠️ 2026-09-18：选题池必须跨 run 保留，否则云端每次都是空池。
         # 每个 job 都是全新 runner，collect_topics 产出的 daily_topics.json 随
         # job 结束即消失；下一个 cron 的 job 起手就没有池子，直接走
@@ -645,6 +645,12 @@ jobs:
             output/growth_feedback.json
             output/accounts/*/creative_score_calibration.json
             output/creative_score_calibration.json
+            output/accounts/*/performance_metrics.json
+            output/performance_metrics.json
+            output/accounts/*/growth_ops/performance/
+            output/growth_ops/performance/
+            output/accounts/*/growth_ops/revenue_attribution/
+            output/growth_ops/revenue_attribution/
           key: daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-${{ github.run_id }}
           restore-keys: |
             daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-

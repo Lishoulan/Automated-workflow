@@ -18,3 +18,15 @@ def test_offline_kill_switch_overrides_dispatch_and_schedule_values() -> None:
     publish_gate_position = workflow.index('if [ "$RUN_PUBLISH_TOUTIAO" = "true" ]; then')
 
     assert switch_position < publish_gate_position
+
+
+def test_revenue_and_performance_ledgers_persist_between_cloud_runs() -> None:
+    workflow = Path(".github/workflows/daily-run.yml").read_text(encoding="utf-8")
+
+    for path in (
+        "output/accounts/*/growth_checkpoints.json",
+        "output/accounts/*/performance_metrics.json",
+        "output/accounts/*/growth_ops/performance/",
+        "output/accounts/*/growth_ops/revenue_attribution/",
+    ):
+        assert path in workflow

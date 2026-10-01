@@ -945,6 +945,10 @@ jobs:
           if [ -f "$REPORT_FILE" ]; then
             cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
           fi
+          REVENUE_DASHBOARD="$ACCOUNT_OUTPUT_DIR/growth_ops/revenue_experiment/revenue_30d_dashboard.md"
+          if [ -f "$REVENUE_DASHBOARD" ]; then
+            cat "$REVENUE_DASHBOARD" >> "$GITHUB_STEP_SUMMARY"
+          fi
         continue-on-error: true
 
       - name: Publish precheck report

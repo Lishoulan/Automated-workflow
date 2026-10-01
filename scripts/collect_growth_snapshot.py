@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from collections import Counter
@@ -19,6 +20,9 @@ from toutiao_content_factory.services.growth_feedback_service import (
     build_growth_feedback,
     classify_checkpoint_capture,
     write_growth_outputs,
+)
+from toutiao_content_factory.services.revenue_experiment_service import (
+    RevenueExperimentService,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -266,7 +270,7 @@ def fetch_published(cookie_path: Path, *, max_pages: int, cutoff: datetime) -> l
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--account", default="robot_notes")
-    parser.add_argument("--days", type=int, default=14)
+    parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--max-pages", type=int, default=10)
     args = parser.parse_args()
     if args.days < 1 or args.max_pages < 1:
@@ -307,6 +311,13 @@ def main() -> int:
         generated_at=observed_at.isoformat(timespec="seconds"),
     )
     growth_outputs = write_growth_outputs(output_dir, feedback)
+    revenue_outputs = RevenueExperimentService(
+        output_dir,
+        logging.getLogger("revenue_experiment"),
+    ).build_and_write(
+        growth_snapshot=snapshot,
+        growth_feedback=feedback,
+    )
     print(f"Growth snapshot: {target}")
     print(
         "Growth checkpoints: "
@@ -314,6 +325,7 @@ def main() -> int:
         f"72h+={checkpoint_summary['captured_now']['72h']} file={checkpoint_path}"
     )
     print(f"Growth operations report: {growth_outputs['report_md']}")
+    print(f"Revenue experiment dashboard: {revenue_outputs['dashboard_md']}")
     for content_type, metrics in snapshot["summary"].items():
         print(
             f"{content_type}: works={metrics['works']} impressions={metrics['impressions']} "

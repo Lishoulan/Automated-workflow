@@ -1282,7 +1282,7 @@ class PerformanceService:
             records = self._load_publish_records(self.settings.output_dir / self.settings.publishing.history_filename)
             # 图文 + 微头条一起纳入匹配（2026-08-27）：微头条行无独立标题、
             # 靠正文占位标题 + 发布日匹配，须允许 platform=toutiao_weitoutiao 记录参与。
-            return [
+            entries = [
                 {
                     "platform": record.platform or "toutiao",
                     "title": record.title,
@@ -1296,6 +1296,23 @@ class PerformanceService:
                 for record in records
                 if (record.platform or "toutiao") in ("toutiao", "toutiao_weitoutiao")
             ]
+            archived = self._load_archived_toutiao_entries()
+            seen = {
+                f"{self._normalize_text(str(item.get('title', '')))}|"
+                f"{self._normalize_url(str(item.get('external_url', '')))}|"
+                f"{str(item.get('run_dir', ''))}"
+                for item in entries
+            }
+            for item in archived:
+                key = (
+                    f"{self._normalize_text(str(item.get('title', '')))}|"
+                    f"{self._normalize_url(str(item.get('external_url', '')))}|"
+                    f"{str(item.get('run_dir', ''))}"
+                )
+                if key not in seen:
+                    seen.add(key)
+                    entries.append(item)
+            return entries
 
         history_path = self.settings.output_dir / self.settings.wechat.history_filename
         if not history_path.exists():
@@ -1321,6 +1338,65 @@ class PerformanceService:
             )
         return entries
 
+    def _load_archived_toutiao_entries(self) -> list[dict[str, Any]]:
+        archive_dirname = str(
+            getattr(getattr(self.settings, "automation", None), "archive_dirname", "runs")
+        )
+        roots = [
+            self.settings.output_dir / archive_dirname,
+            self.settings.output_dir / "wtt_standalone",
+        ]
+        accepted = {"published", "submitted", "submitted_for_review", "success", "publish_uncertain"}
+        entries: list[dict[str, Any]] = []
+        for root in roots:
+            if not root.exists():
+                continue
+            for meta_path in root.rglob("publish_meta.json"):
+                publish_dir = meta_path.parent
+                run_dir = publish_dir.parent
+                meta = self._load_json_dict(meta_path)
+                topic = meta.get("selected_topic") if isinstance(meta.get("selected_topic"), dict) else {}
+                for result_name, default_platform in (
+                    ("publish_result.json", "toutiao"),
+                    ("weitoutiao_publish_result.json", "toutiao_weitoutiao"),
+                ):
+                    result_path = publish_dir / result_name
+                    if not result_path.exists():
+                        continue
+                    result = self._load_json_dict(result_path)
+                    record = result.get("record") if isinstance(result.get("record"), dict) else {}
+                    status = str(result.get("status") or record.get("status") or "").strip().lower()
+                    if status not in accepted:
+                        continue
+                    entries.append(
+                        {
+                            "platform": str(result.get("platform") or record.get("platform") or default_platform),
+                            "title": str(meta.get("selected_title") or record.get("title") or ""),
+                            "published_at": str(
+                                result.get("published_at")
+                                or record.get("published_at")
+                                or meta.get("approved_at")
+                                or ""
+                            ),
+                            "run_dir": str(run_dir),
+                            "topic_title": str(topic.get("title") or record.get("topic_title") or ""),
+                            "topic_url": str(topic.get("url") or record.get("topic_url") or ""),
+                            "external_url": str(
+                                result.get("external_url") or record.get("external_url") or ""
+                            ),
+                            "status": status,
+                        }
+                    )
+        return entries
+
+    @staticmethod
+    def _load_json_dict(path: Path) -> dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
     def _find_best_local_entry(
         self,
         metric: ArticlePerformance,
@@ -1328,6 +1404,7 @@ class PerformanceService:
     ) -> dict[str, Any] | None:
         normalized_title = self._normalize_text(metric.title)
         normalized_url = self._normalize_url(metric.url)
+        metric_content_id = self._toutiao_content_id(metric.url)
         best_entry: dict[str, Any] | None = None
         best_score = -1
 
@@ -1344,6 +1421,8 @@ class PerformanceService:
             ):
                 if normalized_url and normalized_url == self._normalize_url(url_value):
                     score += 4
+                if metric_content_id and metric_content_id == self._toutiao_content_id(url_value):
+                    score += 6
 
             if metric.publish_date and self._same_publish_day(metric.publish_date, str(entry.get("published_at", ""))):
                 score += 2
@@ -1744,7 +1823,19 @@ class PerformanceService:
         return re.sub(r"[\W_]+", "", str(text or "").lower())
 
     def _normalize_url(self, url: str) -> str:
-        return str(url or "").strip().rstrip("/")
+        return str(url or "").strip().split("#", 1)[0].split("?", 1)[0].rstrip("/")
+
+    @staticmethod
+    def _toutiao_content_id(url: str) -> str:
+        text = str(url or "").strip()
+        for pattern in (
+            r"/(?:article|group)/(\d{8,})",
+            r"(?:^|[?&])(?:item_id|group_id|gid)=(\d{8,})",
+        ):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return ""
 
     def _parse_datetime(self, value: object) -> datetime | None:
         text = str(value or "").strip()

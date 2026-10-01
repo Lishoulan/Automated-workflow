@@ -965,46 +965,40 @@ class WriterAgent(BaseAgent):
         """
         title = self.clean_publish_text(data_report.topic_title).rstrip("。！？!? ") or "这件事"
         facts = self._clean_narrative_source_facts(data_report)
+        public_issue = self._is_public_policy_issue(data_report)
 
-        paragraphs = [
-            f"{title}引起讨论。先把公开材料能够确认的经过说清楚，再看当事人面对的具体处境。"
-        ]
-        leads = (
-            "现有材料提到，",
-            "从已经公开的信息看，",
-            "事情的另一个细节是，",
-            "把前后信息放在一起看，",
-        )
-        boundaries = (
-            "这部分说明了事情发生的背景，材料没有交代的细节暂不作推断。",
-            "这能确认事件的一部分，后续结果仍要以新的公开信息为准。",
-            "这个细节关系到当事人的实际处境，不能用概括性的判断替代。",
-            "目前能下的结论只到这里，更完整的经过仍需后续信息补充。",
-        )
-        for index, fact in enumerate(facts[:6]):
+        if public_issue:
+            paragraphs = [f"{title}引起讨论。这个话题首先要分清：哪些是现行规则，哪些只是建议或讨论。"]
+            for fact in facts[:5]:
+                paragraphs.append(fact.rstrip("。！？!? ") + "。")
+            if len(paragraphs) == 1:
+                paragraphs.append("公开信息还不足以证明相关建议已经成为正式规则，结论需要等待权威文件。")
             paragraphs.append(
-                f"{leads[index % len(leads)]}{fact.rstrip('。！？!?')}。"
-                f"{boundaries[index % len(boundaries)]}"
+                "建议、讨论和已经生效的政策不是一回事。涉及社保、养老或补贴待遇时，"
+                "还要看适用地区、参保记录、生效时间和主管部门的正式口径。"
             )
-
-        if len(paragraphs) == 1:
+            metrics = self.clean_publish_list(getattr(data_report, "watch_metrics", []) or [], limit=3)
+            if metrics:
+                paragraphs.append("后续可以继续核对：" + "、".join(metrics) + "。")
             paragraphs.append(
-                "目前公开材料提供的细节有限，时间、人物、处理过程和最终结果还不能完整对应。"
-                "在这些信息补齐之前，不把网络讨论直接写成已经确认的事实。"
+                "个人办理前，可先查询当地人社或相关主管部门的公开文件，再通过官方渠道确认。"
+                "在正式文件公布前，不宜把网络观点当成已经可以执行的待遇标准。"
             )
-
-        metrics = self.clean_publish_list(getattr(data_report, "watch_metrics", []) or [], limit=3)
-        if metrics:
+        else:
+            paragraphs = [f"{title}引起讨论。公开信息目前能确认的经过如下。"]
+            for fact in facts[:6]:
+                paragraphs.append(fact.rstrip("。！？!? ") + "。")
+            if len(paragraphs) == 1:
+                paragraphs.append(
+                    "目前公开材料提供的细节有限，时间、人物、处理过程和最终结果还不能完整对应。"
+                )
+            metrics = self.clean_publish_list(getattr(data_report, "watch_metrics", []) or [], limit=3)
+            if metrics:
+                paragraphs.append("接下来值得留意的是" + "、".join(metrics) + "。")
             paragraphs.append(
-                "接下来真正值得留意的是"
-                + "、".join(metrics)
-                + "。这些变化能帮助判断事情是否得到处理，也能避免只凭标题作结论。"
+                "遇到相似情况，可以先保存通知、沟通和处理记录，再根据已经确认的信息决定下一步。"
+                "公开材料没有涉及的责任和结果，不提前判断。"
             )
-
-        paragraphs.append(
-            "对普通读者来说，遇到相似情况时，应先把时间、通知、沟通和处理记录保存完整，"
-            "再根据已经确认的信息决定下一步。公开材料没有涉及的责任和处理结果，不在这里提前判断。"
-        )
         return self._finalize_article(
             "\n\n".join(paragraphs),
             trend_report,
@@ -1012,6 +1006,25 @@ class WriterAgent(BaseAgent):
             comment_prompt=comment_prompt,
             benchmark_track=benchmark_track,
             self_benchmark_context=self_benchmark_context,
+        )
+
+    @staticmethod
+    def _is_public_policy_issue(data_report: DataReport) -> bool:
+        text = " ".join(
+            [
+                str(getattr(data_report, "topic_title", "") or ""),
+                *[
+                    str(item)
+                    for item in (getattr(data_report, "source_facts", []) or [])[:6]
+                ],
+            ]
+        )
+        return any(
+            token in text
+            for token in (
+                "政策", "社保", "养老", "养老金", "医保", "公粮", "提案", "建议",
+                "制度", "标准", "补贴", "户籍", "退休", "能否", "应否",
+            )
         )
 
     def _build_local_service_robot_article(
@@ -3482,6 +3495,25 @@ class WriterAgent(BaseAgent):
                 supplements.append(block)
 
         facts = self._clean_narrative_source_facts(data_report)
+        if self._is_public_policy_issue(data_report):
+            neutral_boundaries = (
+                "这条信息说明了讨论背景，是否落地仍要等待正式文件。",
+                "这部分只能按公开信息理解，不能据此扩大适用范围。",
+                "后续判断应以主管部门公布的时间、地区和办理条件为准。",
+            )
+            for index, fact in enumerate(facts[:3]):
+                append_if_new(
+                    f"{fact.rstrip('。！？!?')}。{neutral_boundaries[index]}"
+                )
+            append_if_new(
+                "公共政策关系到很多人的长期权益。讨论历史贡献如何记录有现实意义，"
+                "但待遇认定通常还需要明确的法律依据、核验材料和经办规则。"
+            )
+            append_if_new(
+                "在正式规则出现前，可以持续关注主管部门公开文件与权威答复，"
+                "不要仅凭转述就判断自己已经符合办理条件。"
+            )
+            return self._trim_low_confidence_paragraphs(supplements, data_report)
         # ⚠️ 2026-09-19：引导句和边界句各自只有 3 条，而事实最多 6 条，
         # 原来按 `index % len(...)` 取用，第 4 条起必然重复。实测正文里
         # 「把素材里能确认的部分列一下」出现 3 次、「这些是目前能核实的范围，

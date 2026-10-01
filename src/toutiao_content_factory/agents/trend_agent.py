@@ -58,6 +58,42 @@ class TrendAgent(BaseAgent):
         secondary = self._secondary_node(extraction, primary, "产业链") or "产业链"
         content_mode = self._content_mode(extraction)
 
+        if content_mode == "social_story":
+            hot_trends = self.unique(
+                extraction.industry_trends[:4]
+                + [
+                    f"{primary}引发讨论，核心是公开事实、现实影响与规则边界。",
+                    "后续是否有权威回应或正式规则变化，是判断事件走向的关键。",
+                ]
+            )[:4]
+            platform_topics = self.unique(
+                [f"{primary}事实梳理", f"{primary}现实影响", "规则边界", "普通人如何判断"]
+            )[:5]
+            audience_hooks = self.unique(
+                [
+                    "先把已经确认的事实与网上讨论分开，再谈这件事会影响谁。",
+                    "公众建议、媒体讨论和已经生效的政策，不能混为一谈。",
+                    "读者真正需要的是事实进展、适用边界和可核验的信息来源。",
+                ]
+            )[:3]
+            recommended_angle = (
+                extraction.suggested_angle.strip().rstrip("。")
+                if extraction.suggested_angle.strip()
+                else f"梳理{primary}已确认的事实、尚未确定的部分，以及普通人需要留意的规则边界"
+            )
+            return TrendReport(
+                hot_trends=hot_trends,
+                platform_topics=platform_topics,
+                audience_hooks=audience_hooks,
+                recommended_angle=recommended_angle,
+                timing_judgment="话题仍在讨论期，发布前需要再次核对权威回应和政策状态。",
+                competitive_edges=[
+                    "按事实、讨论、待确认信息分层表达。",
+                    "不虚构当事人，也不把建议写成已经实施的政策。",
+                    "给出读者可以自行核验的公开信息入口。",
+                ],
+            )
+
         if content_mode == "sports":
             hot_trends = self.unique(
                 extraction.industry_trends[:4]

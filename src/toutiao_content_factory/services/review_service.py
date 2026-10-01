@@ -39,6 +39,8 @@ class ReviewBundle:
 
 
 class ReviewWorkflowService:
+    AUTO_TITLE_SCORE_MIN = CreativeScoringService.AUTO_TITLE_SCORE_MIN
+
     def __init__(self, settings: AppSettings, logger: logging.Logger) -> None:
         self.settings = settings
         self.logger = logger
@@ -152,6 +154,7 @@ class ReviewWorkflowService:
         title_index: int | None = None,
         reviewer_notes: str | None = None,
         auto_publish: bool = False,
+        automated: bool = False,
     ) -> dict[str, Path]:
         bundle, selected_topic = self._load_bundle(run_dir)
         status = self._load_status(run_dir)
@@ -206,6 +209,8 @@ class ReviewWorkflowService:
             "selected_topic": selected_topic.__dict__ if selected_topic is not None else None,
             "source_run_dir": str(run_dir),
             "validation_notes": bundle.validation_notes,
+            "approval_mode": "automatic" if automated else "manual",
+            "creative_gate_status": "pending_cover" if automated else "manual_override",
         }
         selected_topic_payload = selected_topic.__dict__ if selected_topic is not None else {}
         topic_title_text = str(selected_topic_payload.get("title", ""))
@@ -265,6 +270,8 @@ class ReviewWorkflowService:
                 "publish_dir": str(publish_dir),
                 "publish_recommendation": bundle.score_snapshot.get("publish_recommendation", "manual_review"),
                 "experiment_tags_path": str(experiment_tags_path),
+                "approval_mode": "automatic" if automated else "manual",
+                "creative_gate_status": "pending_cover" if automated else "manual_override",
             }
         )
         status_path = run_dir / "review_status.json"
@@ -382,6 +389,16 @@ class ReviewWorkflowService:
                 content_domain=content_domain,
             )
             evaluation["creative_score"] = creative_score
+            if int(creative_score.get("score", 0) or 0) < self.AUTO_TITLE_SCORE_MIN:
+                issues.append(
+                    f"标题封面预评分低于自动发布下限："
+                    f"{int(creative_score.get('score', 0) or 0)} < {self.AUTO_TITLE_SCORE_MIN}"
+                )
+                evaluation["passed"] = False
+                evaluation["issues"] = issues
+                reason_summary["creative_score_below_auto_threshold"] = (
+                    reason_summary.get("creative_score_below_auto_threshold", 0) + 1
+                )
             evaluations.append(evaluation)
             if not issues:
                 passed.append(

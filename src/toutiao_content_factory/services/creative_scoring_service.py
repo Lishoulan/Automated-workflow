@@ -14,6 +14,10 @@ from toutiao_content_factory.services.growth_feedback_service import title_signa
 class CreativeScoringService:
     """Score article titles and the generated cover with explainable signals."""
 
+    AUTO_TITLE_SCORE_MIN = 70
+    AUTO_COVER_SCORE_MIN = 70
+    AUTO_COMBINED_SCORE_MIN = 70
+
     _CONCRETE_TOKENS = (
         "老人", "夫妻", "妻子", "丈夫", "儿子", "女儿", "邻居", "物业", "法院",
         "公司", "工厂", "机器人", "电池", "订单", "收入", "利润", "判决", "赔偿",

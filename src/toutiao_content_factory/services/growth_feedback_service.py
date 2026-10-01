@@ -151,7 +151,7 @@ def build_growth_feedback(
         if (
             row["capture_quality"] == "on_schedule"
             and row["type"] == "article"
-            and row["reads"] > 0
+            and row["impressions"] > 0
         ):
             for signal in signals:
                 signal_scores[signal].append(index)
@@ -231,7 +231,16 @@ def build_growth_feedback(
             "signal_adjustments": signal_adjustments,
             "evidence": signal_evidence,
             "article_samples": sum(
-                item["type"] == "article" and item["reads"] > 0 for item in evaluated
+                item["type"] == "article"
+                and item["capture_quality"] == "on_schedule"
+                and item["impressions"] > 0
+                for item in evaluated
+            ),
+            "positive_read_article_samples": sum(
+                item["type"] == "article"
+                and item["capture_quality"] == "on_schedule"
+                and item["reads"] > 0
+                for item in evaluated
             ),
             "mature_article_samples": sum(item["type"] == "article" for item in evaluated),
         },

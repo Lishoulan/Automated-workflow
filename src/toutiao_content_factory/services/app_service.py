@@ -1109,6 +1109,7 @@ class ContentFactoryAppService:
                     selected_title_index=int(title_selection.get("selected_title_index", 0) or 0),
                     review_notes="Auto-approved by the daily automation workflow after the title quality gate.",
                     auto_publish=False,
+                    automated=True,
                 )
                 attempt_exports.update(approve_exports)
                 exported_files.update(approve_exports)
@@ -1296,6 +1297,7 @@ class ContentFactoryAppService:
         selected_title_index: int | None = None,
         review_notes: str | None = None,
         auto_publish: bool = False,
+        automated: bool = False,
     ) -> dict[str, str]:
         resolved = self.review_service.resolve_run_dir(run_dir)
         result = self.review_service.approve_review(
@@ -1304,6 +1306,7 @@ class ContentFactoryAppService:
             title_index=selected_title_index,
             reviewer_notes=review_notes,
             auto_publish=auto_publish,
+            automated=automated,
         )
         return {name: str(path) for name, path in result.items()}
 
@@ -1472,14 +1475,30 @@ class ContentFactoryAppService:
     def _publish_priority_weitoutiao(self, *, dry_run: bool) -> dict[str, Any]:
         publishing = self.settings.publishing
         if (
-            dry_run
-            or not publishing.enabled
-            or not publishing.auto_publish
-            or publishing.draft_only
-            or not publishing.weitoutiao_enabled
+            not publishing.weitoutiao_enabled
             or not publishing.weitoutiao_standalone_enabled
             or not getattr(publishing, "weitoutiao_priority_enabled", False)
         ):
+            return {}
+        if dry_run:
+            try:
+                preview = WeiToutiaoStandaloneGenerator(self.settings, self.logger).preview_standalone()
+            except Exception as exc:
+                self.logger.warning("Priority WeiToutiao dry-run preview failed: %s", exc)
+                return {
+                    "standalone_priority_status": "preview_failed",
+                    "standalone_priority_summary": str(exc),
+                }
+            exports = {
+                name: str(path) for name, path in dict(preview.get("exports", {})).items()
+            }
+            exports["standalone_priority_status"] = str(preview.get("status", ""))
+            exports["standalone_priority_summary"] = (
+                f"status={preview.get('status', '')} topic={preview.get('topic_title', '')} "
+                f"mode={preview.get('generation_mode', '')}"
+            )
+            return exports
+        if not publishing.enabled or not publishing.auto_publish or publishing.draft_only:
             return {}
         try:
             exports = self._top_up_standalone_weitoutiao(max_count=1)
@@ -2718,6 +2737,34 @@ class ContentFactoryAppService:
         if not available_topics:
             return []
 
+        # Scheduled long articles need enough source material to support a
+        # grounded narrative. Thin/title-only topics remain in the daily topic
+        # pool, where the priority WeiToutiao path can use them as short posts.
+        article_topics: list[TopicCandidate] = []
+        blocked_quality_flags = {"weak_evidence", "weak_subject", "title_only"}
+        for topic in available_topics:
+            flags = {
+                str(flag).strip().lower()
+                for flag in (getattr(topic, "quality_flags", []) or [])
+                if str(flag).strip()
+            }
+            evidence = int(getattr(topic, "evidence_strength", 0) or 0)
+            quality = int(getattr(topic, "quality_score", 0) or 0)
+            if evidence < 55 or quality < 55 or flags.intersection(blocked_quality_flags):
+                self.logger.info(
+                    "Routing thin topic to WeiToutiao instead of scheduled article: %s "
+                    "(evidence=%s quality=%s flags=%s)",
+                    topic.title,
+                    evidence,
+                    quality,
+                    sorted(flags),
+                )
+                continue
+            article_topics.append(topic)
+        available_topics = article_topics
+        if not available_topics:
+            return []
+
         max_attempts = max(1, int(self.settings.automation.max_daily_topic_attempts))
         # Prefer candidates that can support a grounded article.  Hot-board
         # items are often title-only and should remain a fallback, otherwise
@@ -2805,7 +2852,7 @@ class ContentFactoryAppService:
                 return candidate
         return None
 
-    def _load_run_score_snapshot(self, run_dir: Path | None) -> dict[str, int]:
+    def _load_run_score_snapshot(self, run_dir: Path | None) -> dict[str, Any]:
         if run_dir is None:
             return {}
         score_path = run_dir / "content_score.json"
@@ -2819,6 +2866,25 @@ class ContentFactoryAppService:
             "validation_score": int(raw_scores.get("validation_score", 0)),
             "publish_readiness_score": int(raw_scores.get("publish_readiness_score", 0)),
         }
+        if isinstance(payload, dict):
+            model_used = str(payload.get("model_used", "") or "").strip()
+            recommendation = str(payload.get("publish_recommendation", "") or "").strip()
+            if model_used:
+                snapshot["model_used"] = model_used
+            if recommendation:
+                snapshot["publish_recommendation"] = recommendation
+        council_path = run_dir / "quality_review_council.json"
+        if council_path.exists():
+            council = _safe_json_loads(
+                council_path.read_text(encoding="utf-8-sig"), default={}
+            )
+            if isinstance(council, dict):
+                snapshot["quality_council_used_fallback"] = bool(
+                    council.get("used_fallback", False)
+                )
+                verdict = str(council.get("verdict", "") or "").strip()
+                if verdict:
+                    snapshot["quality_council_verdict"] = verdict
         # 读取热榜快评标记：标题型热点使用放宽的自动发布门槛
         workflow_path = run_dir / "workflow_result.json"
         if workflow_path.exists():
@@ -2866,11 +2932,23 @@ class ContentFactoryAppService:
 
     def _qualifies_for_auto_approval(
         self,
-        score_snapshot: dict[str, int],
+        score_snapshot: dict[str, Any],
         *,
         content_guard_report: dict[str, Any] | None = None,
     ) -> bool:
         if not score_snapshot:
+            return False
+        if str(score_snapshot.get("model_used", "") or "").strip().lower() == "local-draft":
+            self.logger.warning("Local fallback drafts require human review and cannot be auto-approved.")
+            return False
+        if score_snapshot.get("quality_council_used_fallback") is True:
+            self.logger.warning("Fallback council reviews require human review and cannot be auto-approved.")
+            return False
+        recommendation = str(score_snapshot.get("publish_recommendation", "") or "").strip().lower()
+        if recommendation and recommendation not in {"ready_to_publish", "approve", "approved"}:
+            self.logger.warning(
+                "Publish recommendation %s does not permit automatic approval.", recommendation
+            )
             return False
         article_chars = int(score_snapshot.get("article_char_count", 0))
         # ⚠️ 2026-09-19：这里原来是 `_minimum_article_chars` 的**第二份拷贝**
@@ -3144,6 +3222,13 @@ class ContentFactoryAppService:
         # 硬性上限（非热点 40 / 热点 50），不属于「模型软指控」，兜底也必须
         # 遵守。快照缺失时该值默认为 100（从严），避免无评分数据时放行。
         snapshot = self._load_run_score_snapshot(run_dir)
+        if str(snapshot.get("model_used", "") or "").strip().lower() == "local-draft":
+            reasons.append("本地兜底稿必须人工复核，禁止自动发布")
+        if snapshot.get("quality_council_used_fallback") is True:
+            reasons.append("质量评审委员会使用了兜底结论，必须人工复核")
+        recommendation = str(snapshot.get("publish_recommendation", "") or "").strip().lower()
+        if recommendation and recommendation not in {"ready_to_publish", "approve", "approved"}:
+            reasons.append(f"发布建议为 {recommendation}，未达到自动发布条件")
         is_hot_topic = bool(snapshot.get("is_hot_topic", 0))
         review_settings = self.settings.review
         ai_risk = int(snapshot.get("ai_generated_risk", 100) or 0)
@@ -3339,6 +3424,7 @@ class ContentFactoryAppService:
                     "publishing the best one after deterministic safety checks."
                 ),
                 auto_publish=False,
+                automated=True,
             )
         except Exception as exc:
             self.logger.error("Fallback approve failed for %s: %s", run_dir, exc)

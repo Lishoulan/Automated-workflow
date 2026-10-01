@@ -599,7 +599,6 @@ def test_daily_candidates_prioritize_grounded_material_before_hot_title_only_top
     assert [item["title"] for item in specs] == [
         "充电站接入虚拟电厂项目",
         "储能项目进展",
-        "有素材但标题型标记话题",
     ]
 
 
@@ -620,6 +619,8 @@ def test_daily_candidates_skip_bad_words_before_material_search(
             url="",
             source="hot",
             source_type="baidu_hot",
+            evidence_strength=70,
+            quality_score=75,
             total_score=90,
         ),
     ]

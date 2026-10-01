@@ -208,6 +208,39 @@ def test_topic_ranking_uses_72_hour_feedback(app_settings) -> None:
     assert ranked[0].title == strong.title
 
 
+def test_story_local_fallback_has_no_industry_template_language(app_settings) -> None:
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.story"))
+    topic = TopicCandidate(
+        title="农民交公粮能否视同缴社保",
+        url="https://example.test/story",
+        source="公开信息",
+        source_type="hot_board",
+        summary="有观点建议研究历史交公粮记录与养老保障之间的衔接，当前仍属于公开讨论。",
+        matched_keywords=[],
+    )
+
+    content = generator.build_local_fallback_content(topic, persona="story_comment")
+
+    assert "公开讨论不等于规则已经改变" in content
+    assert "#社会热点" in content
+    for marker in ("产业链", "上下游", "订单", "利润兑现"):
+        assert marker not in content
+
+
+def test_standalone_preview_builds_package_without_publishing(app_settings) -> None:
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.preview"))
+    generator.select_topics = MagicMock(return_value=[_topic()])
+    generator.generate_content = MagicMock(return_value="有效的微头条正文。" * 40)
+    generator.publish_service.publish_weitoutiao = MagicMock()
+
+    result = generator.preview_standalone()
+
+    assert result["status"] == "preview_ready"
+    assert Path(result["exports"]["standalone_priority_preview"]).exists()
+    assert Path(result["exports"]["standalone_priority_article"]).exists()
+    generator.publish_service.publish_weitoutiao.assert_not_called()
+
+
 def test_fallback_report_merges_pending_and_evergreen_topics(app_settings) -> None:
     service = TopicPoolService(app_settings, logging.getLogger("test.topic_pool"))
     pending = _topic()

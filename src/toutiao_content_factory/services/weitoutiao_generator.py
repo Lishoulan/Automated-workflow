@@ -333,15 +333,33 @@ class WeiToutiaoStandaloneGenerator:
             content = content + "\n\n" + self._build_tags(topic)
         return content[:MAX_WTT_CHARS]
 
-    def _build_tags(self, topic: TopicCandidate) -> str:
+    def _build_tags(self, topic: TopicCandidate, persona: str = "") -> str:
         tags: list[str] = []
         for keyword in (topic.matched_keywords or [])[:3]:
             keyword = str(keyword).strip()
             if keyword and keyword not in {"热点", "热议"}:
                 tags.append(f"#{keyword}")
         if not tags:
-            tags = ["#产业观察", "#热点"]
+            tags = (
+                ["#社会热点", "#生活观察"]
+                if self._is_story_context(topic, persona)
+                else ["#产业观察", "#热点"]
+            )
         return " ".join(tags[:3])
+
+    def _is_story_context(self, topic: TopicCandidate, persona: str = "") -> bool:
+        if persona == "story_comment":
+            return True
+        text = " ".join(
+            [
+                str(getattr(self.settings, "content_domain", "") or ""),
+                str(getattr(self.settings, "industry_focus", "") or ""),
+                str(topic.title or ""),
+                str(topic.summary or ""),
+                " ".join(str(item) for item in (topic.matched_keywords or [])),
+            ]
+        ).lower()
+        return "social_story" in text or "社会故事" in text or "社会热点" in text
 
     @staticmethod
     def _content_char_count(content: str) -> int:
@@ -425,6 +443,19 @@ class WeiToutiaoStandaloneGenerator:
             summary = title
         summary = summary[:280]
         source = re.sub(r"\s+", " ", str(topic.source or "公开信息").strip()) or "公开信息"
+        if self._is_story_context(topic, persona):
+            headline = title[:30]
+            content = (
+                f"{headline}\n\n"
+                f"根据{source}目前公开的信息，可以确认的是：{summary}。"
+                "这里需要把已经发生的事实、网友观点和仍待确认的信息分开。\n\n"
+                "如果话题涉及政策、社保、养老或公共待遇，还要继续核对适用地区、"
+                "生效时间和主管部门正式文件。公开讨论不等于规则已经改变，"
+                "没有明确人物和处理结果时，也不补写所谓当事人经历。\n\n"
+                "普通读者可以先保存权威来源，再根据后续公开进展更新判断。"
+                f"这件事里，你最希望主管部门先说明哪一个具体问题？\n\n{self._build_tags(topic, persona)}"
+            )
+            return content[:MAX_WTT_CHARS]
         headline = f"{title[:24]}，真正值得关注的是后续兑现"
         if persona == "warm":
             opening = "热点会过去，但一条公开信息留下的观察线索不会立刻消失。"
@@ -504,6 +535,64 @@ class WeiToutiaoStandaloneGenerator:
         return re.findall(r"#([^\s#]{1,20})", content)[:4]
 
     # ── 批量发布 ──────────────────────────────────────────
+
+    def preview_standalone(self) -> dict[str, Any]:
+        """Generate one priority micro-post package without opening the publisher."""
+        topics = self.select_topics(count=1)
+        if not topics:
+            return {"status": "no_topics", "exports": {}}
+        topic = topics[0]
+        personas = list(self.settings.publishing.weitoutiao_personas) or ["hot_comment"]
+        persona = personas[0]
+        generation_mode = "model"
+        fallback_reason = ""
+        try:
+            content = self.generate_content(topic, persona=persona)
+        except Exception as exc:
+            if not self._local_fallback_enabled() or not self._is_local_fallback_eligible(exc):
+                raise
+            generation_mode = "local_fallback"
+            fallback_reason = self._safe_error(exc)
+            content = self.build_local_fallback_content(topic, persona=persona)
+        if self._content_char_count(content) < MIN_WTT_CHARS:
+            generation_mode = "local_fallback"
+            fallback_reason = fallback_reason or "model_output_too_short"
+            content = self.build_local_fallback_content(topic, persona=persona)
+        if self._content_char_count(content) < MIN_WTT_CHARS:
+            return {"status": "content_too_short", "exports": {}}
+        run_dir = self.build_run_package(
+            topic,
+            content,
+            persona,
+            generation_mode=generation_mode,
+            generation_fallback_reason=fallback_reason,
+        )
+        preview_path = run_dir / "dry_run_preview.json"
+        preview_path.write_text(
+            json.dumps(
+                {
+                    "status": "preview_ready",
+                    "topic_title": topic.title,
+                    "persona": persona,
+                    "generation_mode": generation_mode,
+                    "content_char_count": self._content_char_count(content),
+                    "run_dir": str(run_dir),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "status": "preview_ready",
+            "topic_title": topic.title,
+            "run_dir": str(run_dir),
+            "generation_mode": generation_mode,
+            "exports": {
+                "standalone_priority_preview": preview_path,
+                "standalone_priority_article": run_dir / self.settings.review.publish_dirname / "article.md",
+            },
+        }
 
     def publish_standalone(
         self,

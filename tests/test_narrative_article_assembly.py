@@ -226,6 +226,26 @@ def test_narrative_fallback_does_not_repeat_truncated_search_snippets() -> None:
     assert "官宣离婚了吗" not in article
 
 
+def test_public_policy_fallback_does_not_invent_an_individual_case() -> None:
+    agent = _story_agent()
+    report = _story_report()
+    report.topic_title = "农民交公粮能否视同缴社保"
+    report.source_facts = [
+        "有观点建议研究历史交公粮记录与养老保障之间的衔接",
+        "目前公开信息显示该说法仍处于讨论阶段",
+    ]
+    report.watch_metrics = ["主管部门是否发布正式文件", "政策适用地区和生效时间"]
+
+    article = agent._build_local_narrative_article(
+        TrendReport(), report, "你认为这类历史贡献应当如何被记录？"
+    )
+
+    assert "建议、讨论和已经生效的政策不是一回事" in article
+    assert "当事人" not in article
+    assert "订单" not in article
+    assert "利润" not in article
+
+
 # ---------------------------------------------------------------------------
 # 3b. 产业分析节拍不许套在叙事稿上
 # ---------------------------------------------------------------------------

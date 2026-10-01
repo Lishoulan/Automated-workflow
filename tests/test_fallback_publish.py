@@ -109,7 +109,7 @@ def _make_run(
                     "ai_generated_risk": ai_risk,
                     "validation_score": 95,
                 },
-                "publish_recommendation": "manual_review",
+                "publish_recommendation": "ready_to_publish",
             },
             ensure_ascii=False,
         ),
@@ -147,6 +147,20 @@ def test_clean_article_passes_safety_check(tmp_path: Path) -> None:
     run_dir = _make_run(tmp_path)
     safe, reasons, _notes = service._fallback_safety_check(run_dir)
     assert safe is True, reasons
+
+
+def test_manual_review_recommendation_blocks_fallback_auto_publish(tmp_path: Path) -> None:
+    service = _service()
+    run_dir = _make_run(tmp_path)
+    score_path = run_dir / "content_score.json"
+    payload = json.loads(score_path.read_text(encoding="utf-8"))
+    payload["publish_recommendation"] = "manual_review"
+    score_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    safe, reasons, _notes = service._fallback_safety_check(run_dir)
+
+    assert safe is False
+    assert any("manual_review" in reason for reason in reasons)
 
 
 def test_internal_label_blocks_fallback(tmp_path: Path) -> None:

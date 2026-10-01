@@ -242,6 +242,7 @@ class DataAgent(BaseAgent):
             secondary,
             trend_report,
             supply_chain_keywords,
+            content_mode=self._content_mode(extraction),
         )
         risk_flags = self._clean_contextual_list(
             self._list_values(merged.get("risk_flags"), risk_fallback),
@@ -468,7 +469,10 @@ class DataAgent(BaseAgent):
         )
         supply_chain_keywords = self.clean_publish_list(extraction.supply_chain_keywords[:8] or keywords, limit=8)
         watch_metrics = self._build_watch_metrics(primary, secondary, extraction.follow_up_focus)
-        risk_flags = self._build_risk_flags(primary, secondary, trend_report, keywords)
+        content_mode = self._content_mode(extraction)
+        risk_flags = self._build_risk_flags(
+            primary, secondary, trend_report, keywords, content_mode=content_mode
+        )
         watch_metrics = self._clean_contextual_list(
             watch_metrics,
             fallback=self._build_watch_metrics(primary, secondary, extraction.follow_up_focus),
@@ -477,7 +481,9 @@ class DataAgent(BaseAgent):
         )
         risk_flags = self._clean_contextual_list(
             risk_flags,
-            fallback=self._build_risk_flags(primary, secondary, trend_report, keywords),
+            fallback=self._build_risk_flags(
+                primary, secondary, trend_report, keywords, content_mode=content_mode
+            ),
             factual_text=factual_context,
             limit=4,
         )
@@ -1327,13 +1333,23 @@ class DataAgent(BaseAgent):
         secondary: str,
         trend_report: TrendReport,
         keywords: list[str],
+        *,
+        content_mode: str = "",
     ) -> list[str]:
         text = " ".join([primary, secondary, trend_report.recommended_angle, *keywords]).lower()
         tech_tokens = ["机器人", "芯片", "半导体", "储能", "光伏", "锂电", "电池", "ai", "大模型", "智能制造", "工业自动化"]
         tech_tokens_count = sum(1 for token in tech_tokens if token in text)
-        mode = "sports" if any(token in text for token in self.SPORTS_TOKENS) \
+        mode = content_mode or ("sports" if any(token in text for token in self.SPORTS_TOKENS) \
             else "international" if tech_tokens_count == 0 and any(token in text for token in self.INTERNATIONAL_TOKENS) \
-            else "generic"
+            else "generic")
+        if mode == "social_story":
+            risks = [
+                f"{primary}的公开讨论不等于正式政策或最终处理结果。",
+                "需要区分已经确认的事实、个人观点与仍待权威来源核实的信息。",
+                "涉及政策待遇时，应核对适用地区、生效时间和主管部门公开口径。",
+                "公开材料没有具体当事人时，不虚构人物经历或处理结果。",
+            ]
+            return self.clean_publish_list(risks, limit=4)
         if mode == "sports":
             risks = [
                 f"{primary}热度升高，不等于后续走势已经被提前锁定。",

@@ -48,8 +48,8 @@ def test_priority_strategy_never_publishes_during_dry_run(app_settings) -> None:
 
     result = ContentFactoryAppService._publish_priority_weitoutiao(stub, dry_run=True)
 
-    assert result == {}
     assert calls == []
+    assert result["standalone_priority_status"] in {"preview_ready", "preview_failed", "no_topics"}
 
 
 def test_priority_strategy_never_publishes_in_draft_only_mode(app_settings) -> None:

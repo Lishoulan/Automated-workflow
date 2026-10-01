@@ -31,6 +31,7 @@ from toutiao_content_factory.services.browser_launch_guard import (
 )
 from toutiao_content_factory.services.compliance_service import get_proxy_server
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
+from toutiao_content_factory.services.creative_scoring_service import CreativeScoringService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.image_generation_service import generate_text_cover
 from toutiao_content_factory.services.notification_service import NotificationService
@@ -125,6 +126,10 @@ class PlatformUIUpdateException(RuntimeError):
 
 
 class PublishService:
+    AUTO_TITLE_SCORE_MIN = CreativeScoringService.AUTO_TITLE_SCORE_MIN
+    AUTO_COVER_SCORE_MIN = CreativeScoringService.AUTO_COVER_SCORE_MIN
+    AUTO_CREATIVE_COMBINED_MIN = CreativeScoringService.AUTO_COMBINED_SCORE_MIN
+
     DEBUG_PATH_PATTERN = re.compile(r"Debug files saved to:\s*(?P<path>.+)$", re.IGNORECASE)
     NORMALIZE_PATTERN = re.compile(r"[\s\W_]+", re.UNICODE)
     # 去重基线状态：凡可能已上线(含发布验证不确定但有成功后端确认或可能已发布)的记录，
@@ -446,6 +451,8 @@ class PublishService:
             raise FileNotFoundError("publish_meta.json is missing.")
         if str(review_status.get("status", "")) != "approved":
             raise RuntimeError("Run is not approved yet. Approve review before publishing.")
+        if str(publish_meta.get("approval_mode", "")).strip().lower() == "automatic":
+            self._validate_automatic_creative_gate(publish_dir)
 
         # 日发布频率硬限制：防止 max_daily_posts 配置被绕过
         # 历史数据：5月31日单日发布10篇，触发平台限流，账号权重被稀释
@@ -2013,6 +2020,38 @@ class PublishService:
             raise RuntimeError(
                 f"Toutiao login form detected on page. Session may have expired. "
                 f"Please re-run the login initialization script. Debug files saved to: {debug_dir}"
+            )
+
+    def _validate_automatic_creative_gate(self, publish_dir: Path) -> None:
+        """Require measured title and cover quality for unattended publishing."""
+        score_path = publish_dir / "title_cover_score.json"
+        payload = self._load_json(score_path)
+        title = payload.get("title") if isinstance(payload.get("title"), dict) else {}
+        title_score = int(title.get("score", 0) or 0)
+        if title_score < self.AUTO_TITLE_SCORE_MIN:
+            raise RuntimeError(
+                "Automatic creative gate blocked: title score "
+                f"{title_score} is below {self.AUTO_TITLE_SCORE_MIN}."
+            )
+
+        cover_mode = str(self.settings.publishing.cover_mode or "auto").strip().lower()
+        if cover_mode == "none":
+            return
+
+        cover = payload.get("cover") if isinstance(payload.get("cover"), dict) else {}
+        cover_score = int(cover.get("score", 0) or 0)
+        combined_score = int(payload.get("combined_score", 0) or 0)
+        if not cover or str(cover.get("status", "")).strip().lower() == "missing":
+            raise RuntimeError("Automatic creative gate blocked: generated cover score is missing.")
+        if cover_score < self.AUTO_COVER_SCORE_MIN:
+            raise RuntimeError(
+                "Automatic creative gate blocked: cover score "
+                f"{cover_score} is below {self.AUTO_COVER_SCORE_MIN}."
+            )
+        if combined_score < self.AUTO_CREATIVE_COMBINED_MIN:
+            raise RuntimeError(
+                "Automatic creative gate blocked: combined title/cover score "
+                f"{combined_score} is below {self.AUTO_CREATIVE_COMBINED_MIN}."
             )
 
     def _load_json(self, path: Path) -> dict[str, Any]:

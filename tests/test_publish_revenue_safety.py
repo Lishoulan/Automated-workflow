@@ -52,6 +52,63 @@ def _make_service(app_settings, monkeypatch) -> PublishService:
     return service
 
 
+def test_automatic_publish_requires_a_real_cover_score(app_settings, tmp_path: Path, monkeypatch) -> None:
+    service = _make_service(app_settings, monkeypatch)
+    run_dir = _prepare_approved_run(tmp_path)
+    publish_dir = run_dir / "publish"
+    meta = json.loads((publish_dir / "publish_meta.json").read_text(encoding="utf-8"))
+    meta["approval_mode"] = "automatic"
+    (publish_dir / "publish_meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+    )
+    (publish_dir / "title_cover_score.json").write_text(
+        json.dumps({"title": {"score": 82}, "cover": None}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="cover score is missing"):
+        service._publish_run_locked(run_dir)
+
+
+def test_automatic_publish_accepts_measured_title_and_cover_scores(
+    app_settings, tmp_path: Path, monkeypatch
+) -> None:
+    service = _make_service(app_settings, monkeypatch)
+    run_dir = _prepare_approved_run(tmp_path)
+    publish_dir = run_dir / "publish"
+    meta = json.loads((publish_dir / "publish_meta.json").read_text(encoding="utf-8"))
+    meta["approval_mode"] = "automatic"
+    (publish_dir / "publish_meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+    )
+    (publish_dir / "title_cover_score.json").write_text(
+        json.dumps(
+            {
+                "title": {"score": 82},
+                "cover": {"score": 78, "status": "ready"},
+                "combined_score": 81,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        service.content_guard_service,
+        "build_publish_guard_report",
+        lambda _run_dir: {
+            "blocking_flags": [],
+            "warnings": [],
+            "quality_check": {"is_passed": True, "issues": []},
+        },
+    )
+    monkeypatch.setattr(service.precheck_service, "run_precheck", lambda *_a, **_k: {"status": "passed"})
+    monkeypatch.setattr(service, "_publish_to_toutiao", lambda **_k: {"status": "submitted_for_review"})
+
+    result = service._publish_run_locked(run_dir)
+
+    assert result["publish_result"].exists()
+
+
 def test_failed_quality_gate_blocks_real_publish(app_settings, tmp_path: Path, monkeypatch) -> None:
     service = _make_service(app_settings, monkeypatch)
     run_dir = _prepare_approved_run(tmp_path)

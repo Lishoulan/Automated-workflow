@@ -140,6 +140,28 @@ def test_content_guard_blocks_high_score_auto_approval(app_settings) -> None:
     ) is True
 
 
+def test_automatic_approval_rejects_local_and_fallback_review_outputs(app_settings) -> None:
+    service = ContentFactoryAppService(app_settings, logging.getLogger("test-generation-gate"))
+    high_score = {
+        "overall_score": 90,
+        "ai_generated_risk": 10,
+        "validation_score": 90,
+        "publish_readiness_score": 90,
+        "article_char_count": 1800,
+    }
+    guard = {"blocked": False, "blocking_flags": [], "source_copy_ratio": 5.0}
+
+    assert service._qualifies_for_auto_approval(
+        {**high_score, "model_used": "local-draft"}, content_guard_report=guard
+    ) is False
+    assert service._qualifies_for_auto_approval(
+        {**high_score, "quality_council_used_fallback": True}, content_guard_report=guard
+    ) is False
+    assert service._qualifies_for_auto_approval(
+        {**high_score, "publish_recommendation": "manual_review"}, content_guard_report=guard
+    ) is False
+
+
 def test_auto_approval_length_floor_matches_hot_and_auto_publish_modes(app_settings) -> None:
     service = ContentFactoryAppService(app_settings, logging.getLogger("test-length-gate"))
     high_score = {

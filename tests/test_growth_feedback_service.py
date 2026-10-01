@@ -77,6 +77,27 @@ def test_feedback_builds_creative_calibration_only_with_enough_samples() -> None
     assert calibration["evidence"]["mobile_length"]["samples"] == 3
 
 
+def test_zero_read_articles_with_impressions_still_calibrate_title_signals() -> None:
+    works = {
+        str(index): _entry(
+            str(index),
+            "article",
+            f"老人养老政策为何引发讨论这件事{index}",
+            500 + index * 20,
+            0,
+        )
+        for index in range(1, 4)
+    }
+
+    feedback = build_growth_feedback({}, {"works": works})
+
+    calibration = feedback["creative_calibration"]
+    assert calibration["status"] == "active"
+    assert calibration["article_samples"] == 3
+    assert calibration["positive_read_article_samples"] == 0
+    assert calibration["signal_adjustments"]["question_gap"] < 0
+
+
 def test_feedback_marks_late_samples_and_groups_duplicate_stop_titles() -> None:
     repeated = "老人借钱给亲戚没打借条"
     first = _entry("1", "weitoutiao", repeated, 100, 0)

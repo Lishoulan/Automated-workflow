@@ -10,6 +10,31 @@ from toutiao_content_factory.services.company_entities import (
 )
 
 
+def test_social_story_risk_flags_do_not_use_industry_profit_language(
+    app_settings, mock_openai_service, logger
+) -> None:
+    agent = DataAgent(
+        app_settings,
+        prompt_repository=MagicMock(),
+        openai_service=mock_openai_service,
+        logger=logger,
+    )
+
+    risks = agent._build_risk_flags(
+        "养老保障",
+        "交公粮记录",
+        TrendReport(recommended_angle="区分建议和现行政策"),
+        ["社保", "养老"],
+        content_mode="social_story",
+    )
+
+    joined = " ".join(risks)
+    assert "正式政策" in joined
+    assert "不虚构人物" in joined
+    for marker in ("利润", "订单", "毛利", "产业链"):
+        assert marker not in joined
+
+
 def test_product_context_identifies_apple_without_accepting_publisher_boilerplate() -> None:
     text = "IT之家消息，软媒旗下科技整理了苹果 iPad Mini 8 的产品信息。"
 

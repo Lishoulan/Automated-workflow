@@ -76,6 +76,60 @@ def test_performance_records_expose_compatible_read_and_ctr_fields(tmp_path: Pat
     assert matched[0]["share_count"] == 1
 
 
+def test_performance_recovers_archived_publish_when_history_is_missing(
+    app_settings, tmp_path: Path
+) -> None:
+    service = PerformanceService(app_settings, logging.getLogger("test.archive-match"))
+    run_dir = (
+        app_settings.output_dir
+        / app_settings.automation.archive_dirname
+        / "20261001-090000_story"
+    )
+    publish_dir = run_dir / app_settings.review.publish_dirname
+    publish_dir.mkdir(parents=True)
+    (publish_dir / "publish_meta.json").write_text(
+        json.dumps(
+            {
+                "approved_at": "2026-10-01T09:00:00+08:00",
+                "selected_title": "交公粮和社保能否衔接，先分清建议与现行规则",
+                "selected_topic": {
+                    "title": "农民交公粮能否视同缴社保",
+                    "url": "https://www.toutiao.com/article/1234567890123456789/",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (publish_dir / "publish_result.json").write_text(
+        json.dumps(
+            {
+                "status": "submitted_for_review",
+                "published_at": "2026-10-01T09:01:00+08:00",
+                "external_url": "https://www.toutiao.com/article/1234567890123456789/",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    metric = ArticlePerformance(
+        url="https://www.toutiao.com/group/1234567890123456789/?source=mp",
+        title="平台展示标题可能被截断",
+        publish_date="2026-10-01",
+        views=10,
+        interactions=1,
+        roi_score=0,
+        impression_count=200,
+        read_count=10,
+    )
+
+    matched = service._match_metrics_to_local_records("toutiao", [metric])
+
+    assert matched[0]["matched"] is True
+    assert matched[0]["local_record"]["run_dir"] == str(run_dir)
+    assert matched[0]["local_record"]["status"] == "submitted_for_review"
+
+
 def test_performance_syncs_matured_revenue_snapshot(app_settings, tmp_path: Path) -> None:
     app_settings.output_dir.mkdir(parents=True, exist_ok=True)
     run_dir = tmp_path / "run-8h"

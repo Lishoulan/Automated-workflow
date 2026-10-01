@@ -1003,6 +1003,7 @@ jobs:
             ACCOUNT=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('account_key', '$RUN_ACCOUNT'))" 2>/dev/null || echo "$RUN_ACCOUNT")
             PUBLISH_STATUS=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('publish_status', ''))" 2>/dev/null || echo "")
             PUBLISH_PGC_ID=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('publish_pgc_id', ''))" 2>/dev/null || echo "")
+            WEITOUTIAO_STATUS=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('weitoutiao_status', ''))" 2>/dev/null || echo "")
             SELECTED_TITLE=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('selected_title', ''))" 2>/dev/null || echo "")
             WORKFLOW_STATUS=$(python -c "import json; print(json.load(open('$RESULT_FILE')).get('workflow_status', ''))" 2>/dev/null || echo "")
             WORKFLOW_ERROR_COUNT=$(python -c "import json; value=json.load(open('$RESULT_FILE')).get('workflow_errors', []); print(len(value) if isinstance(value, list) else 0)" 2>/dev/null || echo "0")
@@ -1020,12 +1021,14 @@ jobs:
             echo "run-account=$ACCOUNT" >> $GITHUB_OUTPUT
             echo "publish-status=$PUBLISH_STATUS" >> $GITHUB_OUTPUT
             echo "publish-pgc-id=$PUBLISH_PGC_ID" >> $GITHUB_OUTPUT
+            echo "weitoutiao-status=$WEITOUTIAO_STATUS" >> $GITHUB_OUTPUT
             echo "selected-title=$SELECTED_TITLE" >> $GITHUB_OUTPUT
             echo "workflow-status=$WORKFLOW_STATUS" >> $GITHUB_OUTPUT
             echo "RUN_STATUS=$STATUS" >> "$GITHUB_ENV"
             echo "RUN_WORKFLOW_STATUS=$WORKFLOW_STATUS" >> "$GITHUB_ENV"
             echo "RUN_PUBLISH_STATUS=$PUBLISH_STATUS" >> "$GITHUB_ENV"
             echo "RUN_PUBLISH_PGC_ID=$PUBLISH_PGC_ID" >> "$GITHUB_ENV"
+            echo "RUN_WEITOUTIAO_STATUS=$WEITOUTIAO_STATUS" >> "$GITHUB_ENV"
             if [ "$STATUS" = "degraded_to_draft" ]; then
               echo "::warning::定时任务降级为草稿模式（publish_status=draft_saved），文章未发布到头条公域。请检查 precheck_report.json 确认降级原因。"
             fi
@@ -1109,8 +1112,18 @@ jobs:
             exit 0
           fi
           if [ "$RUN_PUBLISH_TOUTIAO" = "true" ] && { [ "${RUN_PUBLISH_STATUS:-}" != "submitted_for_review" ] || [ -z "${RUN_PUBLISH_PGC_ID:-}" ]; }; then
-            echo "::error::Toutiao publish was requested but no accepted submission with pgc_id was recorded: status=${RUN_PUBLISH_STATUS:-missing}"
-            exit 1
+            WEITOUTIAO_ACCEPTED="false"
+            case "${RUN_WEITOUTIAO_STATUS:-}" in
+              success|published|submitted|submitted_for_review|target_reached)
+                WEITOUTIAO_ACCEPTED="true"
+                ;;
+            esac
+            if [ "$WEITOUTIAO_ACCEPTED" = "true" ] && { [ "${RUN_STATUS:-}" = "no_topics" ] || [ "${RUN_STATUS:-}" = "already_published" ]; }; then
+              echo "WeiToutiao publish accepted while the article path was intentionally skipped: weitoutiao_status=${RUN_WEITOUTIAO_STATUS}, status=${RUN_STATUS}"
+            else
+              echo "::error::Toutiao publish was requested but neither an article submission with pgc_id nor an accepted WeiToutiao-only result was recorded: article_status=${RUN_PUBLISH_STATUS:-missing}, weitoutiao_status=${RUN_WEITOUTIAO_STATUS:-missing}, status=${RUN_STATUS:-unknown}"
+              exit 1
+            fi
           fi
           case "${RUN_STATUS:-unknown}" in
             failed|partial_success|publish_login_required|publish_uncertain|degraded_to_draft)

@@ -30,3 +30,13 @@ def test_revenue_and_performance_ledgers_persist_between_cloud_runs() -> None:
         "output/accounts/*/growth_ops/revenue_attribution/",
     ):
         assert path in workflow
+
+
+def test_publish_enforcement_accepts_successful_weitoutiao_only_run() -> None:
+    workflow = Path(".github/workflows/daily-run.yml").read_text(encoding="utf-8")
+
+    assert "WEITOUTIAO_STATUS=$(python -c" in workflow
+    assert 'echo "RUN_WEITOUTIAO_STATUS=$WEITOUTIAO_STATUS" >> "$GITHUB_ENV"' in workflow
+    assert 'success|published|submitted|submitted_for_review|target_reached)' in workflow
+    assert '[ "${RUN_STATUS:-}" = "no_topics" ] || [ "${RUN_STATUS:-}" = "already_published" ]' in workflow
+    assert "neither an article submission with pgc_id nor an accepted WeiToutiao-only result" in workflow

@@ -124,6 +124,60 @@ def _run(agent: TitleAgent) -> dict:
     )
 
 
+def test_policy_topic_fallback_keeps_the_named_agency_subject(
+    app_settings,
+    mock_openai_service,
+    logger,
+    monkeypatch,
+) -> None:
+    agent = _agent(app_settings, mock_openai_service, logger)
+    report = DataReport(
+        topic_title="刚刚，国家能源局连发两文，储能新利好来了！",
+        focus_industry="储能",
+        focus_keywords=["储能", "光伏"],
+        supply_chain_keywords=["储能"],
+        growth_numbers=["40%", "7.9亿千瓦"],
+        companies=[],
+        focus_companies=[],
+        core_data=["国家能源局连发两文，明确新型并网主体风险管控责任。"],
+        source_facts=["全国光伏累计装机容量约7.9亿千瓦，同比增长48.0%。"],
+    )
+    body = (
+        "国家能源局连发两文，明确新型并网主体的风险管控责任。"
+        "国网能源研究院预计新能源发电装机占比超过40%。"
+        "全国光伏累计装机容量约7.9亿千瓦，同比增长48.0%。"
+    )
+    content = GeneratedContent(article=body, polished_article=body, summary=body[:60])
+    monkeypatch.setattr(agent, "render_prompt", lambda *a, **k: "")
+    monkeypatch.setattr(agent, "best_practices_instruction", lambda *a, **k: "")
+    monkeypatch.setattr(agent, "request_json", lambda *a, **k: {})
+    monkeypatch.setattr(
+        agent,
+        "_build_title_playbook_context",
+        lambda *a, **k: {
+            "track": "储能",
+            "top_keywords": [],
+            "title_templates": [],
+            "topic_imitation_pool": [],
+            "example_titles": [],
+            "note": "",
+        },
+    )
+
+    result = agent.run(
+        content,
+        TrendReport(),
+        report,
+        agent.settings.style_profiles[agent.settings.default_style],
+        CacheContext(),
+    )
+
+    assert result["selected_title_source"] == TITLE_SOURCE_FALLBACK
+    assert any("影响哪些环节" in title for title in result["titles"])
+    assert all(title.startswith("国家能源局") for title in result["titles"])
+    assert all("国网能源研究院经" not in title for title in result["titles"])
+
+
 # ---------------------------------------------------------------------------
 # D3：三类来源必须进入**同一个**正式校验入口，并且都拿到正文
 # ---------------------------------------------------------------------------

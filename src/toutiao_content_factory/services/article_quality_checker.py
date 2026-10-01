@@ -9,6 +9,10 @@ from toutiao_content_factory.services.company_entities import (
     is_valid_company_name,
     normalize_company_name,
 )
+from toutiao_content_factory.services.subject_entities import (
+    extract_known_organization_names,
+    is_known_organization_name,
+)
 
 
 @dataclass
@@ -723,6 +727,14 @@ class ArticleQualityChecker:
                 candidates.append(normalized)
         return candidates
 
+    @classmethod
+    def _extract_subject_mentions(cls, text: str) -> list[str]:
+        subjects = cls._extract_company_mentions(text)
+        for organization in extract_known_organization_names(text):
+            if organization not in subjects:
+                subjects.append(organization)
+        return subjects
+
     @staticmethod
     def _company_matches(left: str, right: str) -> bool:
         left_folded = str(left or "").casefold()
@@ -750,13 +762,16 @@ class ArticleQualityChecker:
             for match in cls._GENERIC_TITLE_SUBJECT_PATTERN.finditer(title_text)
             if match.group(1)
         ]
-        title_companies = cls._extract_company_mentions(title_text)
+        title_companies = cls._extract_subject_mentions(title_text)
         body_text = str(content or "")
-        body_companies = cls._extract_company_mentions(body_text)
+        body_companies = cls._extract_subject_mentions(body_text)
         expected: list[str] = []
         for raw_company in expected_companies or ():
             normalized = normalize_company_name(raw_company)
-            if is_valid_company_name(normalized) and normalized not in expected:
+            if (
+                is_valid_company_name(normalized)
+                or is_known_organization_name(normalized)
+            ) and normalized not in expected:
                 expected.append(normalized)
 
         if generic_subjects:
@@ -952,7 +967,10 @@ class ArticleQualityChecker:
 
         # RULE_006: 纯抽象标题硬校验（主体词含"机器人/具身智能"等）
         has_number = bool(re.search(r"\d", title))
-        has_company = bool(self._TITLE_SUBJECT_PATTERN.search(title))
+        has_company = bool(
+            self._TITLE_SUBJECT_PATTERN.search(title)
+            or extract_known_organization_names(title)
+        )
         has_place = bool(self._TITLE_PLACE_PATTERN.search(title))
         if not has_number and not has_company and not has_place:
             issues.append(
@@ -975,7 +993,7 @@ class ArticleQualityChecker:
         # 2026-09-15 扩充词表：原词表过窄，导致"出货量…8万台""产能210万套…激增"
         # 这类含具体数字的合格标题也被误判为信息密度不足而遭清空，直接阻断发布。
         _ACTION_PATTERN = re.compile(
-            r"(夺冠|跳远|跑完|飞起|进厂|开工|敬礼|复刻|跌破|暴跌|暴涨|降价|量产|上市|发布|亮相|"
+            r"(夺冠|跳远|跑完|飞起|进厂|开工|敬礼|复刻|跌破|暴跌|暴涨|降价|量产|上市|发布|连发|印发|出台|亮相|"
             r"超越|刷新|纪录|签约|交付|订单|跌去|跌逾|降超|演示|实测|开跑|"
             # 增补：出货/营收/投产/融资等常见经营动作
             r"出货|交付量|营收|收入|净利|毛利|亏损|扭亏|投产|下线|扩产|减产|涨价|提价|降本|"

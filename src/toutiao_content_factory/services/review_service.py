@@ -307,7 +307,7 @@ class ReviewWorkflowService:
         checker = ArticleQualityChecker()
         selected_topic_payload = selected_topic.__dict__ if selected_topic is not None else {}
         expected_companies = (
-            checker._extract_company_mentions(str(selected_topic.title or ""))
+            checker._extract_subject_mentions(str(selected_topic.title or ""))
             if selected_topic is not None
             else []
         )

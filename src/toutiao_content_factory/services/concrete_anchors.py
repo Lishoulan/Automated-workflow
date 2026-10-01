@@ -50,12 +50,17 @@ from toutiao_content_factory.services.company_entities import (
     extract_known_company_names,
     is_valid_company_name,
 )
+from toutiao_content_factory.services.subject_entities import (
+    extract_known_organization_names,
+)
 
 KIND_COMPANY = "company"
+KIND_ORGANIZATION = "organization"
 KIND_QUANTITY = "quantity"
 KIND_YEAR = "year"
 
 CONF_COMPANY = 0.9
+CONF_ORGANIZATION = 0.9
 CONF_QUANTITY_STRONG = 0.8
 CONF_QUANTITY_WEAK = 0.45
 CONF_YEAR = 0.5
@@ -335,6 +340,23 @@ def _company_anchors(text: str) -> list[ConcreteAnchor]:
     return anchors
 
 
+def _organization_anchors(text: str) -> list[ConcreteAnchor]:
+    anchors: list[ConcreteAnchor] = []
+    for name in extract_known_organization_names(text):
+        position = text.find(name)
+        if position < 0:
+            continue
+        anchors.append(
+            ConcreteAnchor(
+                name,
+                KIND_ORGANIZATION,
+                CONF_ORGANIZATION,
+                (position, position + len(name)),
+            )
+        )
+    return anchors
+
+
 def extract_concrete_anchors(text: object) -> list[ConcreteAnchor]:
     """从正文里抽出具象锚点（公司名 / 量化值 / 年份），按出现顺序返回。
 
@@ -345,7 +367,12 @@ def extract_concrete_anchors(text: object) -> list[ConcreteAnchor]:
     if not raw.strip():
         return []
 
-    anchors = [*_company_anchors(raw), *_quantity_anchors(raw), *_year_anchors(raw)]
+    anchors = [
+        *_company_anchors(raw),
+        *_organization_anchors(raw),
+        *_quantity_anchors(raw),
+        *_year_anchors(raw),
+    ]
     anchors.sort(key=lambda anchor: (anchor.source_span[0], -len(anchor.text)))
 
     deduped: list[ConcreteAnchor] = []

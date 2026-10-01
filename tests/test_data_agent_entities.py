@@ -17,6 +17,21 @@ def test_product_context_identifies_apple_without_accepting_publisher_boilerplat
     assert is_valid_company_name("软媒旗下科技") is False
 
 
+def test_policy_prose_fragments_are_not_company_names() -> None:
+    invalid = [
+        "国网能源研究院经济与能源",
+        "高比例电力电子",
+        "掌握高比例可再生能源",
+        "安全稳定运行成为能源",
+        "国家能源",
+        "中国的光伏",
+        "全国光伏",
+        "中国2050年光伏",
+    ]
+
+    assert all(not is_valid_company_name(item) for item in invalid)
+
+
 def test_data_agent_sanitizes_scene_and_source_labels_from_company_fields(
     app_settings,
     mock_openai_service,

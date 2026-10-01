@@ -280,6 +280,23 @@ class TestCheckArticleIntegration:
 
         assert any("与数据报告确认主体" in issue for issue in result["issues"])
 
+    def test_policy_title_subject_must_match_expected_topic_organization(self) -> None:
+        result = self.checker._check_title(
+            "国网能源研究院发布40%预测，光伏进度看交付",
+            "国家能源局连发两文。国网能源研究院另有一份新能源占比预测。",
+            expected_companies=["国家能源局"],
+        )
+
+        assert any("与数据报告确认主体" in issue for issue in result["issues"])
+
+    def test_policy_organization_counts_as_a_concrete_title_subject(self) -> None:
+        result = self.checker._check_title(
+            "国家能源局连发两文，储能政策影响哪些环节",
+            "国家能源局连发两文，明确新型并网主体的风险管控责任。",
+        )
+
+        assert not any("RULE_006" in issue or "RULE_009" in issue for issue in result["issues"])
+
     def test_editorial_integrity_rejects_html_and_residual_sentence(self) -> None:
         result = self.checker.check_editorial_integrity(
             "优必选业务观察",

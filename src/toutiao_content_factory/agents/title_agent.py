@@ -11,6 +11,9 @@ from toutiao_content_factory.agents.base import BaseAgent
 from toutiao_content_factory.config import AppSettings, IterationOverrides, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, TrendReport
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
+from toutiao_content_factory.services.subject_entities import (
+    extract_known_organization_names,
+)
 from toutiao_content_factory.services.concrete_anchors import (
     GATE_MIN_ANCHORS,
     STATUS_FAIL,
@@ -815,6 +818,7 @@ class TitleAgent(BaseAgent):
         topic = self._sanitize_title(str(getattr(data_report, "topic_title", "") or ""))
         if topic:
             candidates.append(topic)
+        candidates.extend(self._policy_topic_fallback_titles(data_report))
 
         company = self._primary_company(data_report)
         label = self._primary_topic_label(data_report)
@@ -844,6 +848,29 @@ class TitleAgent(BaseAgent):
                 result.append(item)
         return result[: self.settings.title_count]
 
+    def _policy_topic_fallback_titles(self, data_report: DataReport) -> list[str]:
+        """Build grounded fallbacks for policy topics led by a named institution."""
+
+        topic = self._sanitize_title(str(getattr(data_report, "topic_title", "") or ""))
+        organizations = extract_known_organization_names(topic)
+        if not organizations:
+            return []
+        subject = organizations[0]
+        action_match = re.search(
+            r"(连发[一二三四五六七八九十两\d]+文|发布|印发|出台|通过|宣布)",
+            topic,
+        )
+        if not action_match:
+            return []
+        action = action_match.group(1)
+        detail = self._primary_topic_label(data_report)
+        if not detail or detail == subject:
+            detail = "相关政策"
+        return [
+            self._fit_title_length(f"{subject}{action}，{detail}政策影响哪些环节"),
+            self._fit_title_length(f"{subject}{action}，{detail}规则重点变在哪"),
+        ]
+
     def _fallback_titles(
         self,
         content: GeneratedContent,
@@ -861,6 +888,10 @@ class TitleAgent(BaseAgent):
                 self._narrative_fallback_titles(content, data_report),
                 cache_context,
             )
+
+        policy_titles = self._policy_topic_fallback_titles(data_report)
+        if policy_titles:
+            return self._dedupe_titles(policy_titles, cache_context)
 
         keyword = self._primary_topic_label(data_report)
         secondary = "关键环节"

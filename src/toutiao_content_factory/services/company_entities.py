@@ -342,6 +342,14 @@ COMPANY_GENERIC_SUBSTRINGS = (
 # "为最主要的增长驱动力" or "其他行业定制智能机器人及智能机器人").
 COMPANY_SEMANTIC_PREFIX_NOISE = ("为", "其他")
 COMPANY_SEMANTIC_JOINER_NOISE = ("及",)
+COMPANY_CLAUSE_NOISE = (
+    "的",
+    "与",
+    "比例",
+    "掌握",
+    "运行",
+    "成为",
+)
 
 COMPANY_SUFFIXES = (
     "有限责任公司",
@@ -430,6 +438,10 @@ def is_valid_company_name(value: object) -> bool:
     if any(marker in candidate for marker in COMPANY_GENERIC_SUBSTRINGS):
         return False
     if any(candidate.startswith(prefix) for prefix in COMPANY_SEMANTIC_PREFIX_NOISE):
+        return False
+    if any(token in candidate for token in COMPANY_CLAUSE_NOISE):
+        return False
+    if candidate in {"国家能源", "全国光伏"} or re.search(r"\d{4}年", candidate):
         return False
     if any(
         joiner in candidate and any(marker in candidate for marker in ("产品", "服务", "方案", "机器人"))

@@ -410,7 +410,7 @@ accounts:
     publishing:
       weitoutiao_personas:
       - story_comment
-      weitoutiao_daily_target: 3
+      weitoutiao_daily_target: 2
       weitoutiao_priority_enabled: true
     topic_collection:
       max_topic_age_hours: 24

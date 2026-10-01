@@ -355,6 +355,7 @@ jobs:
           #
           # 未设置该变量时行为与以前完全一致（用 Secret 里的 default account）。
           SCHEDULE_ACCOUNTS_RAW="${{ vars.CLOUD_SCHEDULE_ACCOUNTS }}"
+          ROBOT_NOTES_ONLINE="$(normalize_bool "${{ vars.CLOUD_ROBOT_NOTES_ONLINE }}")"
 
           pick_schedule_account() {
             # 把逗号分隔列表规范化后，按 run_number 轮转取一个。
@@ -389,11 +390,17 @@ jobs:
             echo "Scheduled account resolution: CLOUD_SCHEDULE_ACCOUNTS='${SCHEDULE_ACCOUNTS_RAW}' run_number=${GITHUB_RUN_NUMBER:-0} -> RUN_ACCOUNT='${RUN_ACCOUNT}'"
           fi
 
-          # Account offline kill switch. Keep scheduled collection and content
-          # validation available, but never submit a Toutiao or WeChat post.
-          # Remove this override only when the account is explicitly brought online.
-          RUN_DRY_RUN="true"
-          RUN_PUBLISH_TOUTIAO="false"
+          # Live publishing is an explicit, account-scoped repository switch.
+          # Missing/false always fails closed, and no other account may inherit it.
+          if [ "$RUN_ACCOUNT" != "robot_notes" ] || [ "$ROBOT_NOTES_ONLINE" != "true" ]; then
+            RUN_DRY_RUN="true"
+            RUN_PUBLISH_TOUTIAO="false"
+          elif [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            # Scheduled robot_notes runs go live only after the repository variable
+            # is enabled. Manual runs still respect their dry-run/publish inputs.
+            RUN_DRY_RUN="false"
+            RUN_PUBLISH_TOUTIAO="true"
+          fi
 
           # 135 Editor is retired for this workflow. Keep the legacy dispatch
           # input and Secret names compatible, but never enable the route.
@@ -441,6 +448,7 @@ jobs:
 
           echo "Resolved cloud runtime flags:"
           echo "  account=$RUN_ACCOUNT"
+          echo "  robot_notes_online=$ROBOT_NOTES_ONLINE"
           echo "  dry_run=$RUN_DRY_RUN"
           echo "  fast_mode=$RUN_FAST_MODE"
           echo "  publish_toutiao=$RUN_PUBLISH_TOUTIAO"

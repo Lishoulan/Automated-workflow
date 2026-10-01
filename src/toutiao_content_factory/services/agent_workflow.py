@@ -1002,31 +1002,76 @@ class AgentWorkflowService:
             REVIEW_THRESHOLD,
             len(spans),
         )
-        rewritten = self.polish_agent.dedup_rewrite(article, spans)
-        if not rewritten:
-            self.logger.warning("去重合改写未返回可用正文，保留原稿")
-            return
-
-        after = source_copy_ratio(rewritten, source_text, strip_file_header=False)
-        after_ratio = after.get("ratio")
-        if after_ratio is None or float(after_ratio) >= ratio:
-            self.logger.warning(
-                "去重合改写未降低抄录率（%.1f%% -> %s），保留原稿",
-                ratio,
-                after_ratio,
+        best_article = ""
+        best_ratio = ratio
+        rewrite_mode = ""
+        model_rewrite = self.polish_agent.dedup_rewrite(article, spans)
+        if model_rewrite:
+            model_result = source_copy_ratio(
+                model_rewrite, source_text, strip_file_header=False
             )
+            model_ratio = model_result.get("ratio")
+            if model_ratio is not None and float(model_ratio) < best_ratio:
+                best_article = model_rewrite
+                best_ratio = float(model_ratio)
+                rewrite_mode = "model"
+
+        if best_ratio >= REVIEW_THRESHOLD:
+            deterministic_rewrite = self.polish_agent.deterministic_dedup_rewrite(
+                article,
+                spans,
+            )
+            if deterministic_rewrite:
+                deterministic_result = source_copy_ratio(
+                    deterministic_rewrite,
+                    source_text,
+                    strip_file_header=False,
+                )
+                deterministic_ratio = deterministic_result.get("ratio")
+                if (
+                    deterministic_ratio is not None
+                    and float(deterministic_ratio) < best_ratio
+                ):
+                    best_article = deterministic_rewrite
+                    best_ratio = float(deterministic_ratio)
+                    rewrite_mode = "deterministic"
+
+        if not best_article:
+            self.logger.warning("去重合改写未降低抄录率（%.1f%%），保留原稿", ratio)
             return
 
         # 走润色回写通道，顺带把自动发布模式的字数下限再兜一次；
         # update_validation=False 避免清掉已有的校验分。
+        previous_polished_article = str(getattr(content, "polished_article", "") or "")
         self._apply_polish_pack(
-            content, {"polished_article": rewritten}, data_report, update_validation=False
+            content, {"polished_article": best_article}, data_report, update_validation=False
         )
+        final_result = source_copy_ratio(
+            str(getattr(content, "article", "") or ""),
+            source_text,
+            strip_file_header=False,
+        )
+        final_ratio = final_result.get("ratio")
+        if final_ratio is None or float(final_ratio) >= ratio:
+            content.article = article
+            content.polished_article = previous_polished_article or article
+            self.logger.warning(
+                "去重合改写在后处理后失效（%.1f%% -> %s），恢复原稿",
+                ratio,
+                final_ratio,
+            )
+            return
+        best_ratio = float(final_ratio)
         content.validation_notes = [
             *list(getattr(content, "validation_notes", []) or []),
-            f"已执行去重合改写：与素材连续抄录 {ratio}% -> {after_ratio}%",
+            f"已执行去重合改写（{rewrite_mode}）：与素材连续抄录 {ratio}% -> {best_ratio}%",
         ][:10]
-        self.logger.info("去重合改写生效：连续抄录 %.1f%% -> %.1f%%", ratio, after_ratio)
+        self.logger.info(
+            "去重合改写生效（%s）：连续抄录 %.1f%% -> %.1f%%",
+            rewrite_mode,
+            ratio,
+            best_ratio,
+        )
 
     def _apply_polish_pack(self, content, polish_pack, data_report, update_validation: bool = True) -> None:
         content.polished_article = str(polish_pack.get("polished_article", "")).strip()

@@ -14,6 +14,10 @@ from toutiao_content_factory.models import (
     TrendReport,
 )
 from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
+from toutiao_content_factory.services.originality_service import (
+    REVIEW_THRESHOLD,
+    source_copy_ratio,
+)
 
 
 @pytest.fixture()
@@ -525,6 +529,89 @@ class TestReduceSourceOverlap:
         )
         assert content.article != self.SOURCE
         assert any("去重合改写" in note for note in content.validation_notes)
+
+    def test_offline_fallback_rewrites_only_measured_news_prose(
+        self,
+        workflow_service: AgentWorkflowService,
+        mock_openai_service,
+        monkeypatch,
+    ) -> None:
+        copied = (
+            "事实上，《电网安全风险管控办法(试行)》自2014年颁布以来已10年有余，"
+            "如今重新修订的背景便是十年来电网规模快速扩大，新能源并网主体持续增加，"
+            "重塑了电力系统格局，系统运行特性愈加复杂。"
+            "今年5月23日，国网能源研究院发布《中国电力供需分析报告2024》预计，"
+            "新能源发电装机容量占比在2024年底将超过40%。"
+            "据国家能源局数据，今年1-10月全国光伏装机容量约7.9亿千瓦，"
+            "同比增长48.0%，增速遥遥领先其他电源类型，光伏已成为中国第二大电源。"
+        )
+        independent = (
+            "判断这类政策信息时，需要分别核对规则适用对象、执行时间和后续公开记录。"
+            "文件发布只能说明治理框架发生变化，不能直接推出企业订单、收入或利润已经兑现。"
+            "后续观察应放在责任划分、项目验收和公开执行案例上。"
+        ) * 5
+        article = f"{copied}\n\n{independent}"
+        untouched = "公开信息显示，另一段独立分析不属于素材重合样本。"
+        article = f"{article}\n\n{untouched}"
+        before = source_copy_ratio(article, copied, strip_file_header=False)
+        assert float(before["ratio"]) >= REVIEW_THRESHOLD
+        mock_openai_service.create_json_completion.side_effect = RuntimeError("offline")
+
+        def apply_rewrite(content, payload, _report, update_validation=True):
+            content.article = str(payload["polished_article"])
+            content.polished_article = content.article
+
+        monkeypatch.setattr(workflow_service, "_apply_polish_pack", apply_rewrite)
+        content = GeneratedContent(
+            article=article,
+            polished_article=article,
+            summary=article[:80],
+        )
+
+        workflow_service._reduce_source_overlap(
+            content,
+            self._extraction(copied),
+            DataReport(),
+        )
+
+        after = source_copy_ratio(content.article, copied, strip_file_header=False)
+        assert float(after["ratio"]) < REVIEW_THRESHOLD
+        assert untouched in content.article
+        for token in ("2014", "10", "2024", "40", "1", "7.9", "48.0"):
+            assert token in content.article
+        assert any("deterministic" in note for note in content.validation_notes)
+
+    def test_post_processing_cannot_reintroduce_source_overlap(
+        self,
+        workflow_service: AgentWorkflowService,
+        mock_openai_service,
+        monkeypatch,
+    ) -> None:
+        article = self.SOURCE
+        rewritten = "采用不同结构形成的独立分析，保留事实边界并讨论后续验证条件。" * 20
+        mock_openai_service.create_json_completion.return_value = {
+            "polished_article": rewritten,
+        }
+
+        def restore_overlap(content, _payload, _report, update_validation=True):
+            content.article = article
+            content.polished_article = article
+
+        monkeypatch.setattr(workflow_service, "_apply_polish_pack", restore_overlap)
+        content = GeneratedContent(
+            article=article,
+            polished_article=article,
+            summary=article[:80],
+        )
+
+        workflow_service._reduce_source_overlap(
+            content,
+            self._extraction(self.SOURCE),
+            DataReport(),
+        )
+
+        assert content.article == article
+        assert not any("已执行去重合改写" in note for note in content.validation_notes)
 
 
 def test_all_rejected_titles_clear_the_pool_instead_of_keeping_the_least_bad(

@@ -1296,7 +1296,10 @@ class PerformanceService:
                 for record in records
                 if (record.platform or "toutiao") in ("toutiao", "toutiao_weitoutiao")
             ]
-            archived = self._load_archived_toutiao_entries()
+            archived = [
+                *self._load_checkpoint_entries(),
+                *self._load_archived_toutiao_entries(),
+            ]
             seen = {
                 f"{self._normalize_text(str(item.get('title', '')))}|"
                 f"{self._normalize_url(str(item.get('external_url', '')))}|"
@@ -1334,6 +1337,36 @@ class PerformanceService:
                     "topic_url": "",
                     "external_url": "",
                     "status": "submitted",
+                }
+            )
+        return entries
+
+    def _load_checkpoint_entries(self) -> list[dict[str, Any]]:
+        payload = self._load_json_dict(self.settings.output_dir / "growth_checkpoints.json")
+        works = payload.get("works") if isinstance(payload, dict) else {}
+        if not isinstance(works, dict):
+            return []
+        entries: list[dict[str, Any]] = []
+        for key, item in works.items():
+            if not isinstance(item, dict):
+                continue
+            gid = str(item.get("gid") or key or "").strip()
+            if not gid:
+                continue
+            content_type = str(item.get("type") or "").strip().lower()
+            entries.append(
+                {
+                    "platform": (
+                        "toutiao_weitoutiao" if content_type == "weitoutiao" else "toutiao"
+                    ),
+                    "title": str(item.get("title") or ""),
+                    "published_at": str(item.get("created_at") or ""),
+                    "run_dir": "",
+                    "topic_title": "",
+                    "topic_url": "",
+                    "external_url": f"https://www.toutiao.com/item/{gid}",
+                    "status": "observed",
+                    "match_source": "growth_checkpoint",
                 }
             )
         return entries
@@ -1829,7 +1862,7 @@ class PerformanceService:
     def _toutiao_content_id(url: str) -> str:
         text = str(url or "").strip()
         for pattern in (
-            r"/(?:article|group)/(\d{8,})",
+            r"/(?:article|group|item)/(\d{8,})",
             r"(?:^|[?&])(?:item_id|group_id|gid)=(\d{8,})",
         ):
             match = re.search(pattern, text, flags=re.IGNORECASE)

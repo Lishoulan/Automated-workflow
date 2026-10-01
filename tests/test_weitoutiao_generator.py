@@ -241,6 +241,32 @@ def test_standalone_preview_builds_package_without_publishing(app_settings) -> N
     generator.publish_service.publish_weitoutiao.assert_not_called()
 
 
+def test_policy_story_preview_replaces_hallucinated_model_case(app_settings) -> None:
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.policy"))
+    topic = TopicCandidate(
+        title="农民交公粮能否视同缴社保",
+        url="https://example.test/story",
+        source="公开信息",
+        source_type="hot_board",
+        summary="有观点建议研究历史交公粮记录与养老保障之间的衔接，目前仍属于讨论。",
+        matched_keywords=[],
+    )
+    object.__setattr__(app_settings.publishing, "weitoutiao_personas", ["story_comment"])
+    generator.select_topics = MagicMock(return_value=[topic])
+    generator.generate_content = MagicMock(
+        return_value="当事人当年被要求交公粮，还保留了合同、收据和转账记录。" * 10
+    )
+
+    result = generator.preview_standalone()
+    content = Path(result["exports"]["standalone_priority_article"]).read_text(encoding="utf-8")
+
+    assert result["generation_mode"] == "local_fallback"
+    assert "当事人" not in content
+    assert "合同" not in content
+    assert "收据" not in content
+    assert "公开讨论不等于规则已经改变" in content
+
+
 def test_fallback_report_merges_pending_and_evergreen_topics(app_settings) -> None:
     service = TopicPoolService(app_settings, logging.getLogger("test.topic_pool"))
     pending = _topic()

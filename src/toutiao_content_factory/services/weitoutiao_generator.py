@@ -361,6 +361,20 @@ class WeiToutiaoStandaloneGenerator:
         ).lower()
         return "social_story" in text or "社会故事" in text or "社会热点" in text
 
+    def _is_public_policy_topic(self, topic: TopicCandidate, persona: str = "") -> bool:
+        if not self._is_story_context(topic, persona):
+            return False
+        text = " ".join(
+            str(item or "") for item in (topic.title, topic.summary, topic.snippet)
+        )
+        return any(
+            token in text
+            for token in (
+                "政策", "社保", "养老", "养老金", "医保", "公粮", "提案", "建议",
+                "制度", "标准", "补贴", "户籍", "退休", "能否", "应否",
+            )
+        )
+
     @staticmethod
     def _content_char_count(content: str) -> int:
         return len(str(content or "").replace("\n", "").replace("\r", "").replace(" ", ""))
@@ -451,7 +465,7 @@ class WeiToutiaoStandaloneGenerator:
                 "这里需要把已经发生的事实、网友观点和仍待确认的信息分开。\n\n"
                 "如果话题涉及政策、社保、养老或公共待遇，还要继续核对适用地区、"
                 "生效时间和主管部门正式文件。公开讨论不等于规则已经改变，"
-                "没有明确人物和处理结果时，也不补写所谓当事人经历。\n\n"
+                "没有明确人物和处理结果时，也不补写具体人物的经历。\n\n"
                 "普通读者可以先保存权威来源，再根据后续公开进展更新判断。"
                 f"这件事里，你最希望主管部门先说明哪一个具体问题？\n\n{self._build_tags(topic, persona)}"
             )
@@ -553,6 +567,10 @@ class WeiToutiaoStandaloneGenerator:
                 raise
             generation_mode = "local_fallback"
             fallback_reason = self._safe_error(exc)
+            content = self.build_local_fallback_content(topic, persona=persona)
+        if generation_mode == "model" and self._is_public_policy_topic(topic, persona):
+            generation_mode = "local_fallback"
+            fallback_reason = "policy_story_evidence_guard"
             content = self.build_local_fallback_content(topic, persona=persona)
         if self._content_char_count(content) < MIN_WTT_CHARS:
             generation_mode = "local_fallback"
@@ -686,6 +704,11 @@ class WeiToutiaoStandaloneGenerator:
                         }
                     )
                     continue
+
+            if generation_mode == "model" and self._is_public_policy_topic(topic, persona):
+                generation_mode = "local_fallback"
+                fallback_reason = "policy_story_evidence_guard"
+                content = self.build_local_fallback_content(topic, persona=persona)
 
             if looks_like_html_document(content):
                 error = "WeiToutiao generated content was an HTML document, so publishing was blocked."

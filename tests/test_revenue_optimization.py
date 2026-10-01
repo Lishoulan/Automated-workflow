@@ -130,6 +130,41 @@ def test_performance_recovers_archived_publish_when_history_is_missing(
     assert matched[0]["local_record"]["status"] == "submitted_for_review"
 
 
+def test_performance_matches_toutiao_item_url_from_checkpoint_registry(app_settings) -> None:
+    app_settings.output_dir.mkdir(parents=True, exist_ok=True)
+    (app_settings.output_dir / "growth_checkpoints.json").write_text(
+        json.dumps(
+            {
+                "works": {
+                    "7690993381375328814": {
+                        "gid": "7690993381375328814",
+                        "type": "article",
+                        "title": "老人房产赠予翻脸，儿子反悔引争议",
+                        "created_at": "2026-09-30T00:22:40+08:00",
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    service = PerformanceService(app_settings, logging.getLogger("test.checkpoint-match"))
+    metric = ArticlePerformance(
+        url="https://www.toutiao.com/item/7690993381375328814/?enter_from=mp_group_management",
+        title="老人房产赠予翻脸，儿子反悔引争议",
+        publish_date="2026-09-30",
+        views=0,
+        interactions=0,
+        roi_score=0,
+        impression_count=442,
+    )
+
+    matched = service._match_metrics_to_local_records("toutiao", [metric])
+
+    assert matched[0]["matched"] is True
+    assert matched[0]["local_record"]["match_source"] == "growth_checkpoint"
+
+
 def test_performance_syncs_matured_revenue_snapshot(app_settings, tmp_path: Path) -> None:
     app_settings.output_dir.mkdir(parents=True, exist_ok=True)
     run_dir = tmp_path / "run-8h"

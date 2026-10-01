@@ -44,6 +44,8 @@ def _run_git(project_root: Path, args: list[str]) -> subprocess.CompletedProcess
             cwd=str(project_root),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=GIT_TIMEOUT_SECONDS,
             check=False,
         )

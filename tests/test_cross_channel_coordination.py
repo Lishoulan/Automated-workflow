@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import subprocess
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace  # noqa: F401
@@ -256,6 +257,22 @@ def test_read_remote_state_degrades_to_empty(app_settings, monkeypatch) -> None:
     # git 不可用 / 分支不存在时必须是「不知道」，由调用方退回本地判断。
     monkeypatch.setattr(xstate, "_run_git", lambda *a, **k: None)
     assert xstate.read_remote_state(app_settings.project_root) == {}
+
+
+def test_cross_channel_git_output_is_always_decoded_as_utf8(app_settings, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="中文标题", stderr="")
+
+    monkeypatch.setattr(xstate.subprocess, "run", fake_run)
+
+    result = xstate._run_git(app_settings.project_root, ["show", "origin/publish-state:state/daily_publish_state.json"])
+
+    assert result is not None and result.stdout == "中文标题"
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
 
 
 def test_read_remote_state_uses_a_shallow_fetch(app_settings, monkeypatch) -> None:

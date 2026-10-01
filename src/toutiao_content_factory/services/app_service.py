@@ -1421,17 +1421,44 @@ class ContentFactoryAppService:
         if not publishing.weitoutiao_enabled or not publishing.weitoutiao_standalone_enabled:
             return {"standalone_topup_status": "disabled"}
 
-        # The shared state protects a local runner from duplicating a cloud post.
-        # A GitHub Actions runner is the cloud channel itself and restores its
-        # publish history cache between slots, so it must be allowed to continue
-        # toward a configured target greater than one.
         cloud_weitoutiao = self._cloud_published_today(platform=CLOUD_WEITOUTIAO_PLATFORM_KEY)
         is_cloud_runner = os.getenv("GITHUB_ACTIONS", "").strip().lower() == "true"
-        if cloud_weitoutiao is not None and not is_cloud_runner:
+        generator = WeiToutiaoStandaloneGenerator(self.settings, self.logger)
+        local_today_count = generator.today_weitoutiao_count()
+        target = max(1, int(publishing.weitoutiao_daily_target or 1))
+        remote_today_count = 0
+        if cloud_weitoutiao is not None:
+            try:
+                remote_today_count = max(1, int(cloud_weitoutiao.get("daily_count", 1) or 1))
+            except (TypeError, ValueError):
+                remote_today_count = 1
+
+        if cloud_weitoutiao is not None and remote_today_count >= target:
+            self.logger.info(
+                "Cross-channel guard: WeiToutiao daily target already reached in shared state; "
+                "target=%s remote_count=%s cloud_title=%s",
+                target,
+                remote_today_count,
+                cloud_weitoutiao.get("title", ""),
+            )
+            return {
+                "standalone_topup_status": "target_reached",
+                "standalone_topup_summary": (
+                    f"status=target_reached target={target} remote_count={remote_today_count}"
+                ),
+            }
+
+        # A failed Actions job may publish successfully but skip the cache save.
+        # In that case shared state exists while local history is empty. Do not
+        # trust the empty cache enough to submit another post.
+        if cloud_weitoutiao is not None and (not is_cloud_runner or local_today_count == 0):
             self.logger.info(
                 "Cross-channel guard: the cloud channel already published a WeiToutiao today; "
-                "skipping the local top-up. cloud_title=%s",
+                "skipping the top-up because local history cannot prove the remaining quota. "
+                "cloud_title=%s local_count=%s remote_count=%s",
                 cloud_weitoutiao.get("title", ""),
+                local_today_count,
+                remote_today_count,
             )
             return {
                 "standalone_topup_status": "skipped_cloud_already_published",
@@ -1440,7 +1467,6 @@ class ContentFactoryAppService:
                 ),
             }
 
-        generator = WeiToutiaoStandaloneGenerator(self.settings, self.logger)
         remaining = generator.remaining_for_target()
         count = min(remaining, max(0, int(max_count)))
         self.logger.info(
@@ -1453,6 +1479,11 @@ class ContentFactoryAppService:
         result = generator.publish_standalone(
             count=count,
             draft_only=publishing.draft_only,
+            exclude_topic_titles=(
+                [str(cloud_weitoutiao.get("title", ""))]
+                if cloud_weitoutiao is not None and str(cloud_weitoutiao.get("title", "")).strip()
+                else None
+            ),
             purpose="topup",
         )
         exports = {name: str(path) for name, path in result.get("exports", {}).items()}

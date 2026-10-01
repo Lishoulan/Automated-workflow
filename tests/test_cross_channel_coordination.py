@@ -451,6 +451,7 @@ def _weitoutiao_stub(app_settings, cloud_record):
         app_settings.publishing,
         weitoutiao_enabled=True,
         weitoutiao_standalone_enabled=True,
+        weitoutiao_daily_target=2,
     )
     settings = dataclasses.replace(app_settings, publishing=publishing)
     calls: list[object] = []
@@ -493,7 +494,7 @@ def test_weitoutiao_topup_still_runs_when_cloud_has_not_published(app_settings) 
     assert calls == ["toutiao_weitoutiao"]
 
 
-def test_cloud_runner_can_continue_toward_multi_post_target(
+def test_cloud_runner_stops_when_remote_state_exists_but_local_cache_is_empty(
     app_settings, monkeypatch
 ) -> None:
     stub, calls = _weitoutiao_stub(
@@ -504,7 +505,62 @@ def test_cloud_runner_can_continue_toward_multi_post_target(
 
     result = stub._top_up_standalone_weitoutiao(max_count=0)
 
-    assert result.get("standalone_topup_status") != "skipped_cloud_already_published"
+    assert result["standalone_topup_status"] == "skipped_cloud_already_published"
+    assert calls == ["toutiao_weitoutiao"]
+
+
+def test_cloud_runner_can_continue_when_local_history_proves_first_post(
+    app_settings, monkeypatch
+) -> None:
+    stub, calls = _weitoutiao_stub(
+        app_settings,
+        {
+            "title": "Earlier cloud WeiToutiao",
+            "status": "submitted_for_review",
+            "daily_count": 1,
+        },
+    )
+    stub.settings.output_dir.mkdir(parents=True, exist_ok=True)
+    history_path = stub.settings.output_dir / stub.settings.publishing.history_filename
+    history_path.write_text(
+        json.dumps(
+            [
+                {
+                    "published_at": datetime.now().isoformat(timespec="seconds"),
+                    "platform": "toutiao_weitoutiao",
+                    "title": "Earlier cloud WeiToutiao",
+                    "status": "submitted_for_review",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    result = stub._top_up_standalone_weitoutiao(max_count=0)
+
+    assert result["standalone_topup_status"] == "target_reached"
+    assert calls == ["toutiao_weitoutiao"]
+
+
+def test_cloud_runner_stops_when_shared_daily_count_reaches_target(
+    app_settings, monkeypatch
+) -> None:
+    stub, calls = _weitoutiao_stub(
+        app_settings,
+        {
+            "title": "Second cloud WeiToutiao",
+            "status": "submitted_for_review",
+            "daily_count": 2,
+        },
+    )
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    result = stub._top_up_standalone_weitoutiao(max_count=1)
+
+    assert result["standalone_topup_status"] == "target_reached"
+    assert "remote_count=2" in result["standalone_topup_summary"]
     assert calls == ["toutiao_weitoutiao"]
 
 

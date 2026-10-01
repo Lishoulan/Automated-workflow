@@ -69,9 +69,10 @@ def find_history_file(account_key: str, account_output_dir: Path | None) -> Path
     return None
 
 
-def latest_today_record(history_path: Path, platform: str, today: str) -> dict[str, Any] | None:
+def today_records(history_path: Path, platform: str, today: str) -> list[dict[str, Any]]:
     payload = _read_json(history_path)
-    for record in reversed(_records(payload)):
+    matches: list[dict[str, Any]] = []
+    for record in _records(payload):
         if str(record.get("platform", "")).strip() != platform:
             continue
         published_at = str(record.get("published_at", "")).strip()
@@ -79,8 +80,13 @@ def latest_today_record(history_path: Path, platform: str, today: str) -> dict[s
             continue
         if str(record.get("status", "")).strip().lower() not in SUCCESS_STATUSES:
             continue
-        return record
-    return None
+        matches.append(record)
+    return matches
+
+
+def latest_today_record(history_path: Path, platform: str, today: str) -> dict[str, Any] | None:
+    records = today_records(history_path, platform, today)
+    return records[-1] if records else None
 
 
 def main() -> int:
@@ -111,11 +117,20 @@ def main() -> int:
     state = remote_state if isinstance(remote_state, dict) else {}
     changed = False
 
+    account_slug = resolve_account_slug(args.account, ROOT / "output")
     for platform in (xstate.PLATFORM_KEY_MAIN, xstate.PLATFORM_KEY_WEITOUTIAO):
-        record = latest_today_record(history_path, platform, today)
-        if record is None:
+        records = today_records(history_path, platform, today)
+        if not records:
             logger.info("No %s publish recorded today (%s).", platform, today)
             continue
+        record = records[-1]
+        previous = xstate.published_on(state, today, platform=platform, account=account_slug)
+        previous_count = 0
+        if previous is not None:
+            try:
+                previous_count = max(1, int(previous.get("daily_count", 1) or 1))
+            except (TypeError, ValueError):
+                previous_count = 1
         state = xstate.merge_entry(
             state,
             day=today,
@@ -126,12 +141,13 @@ def main() -> int:
                 "pgc_id": record.get("pgc_id", ""),
                 "title": record.get("title", ""),
                 "publish_url": record.get("publish_url", ""),
+                "daily_count": max(len(records), previous_count),
                 "recorded_at": datetime.now().isoformat(timespec="seconds"),
             },
             updated_at=datetime.now().isoformat(timespec="seconds"),
             # 带上账号，否则两个账号会覆盖同一条 entries[日期][平台]，
             # 跨通道互斥会串号（A 发过导致 B 整天不发）。
-            account=resolve_account_slug(args.account, ROOT / "output"),
+            account=account_slug,
         )
         changed = True
         logger.info("Recorded %s publish: %s", platform, record.get("title", ""))

@@ -110,6 +110,19 @@ class MaterialSource:
     body: str = ""
     ok: bool = False
     error: str = ""
+    evidence_type: str = "article"
+
+
+@dataclass(frozen=True)
+class MaterialEvidenceAssessment:
+    """Whether collected material can support a fact-grounded article."""
+
+    passed: bool
+    total_chars: int
+    independent_source_count: int
+    full_article_count: int
+    factual_anchor_count: int
+    reasons: tuple[str, ...] = ()
 
 
 @dataclass
@@ -134,6 +147,123 @@ class MaterialBundle:
     @property
     def total_chars(self) -> int:
         return sum(len(item.body) for item in self.usable)
+
+
+_FACT_ANCHOR_PATTERN = re.compile(
+    r"(?:"
+    r"\d+(?:\.\d+)?(?:%|％|元|万元|亿元|人|家|项|次|天|年|月|日|时|分|秒|米|公里|英寸|款|台|个)?"
+    r"|[一二两三四五六七八九十百千万亿两]+(?:人|家|项|次|天|年|月|日|元|米|款|台|个)"
+    r"|据|报道|通报|公告|发布|表示|回应|显示|披露|介绍|宣布|确认"
+    r"|发生|完成|推出|上线|开工|签约|获批|增长|下降|达到|超过|位于|来自|涉及|造成|截至"
+    r")"
+)
+
+
+def _source_identity(source: MaterialSource) -> str:
+    """Return an identity that does not count several pages from one site twice."""
+    url = str(source.url or "").strip()
+    if url:
+        host = urllib.parse.urlparse(url).netloc.lower()
+        host = re.sub(r"^(?:www\.|m\.|mobile\.)", "", host)
+        if host:
+            labels = host.split(".")
+            if len(labels) >= 3 and ".".join(labels[-2:]) in {
+                "com.cn",
+                "net.cn",
+                "org.cn",
+                "gov.cn",
+            }:
+                host = ".".join(labels[-3:])
+            elif len(labels) >= 2:
+                host = ".".join(labels[-2:])
+            return f"host:{host}"
+    title = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", str(source.title or "")).lower()
+    return f"title:{title[:80]}" if title else ""
+
+
+def _factual_anchor_count(sources: Iterable[MaterialSource]) -> int:
+    anchors: set[str] = set()
+    for source in sources:
+        for sentence in re.split(r"[。！？!?；;\n]+", str(source.body or "")):
+            sentence = re.sub(r"\s+", "", sentence).strip()
+            if len(sentence) < 10 or not _FACT_ANCHOR_PATTERN.search(sentence):
+                continue
+            # Search results often repeat the same sentence with a different title.
+            # A normalized prefix prevents those copies from inflating the count.
+            normalized = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9%％]+", "", sentence).lower()
+            if normalized:
+                anchors.add(normalized[:120])
+    return len(anchors)
+
+
+def assess_material_evidence(bundle: MaterialBundle) -> MaterialEvidenceAssessment:
+    """Assess source diversity and concrete facts before an article is generated.
+
+    A single substantial article can carry an event. Shorter material needs at
+    least two independent sources. Synthetic search-result digests add context,
+    but never count as an independent source or a full article.
+    """
+    usable = list(bundle.usable)
+    real_sources = [item for item in usable if isinstance(item, MaterialSource)]
+
+    # Keep compatibility with custom collectors that implement the historical
+    # MaterialBundle protocol but do not expose typed MaterialSource objects.
+    if usable and not real_sources:
+        total_chars = int(getattr(bundle, "total_chars", 0) or 0)
+        return MaterialEvidenceAssessment(
+            passed=total_chars >= 400,
+            total_chars=total_chars,
+            independent_source_count=1,
+            full_article_count=1,
+            factual_anchor_count=0,
+            reasons=() if total_chars >= 400 else ("素材少于 400 字",),
+        )
+
+    unique_sources: list[MaterialSource] = []
+    seen_bodies: set[str] = set()
+    for source in real_sources:
+        normalized = re.sub(
+            r"[^\u4e00-\u9fffA-Za-z0-9%％]+", "", str(source.body or "")
+        ).lower()
+        if not normalized or normalized in seen_bodies:
+            continue
+        seen_bodies.add(normalized)
+        unique_sources.append(source)
+
+    total_chars = sum(len(str(item.body or "")) for item in unique_sources)
+    independent_ids = {
+        identity
+        for item in unique_sources
+        if item.evidence_type != "search_digest"
+        if (identity := _source_identity(item))
+    }
+    full_articles = [
+        item for item in unique_sources if item.evidence_type == "article"
+    ]
+    longest_article = max((len(item.body) for item in full_articles), default=0)
+    factual_anchors = _factual_anchor_count(unique_sources)
+
+    reasons: list[str] = []
+    if total_chars < 400:
+        reasons.append("素材少于 400 字")
+    if factual_anchors < 5:
+        reasons.append(f"具体事实锚点只有 {factual_anchors} 个，少于 5 个")
+    source_gate_passed = longest_article >= 900 or (
+        len(independent_ids) >= 2 and total_chars >= 600
+    )
+    if not source_gate_passed:
+        reasons.append(
+            "缺少一篇 900 字以上完整正文，且独立来源不足 2 个或总素材少于 600 字"
+        )
+
+    return MaterialEvidenceAssessment(
+        passed=not reasons,
+        total_chars=total_chars,
+        independent_source_count=len(independent_ids),
+        full_article_count=len(full_articles),
+        factual_anchor_count=factual_anchors,
+        reasons=tuple(reasons),
+    )
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -634,6 +764,7 @@ def collect_material(
             if body:
                 source.body = body
                 source.ok = True
+                source.evidence_type = "article"
             else:
                 source.error = f"页面里没抽出足够长的正文（{how}）"
         except urllib.error.HTTPError as exc:
@@ -655,6 +786,7 @@ def collect_material(
                 source.body = f"{hit['title']}。{snippet}"
                 source.ok = True
                 source.error = ""
+                source.evidence_type = "search_snippet"
         bundle.sources.append(source)
 
     # 若逐条抓取拿到的正文太少，把所有结果的摘要合并成一份兜底素材
@@ -667,6 +799,7 @@ def collect_material(
                     url="",
                     body=merged,
                     ok=True,
+                    evidence_type="search_digest",
                 )
             )
     return bundle

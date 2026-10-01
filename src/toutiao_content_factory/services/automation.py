@@ -457,14 +457,37 @@ class TopicAutomationService:
         if not title:
             return False
         existing = str(topic.snippet or "").strip()
-        # Hot-list snippets can be long search-result digests, not article bodies.
-        # Re-fetch a source for those topics before treating the text as evidence.
-        if len(existing) >= self.MATERIAL_MIN_CHARS and topic.source_type not in {"baidu_hot", "hot_board"}:
-            return True
         try:
             from toutiao_content_factory.services.material_search_service import (
+                MaterialBundle,
+                MaterialSource,
+                assess_material_evidence,
                 collect_material,
             )
+
+            # Existing non-hot snippets may already contain a fetched article.
+            # Apply the same evidence gate instead of accepting them by length alone.
+            if (
+                len(existing) >= self.MATERIAL_MIN_CHARS
+                and topic.source_type not in {"baidu_hot", "hot_board"}
+            ):
+                existing_bundle = MaterialBundle(
+                    query=title,
+                    sources=[
+                        MaterialSource(
+                            title=str(getattr(topic, "source", "") or title),
+                            url=str(topic.url or ""),
+                            body=existing,
+                            ok=True,
+                            evidence_type="article",
+                        )
+                    ],
+                )
+                existing_assessment = assess_material_evidence(existing_bundle)
+                if existing_assessment.passed:
+                    topic._verified_source_material = True
+                    topic._material_evidence_assessment = asdict(existing_assessment)
+                    return True
 
             bundle = collect_material(
                 title,
@@ -481,12 +504,16 @@ class TopicAutomationService:
                 len(bundle.sources),
             )
             return False
-        if bundle.total_chars < self.MATERIAL_MIN_BODY_CHARS:
+        assessment = assess_material_evidence(bundle)
+        topic._material_evidence_assessment = asdict(assessment)
+        if not assessment.passed:
             self.logger.warning(
-                "[素材] 选题只有 %d 字搜索摘要，低于 %d 字事实材料门槛，改试下一题: %s",
-                bundle.total_chars,
-                self.MATERIAL_MIN_BODY_CHARS,
+                "[素材] 证据不足，改试下一题：%s | %s | 独立来源 %d 个 | 事实锚点 %d 个 | 共 %d 字",
                 title,
+                "；".join(assessment.reasons),
+                assessment.independent_source_count,
+                assessment.factual_anchor_count,
+                assessment.total_chars,
             )
             return False
         body = bundle.combined_text.strip()
@@ -499,8 +526,8 @@ class TopicAutomationService:
         self.logger.info(
             "[素材] 已为选题补齐正文：%s | 来源 %d 个 | 共 %d 字",
             title,
-            len(bundle.usable),
-            bundle.total_chars,
+            assessment.independent_source_count,
+            assessment.total_chars,
         )
         return True
 
@@ -1073,10 +1100,14 @@ class TopicAutomationService:
         basename = self.settings.automation.selected_topic_basename
         json_path = self.settings.output_dir / f"{basename}.json"
         md_path = self.settings.output_dir / f"{basename}.md"
+        material_evidence = dict(
+            getattr(topic, "_material_evidence_assessment", {}) or {}
+        )
         json_payload = {
             "selected_at": datetime.now().isoformat(timespec="seconds"),
             "generated_topics_at": report.generated_at,
             "selected_topic": asdict(enriched_topic),
+            "material_evidence": material_evidence,
             "auto_input_text": input_text,
         }
         json_path.write_text(json.dumps(json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1125,6 +1156,9 @@ class TopicAutomationService:
             f"- 推荐体裁：{content_format_label}\n"
             f"- 证据强度：{enriched_topic.evidence_strength}\n"
             f"- 选题质量分：{enriched_topic.quality_score}\n"
+            f"- 素材独立来源：{material_evidence.get('independent_source_count', '未评估')}\n"
+            f"- 素材事实锚点：{material_evidence.get('factual_anchor_count', '未评估')}\n"
+            f"- 素材总字数：{material_evidence.get('total_chars', '未评估')}\n"
             f"- 标题打法赛道：{prompt_track}\n"
             f"- 标题抓手：{'、'.join(enriched_topic.title_potential_reasons) or '无'}\n"
             f"- 质量标记：{'、'.join(enriched_topic.quality_flags) or '无'}\n"

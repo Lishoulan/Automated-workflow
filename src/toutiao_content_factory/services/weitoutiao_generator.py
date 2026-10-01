@@ -328,9 +328,10 @@ class WeiToutiaoStandaloneGenerator:
             raise AIResponseFormatError(
                 "WeiToutiao model response was an HTML document instead of post text."
             )
-        # 兜底：内容过短时补话题标签，避免发布层 200 字门槛拦截
-        if len(content.replace("\n", "").replace(" ", "")) < MIN_WTT_CHARS:
-            content = content + "\n\n" + self._build_tags(topic)
+        # 模型偶尔不输出标签；发布包会直接把 content_override 交给微头条发布器，
+        # 因此应在这里补齐，而不是只写入旁路的 tags.txt。
+        if not self._extract_tags(content):
+            content = content + "\n\n" + self._build_tags(topic, persona)
         return content[:MAX_WTT_CHARS]
 
     def _build_tags(self, topic: TopicCandidate, persona: str = "") -> str:
@@ -376,6 +377,25 @@ class WeiToutiaoStandaloneGenerator:
                 "制度", "标准", "补贴", "户籍", "退休", "能否", "应否",
             )
         )
+
+    def _model_story_fallback_reason(
+        self,
+        topic: TopicCandidate,
+        persona: str,
+        content: str,
+    ) -> str:
+        """Return a reason when a model-written story needs the evidence-only template."""
+        if not self._is_story_context(topic, persona):
+            return ""
+        if self._is_public_policy_topic(topic, persona):
+            return "policy_story_evidence_guard"
+        quality_flags = {str(flag).strip().lower() for flag in (topic.quality_flags or [])}
+        if quality_flags.intersection({"weak_evidence", "title_only"}):
+            return "story_evidence_guard"
+        compact = re.sub(r"\s+", "", str(content or ""))
+        if re.search(r"(?:你|大家).{0,12}(?:先|选择).{0,16}还是", compact):
+            return "story_safety_guard"
+        return ""
 
     @staticmethod
     def _content_char_count(content: str) -> int:
@@ -467,7 +487,9 @@ class WeiToutiaoStandaloneGenerator:
                     f"根据{source}目前公开的信息，可以确认的是：{summary}。"
                     "公开摘要没有写明的原因、完整时间线和后续安排，不作补写。\n\n"
                     "这类社会故事容易被情绪带着走，更稳妥的做法是把已经确认的事实"
-                    "与网友猜测分开，后续只根据新的公开回应更新判断。\n\n"
+                    "与网友猜测分开，后续只根据新的公开回应更新判断。核对时可以继续看"
+                    "原始发布者、发生时间和地点、相关方面后续回应；不同来源出现冲突时，"
+                    "先保留结论，等待能相互印证的信息。\n\n"
                     "你更希望后续公开哪一个关键细节？"
                     f"\n\n{self._build_tags(topic, persona)}"
                 )
@@ -531,7 +553,9 @@ class WeiToutiaoStandaloneGenerator:
         publish_dir.mkdir(parents=True, exist_ok=True)
 
         (publish_dir / "article.md").write_text(content, encoding="utf-8")
-        tags = self._extract_tags(content) or self._build_tags(topic)
+        tags = self._extract_tags(content)
+        if not tags:
+            tags = [tag.lstrip("#") for tag in self._build_tags(topic, persona).split()]
         (publish_dir / "tags.txt").write_text("\n".join(tags), encoding="utf-8")
 
         first_line = next((line.strip() for line in content.splitlines() if line.strip()), topic.title)
@@ -581,9 +605,10 @@ class WeiToutiaoStandaloneGenerator:
             generation_mode = "local_fallback"
             fallback_reason = self._safe_error(exc)
             content = self.build_local_fallback_content(topic, persona=persona)
-        if generation_mode == "model" and self._is_public_policy_topic(topic, persona):
+        story_fallback_reason = self._model_story_fallback_reason(topic, persona, content)
+        if generation_mode == "model" and story_fallback_reason:
             generation_mode = "local_fallback"
-            fallback_reason = "policy_story_evidence_guard"
+            fallback_reason = story_fallback_reason
             content = self.build_local_fallback_content(topic, persona=persona)
         if self._content_char_count(content) < MIN_WTT_CHARS:
             generation_mode = "local_fallback"
@@ -718,9 +743,10 @@ class WeiToutiaoStandaloneGenerator:
                     )
                     continue
 
-            if generation_mode == "model" and self._is_public_policy_topic(topic, persona):
+            story_fallback_reason = self._model_story_fallback_reason(topic, persona, content)
+            if generation_mode == "model" and story_fallback_reason:
                 generation_mode = "local_fallback"
-                fallback_reason = "policy_story_evidence_guard"
+                fallback_reason = story_fallback_reason
                 content = self.build_local_fallback_content(topic, persona=persona)
 
             if looks_like_html_document(content):

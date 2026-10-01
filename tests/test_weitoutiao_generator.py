@@ -247,6 +247,54 @@ def test_story_policy_classifier_ignores_unrelated_snippet_and_tags(app_settings
     assert "#社会热点" in content
 
 
+def test_weak_evidence_story_preview_uses_grounded_content_and_story_tags(app_settings) -> None:
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.story"))
+    topic = TopicCandidate(
+        title="地震瞬间2名护士一手抱一个婴儿疏散",
+        url="https://example.test/quake",
+        source="公开信息",
+        source_type="hot_board",
+        summary="地震发生时，两名护士迅速各抱一个婴儿疏散至停车场。",
+        matched_industries=["social_story"],
+        matched_keywords=[],
+        quality_flags=["weak_subject", "weak_evidence"],
+    )
+    object.__setattr__(app_settings.publishing, "weitoutiao_personas", ["story_comment"])
+    generator.select_topics = MagicMock(return_value=[topic])
+    generator.generate_content = MagicMock(
+        return_value=("两个宝宝都安全了。你会先保住孩子还是自己？" * 20)
+    )
+
+    result = generator.preview_standalone()
+    run_dir = Path(result["run_dir"])
+    content = (run_dir / "publish" / "article.md").read_text(encoding="utf-8")
+    tags = (run_dir / "publish" / "tags.txt").read_text(encoding="utf-8").splitlines()
+    meta = json.loads((run_dir / "publish" / "publish_meta.json").read_text(encoding="utf-8"))
+
+    assert result["generation_mode"] == "local_fallback"
+    assert "先保住孩子还是自己" not in content
+    assert tags == ["社会热点", "生活观察"]
+    assert meta["tags"] == tags
+
+
+def test_story_model_content_without_tags_gets_story_tags(app_settings) -> None:
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.story"))
+    topic = TopicCandidate(
+        title="社区志愿者帮老人找到走失家人",
+        url="https://example.test/community",
+        source="公开信息",
+        source_type="hot_board",
+        summary="社区志愿者根据公开线索帮助老人找到家人。",
+        matched_industries=["social_story"],
+    )
+    generator.openai_service.create_text_completion = MagicMock(return_value="已核实的故事内容。" * 30)
+
+    content = generator.generate_content(topic, persona="story_comment")
+
+    assert "#社会热点 #生活观察" in content
+    assert "#产业观察" not in content
+
+
 def test_standalone_preview_builds_package_without_publishing(app_settings) -> None:
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.preview"))
     generator.select_topics = MagicMock(return_value=[_topic()])

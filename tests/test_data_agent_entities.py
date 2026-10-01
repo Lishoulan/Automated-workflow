@@ -4,6 +4,17 @@ from unittest.mock import MagicMock
 
 from toutiao_content_factory.agents.data_agent import DataAgent
 from toutiao_content_factory.models import ExtractionResult, TrendReport
+from toutiao_content_factory.services.company_entities import (
+    extract_known_company_names,
+    is_valid_company_name,
+)
+
+
+def test_product_context_identifies_apple_without_accepting_publisher_boilerplate() -> None:
+    text = "IT之家消息，软媒旗下科技整理了苹果 iPad Mini 8 的产品信息。"
+
+    assert "苹果" in extract_known_company_names(text)
+    assert is_valid_company_name("软媒旗下科技") is False
 
 
 def test_data_agent_sanitizes_scene_and_source_labels_from_company_fields(

@@ -157,6 +157,42 @@ def test_select_auto_title_marks_poison_candidates_as_failed(app_settings, tmp_p
     assert selection["passed_count"] == 1
 
 
+def test_select_auto_title_rejects_source_label_and_keeps_topic_subject(
+    app_settings,
+    tmp_path,
+) -> None:
+    article = (
+        "苹果 iPad Mini 8 将搭载 A20 Pro 芯片。"
+        "软媒旗下科技整理了公开信息，产品预计在2026年发布。"
+    )
+    titles = [
+        "软媒旗下科技2026，芯片交付进度才是关键",
+        "苹果iPad Mini 8发布，A20 Pro芯片成关键",
+    ]
+    run_dir = tmp_path / "run"
+    _write_run_dir(run_dir, article=article, titles=titles)
+    (run_dir / "selected_topic.json").write_text(
+        json.dumps(
+            {
+                "selected_topic": {
+                    "title": "苹果 iPad Mini 8 前瞻：A20 Pro 芯片、OLED 屏、12GB 内存",
+                    "source": "ithome",
+                    "source_type": "html",
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    selection = _service(app_settings).select_auto_title(run_dir)
+
+    evaluations = {item["title"]: item for item in selection["evaluations"]}
+    assert evaluations[titles[0]]["passed"] is False
+    assert any("素材来源或媒体归属" in issue for issue in evaluations[titles[0]]["issues"])
+    assert selection["selected_title"] == titles[1]
+
+
 def test_select_auto_title_still_reports_when_nothing_passes(app_settings, tmp_path) -> None:
     article = "工信部提出机器人密度目标80%。"
     titles = ["工信部推动机器人80%：具身智能如何实测"]

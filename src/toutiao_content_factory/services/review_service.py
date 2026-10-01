@@ -306,6 +306,11 @@ class ReviewWorkflowService:
         candidates = self._title_candidates(bundle)
         checker = ArticleQualityChecker()
         selected_topic_payload = selected_topic.__dict__ if selected_topic is not None else {}
+        expected_companies = (
+            checker._extract_company_mentions(str(selected_topic.title or ""))
+            if selected_topic is not None
+            else []
+        )
         cover_variant = str(selected_topic_payload.get("cover_variant", "")).strip()
         try:
             content_domain = str(self.settings.get_style(bundle.style_key).content_domain)
@@ -346,7 +351,11 @@ class ReviewWorkflowService:
             title = self.publish_service._clip_title(
                 self._text_cleaner.strip_prompt_leakage(candidate).strip()
             )
-            result = checker._check_title(title, bundle.article)
+            result = checker._check_title(
+                title,
+                bundle.article,
+                expected_companies=expected_companies,
+            )
             issues = [str(item) for item in result.get("issues", []) if str(item).strip()]
             has_raw_title_issue = bool(issues)
             if exempt_markers:
@@ -491,6 +500,7 @@ class ReviewWorkflowService:
             ("标题与近7天已发布文章标题", "title_duplicate"),
             ("高频模板", "template_duplicate"),
             ("财务指标", "unsupported_financial_link"),
+            ("素材来源或媒体归属", "source_attribution_subject"),
         ):
             if token in issue:
                 return code

@@ -255,6 +255,31 @@ class TestCheckArticleIntegration:
 
         assert not any("模糊主体" in issue or "主体不一致" in issue for issue in result["issues"])
 
+    def test_title_rejects_publisher_attribution_as_subject(self) -> None:
+        result = self.checker._check_title(
+            "软媒旗下科技2026，芯片交付进度才是关键",
+            "软媒旗下科技整理了苹果 iPad Mini 8 的公开产品信息。",
+        )
+
+        assert any("素材来源或媒体归属" in issue for issue in result["issues"])
+
+    def test_title_allows_a_real_subsidiary_company_subject(self) -> None:
+        result = self.checker._check_title(
+            "阿里旗下科技公司投入30亿元，新业务进入交付期",
+            "阿里旗下科技公司宣布投入30亿元，新业务将在今年进入交付期。",
+        )
+
+        assert not any("素材来源或媒体归属" in issue for issue in result["issues"])
+
+    def test_title_subject_must_match_expected_topic_company(self) -> None:
+        result = self.checker._check_title(
+            "三星2026发布平板，芯片交付进度才是关键",
+            "苹果发布 iPad Mini 8，三星也提供了部分显示屏材料。",
+            expected_companies=["苹果"],
+        )
+
+        assert any("与数据报告确认主体" in issue for issue in result["issues"])
+
     def test_editorial_integrity_rejects_html_and_residual_sentence(self) -> None:
         result = self.checker.check_editorial_integrity(
             "优必选业务观察",

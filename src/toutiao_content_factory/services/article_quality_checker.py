@@ -655,6 +655,14 @@ class ArticleQualityChecker:
         r"((?:其他智能|其他机器人|某(?:智能|机器人)?(?:公司|企业|厂商|项目)?|"
         r"这家(?:公司|企业)|该(?:公司|企业)|相关(?:公司|企业|厂商)))"
     )
+    _SOURCE_ATTRIBUTION_TITLE_PATTERN = re.compile(
+        r"[\u4e00-\u9fffA-Za-z0-9]{2,16}旗下(?:"
+        r"科技(?!公司|企业|业务|产品|品牌)|"
+        r"媒体(?!公司|业务|品牌)|"
+        r"资讯(?!公司|平台|业务)|"
+        r"网站"
+        r")"
+    )
     _BODY_HTML_LEAK_PATTERN = re.compile(
         r"<!doctype\s+html\b|</?(?:html|head|body|script|style|div|table|tr|td)\b",
         re.IGNORECASE,
@@ -891,7 +899,12 @@ class ArticleQualityChecker:
             },
         }
 
-    def _check_title(self, title: str, content: str = "") -> dict:
+    def _check_title(
+        self,
+        title: str,
+        content: str = "",
+        expected_companies: Iterable[object] | None = None,
+    ) -> dict:
         """检查标题质量
 
         增强（RULE_006/007/008 落地）：
@@ -932,6 +945,10 @@ class ArticleQualityChecker:
                     "请改用差异化句式。"
                 )
                 break
+        if self._SOURCE_ATTRIBUTION_TITLE_PATTERN.search(title):
+            issues.append(
+                "标题把素材来源或媒体归属描述当成主体，必须改为选题中的真实公司、产品或事件主体。"
+            )
 
         # RULE_006: 纯抽象标题硬校验（主体词含"机器人/具身智能"等）
         has_number = bool(re.search(r"\d", title))
@@ -945,7 +962,13 @@ class ArticleQualityChecker:
 
         # Do not let a number make an otherwise vague placeholder subject
         # look concrete, e.g. “其他智能12.7亿：机器人如何实测”.
-        issues.extend(self._check_title_integrity(title, content))
+        issues.extend(
+            self._check_title_integrity(
+                title,
+                content,
+                expected_companies=expected_companies,
+            )
+        )
 
         # RULE_009: 高阅读四要素校验（2026-08-25 头条真实数据：1.3万 vs 23 阅读）
         # 标题必须含"主体/动作/数字/结果"中至少 2 项，否则信息密度不足、点击率极低

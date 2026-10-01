@@ -227,6 +227,26 @@ def test_story_local_fallback_has_no_industry_template_language(app_settings) ->
         assert marker not in content
 
 
+def test_story_policy_classifier_ignores_unrelated_snippet_and_tags(app_settings) -> None:
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.story"))
+    topic = TopicCandidate(
+        title="女子与家人失散48年国庆节终团圆",
+        url="https://example.test/reunion",
+        source="公开信息",
+        source_type="hot_board",
+        summary="失散多年的家人在国庆节完成认亲。",
+        snippet="同一热榜还出现了退休和养老话题",
+        matched_keywords=["退休"],
+    )
+
+    assert generator._is_public_policy_topic(topic, "story_comment") is False
+    content = generator.build_local_fallback_content(topic, persona="story_comment")
+    assert "社保" not in content
+    assert "政策" not in content
+    assert "#退休" not in content
+    assert "#社会热点" in content
+
+
 def test_standalone_preview_builds_package_without_publishing(app_settings) -> None:
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.preview"))
     generator.select_topics = MagicMock(return_value=[_topic()])

@@ -335,14 +335,18 @@ class WeiToutiaoStandaloneGenerator:
 
     def _build_tags(self, topic: TopicCandidate, persona: str = "") -> str:
         tags: list[str] = []
+        story_context = self._is_story_context(topic, persona)
+        topic_text = f"{topic.title} {topic.summary}"
         for keyword in (topic.matched_keywords or [])[:3]:
             keyword = str(keyword).strip()
+            if story_context and keyword not in topic_text:
+                continue
             if keyword and keyword not in {"热点", "热议"}:
                 tags.append(f"#{keyword}")
         if not tags:
             tags = (
                 ["#社会热点", "#生活观察"]
-                if self._is_story_context(topic, persona)
+                if story_context
                 else ["#产业观察", "#热点"]
             )
         return " ".join(tags[:3])
@@ -364,9 +368,7 @@ class WeiToutiaoStandaloneGenerator:
     def _is_public_policy_topic(self, topic: TopicCandidate, persona: str = "") -> bool:
         if not self._is_story_context(topic, persona):
             return False
-        text = " ".join(
-            str(item or "") for item in (topic.title, topic.summary, topic.snippet)
-        )
+        text = " ".join(str(item or "") for item in (topic.title, topic.summary))
         return any(
             token in text
             for token in (
@@ -459,6 +461,17 @@ class WeiToutiaoStandaloneGenerator:
         source = re.sub(r"\s+", " ", str(topic.source or "公开信息").strip()) or "公开信息"
         if self._is_story_context(topic, persona):
             headline = title[:30]
+            if not self._is_public_policy_topic(topic, persona):
+                content = (
+                    f"{headline}\n\n"
+                    f"根据{source}目前公开的信息，可以确认的是：{summary}。"
+                    "公开摘要没有写明的原因、完整时间线和后续安排，不作补写。\n\n"
+                    "这类社会故事容易被情绪带着走，更稳妥的做法是把已经确认的事实"
+                    "与网友猜测分开，后续只根据新的公开回应更新判断。\n\n"
+                    "你更希望后续公开哪一个关键细节？"
+                    f"\n\n{self._build_tags(topic, persona)}"
+                )
+                return content[:MAX_WTT_CHARS]
             content = (
                 f"{headline}\n\n"
                 f"根据{source}目前公开的信息，可以确认的是：{summary}。"

@@ -1,190 +1,191 @@
 {
-  "schema": 1,
-  "updated_at": "2026-10-02T01:34:31",
-  "entries": {
-    "2026-09-16": {
-      "toutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "工信部推动机器人80%：具身智能如何实测",
-        "publish_url": "",
-        "recorded_at": "2026-09-16T22:47:41"
-      },
-      "toutiao_weitoutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "PS5模拟器突破！KytyPS5可运行《宇宙机器人》",
-        "publish_url": "",
-        "recorded_at": "2026-09-16T22:47:41"
-      }
-    },
-    "2026-09-17": {
-      "toutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "埃斯顿出货量创新高，机器人市场进入新阶段",
-        "publish_url": "",
-        "recorded_at": "2026-09-17T22:53:47"
-      },
-      "toutiao_weitoutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "杭叉集团23亿押宝机器人，叉车巨头转身AI，市场前景几何？",
-        "publish_url": "",
-        "recorded_at": "2026-09-17T22:53:47"
-      }
-    },
-    "2026-09-18": {
-      "toutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "年全球出货预判仅2万台，优必选万台工厂赌对了吗",
-        "publish_url": "",
-        "recorded_at": "2026-09-18T09:19:28"
-      },
-      "toutiao_weitoutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "机器人突破不止于展示，交付先过这三道关",
-        "publish_url": "",
-        "recorded_at": "2026-09-18T17:17:06"
-      }
-    },
-    "2026-09-19::robot-notes": {
-      "toutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "养老困境：独居老人摔倒，家庭责任与社区服务如何结合",
-        "publish_url": "",
-        "recorded_at": "2026-09-19T23:17:17"
-      },
-      "toutiao_weitoutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "“老王退休后帮儿子看孩子，结果一家子因为育儿规矩吵翻天”",
-        "publish_url": "",
-        "recorded_at": "2026-09-19T23:17:17"
-      }
-    },
-    "2026-09-20::robot-notes": {
-      "toutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "独居老人摔倒两天，邻居报警破门揭示照护盲区",
-        "publish_url": "",
-        "recorded_at": "2026-09-20T11:54:43"
-      },
-      "toutiao_weitoutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "老人借亲戚钱没打借条，法院怎么判？",
-        "publish_url": "",
-        "recorded_at": "2026-09-20T11:54:43"
-      }
-    },
-    "2026-09-21::default": {
-      "toutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "国家能源40%：电力系统真实进度看交付",
-        "publish_url": "",
-        "recorded_at": "2026-09-21T01:52:29"
-      },
-      "toutiao_weitoutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "井盖数量远超常规标准",
-        "publish_url": "",
-        "recorded_at": "2026-09-21T01:52:29"
-      }
-    },
-    "2026-09-21::robot-notes": {
-      "toutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "老人去世，房产过户：兄弟姐妹为何反目",
-        "publish_url": "",
-        "recorded_at": "2026-09-21T02:01:56"
-      },
-      "toutiao_weitoutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "「老爹房过户给大儿子后，小弟小妹告赢了」",
-        "publish_url": "",
-        "recorded_at": "2026-09-21T18:21:07"
-      }
-    },
-    "2026-09-29::robot-notes": {
-      "toutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "7690646872964317723",
-        "title": "App广告设计引争议，老人拍照被弹窗20次",
-        "publish_url": "",
-        "visibility": "private",
-        "recorded_at": "2026-09-29T09:11:53",
-        "note": "Platform accepted submission in run 36461021836; article later set private after content review."
-      },
-      "toutiao_weitoutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "「老王拒交物业费，最后怎么解决的」",
-        "publish_url": "",
-        "recorded_at": "2026-09-29T10:45:54"
-      }
-    },
-    "2026-09-30::robot-notes": {
-      "toutiao": {
-        "channel": "cloud",
-        "status": "publish_uncertain",
-        "pgc_id": "",
-        "title": "老人房产赠予翻脸，儿子反悔引争议",
-        "publish_url": "",
-        "recorded_at": "2026-09-30T00:22:59"
-      },
-      "toutiao_weitoutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "「充电器忘拔烧毁整个家，这事最该提醒什么」",
-        "publish_url": "",
-        "recorded_at": "2026-09-30T18:56:03"
-      }
-    },
-    "2026-10-01::robot-notes": {
-      "toutiao_weitoutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "「充电器忘拔烧毁整个家，这事该提醒谁」",
-        "publish_url": "",
-        "recorded_at": "2026-10-01T00:22:38"
-      }
-    },
-    "2026-10-02::robot-notes": {
-      "toutiao_weitoutiao": {
-        "channel": "cloud",
-        "status": "submitted_for_review",
-        "pgc_id": "",
-        "title": "地震瞬间2名护士一手抱一个婴儿疏散",
-        "publish_url": "",
-        "recorded_at": "2026-10-02T01:34:31"
-      }
-    }
-  }
+    "schema":  1,
+    "updated_at":  "2026-10-02T01:34:31",
+    "entries":  {
+                    "2026-09-16":  {
+                                       "toutiao":  {
+                                                       "channel":  "cloud",
+                                                       "status":  "submitted_for_review",
+                                                       "pgc_id":  "",
+                                                       "title":  "工信部推动机器人80%：具身智能如何实测",
+                                                       "publish_url":  "",
+                                                       "recorded_at":  "2026-09-16T22:47:41"
+                                                   },
+                                       "toutiao_weitoutiao":  {
+                                                                  "channel":  "cloud",
+                                                                  "status":  "submitted_for_review",
+                                                                  "pgc_id":  "",
+                                                                  "title":  "PS5模拟器突破！KytyPS5可运行《宇宙机器人》",
+                                                                  "publish_url":  "",
+                                                                  "recorded_at":  "2026-09-16T22:47:41"
+                                                              }
+                                   },
+                    "2026-09-17":  {
+                                       "toutiao":  {
+                                                       "channel":  "cloud",
+                                                       "status":  "submitted_for_review",
+                                                       "pgc_id":  "",
+                                                       "title":  "埃斯顿出货量创新高，机器人市场进入新阶段",
+                                                       "publish_url":  "",
+                                                       "recorded_at":  "2026-09-17T22:53:47"
+                                                   },
+                                       "toutiao_weitoutiao":  {
+                                                                  "channel":  "cloud",
+                                                                  "status":  "submitted_for_review",
+                                                                  "pgc_id":  "",
+                                                                  "title":  "杭叉集团23亿押宝机器人，叉车巨头转身AI，市场前景几何？",
+                                                                  "publish_url":  "",
+                                                                  "recorded_at":  "2026-09-17T22:53:47"
+                                                              }
+                                   },
+                    "2026-09-18":  {
+                                       "toutiao":  {
+                                                       "channel":  "cloud",
+                                                       "status":  "submitted_for_review",
+                                                       "pgc_id":  "",
+                                                       "title":  "年全球出货预判仅2万台，优必选万台工厂赌对了吗",
+                                                       "publish_url":  "",
+                                                       "recorded_at":  "2026-09-18T09:19:28"
+                                                   },
+                                       "toutiao_weitoutiao":  {
+                                                                  "channel":  "cloud",
+                                                                  "status":  "submitted_for_review",
+                                                                  "pgc_id":  "",
+                                                                  "title":  "机器人突破不止于展示，交付先过这三道关",
+                                                                  "publish_url":  "",
+                                                                  "recorded_at":  "2026-09-18T17:17:06"
+                                                              }
+                                   },
+                    "2026-09-19::robot-notes":  {
+                                                    "toutiao":  {
+                                                                    "channel":  "cloud",
+                                                                    "status":  "submitted_for_review",
+                                                                    "pgc_id":  "",
+                                                                    "title":  "养老困境：独居老人摔倒，家庭责任与社区服务如何结合",
+                                                                    "publish_url":  "",
+                                                                    "recorded_at":  "2026-09-19T23:17:17"
+                                                                },
+                                                    "toutiao_weitoutiao":  {
+                                                                               "channel":  "cloud",
+                                                                               "status":  "submitted_for_review",
+                                                                               "pgc_id":  "",
+                                                                               "title":  "“老王退休后帮儿子看孩子，结果一家子因为育儿规矩吵翻天”",
+                                                                               "publish_url":  "",
+                                                                               "recorded_at":  "2026-09-19T23:17:17"
+                                                                           }
+                                                },
+                    "2026-09-20::robot-notes":  {
+                                                    "toutiao":  {
+                                                                    "channel":  "cloud",
+                                                                    "status":  "submitted_for_review",
+                                                                    "pgc_id":  "",
+                                                                    "title":  "独居老人摔倒两天，邻居报警破门揭示照护盲区",
+                                                                    "publish_url":  "",
+                                                                    "recorded_at":  "2026-09-20T11:54:43"
+                                                                },
+                                                    "toutiao_weitoutiao":  {
+                                                                               "channel":  "cloud",
+                                                                               "status":  "submitted_for_review",
+                                                                               "pgc_id":  "",
+                                                                               "title":  "老人借亲戚钱没打借条，法院怎么判？",
+                                                                               "publish_url":  "",
+                                                                               "recorded_at":  "2026-09-20T11:54:43"
+                                                                           }
+                                                },
+                    "2026-09-21::default":  {
+                                                "toutiao":  {
+                                                                "channel":  "cloud",
+                                                                "status":  "submitted_for_review",
+                                                                "pgc_id":  "",
+                                                                "title":  "国家能源40%：电力系统真实进度看交付",
+                                                                "publish_url":  "",
+                                                                "recorded_at":  "2026-09-21T01:52:29"
+                                                            },
+                                                "toutiao_weitoutiao":  {
+                                                                           "channel":  "cloud",
+                                                                           "status":  "submitted_for_review",
+                                                                           "pgc_id":  "",
+                                                                           "title":  "井盖数量远超常规标准",
+                                                                           "publish_url":  "",
+                                                                           "recorded_at":  "2026-09-21T01:52:29"
+                                                                       }
+                                            },
+                    "2026-09-21::robot-notes":  {
+                                                    "toutiao":  {
+                                                                    "channel":  "cloud",
+                                                                    "status":  "submitted_for_review",
+                                                                    "pgc_id":  "",
+                                                                    "title":  "老人去世，房产过户：兄弟姐妹为何反目",
+                                                                    "publish_url":  "",
+                                                                    "recorded_at":  "2026-09-21T02:01:56"
+                                                                },
+                                                    "toutiao_weitoutiao":  {
+                                                                               "channel":  "cloud",
+                                                                               "status":  "submitted_for_review",
+                                                                               "pgc_id":  "",
+                                                                               "title":  "「老爹房过户给大儿子后，小弟小妹告赢了」",
+                                                                               "publish_url":  "",
+                                                                               "recorded_at":  "2026-09-21T18:21:07"
+                                                                           }
+                                                },
+                    "2026-09-29::robot-notes":  {
+                                                    "toutiao":  {
+                                                                    "channel":  "cloud",
+                                                                    "status":  "submitted_for_review",
+                                                                    "pgc_id":  "7690646872964317723",
+                                                                    "title":  "App广告设计引争议，老人拍照被弹窗20次",
+                                                                    "publish_url":  "",
+                                                                    "visibility":  "private",
+                                                                    "recorded_at":  "2026-09-29T09:11:53",
+                                                                    "note":  "Platform accepted submission in run 36461021836; article later set private after content review."
+                                                                },
+                                                    "toutiao_weitoutiao":  {
+                                                                               "channel":  "cloud",
+                                                                               "status":  "submitted_for_review",
+                                                                               "pgc_id":  "",
+                                                                               "title":  "「老王拒交物业费，最后怎么解决的」",
+                                                                               "publish_url":  "",
+                                                                               "recorded_at":  "2026-09-29T10:45:54"
+                                                                           }
+                                                },
+                    "2026-09-30::robot-notes":  {
+                                                    "toutiao":  {
+                                                                    "channel":  "cloud",
+                                                                    "status":  "publish_uncertain",
+                                                                    "pgc_id":  "",
+                                                                    "title":  "老人房产赠予翻脸，儿子反悔引争议",
+                                                                    "publish_url":  "",
+                                                                    "recorded_at":  "2026-09-30T00:22:59"
+                                                                },
+                                                    "toutiao_weitoutiao":  {
+                                                                               "channel":  "cloud",
+                                                                               "status":  "submitted_for_review",
+                                                                               "pgc_id":  "",
+                                                                               "title":  "「充电器忘拔烧毁整个家，这事最该提醒什么」",
+                                                                               "publish_url":  "",
+                                                                               "recorded_at":  "2026-09-30T18:56:03"
+                                                                           }
+                                                },
+                    "2026-10-01::robot-notes":  {
+                                                    "toutiao_weitoutiao":  {
+                                                                               "channel":  "cloud",
+                                                                               "status":  "submitted_for_review",
+                                                                               "pgc_id":  "",
+                                                                               "title":  "「充电器忘拔烧毁整个家，这事该提醒谁」",
+                                                                               "publish_url":  "",
+                                                                               "recorded_at":  "2026-10-01T00:22:38"
+                                                                           }
+                                                },
+                    "2026-10-02::robot-notes":  {
+                                                    "toutiao_weitoutiao":  {
+                                                                               "channel":  "cloud",
+                                                                               "status":  "submitted_for_review",
+                                                                               "pgc_id":  "",
+                                                                               "title":  "地震瞬间2名护士一手抱一个婴儿疏散",
+                                                                               "publish_url":  "",
+                                                                               "recorded_at":  "2026-10-02T01:34:31",
+                                                                               "daily_count":  2
+                                                                           }
+                                                }
+                }
 }

@@ -608,18 +608,15 @@ class ContentGuardService:
             self._write_report(report, run_dir=run_dir)
             self._apply_review_override_from_report(run_dir, report)
             return report
-        if not target_text or not corpus:
-            report = self._empty_report(mode="run")
-            report["run_dir"] = str(run_dir)
-            report["blocked"] = bool(editorial_blockers)
-            report["writing_integrity"] = editorial_integrity
-            report["blocking_flags"] = editorial_blockers
-            report["human_review_required"] = bool(editorial_blockers)
-            self._write_report(report, run_dir=run_dir)
-            self._apply_review_override_from_report(run_dir, report)
-            return report
-
-        best_match, best_score, best_hamming = self._find_best_match(target_text, exclude_run_dir=run_dir)
+        # An empty publish-history corpus only means there is no earlier article
+        # to compare against. Source-copy, number-attribution and AI-risk checks
+        # still have enough local input and must run on a first publication.
+        if target_text and corpus:
+            best_match, best_score, best_hamming = self._find_best_match(
+                target_text, exclude_run_dir=run_dir
+            )
+        else:
+            best_match, best_score, best_hamming = None, 0.0, SimHashIndex.BITS
         ai_risk = self._estimate_ai_giness(title, article)
         blocked = bool(best_match and best_score >= self.RUN_SIMILARITY_THRESHOLD) or (
             best_hamming <= self.SIMHASH_HAMMING_THRESHOLD

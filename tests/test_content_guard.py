@@ -212,3 +212,43 @@ def test_publish_guard_persists_writing_quality_blockers(
     )
     assert status["status"] == "rejected"
     assert status["guard_reason"] == "writing_quality"
+
+
+def test_empty_history_still_checks_source_originality(
+    app_settings,
+    logger,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A first publication has no history corpus but still has source material."""
+    run_dir = tmp_path / "first-run"
+    run_dir.mkdir()
+    article = (
+        "国家能源局发布两份电网安全文件，明确新型并网主体也要纳入风险管控。"
+        "文件要求新能源和新型储能严格接受统一调度，并完善风险分级标准。"
+        "公开数据还显示，全国光伏装机规模继续增长，电网调节需求同步上升。"
+    ) * 8
+    (run_dir / "article.md").write_text(article, encoding="utf-8")
+    (run_dir / "titles.txt").write_text(
+        "国家能源局连发两文：储能安全管理出现三项变化",
+        encoding="utf-8",
+    )
+    (run_dir / "source_material_full.txt").write_text(
+        "素材来源：公开报道\n原文标题：测试\n原文链接：https://example.test/source\n\n"
+        + article,
+        encoding="utf-8",
+    )
+
+    guard = ContentGuardService(app_settings, logger)
+    monkeypatch.setattr(guard, "_get_corpus_and_index", lambda: ([], object()))
+
+    report = guard.evaluate_run(run_dir)
+
+    assert report["source_copy_ratio"] is not None
+    assert report["source_copy_ratio"] >= 35.0
+    assert report["source_copy_chars"] > 0
+    assert report["blocked"] is True
+    persisted = json.loads(
+        (run_dir / "content_guard_report.json").read_text(encoding="utf-8")
+    )
+    assert persisted["source_copy_ratio"] == report["source_copy_ratio"]

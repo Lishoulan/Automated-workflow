@@ -83,6 +83,26 @@ def test_snippets_do_not_exhaust_budget_before_full_report(monkeypatch):
     assert bundle.usable[-1].evidence_type == "article"
 
 
+def test_baijiahao_reports_are_fetchable_but_baidu_search_and_lookalikes_are_not(monkeypatch):
+    urls = [
+        "https://www.baidu.com/s?wd=baijiahao.baidu.com",
+        "https://baijiahao.baidu.com.attacker.example/report",
+        "https://baijiahao.baidu.com/s?id=123",
+    ]
+    assert [material._fetch_priority(url) for url in urls] == [0, 0, 2]
+    monkeypatch.setattr(material, "search_web", lambda *_, **__: [
+        {"title": "社区报道", "url": url, "snippet": ""} for url in urls
+    ])
+    fetch = MagicMock(return_value=(f"<p>{_full_body()}</p>", urls[2], "http"))
+    monkeypatch.setattr(material, "fetch_text_smart", fetch)
+
+    bundle = material.collect_material("社区报道")
+
+    fetch.assert_called_once()
+    assert fetch.call_args.args[0] == urls[2]
+    assert material.assess_material_evidence(bundle).passed
+
+
 def test_hot_story_reuses_rechecked_material_in_next_process(app_settings, monkeypatch):
     search = _mock_full_report(monkeypatch)
     def topic():

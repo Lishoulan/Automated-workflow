@@ -566,6 +566,13 @@ def _fetch_priority(url: str) -> int:
     text = str(url or "")
     if not text:
         return 0
+    try:
+        parsed_url = urllib.parse.urlparse(text)
+    except ValueError:
+        return 0
+    # Baijiahao hosts actual reports, unlike Baidu search/result pages.
+    if parsed_url.scheme in {"http", "https"} and parsed_url.hostname == "baijiahao.baidu.com":
+        return 2
     # 已知抓不到正文的跳转链接：搜狗微信、百度 link、搜索引擎自身
     if "weixin.sogou.com/link" in text or "baidu.com/link" in text:
         return 0
@@ -828,7 +835,7 @@ def collect_material(
         if sum(item.evidence_type == "article" for item in bundle.usable) >= max_sources or assess_material_evidence(bundle).passed:
             break
         url = hit["url"]
-        if any(host in url for host in SKIP_HOSTS):
+        if any(host in url for host in SKIP_HOSTS) and _fetch_priority(url) != 2:
             # 跳转链接允许（百度 / 搜狗微信的 link 域），但纯搜索/视频站跳过。
             # ⚠️ 2026-09-19：`weixin.sogou.com` 必须在白名单里 ——
             # 它是云端少数有结果的后端，结果给的就是 /link?url= 跳转链接。

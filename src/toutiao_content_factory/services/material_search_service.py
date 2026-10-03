@@ -809,6 +809,7 @@ def collect_material(
     min_body_chars: int = 600,
     timeout: int = 20,
     cache_dir: Path | None = None,
+    source_url: str = "",
 ) -> MaterialBundle:
     """按标题找报道并抓正文。
 
@@ -823,12 +824,30 @@ def collect_material(
             return cached
     bundle = MaterialBundle(query=title)
     hits: list[dict] = []
-    for phrase in _search_phrases(title):
-        hits = search_web(phrase, limit=limit)
-        if hits:
-            break
-    fetch_deadline = time.monotonic() + MATERIAL_FETCH_BUDGET_SECONDS
-    for hit in hits:
+
+    def candidates():
+        # Source-backed evergreen cases can fetch their original report even
+        # when search is unavailable. Search/result pages are not article seeds.
+        try:
+            parsed = urllib.parse.urlparse(str(source_url or ""))
+            direct = parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+        except ValueError:
+            direct = False
+        if direct and _fetch_priority(source_url) > 0:
+            yield {"title": title, "url": source_url, "snippet": ""}
+        if assess_material_evidence(bundle).passed:
+            return
+        for phrase in _search_phrases(title):
+            found = search_web(phrase, limit=limit)
+            if found:
+                hits.extend(found)
+                yield from found
+                return
+
+    fetch_deadline: float | None = None
+    for hit in candidates():
+        if fetch_deadline is None:
+            fetch_deadline = time.monotonic() + MATERIAL_FETCH_BUDGET_SECONDS
         if time.monotonic() >= fetch_deadline:
             logging.getLogger(__name__).warning("Material fetch budget exhausted after %d sources: %s", len(bundle.sources), title)
             break

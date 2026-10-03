@@ -96,6 +96,20 @@ class TopicPoolService:
         # 全部实测通过，见 tests/test_evergreen_story_pool.py。
         "robot_notes": [
             {
+                "title": "奶奶赠房给孙女后被起诉，法院判决撤销本人份额赠与",
+                "url": "https://www.court.gov.cn/zixun/xiangqing/365111.html",
+                "source": "最高人民法院公开案例",
+                "published_at": "2022-07-11T09:33:43",
+                "summary": "2022年公开案例回顾：陆奶奶将自己的拆迁份额赠与孙女，协议约定居住安排和赡养义务。孙女诉请否定房屋租约未获支持，陆奶奶随后请求撤销本人份额赠与，法院支持；不能写成收回全部三套房。",
+                "matched_industries": ["social_story"],
+                "matched_keywords": ["奶奶", "孙女", "房产", "赡养"],
+                "topic_type": "evergreen",
+                "topic_type_label": "家庭伦理",
+                "recommended_format": "quick_commentary",
+                "recommended_format_label": "案例回顾",
+                "title_playbook_track": "社会故事",
+            },
+            {
                 "title": "老人去世后房产过户给儿子，其他子女起诉要回",
                 "summary": "围绕遗嘱效力、法定继承顺序与份额协商，讲清房产继承里最容易谈崩的一步。",
                 "matched_industries": ["social_story"],
@@ -807,10 +821,10 @@ class TopicPoolService:
             topic = TopicCandidate.from_dict(
                 {
                     "title": title,
-                    "url": identity_url,
-                    "source": "evergreen_pool",
+                    "url": payload.get("url") or identity_url,
+                    "source": payload.get("source") or "evergreen_pool",
                     "source_type": "evergreen",
-                    "published_at": self._now(),
+                    "published_at": payload.get("published_at") or self._now(),
                     "snippet": payload.get("summary", ""),
                     "summary": payload.get("summary", ""),
                     "matched_industries": payload.get("matched_industries", []),

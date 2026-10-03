@@ -131,6 +131,48 @@ def test_slow_sources_cannot_consume_unbounded_fetch_time(monkeypatch):
     assert not material.assess_material_evidence(bundle).passed
 
 
+def test_original_report_passes_without_search_and_keeps_case_metadata(app_settings, monkeypatch):
+    search = MagicMock(side_effect=AssertionError("qualified original report needs no search"))
+    monkeypatch.setattr(material, "search_web", search)
+    fetch = MagicMock(return_value=(f"<p>{_full_body()}</p>", "https://www.court.gov.cn/case.html", "http"))
+    monkeypatch.setattr(material, "fetch_text_smart", fetch)
+    topic = TopicCandidate(
+        title="奶奶赠房给孙女后被起诉，法院判决撤销本人份额赠与",
+        url="https://www.court.gov.cn/case.html", source="最高人民法院公开案例", source_type="evergreen",
+        topic_type="evergreen", published_at="2022-07-11T09:33:43",
+        summary="2022年案例回顾，仅撤销奶奶本人的赠与份额。",
+    )
+    service = TopicAutomationService(app_settings, logging.getLogger("test"))
+
+    assert service._hydrate_topic_material(topic)
+    assert topic.summary == "2022年案例回顾，仅撤销奶奶本人的赠与份额。"
+    assert topic.published_at == "2022-07-11T09:33:43"
+    assert "不得写成今日" in service._build_input_text(topic)
+    fetch.assert_called_once()
+    search.assert_not_called()
+
+
+def test_failed_original_report_can_recover_from_search(monkeypatch):
+    search = _mock_full_report(monkeypatch)
+    fetch = MagicMock(side_effect=[OSError("temporarily unavailable"),
+                                  (f"<p>{_full_body()}</p>", "https://publisher.example/report", "http")])
+    monkeypatch.setattr(material, "fetch_text_smart", fetch)
+    bundle = material.collect_material("社区报道", source_url="https://www.court.gov.cn/case.html")
+    assert material.assess_material_evidence(bundle).passed
+    assert fetch.call_count == 2
+    search.assert_called_once()
+
+
+@pytest.mark.parametrize("url", ["evergreen://case/123", "file:///private", "https:missing-host",
+                                "https://www.baidu.com/s?wd=case", "https://baijiahao.baidu.com.attacker.example/case"])
+def test_non_article_original_url_is_not_fetched(monkeypatch, url):
+    monkeypatch.setattr(material, "search_web", lambda *_, **__: [])
+    fetch = MagicMock()
+    monkeypatch.setattr(material, "fetch_text_smart", fetch)
+    assert not material.collect_material("社区报道", source_url=url).usable
+    fetch.assert_not_called()
+
+
 @pytest.mark.parametrize("damage", ["expired", "future", "wrong_query", "thin", "invalid_type", "invalid_url", "invalid_json"])
 def test_invalid_or_stale_cache_cannot_pass_evidence_gate(tmp_path, monkeypatch, damage):
     search = _mock_full_report(monkeypatch)

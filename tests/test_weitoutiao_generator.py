@@ -208,6 +208,24 @@ def test_topic_ranking_uses_72_hour_feedback(app_settings) -> None:
     assert ranked[0].title == strong.title
 
 
+def test_case_prompt_keeps_original_year_and_limited_gift_scope(app_settings):
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
+    topic = TopicCandidate(
+        title="奶奶赠房给孙女后被起诉，法院判决撤销本人份额赠与",
+        url="https://www.court.gov.cn/zixun/xiangqing/365111.html",
+        source="最高人民法院公开案例", source_type="evergreen", topic_type="evergreen",
+        published_at="2022-07-11T09:33:43", summary="仅撤销本人份额，不能写成收回全部三套房。",
+        snippet="真实报道正文。" * 150,
+    )
+    topic._verified_source_material = True
+    generator.openai_service.create_text_completion = MagicMock(return_value="合格正文" * 70)
+    generator.generate_content(topic, persona="story_comment")
+    prompt = generator.openai_service.create_text_completion.call_args.kwargs["user_prompt"]
+    assert "2022-07-11" in prompt
+    assert "不得写成今日或近日" in prompt
+    assert "不能写成收回全部三套房" in prompt
+
+
 def test_story_local_fallback_has_no_industry_template_language(app_settings) -> None:
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.story"))
     topic = TopicCandidate(

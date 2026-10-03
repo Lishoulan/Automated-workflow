@@ -157,6 +157,9 @@ STORY_COMMENT_USER = """请围绕下面这件真实发生的事，写一条微�
 选题标题：{title}
 选题摘要：{summary}
 素材来源：{source}
+原始报道时间：{source_time}
+时效要求：{time_instruction}
+核对摘要（限定本案范围）：{case_summary}
 
 写作要求：
 1. 第一行直接写一个 15-25 字的标题，用具体的人、具体的选择或具体的结果，例如
@@ -337,6 +340,13 @@ class WeiToutiaoStandaloneGenerator:
             summary=summary[:6000] if verified_story else summary[:400],
             source="公开报道（见素材中的来源标记）" if verified_story else str(topic.source or "").strip() or "公开信息",
             positioning=positioning or "用数据拆热点、用产业链看趋势兑现",
+            source_time=str(topic.published_at or "未提供，不得自行补充"),
+            time_instruction=(
+                "常青案例回顾，正文须标明原始报道年份，不得写成今日或近日新发生的新闻。"
+                if self.topic_automation._is_evergreen_topic(topic)
+                else "事件日期以素材为准，报道日期不等于事发日期。"
+            ),
+            case_summary=str(topic.summary or "未提供")[:400],
         )
         raw = self.openai_service.create_text_completion(
             system_prompt=system_prompt,

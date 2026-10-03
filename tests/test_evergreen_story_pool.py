@@ -78,6 +78,17 @@ def test_evergreen_pool_is_not_empty() -> None:
     assert _payloads(), "社会故事号必须有自己的长青兜底池"
 
 
+def test_source_backed_case_retains_url_and_original_date(automation):
+    topics = TopicPoolService(automation.settings, logging.getLogger("test"))._load_evergreen_topics()
+    case = next(topic for topic in topics if topic.url.endswith("/365111.html"))
+    assert case.source == "最高人民法院公开案例"
+    assert case.published_at == "2022-07-11T09:33:43"
+    assert "本人份额" in case.summary
+    legacy = next(topic for topic in topics if topic.title == "老人去世后房产过户给儿子，其他子女起诉要回")
+    assert legacy.url.startswith("evergreen://robot-notes/")
+    assert legacy.source == "evergreen_pool"
+
+
 @pytest.mark.parametrize("payload", _payloads(), ids=lambda p: str(p["title"])[:24])
 def test_every_evergreen_topic_passes_the_account_boundary(
     automation: TopicAutomationService, payload: dict

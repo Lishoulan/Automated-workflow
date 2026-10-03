@@ -494,6 +494,7 @@ class TopicAutomationService:
                 max_sources=self.MATERIAL_MAX_SOURCES,
                 min_body_chars=self.MATERIAL_MIN_BODY_CHARS,
                 cache_dir=self.settings.output_dir / "growth_ops" / "source_material",
+                source_url=str(topic.url or ""),
             )
         except Exception as exc:
             self.logger.warning("选题素材抓取失败（非阻断）: %s | %s", title, exc)
@@ -523,7 +524,9 @@ class TopicAutomationService:
         topic._verified_source_material = True
         # 摘要直接取自素材正文的首段（`_summarize_topic` 属于 TopicCollectionService，
         # 本类没有该方法；而且这里已经有真实正文，用正文开头的句子比模板句更贴题）。
-        topic.summary = self._material_lead_sentence(body) or topic.summary
+        source_backed_case = self._is_evergreen_topic(topic) and str(topic.url or "").startswith(("https://", "http://"))
+        if not (source_backed_case and topic.summary):
+            topic.summary = self._material_lead_sentence(body) or topic.summary
         self.logger.info(
             "[素材] 已为选题补齐正文：%s | 来源 %d 个 | 共 %d 字",
             title,
@@ -736,6 +739,10 @@ class TopicAutomationService:
         numbers = "、".join(topic.extracted_numbers) if topic.extracted_numbers else "暂无明确数字"
         summary, snippet = self._build_prompt_evidence(topic)
         published_at = topic.published_at or "时间未标注"
+        time_instruction = (
+            "时效说明：常青案例回顾，须交代原始报道年份，不得写成今日新发生的新闻。\n"
+            if self._is_evergreen_topic(topic) else ""
+        )
         primary_industry = humanized_industries[0] if humanized_industries else "相关赛道"
         primary_keywords = "、".join(topic.matched_keywords[:4]) if topic.matched_keywords else keywords
         topic_mode = self._topic_mode(topic)
@@ -763,6 +770,7 @@ class TopicAutomationService:
             f"标题：{topic.title}\n"
             f"来源：{_humanize_source(topic.source)}\n"
             f"发布日期：{published_at}\n"
+            f"{time_instruction}"
             f"原文链接：{topic.url}\n\n"
             f"主赛道：{primary_industry}\n"
             f"主关键词：{primary_keywords}\n"

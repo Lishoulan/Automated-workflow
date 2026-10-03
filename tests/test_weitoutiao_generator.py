@@ -331,6 +331,26 @@ def test_short_local_fallback_is_rechecked_before_publishing(app_settings) -> No
     generator.publish_service.publish_weitoutiao.assert_not_called()
 
 
+def test_verified_story_still_blocks_speculation_and_health_advice(app_settings) -> None:
+    object.__setattr__(app_settings.publishing, "weitoutiao_personas", ["story_comment"])
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.guards"))
+    topic = _topic()
+    topic._verified_source_material = True
+    generator.select_topics = MagicMock(return_value=[topic])
+    generator.publish_service.publish_weitoutiao = MagicMock()
+
+    for unsafe_text in (
+        "姑娘当时估计就是馋坏了，没控制住自己。",
+        "特别是有胃病、高血压这些基础病的，更得悠着点。",
+        "吃坏了肚子，别硬扛着，赶紧去医院。",
+    ):
+        generator.generate_content = MagicMock(return_value=unsafe_text * 30)
+        result = generator.publish_standalone(count=1)
+        assert result["accepted"] == 0
+        assert result["skipped"][0]["reason"] == "content_too_short"
+    generator.publish_service.publish_weitoutiao.assert_not_called()
+
+
 def test_story_model_content_without_tags_gets_story_tags(app_settings) -> None:
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.story"))
     topic = TopicCandidate(

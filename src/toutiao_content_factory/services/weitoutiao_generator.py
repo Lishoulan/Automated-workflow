@@ -164,7 +164,7 @@ STORY_COMMENT_USER = """请围绕下面这件真实发生的事，写一条微�
    不要用省略号故弄玄虚，不要用"震惊""竟然"这类标题党词。
 2. 正文 250-400 字，2-4 个短段，每段最多 3 行，顺序是：
    - 【把事说清楚】用素材里的事实交代发生了什么、涉及谁、结果如何；素材没写的不要补。
-   - 【当事人的处境】说清他当时面临的约束和可选做法，让读者能代入。
+   - 【当事人的处境】仅写素材明确提及的约束和做法，不猜测他为什么这样做。
    - 【给读者的提醒】给一句具体可用的经验，例如涉及钱、合同、赡养、就医时该留什么证据、
      该找谁、该走什么流程。不要写成空泛的"引人深思"。
 3. **严禁编造**：不得虚构任何人的姓名、身份、对话、心理活动或现场细节；
@@ -172,6 +172,8 @@ STORY_COMMENT_USER = """请围绕下面这件真实发生的事，写一条微�
    只能写素材里明确有的事实，缺的地方就不写。
 4. 可以共情、可以有立场，但不做人身攻击、不煽动群体对立、不渲染悲惨细节、
    不替司法机关下结论。不做健康建议、不做投资建议。
+   医疗事件只交代公开经过，不给读者列疾病风险、诊疗或饮食建议。
+   不用「估计」「想必」推测当事人的想法，不用「馋坏了」等词评判当事人。
 5. 结尾用一个具体的问句引导评论（问大家遇到这种情况会怎么做），
    不要用"你怎么看""欢迎留言交流"这种空话。
 6. 口语化，短句，像跟人唠嗑，全文控制在 300-450 字。"""
@@ -339,7 +341,7 @@ class WeiToutiaoStandaloneGenerator:
         raw = self.openai_service.create_text_completion(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            temperature=0.85,
+            temperature=0.55 if self._is_story_context(topic, persona) else 0.85,
             max_tokens=900,
         )
         content = raw.strip()
@@ -414,6 +416,17 @@ class WeiToutiaoStandaloneGenerator:
         ):
             return "story_evidence_guard"
         compact = re.sub(r"\s+", "", str(content or ""))
+        if re.search(
+            r"(?:估计|想必|大概|肯定|一定|可能).{0,10}(?:馋|心里|觉得|想着|害怕|担心|忍不住|控制不住)",
+            compact,
+        ):
+            return "story_speculation_guard"
+        if re.search(
+            r"(?:胃病|高血压|基础病).{0,25}(?:建议|应该|需要|得|悠着|注意|不能)"
+            r"|(?:赶紧|立即|及时|应该|建议|记得|一定要|千万别).{0,12}(?:就医|去医院|服药|用药|治疗|急诊)",
+            compact,
+        ):
+            return "story_health_advice_guard"
         if re.search(r"(?:你|大家).{0,12}(?:先|选择).{0,16}还是", compact):
             return "story_safety_guard"
         return ""

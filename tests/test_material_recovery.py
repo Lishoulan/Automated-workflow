@@ -173,7 +173,7 @@ def test_non_article_original_url_is_not_fetched(monkeypatch, url):
     fetch.assert_not_called()
 
 
-@pytest.mark.parametrize("damage", ["expired", "future", "wrong_query", "thin", "invalid_type", "invalid_url", "invalid_json"])
+@pytest.mark.parametrize("damage", ["old_version", "expired", "future", "wrong_query", "thin", "invalid_type", "invalid_url", "invalid_json"])
 def test_invalid_or_stale_cache_cannot_pass_evidence_gate(tmp_path, monkeypatch, damage):
     search = _mock_full_report(monkeypatch)
     monkeypatch.setattr(material.time, "time", lambda: 100_000)
@@ -181,7 +181,9 @@ def test_invalid_or_stale_cache_cannot_pass_evidence_gate(tmp_path, monkeypatch,
     material.collect_material(title, cache_dir=tmp_path)
     path = next(tmp_path.glob("*.json"))
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if damage == "expired":
+    if damage == "old_version":
+        payload["version"] = 1
+    elif damage == "expired":
         payload["collected_at"] -= material.MATERIAL_CACHE_TTL_SECONDS + 1
     elif damage == "future":
         payload["collected_at"] += 1
@@ -223,3 +225,19 @@ def test_cache_write_failure_does_not_block_qualified_material(tmp_path, monkeyp
     bundle = material.collect_material("社区志愿者为老人提供服务", cache_dir=tmp_path)
     assert material.assess_material_evidence(bundle).passed
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_article_container_excludes_sidebar_and_comments_without_padding_short_reports():
+    sidebar = "股市涨跌数据和其他新闻不能作为本案事实。" * 100
+    body = _full_body()
+    page = f'<body><div id="artibody"><p>{body}</p><div><p>报道补充说明了现场人员的登记安排。</p></div></div><div>{sidebar}</div></body>'
+    extracted = material.extract_article_body(page)
+    assert body in extracted
+    assert "登记安排" in extracted
+    assert "股市" not in extracted
+    short_page = f'<div id="artibody"><p>仅有一段简短报道，不应靠推荐栏凑足证据字数。</p></div><p>{sidebar}</p>'
+    assert material.extract_article_body(short_page) == ""
+
+
+def test_unclosed_article_container_cannot_spill_into_sidebar():
+    assert material.extract_article_body(f'<div id="artibody"><p>{_full_body()}</p>') == ""

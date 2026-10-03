@@ -226,6 +226,14 @@ def test_case_prompt_keeps_original_year_and_limited_gift_scope(app_settings):
     assert "不能写成收回全部三套房" in prompt
 
 
+def test_surveillance_lead_cannot_be_rewritten_as_recovery_location(app_settings):
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
+    topic = TopicCandidate(title="快递员丢包裹", url="", source="公开报道", source_type="test",
+                           snippet="民警调阅交警高位探头。顺着轨迹，民警找到老人，包裹完好无损。")
+    assert generator._model_story_fallback_reason(topic, "story_comment", "民警在高位探头下找到了手机。") == "story_event_sequence_guard"
+    assert generator._model_story_fallback_reason(topic, "story_comment", "监控记录提供线索，民警顺着轨迹找到老人并寻回包裹。") == ""
+
+
 def test_story_local_fallback_has_no_industry_template_language(app_settings) -> None:
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.story"))
     topic = TopicCandidate(

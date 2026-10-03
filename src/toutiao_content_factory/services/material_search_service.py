@@ -31,6 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable
 
@@ -374,6 +375,37 @@ def strip_tags(text: str) -> str:
     return re.sub(r"[ \t\u3000]+", " ", text)
 
 
+class _ArticleContainerParser(HTMLParser):
+    """Isolate a known primary article container, including nested divs."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.depth = 0
+        self.found = False
+        self.complete = False
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if self.complete:
+            return
+        if tag == "div" and (self.depth or dict(attrs).get("id") == "artibody"):
+            self.depth += 1
+            self.found = True
+        if self.depth:
+            self.parts.append(self.get_starttag_text())
+
+    def handle_endtag(self, tag):
+        if self.depth:
+            self.parts.append(f"</{tag}>")
+            if tag == "div":
+                self.depth -= 1
+                self.complete = self.depth == 0
+
+    def handle_data(self, data):
+        if self.depth:
+            self.parts.append(html.escape(data))
+
+
 def extract_article_body(page_html: str, min_chars: int = 600) -> str:
     """从页面 HTML 里抽出正文段落。
 
@@ -390,6 +422,12 @@ def extract_article_body(page_html: str, min_chars: int = 600) -> str:
     # 取 <body> 范围，避免 head 里的 meta 干扰
     m = re.search(r"(?is)<body[^>]*>(.*?)</body>", page_html)
     fragment = m.group(1) if m else page_html
+    primary = _ArticleContainerParser()
+    primary.feed(fragment)
+    if primary.found:
+        if not primary.complete:
+            return ""
+        fragment = "".join(primary.parts)
     # 段落级切分
     blocks = re.split(r"(?i)</?(?:p|div|br|li|h[1-6]|section|article)[^>]*>", fragment)
     noise_res = [re.compile(p) for p in NOISE_LINE_PATTERNS]
@@ -425,6 +463,7 @@ def extract_article_body(page_html: str, min_chars: int = 600) -> str:
 _DEAD_BACKENDS: set[str] = set()
 
 MATERIAL_CACHE_TTL_SECONDS = 6 * 60 * 60
+MATERIAL_CACHE_VERSION = 2
 MATERIAL_FETCH_BUDGET_SECONDS = 120
 
 
@@ -439,7 +478,7 @@ def _load_cached_material(cache_dir: Path, title: str) -> MaterialBundle | None:
         if path.stat().st_size > 1_000_000:
             return None
         payload = json.loads(path.read_text(encoding="utf-8"))
-        if payload["version"] != 1 or payload["query"] != title:
+        if payload["version"] != MATERIAL_CACHE_VERSION or payload["query"] != title:
             return None
         if not 0 <= time.time() - float(payload["collected_at"]) < MATERIAL_CACHE_TTL_SECONDS:
             return None
@@ -470,7 +509,7 @@ def _save_cached_material(cache_dir: Path, bundle: MaterialBundle) -> None:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache_dir, suffix=".tmp", delete=False) as handle:
             temporary_path = Path(handle.name)
             json.dump(
-                {"version": 1, "query": bundle.query, "collected_at": time.time(),
+                {"version": MATERIAL_CACHE_VERSION, "query": bundle.query, "collected_at": time.time(),
                  "sources": [asdict(source) for source in bundle.usable]},
                 handle, ensure_ascii=False,
             )

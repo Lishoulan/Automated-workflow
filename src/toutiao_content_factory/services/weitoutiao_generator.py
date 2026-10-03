@@ -173,6 +173,7 @@ STORY_COMMENT_USER = """请围绕下面这件真实发生的事，写一条微�
 3. **严禁编造**：不得虚构任何人的姓名、身份、对话、心理活动或现场细节；
    不得编一个"我邻居""我朋友"的故事；**不得用第一人称说自己亲历了这件事**。
    只能写素材里明确有的事实，缺的地方就不写。
+   保留事件的查找和处置顺序：监控拍到线索不等于物品在探头下被找到，不改写结果发生地点。
 4. 可以共情、可以有立场，但不做人身攻击、不煽动群体对立、不渲染悲惨细节、
    不替司法机关下结论。不做健康建议、不做投资建议。
    医疗事件只交代公开经过，不给读者列疾病风险、诊疗或饮食建议。
@@ -426,6 +427,11 @@ class WeiToutiaoStandaloneGenerator:
         ):
             return "story_evidence_guard"
         compact = re.sub(r"\s+", "", str(content or ""))
+        source_text = re.sub(r"\s+", "", str(topic.snippet or ""))
+        if "顺着轨迹" in source_text and re.search(
+            r"(?:监控|探头)下.{0,8}(?:找回|找到|发现).{0,6}(?:手机|包裹|物品)", compact,
+        ):
+            return "story_event_sequence_guard"
         if re.search(
             r"(?:估计|想必|大概|肯定|一定|可能).{0,10}(?:馋|心里|觉得|想着|害怕|担心|忍不住|控制不住)",
             compact,

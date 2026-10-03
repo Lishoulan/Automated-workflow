@@ -416,6 +416,13 @@ jobs:
             RUN_PUBLISH_WECHAT_VIA_135="false"
           fi
 
+          # Both cloud_daily_run and the separate step read this effective flag.
+          # An old Secret must not enable interactions during a preview.
+          ENGAGEMENT_ENABLED_VALUE="0"
+          if [ "$RUN_DRY_RUN" = "false" ] && [ "${{ vars.CLOUD_ENGAGEMENT_ONLINE }}" = "true" ]; then
+            ENGAGEMENT_ENABLED_VALUE="${ENGAGEMENT_ENABLED:-0}"
+          fi
+
           if [ "$RUN_PUBLISH_TOUTIAO" = "true" ]; then
             TOUTIAO_AUTO_PUBLISH_VALUE="1"
             TOUTIAO_DRAFT_ONLY_VALUE="0"
@@ -429,6 +436,7 @@ jobs:
           {
             echo "RUN_ACCOUNT=$RUN_ACCOUNT"
             echo "RUN_DRY_RUN=$RUN_DRY_RUN"
+            echo "ENGAGEMENT_ENABLED=$ENGAGEMENT_ENABLED_VALUE"
             echo "RUN_FAST_MODE=$RUN_FAST_MODE"
             echo "RUN_PUBLISH_TOUTIAO=$RUN_PUBLISH_TOUTIAO"
             echo "RUN_PUBLISH_WECHAT_VIA_135=$RUN_PUBLISH_WECHAT_VIA_135"

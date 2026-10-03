@@ -1,6 +1,8 @@
 """GitHub Actions live publishing must fail closed behind an account-scoped switch."""
 
 from pathlib import Path
+import importlib.util
+from unittest.mock import MagicMock
 
 import yaml
 
@@ -54,3 +56,27 @@ def test_engagement_requires_live_mode_and_separate_explicit_switch() -> None:
         conditions = set(step["if"].split(" && "))
         assert "env.RUN_DRY_RUN == 'false'" in conditions
         assert "vars.CLOUD_ENGAGEMENT_ONLINE == 'true'" in conditions
+
+    resolver = next(step for step in steps if step["name"] == "Resolve cloud runtime flags")["run"]
+    assert 'ENGAGEMENT_ENABLED_VALUE="0"' in resolver
+    assert '[ "$RUN_DRY_RUN" = "false" ] && [ "${{ vars.CLOUD_ENGAGEMENT_ONLINE }}" = "true" ]' in resolver
+    assert 'echo "ENGAGEMENT_ENABLED=$ENGAGEMENT_ENABLED_VALUE"' in resolver
+
+
+def test_cloud_preview_skips_interactions_but_keeps_read_only_collection(monkeypatch) -> None:
+    spec = importlib.util.spec_from_file_location("cloud_preview_test", "scripts/cloud_daily_run.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("ENGAGEMENT_ENABLED", "1")
+    monkeypatch.setenv("PERFORMANCE_COLLECT_ENABLED", "1")
+    for flag in ("MONTHLY_REVIEW_ENABLED", "MONETIZATION_ENABLED", "MATRIX_ENABLED"):
+        monkeypatch.setenv(flag, "0")
+    run = MagicMock(return_value=MagicMock(returncode=0))
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    module._run_extra_modules("robot_notes", dry_run=True)
+
+    commands = [call.args[0] for call in run.call_args_list]
+    assert len(commands) == 1
+    assert "--collect-performance" in commands[0]
+    assert "--account" in commands[0] and "robot_notes" in commands[0]

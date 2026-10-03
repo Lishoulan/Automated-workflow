@@ -639,7 +639,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_extra_modules(account_key: str) -> None:
+def _run_extra_modules(account_key: str, *, dry_run: bool = False) -> None:
     """运行 AiToEarn 集成模块（engagement / monetization / matrix）。
 
     在主 pipeline 完成后执行，各模块独立运行，互不影响。
@@ -647,7 +647,7 @@ def _run_extra_modules(account_key: str) -> None:
     main_py = str(PROJECT_ROOT / "main.py")
 
     # --- 互动 Agent ---
-    if os.environ.get("ENGAGEMENT_ENABLED", "0") == "1":
+    if not dry_run and os.environ.get("ENGAGEMENT_ENABLED", "0") == "1":
         _logger.info("运行互动 Agent...")
         try:
             result = subprocess.run(
@@ -839,7 +839,7 @@ def main() -> int:
                     # 配置要求发布但可能被 precheck/质量门禁内部降级为草稿
                     _mark_degraded_if_draft_saved(account_key)
                 # 主 pipeline 成功后运行 AiToEarn 集成模块
-                _run_extra_modules(account_key)
+                _run_extra_modules(account_key, dry_run=args.dry_run)
                 _print_publish_summary(account_key)
                 return exit_code
 

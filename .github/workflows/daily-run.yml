@@ -916,7 +916,7 @@ jobs:
             --run-dir "$RUN_DIR"
 
       - name: Run engagement agent
-        if: env.ENGAGEMENT_ENABLED == '1'
+        if: env.ENGAGEMENT_ENABLED == '1' && env.RUN_DRY_RUN == 'false' && vars.CLOUD_ENGAGEMENT_ONLINE == 'true'
         run: |
           echo "Running daily engagement agent..."
           python main.py --engagement --account "$RUN_ACCOUNT"

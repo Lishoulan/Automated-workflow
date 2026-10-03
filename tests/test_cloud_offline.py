@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import yaml
+
 
 def test_daily_run_defaults_to_dry_run_without_toutiao_publish() -> None:
     workflow = Path(".github/workflows/daily-run.yml").read_text(encoding="utf-8")
@@ -40,3 +42,15 @@ def test_publish_enforcement_accepts_successful_weitoutiao_only_run() -> None:
     assert 'success|published|submitted|submitted_for_review|target_reached)' in workflow
     assert '[ "${RUN_STATUS:-}" = "no_topics" ] || [ "${RUN_STATUS:-}" = "already_published" ]' in workflow
     assert "neither an article submission with pgc_id nor an accepted WeiToutiao-only result" in workflow
+
+
+def test_engagement_requires_live_mode_and_separate_explicit_switch() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/daily-run.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["daily-run"]["steps"]
+    mutating_steps = [step for step in steps if "--engagement " in step.get("run", "")]
+
+    assert mutating_steps
+    for step in mutating_steps:
+        conditions = set(step["if"].split(" && "))
+        assert "env.RUN_DRY_RUN == 'false'" in conditions
+        assert "vars.CLOUD_ENGAGEMENT_ONLINE == 'true'" in conditions

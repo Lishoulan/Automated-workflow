@@ -234,6 +234,34 @@ def test_surveillance_lead_cannot_be_rewritten_as_recovery_location(app_settings
     assert generator._model_story_fallback_reason(topic, "story_comment", "监控记录提供线索，民警顺着轨迹找到老人并寻回包裹。") == ""
 
 
+def test_verified_story_uses_corrected_review_and_review_failures_block_publish(app_settings):
+    object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
+    object.__setattr__(app_settings.publishing, "weitoutiao_personas", ["story_comment"])
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
+    topic = _topic()
+    topic.title = "快递员丢包裹，民警沿监控线索寻回"
+    topic.snippet = "【来源：公开报道】丢包者报警，民警沿轨迹找到捡包者并取回包裹。"
+    topic._verified_source_material = True
+    corrected = "民警沿监控线索找到捡包者，取回包裹。" * 15
+    generator.openai_service.create_text_completion = MagicMock(side_effect=["丢包者没私自拆包。", corrected])
+    content = generator.generate_content(topic, "story_comment")
+    assert corrected in content
+    assert "丢包者没私自拆包" not in content
+    assert generator.openai_service.create_text_completion.call_count == 2
+    review = generator.openai_service.create_text_completion.call_args.kwargs
+    assert topic.snippet in review["user_prompt"]
+    assert "待复核稿" in review["user_prompt"]
+    assert review["temperature"] == 0.1
+    generator.select_topics = MagicMock(return_value=[topic])
+    generator.publish_service.publish_weitoutiao = MagicMock()
+    for failed_review in [AIRequestError("review unavailable"), "<html><body>gateway</body></html>"]:
+        generator.openai_service.create_text_completion = MagicMock(side_effect=[corrected, failed_review])
+        result = generator.publish_standalone(count=1)
+        assert result["accepted"] == 0
+        assert result["skipped_count"] == 1
+    generator.publish_service.publish_weitoutiao.assert_not_called()
+
+
 def test_story_local_fallback_has_no_industry_template_language(app_settings) -> None:
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.story"))
     topic = TopicCandidate(

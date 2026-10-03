@@ -360,6 +360,28 @@ class WeiToutiaoStandaloneGenerator:
             raise AIResponseFormatError(
                 "WeiToutiao model response was an HTML document instead of post text."
             )
+        if verified_story and not self._is_public_policy_topic(topic, persona):
+            # One bounded editing pass against the reporting used to draft it.
+            # A failed review propagates to the existing skip/fallback boundary.
+            content = self.openai_service.create_text_completion(
+                system_prompt=(
+                    "你是事实核对编辑。原文素材是唯一事实依据，待复核稿不是依据。"
+                    "逐句核对数字、日期、人物身份、动作、地点、先后顺序、因果和发言。"
+                    "删除或纠正无原文依据的陈述，不补造情节、动机或对话。"
+                    "区分丢失者、捡拾者和处置人员，不能把某人的动作或提醒套给另一人。"
+                    "不能把监控提供线索改成直接发现物品，不能把查找过程改成持续追查某个人。"
+                    "保留历史报道年份和案件裁判范围，不能把旧案写成今日新闻。"
+                    "读者提醒应与事件事实分段，只保留原文明确的提醒。"
+                    "输出纠正后的完整微头条：标题加250至400字正文和话题标签。"
+                    "不输出核对说明，不增加健康或投资建议；素材不足时只输出‘素材不足’。"
+                ),
+                user_prompt=f"{user_prompt}\n\n待复核稿（可能有错误）：\n{content[:MAX_WTT_CHARS]}",
+                temperature=0.1,
+                max_tokens=900,
+            ).strip()
+            if looks_like_html_document(content):
+                raise AIResponseFormatError("WeiToutiao fact review returned an HTML document.")
+            self.logger.info("WeiToutiao source-based fact review completed: %s", topic.title)
         # 模型偶尔不输出标签；发布包会直接把 content_override 交给微头条发布器，
         # 因此应在这里补齐，而不是只写入旁路的 tags.txt。
         if not self._extract_tags(content):

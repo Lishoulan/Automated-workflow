@@ -19,13 +19,19 @@ snippet 长度全部为 0，多数连原文链接都没有。让模型用 28 个
 from __future__ import annotations
 
 import html
+import hashlib
+import json
+import logging
+import os
 import re
 import ssl
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Iterable
 
 USER_AGENT = (
@@ -411,12 +417,72 @@ def extract_article_body(page_html: str, min_chars: int = 600) -> str:
     return body if len(body) >= min_chars else ""
 
 
-#: 进程级「后端已死」缓存：本次运行里连续拿不到结果的搜索后端不再重复查询。
+#: 进程级不可用缓存：仅请求失败或反爬页停用后端，某个选题无匹配结果不算故障。
 #:
 #: ⚠️ 2026-09-20：一次运行要为 4 个候选选题各搜一次，而每次都把 3 个后端全查一遍，
 #: 每个后端还带 2 次重试 —— 实测 `cn.bing.com`（在美国 IP 上 301）白白多花
 #: 1~2 分钟/次。这个缓存把"已经证明没用"的后端从后续查询里摘掉。
 _DEAD_BACKENDS: set[str] = set()
+
+MATERIAL_CACHE_TTL_SECONDS = 6 * 60 * 60
+MATERIAL_FETCH_BUDGET_SECONDS = 120
+
+
+def _material_cache_path(cache_dir: Path, title: str) -> Path:
+    return cache_dir / f"{hashlib.sha256(title.encode('utf-8')).hexdigest()}.json"
+
+
+def _load_cached_material(cache_dir: Path, title: str) -> MaterialBundle | None:
+    """Recheck evidence and provenance; cached pass flags are never trusted."""
+    try:
+        path = _material_cache_path(cache_dir, title)
+        if path.stat().st_size > 1_000_000:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload["version"] != 1 or payload["query"] != title:
+            return None
+        if not 0 <= time.time() - float(payload["collected_at"]) < MATERIAL_CACHE_TTL_SECONDS:
+            return None
+        sources = [MaterialSource(**item) for item in payload["sources"]]
+        for source in sources:
+            if source.ok is not True or not all(
+                isinstance(value, str) for value in (source.title, source.url, source.body, source.evidence_type)
+            ):
+                return None
+            if source.evidence_type not in {"article", "search_snippet", "search_digest"}:
+                return None
+            if source.evidence_type != "search_digest":
+                parsed_url = urllib.parse.urlparse(source.url)
+                if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
+                    return None
+        bundle = MaterialBundle(query=title, sources=sources)
+        return bundle if assess_material_evidence(bundle).passed else None
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def _save_cached_material(cache_dir: Path, bundle: MaterialBundle) -> None:
+    if not assess_material_evidence(bundle).passed:
+        return
+    temporary_path: Path | None = None
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache_dir, suffix=".tmp", delete=False) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(
+                {"version": 1, "query": bundle.query, "collected_at": time.time(),
+                 "sources": [asdict(source) for source in bundle.usable]},
+                handle, ensure_ascii=False,
+            )
+        os.replace(temporary_path, _material_cache_path(cache_dir, bundle.query))
+    except OSError as exc:
+        logging.getLogger(__name__).warning("Material cache write failed: %s", type(exc).__name__)
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                logging.getLogger(__name__).warning("Material cache temporary file cleanup failed")
 
 
 def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2.0) -> list[dict]:
@@ -452,10 +518,6 @@ def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2
         if name in _DEAD_BACKENDS:
             continue
         hits = _search_with_backend(backend, query, retries=retries, pause=pause)
-        if not hits:
-            # 完全没结果 = 这个后端在当前网络下不可用（如 cn.bing.com 在美国 IP 上 301）。
-            # 后续查询不再浪费时间去试它 —— 一次运行有 4 个候选要搜。
-            _DEAD_BACKENDS.add(name)
         for hit in hits:
             url = str(hit.get("url", "") or "").strip()
             if not url or url in seen_urls:
@@ -608,15 +670,19 @@ def _search_with_backend(
 
     url = template.replace("{q}", urllib.parse.quote(query))
     out: list[dict] = []
+    backend_unavailable = True
     for attempt in range(1, max(retries, 1) + 1):
         try:
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=True)
                 context = browser.new_context(locale="zh-CN", user_agent=USER_AGENT)
                 page = context.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                response = page.goto(url, wait_until="domcontentloaded", timeout=45000)
                 page.wait_for_timeout(3500)
-                out = page.evaluate(extractor)
+                blocked = (response is not None and response.status in {403, 429, 500, 502, 503, 504}) or _looks_like_antispider(page.content(), page.url)
+                if not blocked:
+                    out = page.evaluate(extractor)
+                    backend_unavailable = False
                 browser.close()
         except Exception:
             out = []
@@ -626,6 +692,8 @@ def _search_with_backend(
             time.sleep(pause * attempt)
     if out:
         return _filter_relevant_hits(name, query, out)
+    if backend_unavailable:
+        _DEAD_BACKENDS.add(name)
     return []
 
 
@@ -733,20 +801,31 @@ def collect_material(
     max_sources: int = 3,
     min_body_chars: int = 600,
     timeout: int = 20,
+    cache_dir: Path | None = None,
 ) -> MaterialBundle:
     """按标题找报道并抓正文。
 
     搜索用**多个由标题派生的短语**依次尝试（见 `_search_phrases`）：
     长句标题直接搜不到东西，但它的前半句/主干往往能搜到大量真实报道。
     """
+    title = str(title).strip()
+    if cache_dir is not None:
+        cached = _load_cached_material(cache_dir, title)
+        if cached is not None:
+            logging.getLogger(__name__).info("Material cache hit after evidence recheck: %s", title)
+            return cached
     bundle = MaterialBundle(query=title)
     hits: list[dict] = []
     for phrase in _search_phrases(title):
         hits = search_web(phrase, limit=limit)
         if hits:
             break
+    fetch_deadline = time.monotonic() + MATERIAL_FETCH_BUDGET_SECONDS
     for hit in hits:
-        if len(bundle.usable) >= max_sources:
+        if time.monotonic() >= fetch_deadline:
+            logging.getLogger(__name__).warning("Material fetch budget exhausted after %d sources: %s", len(bundle.sources), title)
+            break
+        if sum(item.evidence_type == "article" for item in bundle.usable) >= max_sources or assess_material_evidence(bundle).passed:
             break
         url = hit["url"]
         if any(host in url for host in SKIP_HOSTS):
@@ -802,6 +881,8 @@ def collect_material(
                     evidence_type="search_digest",
                 )
             )
+    if cache_dir is not None:
+        _save_cached_material(cache_dir, bundle)
     return bundle
 
 

@@ -592,15 +592,9 @@ jobs:
           fi
           rm -f "$BODY_FILE" "$CURL_ERR"
 
-          # 用同一把 key 去问几个候选 provider「你认识它吗」，直接定位密钥属于哪家，
-          # 省掉「base_url 和 key 不匹配」这类只能靠试的排查（2026-09-16 就是这么坏的）。
-          echo "[llm-probe] key acceptance across candidate endpoints (GET {base}/models):"
-          for candidate in \
-            "$OPENAI_BASE_URL" \
-            "https://www.fhl.mom/v1" \
-            "https://open.bigmodel.cn/api/paas/v4" \
-            "https://api.siliconflow.cn/v1" \
-            "https://api.deepseek.com" ; do
+          # Only the configured provider may receive the real credential.
+          echo "[llm-probe] key acceptance at configured endpoint (GET {base}/models):"
+          for candidate in "$OPENAI_BASE_URL"; do
             [ -z "$candidate" ] && continue
             code="$(curl -sS -o /dev/null -w '%{http_code}' -m 20 \
               -H "Authorization: Bearer ${OPENAI_API_KEY}" \
@@ -667,6 +661,8 @@ jobs:
             output/growth_ops/performance/
             output/accounts/*/growth_ops/revenue_attribution/
             output/growth_ops/revenue_attribution/
+            output/accounts/*/growth_ops/source_material/
+            output/growth_ops/source_material/
           key: daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-${{ github.run_id }}
           restore-keys: |
             daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-

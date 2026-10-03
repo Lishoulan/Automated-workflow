@@ -493,6 +493,7 @@ class TopicAutomationService:
                 title,
                 max_sources=self.MATERIAL_MAX_SOURCES,
                 min_body_chars=self.MATERIAL_MIN_BODY_CHARS,
+                cache_dir=self.settings.output_dir / "growth_ops" / "source_material",
             )
         except Exception as exc:
             self.logger.warning("选题素材抓取失败（非阻断）: %s | %s", title, exc)

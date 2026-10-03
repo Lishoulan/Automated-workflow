@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import importlib.util
+import re
 from unittest.mock import MagicMock
 
 import yaml
@@ -32,6 +33,7 @@ def test_revenue_and_performance_ledgers_persist_between_cloud_runs() -> None:
         "output/accounts/*/performance_metrics.json",
         "output/accounts/*/growth_ops/performance/",
         "output/accounts/*/growth_ops/revenue_attribution/",
+        "output/accounts/*/growth_ops/source_material/",
     ):
         assert path in workflow
 
@@ -80,3 +82,14 @@ def test_cloud_preview_skips_interactions_but_keeps_read_only_collection(monkeyp
     assert len(commands) == 1
     assert "--collect-performance" in commands[0]
     assert "--account" in commands[0] and "robot_notes" in commands[0]
+
+
+def test_probe_never_sends_real_credential_to_other_candidate_providers() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/daily-run.yml").read_text(encoding="utf-8"))
+    probe = next(step for step in workflow["jobs"]["daily-run"]["steps"] if step["name"] == "Probe LLM endpoint")["run"]
+    credential_loops = [(targets, body) for targets, body in re.findall(
+        r"for candidate in (.*?)\bdo\b(.*?)\bdone\b", probe, re.S
+    ) if "Authorization: Bearer ${OPENAI_API_KEY}" in body]
+    assert len(credential_loops) == 1
+    assert re.findall(r'https?://[^\s"\\]+', credential_loops[0][0]) == []
+    assert '"$OPENAI_BASE_URL"' in credential_loops[0][0]

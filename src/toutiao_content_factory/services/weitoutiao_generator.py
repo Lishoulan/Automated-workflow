@@ -221,6 +221,7 @@ class WeiToutiaoStandaloneGenerator:
         补充候选（build_fallback_report 内部：topic_pool pending → evergreen），
         并与已选/已用选题去重，保证每日 2-3 条微头条有足够选题。
         """
+        candidate_limit = max(4, count * 2)
         ranked: list[TopicCandidate] = []
         try:
             report = self.topic_automation._load_daily_topics()
@@ -233,7 +234,7 @@ class WeiToutiaoStandaloneGenerator:
         except Exception as exc:
             self.logger.warning("WeiToutiao standalone topic load failed: %s", exc)
 
-        if len(ranked) < count:
+        if len(ranked) < candidate_limit:
             try:
                 fallback_report = self.topic_automation.topic_pool_service.build_fallback_report()
                 # ⚠️ 2026-09-16 修：兜底池以前只做「今日已用去重」，**漏了账号边界过滤**
@@ -254,7 +255,7 @@ class WeiToutiaoStandaloneGenerator:
                         continue
                     seen_keys.add(key)
                     ranked.append(topic)
-                    if len(ranked) >= count:
+                    if len(ranked) >= candidate_limit:
                         break
                 self.logger.info(
                     "WeiToutiao standalone fallback pool used: fallback_available=%d "
@@ -271,7 +272,20 @@ class WeiToutiaoStandaloneGenerator:
             len(ranked),
             count,
         )
-        return ranked[:count]
+        personas = list(self.settings.publishing.weitoutiao_personas) or ["hot_comment"]
+        selected: list[TopicCandidate] = []
+        # Bound searches per slot while allowing the next candidate to replace
+        # a headline that cannot be backed by real reporting.
+        for topic in ranked[:candidate_limit]:
+            if len(selected) >= count:
+                break
+            persona = personas[len(selected) % len(personas)]
+            if self._is_story_context(topic, persona):
+                if not self.topic_automation._hydrate_topic_material(topic):
+                    self.logger.info("WeiToutiao skipped insufficient source material: %s", topic.title)
+                    continue
+            selected.append(topic)
+        return selected
 
     @staticmethod
     def _topic_key(topic: TopicCandidate) -> str:
@@ -311,10 +325,15 @@ class WeiToutiaoStandaloneGenerator:
         positioning = str(self.settings.brand_positioning or "").strip()
         system_prompt = system_template.format(positioning=positioning) if "{positioning}" in system_template else system_template
         summary = str(topic.summary or "").strip() or str(topic.snippet or "").strip() or str(topic.title)
+        verified_story = self._is_story_context(topic, persona) and bool(
+            getattr(topic, "_verified_source_material", False)
+        )
+        if verified_story:
+            summary = str(topic.snippet or summary).strip()
         user_prompt = user_template.format(
             title=str(topic.title or "").strip(),
-            summary=summary[:400],
-            source=str(topic.source or "").strip() or "公开信息",
+            summary=summary[:6000] if verified_story else summary[:400],
+            source="公开报道（见素材中的来源标记）" if verified_story else str(topic.source or "").strip() or "公开信息",
             positioning=positioning or "用数据拆热点、用产业链看趋势兑现",
         )
         raw = self.openai_service.create_text_completion(
@@ -390,7 +409,9 @@ class WeiToutiaoStandaloneGenerator:
         if self._is_public_policy_topic(topic, persona):
             return "policy_story_evidence_guard"
         quality_flags = {str(flag).strip().lower() for flag in (topic.quality_flags or [])}
-        if quality_flags.intersection({"weak_evidence", "title_only"}):
+        if quality_flags.intersection({"weak_evidence", "title_only"}) and not getattr(
+            topic, "_verified_source_material", False
+        ):
             return "story_evidence_guard"
         compact = re.sub(r"\s+", "", str(content or ""))
         if re.search(r"(?:你|大家).{0,12}(?:先|选择).{0,16}还是", compact):
@@ -482,18 +503,9 @@ class WeiToutiaoStandaloneGenerator:
         if self._is_story_context(topic, persona):
             headline = title[:30]
             if not self._is_public_policy_topic(topic, persona):
-                content = (
-                    f"{headline}\n\n"
-                    f"根据{source}目前公开的信息，可以确认的是：{summary}。"
-                    "公开摘要没有写明的原因、完整时间线和后续安排，不作补写。\n\n"
-                    "这类社会故事容易被情绪带着走，更稳妥的做法是把已经确认的事实"
-                    "与网友猜测分开，后续只根据新的公开回应更新判断。核对时可以继续看"
-                    "原始发布者、发生时间和地点、相关方面后续回应；不同来源出现冲突时，"
-                    "先保留结论，等待能相互印证的信息。\n\n"
-                    "你更希望后续公开哪一个关键细节？"
-                    f"\n\n{self._build_tags(topic, persona)}"
-                )
-                return content[:MAX_WTT_CHARS]
+                # A source summary plus generic advice is not an original story.
+                # Let the minimum-content gate skip it when writing is unavailable.
+                return ""
             content = (
                 f"{headline}\n\n"
                 f"根据{source}目前公开的信息，可以确认的是：{summary}。"
@@ -772,7 +784,7 @@ class WeiToutiaoStandaloneGenerator:
                         "WeiToutiao model output was too short; using local fallback for topic=%s",
                         topic.title,
                     )
-                else:
+                if self._content_char_count(content) < MIN_WTT_CHARS:
                     skipped.append(
                         {
                             "topic_title": topic.title,

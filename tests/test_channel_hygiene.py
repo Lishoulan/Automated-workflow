@@ -57,7 +57,7 @@ def test_standalone_weitoutiao_fallback_pool_applies_account_boundary_filter() -
         ),
     )
     generator = WeiToutiaoStandaloneGenerator.__new__(WeiToutiaoStandaloneGenerator)
-    generator.settings = SimpleNamespace()
+    generator.settings = SimpleNamespace(publishing=SimpleNamespace(weitoutiao_personas=["hot_comment"]))
     generator.logger = logging.getLogger("test")
     generator.topic_automation = automation
 

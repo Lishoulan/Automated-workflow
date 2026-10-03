@@ -241,13 +241,15 @@ def test_story_policy_classifier_ignores_unrelated_snippet_and_tags(app_settings
 
     assert generator._is_public_policy_topic(topic, "story_comment") is False
     content = generator.build_local_fallback_content(topic, persona="story_comment")
+    assert content == ""
+    tags = generator._build_tags(topic, persona="story_comment")
     assert "社保" not in content
     assert "政策" not in content
-    assert "#退休" not in content
-    assert "#社会热点" in content
+    assert "#退休" not in tags
+    assert "#社会热点" in tags
 
 
-def test_weak_evidence_story_preview_uses_grounded_content_and_story_tags(app_settings) -> None:
+def test_weak_evidence_story_preview_does_not_pad_unsafe_content(app_settings) -> None:
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.story"))
     topic = TopicCandidate(
         title="地震瞬间2名护士一手抱一个婴儿疏散",
@@ -266,15 +268,67 @@ def test_weak_evidence_story_preview_uses_grounded_content_and_story_tags(app_se
     )
 
     result = generator.preview_standalone()
-    run_dir = Path(result["run_dir"])
-    content = (run_dir / "publish" / "article.md").read_text(encoding="utf-8")
-    tags = (run_dir / "publish" / "tags.txt").read_text(encoding="utf-8").splitlines()
-    meta = json.loads((run_dir / "publish" / "publish_meta.json").read_text(encoding="utf-8"))
+    assert result == {"status": "content_too_short", "exports": {}}
+    assert not (app_settings.output_dir / "wtt_standalone").exists()
 
-    assert result["generation_mode"] == "local_fallback"
-    assert "先保住孩子还是自己" not in content
-    assert tags == ["社会热点", "生活观察"]
-    assert meta["tags"] == tags
+
+def test_story_selection_replaces_headline_without_verified_material(app_settings) -> None:
+    object.__setattr__(app_settings.publishing, "weitoutiao_personas", ["story_comment"])
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.material"))
+    weak, rich = _topic(), _topic()
+    rich.title = "社区志愿者帮老人找到走失家人"
+    rich.rank = 2
+    generator.topic_automation._load_daily_topics = MagicMock(
+        return_value=MagicMock(topics=[weak, rich])
+    )
+    generator.topic_automation._available_topics = MagicMock(side_effect=lambda topics: topics)
+    generator.topic_automation._hydrate_topic_material = MagicMock(side_effect=[False, True])
+
+    selected = generator.select_topics(count=1)
+
+    assert selected == [rich]
+    assert generator.topic_automation._hydrate_topic_material.call_count == 2
+
+
+def test_verified_story_uses_report_body_instead_of_short_hotlist_summary(app_settings) -> None:
+    object.__setattr__(app_settings.publishing, "weitoutiao_personas", ["story_comment"])
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.material"))
+    topic = _topic()
+    topic.title = "广场上妈妈将孩子交给女警"
+    topic.source = "baidu_hot"
+    topic.quality_flags = ["weak_evidence", "title_only"]
+    topic.summary = "群众参加国庆合唱活动。"
+    topic.snippet = "【来源：现场报道】\n" + "广场举行合唱活动。" * 55 + "妈妈请执勤女警帮忙照看孩子。"
+    topic._verified_source_material = True
+    generator.select_topics = MagicMock(return_value=[topic])
+    generator.openai_service.create_text_completion = MagicMock(
+        return_value="根据报道，广场举行合唱活动，妈妈请执勤女警帮忙照看孩子。" * 12
+    )
+    generator.publish_service.publish_weitoutiao = MagicMock()
+
+    result = generator.preview_standalone()
+
+    assert result["status"] == "preview_ready"
+    assert result["generation_mode"] == "model"
+    prompt = generator.openai_service.create_text_completion.call_args.kwargs["user_prompt"]
+    assert "妈妈请执勤女警帮忙照看孩子。" in prompt
+    assert "【来源：现场报道】" in prompt
+    assert "baidu_hot" not in prompt
+    generator.publish_service.publish_weitoutiao.assert_not_called()
+
+
+def test_short_local_fallback_is_rechecked_before_publishing(app_settings) -> None:
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.short"))
+    generator.select_topics = MagicMock(return_value=[_topic()])
+    generator.generate_content = MagicMock(return_value="不足字数")
+    generator.build_local_fallback_content = MagicMock(return_value="仍不足字数")
+    generator.publish_service.publish_weitoutiao = MagicMock()
+
+    result = generator.publish_standalone(count=1)
+
+    assert result["accepted"] == 0
+    assert result["skipped"][0]["reason"] == "content_too_short"
+    generator.publish_service.publish_weitoutiao.assert_not_called()
 
 
 def test_story_model_content_without_tags_gets_story_tags(app_settings) -> None:

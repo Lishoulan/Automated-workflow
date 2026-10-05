@@ -796,6 +796,18 @@ class PolishAgent(BaseAgent):
             article_text,
             data_report,
         ):
+            if self.settings.wechat_auto_publish_mode:
+                # Drop unsupported claims without discarding the verified
+                # remainder for a generic short corporate template. Return
+                # before the length fallback can reintroduce unsafe claims.
+                supported = [
+                    paragraph for paragraph in paragraphs[:12]
+                    if not self._unsupported_numeric_tokens(paragraph, data_report)
+                    and not self._has_unsupported_order_claim(paragraph, data_report)
+                ]
+                if supported:
+                    self.logger.info("WeChat polish removed %d unsupported paragraphs; retained %d.", len(paragraphs[:12]) - len(supported), len(supported))
+                    return clean_article_text("\n\n".join(supported), min_word_count=0)
             return self._rebuild_cautious_article(data_report, trend_report)
         if original_char_count > 0:
             polished_chars = len(article_text.replace("\n", "").replace(" ", ""))

@@ -83,10 +83,11 @@ class ContentIncomeCollector:
         self.sources: dict[str, str] = {}
         self.schemas: list[dict[str, Any]] = []
         self.ui: dict[str, Any] = {}
+        self.work_data_ui: dict[str, Any] = {}
 
     def observe_response(self, response: Any) -> None:
         parsed = urlsplit(response.url)
-        if parsed.hostname != "mp.toutiao.com" or "/income/" not in parsed.path or response.status != 200:
+        if parsed.hostname != "mp.toutiao.com" or not any(part in parsed.path for part in ("/income/", "/statistic/")) or response.status != 200:
             return
         try:
             if "json" not in response.headers.get("content-type", ""):
@@ -153,6 +154,17 @@ class ContentIncomeCollector:
                 known = {exact_yuan(value) for value in amounts} - {None}
                 if len(ids) == 1 and len(known) == 1:
                     self.add(ids.pop(), known.pop(), "income_page_dom")
+        if not self.amounts:
+            # The live sidebar exposes this read-only route even when the
+            # income page has no per-work tab. Inspect its actual API responses.
+            control = page.get_by_role("link", name="作品数据", exact=True)
+            if control.count() == 1 and control.is_visible():
+                control.click(timeout=3000)
+                page.wait_for_timeout(4000)
+                self.work_data_ui = page.evaluate("""() => ({
+                  labels: Array.from(document.querySelectorAll('a,button,[role="tab"]')).map(e => (e.innerText || '').trim()).filter(t => t.length < 40 && /收益|收入|数据/.test(t)).slice(0,60),
+                  detail_links: Array.from(document.querySelectorAll('a[href]')).map(e => {try {const u = new URL(e.href); const label = (e.innerText || '').trim(); return u.hostname === 'mp.toutiao.com' && /收益|数据/.test(label) ? {label: label.slice(0,40), path: u.pathname} : null;} catch {return null;}}).filter(Boolean).slice(0,30)
+                })""")
 
     def write_report(self, path: Path, *, matched: int, error: str = "") -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +176,7 @@ class ContentIncomeCollector:
             "conflicting_works": len(self.conflicts),
             "observed_schemas": self.schemas,
             "income_ui": self.ui,
+            "work_data_ui": self.work_data_ui,
             "error_type": error,
             "reason": "Only explicit platform work IDs with explicit yuan amounts are attributed; missing or ambiguous values remain unknown.",
         }

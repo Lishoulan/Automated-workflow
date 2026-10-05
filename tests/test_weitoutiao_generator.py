@@ -42,6 +42,15 @@ def test_opening_assignment_advances_only_after_accepted_model_submission(app_se
     assert len(ledger["records"]) == 1
 
 
+def test_reusing_topic_does_not_keep_an_experiment_from_another_persona(app_settings):
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
+    topic = _topic()
+    topic._content_experiment = {"id": "story_opening_v1", "variant": "result_first"}
+    generator.openai_service.create_text_completion = MagicMock(return_value="素材中的事实。" * 30)
+    generator.generate_content(topic, "hot_comment")
+    assert topic._content_experiment == {}
+
+
 def test_large_source_copy_is_blocked_but_short_fact_matches_are_allowed(app_settings):
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
     topic = _topic()

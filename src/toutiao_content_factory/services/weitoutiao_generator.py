@@ -347,6 +347,7 @@ class WeiToutiaoStandaloneGenerator:
 
     def generate_content(self, topic: TopicCandidate, persona: str = "hot_comment") -> str:
         """按人设模板写一条独立微头条（含标题行 + 正文 + 话题标签）。"""
+        topic._content_experiment = {}
         system_template, user_template = PERSONA_TEMPLATES.get(
             persona, PERSONA_TEMPLATES["hot_comment"]
         )

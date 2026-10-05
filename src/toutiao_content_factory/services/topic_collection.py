@@ -639,7 +639,7 @@ class TopicCollectionService:
         scored = [self._enrich_topic(item) for item in raw_items]
         freshness_filtered = self._filter_by_freshness(scored, filtered_out)
         filtered = self._filter_to_focus_industries(freshness_filtered, filtered_out)
-        filtered = [item for item in filtered if self._passes_topic_focus(item, filtered_out)]
+        filtered = [item for item in filtered if self._wechat_enrichment_candidate(item) or self._passes_topic_focus(item, filtered_out)]
         deduped = self._dedupe_topics(filtered, filtered_out)
         ranked = self._rank_topics(deduped)
         capped = self._apply_source_cap(ranked, filtered_out)[: self.topic_settings.max_export_topics]
@@ -1700,6 +1700,14 @@ class TopicCollectionService:
 
         deduped = self._dedupe_topics(pool)
         return self._rank_topics(deduped)
+
+    def _wechat_enrichment_candidate(self, topic: TopicCandidate) -> bool:
+        """Defer evidence rejection, preserving technology and safety prefilters."""
+        text = f"{topic.title} {topic.summary} {topic.snippet}"
+        return (self.settings.wechat_auto_publish_mode
+                and (len(topic.snippet or "") < 600 or bool(set(topic.quality_flags) & {"title_only", "weak_evidence"}))
+                and self._has_concrete_industry_keyword(topic)
+                and not any(token in text for token in self.HOT_TOPIC_BLOCKLIST))
 
     def _passes_topic_focus(
         self,

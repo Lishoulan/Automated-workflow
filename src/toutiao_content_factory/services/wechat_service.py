@@ -207,7 +207,8 @@ class WechatPublishService:
             pipeline = AntiAIFlavorPipeline()
             result = pipeline.process(article)
             density = result["density"]
-            article = result["processed_text"]
+            if not self.settings.wechat_auto_publish_mode:
+                article = result["processed_text"]
             self.logger.info(
                 "WeChat compliance: density_score=%d, noun_ratio=%.3f, verb_ratio=%.3f, avg_sent_len=%.1f",
                 density["score"], density["noun_ratio"], density["verb_ratio"], density["avg_sentence_length"],
@@ -265,6 +266,13 @@ class WechatPublishService:
                 inline_image_urls=[],
             )
         article_html_path.write_text(article_html, encoding="utf-8")
+        expected_publication = {}
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_metrics import html_body_hash, assert_reviewed_body_preserved
+            assert_reviewed_body_preserved(article, article_html)
+            expected_publication = {"account": self.settings.wechat.account_name,
+                                    "title": title, "body_hash": html_body_hash(article_html),
+                                    "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
 
         if api_available:
             payload = self._build_article_payload(
@@ -328,6 +336,7 @@ class WechatPublishService:
             "original_declared": bool(publish_response.get("original_declared", False)) if publish_response else False,
             "title": title,
             "api_available": api_available,
+            **({"expected_publication": expected_publication} if expected_publication else {}),
         }
         result_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         self._append_history(result_payload)

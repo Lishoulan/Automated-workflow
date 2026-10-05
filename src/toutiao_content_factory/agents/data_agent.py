@@ -1449,4 +1449,6 @@ class DataAgent(BaseAgent):
             "follow_up_focus": extraction.follow_up_focus,
             "writing_brief": extraction.writing_brief,
             "evidence_items": extraction.evidence_items,
+            **({"source_records": extraction.source_records, "fact_evidence": extraction.fact_evidence,
+                "article_kind": extraction.article_kind} if self.settings.wechat_auto_publish_mode else {}),
         }

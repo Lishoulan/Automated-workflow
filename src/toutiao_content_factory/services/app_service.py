@@ -462,6 +462,7 @@ class ContentFactoryAppService:
         refresh_cache: bool = False,
         include_input_dir: bool = True,
         fast_mode: bool = False,
+        source_records: list[dict] | None = None,
     ) -> dict[str, str]:
         pipeline = ContentFactoryPipeline(
             settings=self.settings,
@@ -472,7 +473,8 @@ class ContentFactoryAppService:
             fast_mode=fast_mode,
         )
         try:
-            return pipeline.run(paste_text=paste_text, include_input_dir=include_input_dir)
+            return pipeline.run(paste_text=paste_text, include_input_dir=include_input_dir,
+                                **({"source_records": source_records} if source_records is not None else {}))
         finally:
             pipeline.close()
 
@@ -588,6 +590,7 @@ class ContentFactoryAppService:
             refresh_cache=refresh_cache,
             include_input_dir=False,
             fast_mode=fast_mode,
+            **({"source_records": selection.topic.source_records} if self.settings.wechat_auto_publish_mode else {}),
         )
         exported_files.update(content_exports)
 
@@ -713,6 +716,11 @@ class ContentFactoryAppService:
         fast_mode: bool = False,
         skip_wait: bool = False,
     ) -> dict[str, str]:
+        if self.settings.wechat_auto_publish_mode:
+            self._wechat_enrichment_deadline = time.monotonic() + 300
+            self._wechat_enrichment_count = 0
+            self._wechat_enriched_topics = {}
+            self.topic_automation._wechat_enriched_topics = {}
         # ── 当日已发布短路：每日 1 篇上限下，发布成功后的后续时段任务
         # 不再重复选题、写作、评分（这些环节会持续消耗 LLM token 且无法再发布），
         # 直接返回 already_published，由定时任务快速跳过。
@@ -883,8 +891,12 @@ class ContentFactoryAppService:
                 )
             except Exception as exc:
                 self.logger.warning("Topic re-collection also failed: %s", exc)
+                if self.settings.wechat_auto_publish_mode:
+                    raise
 
             if not candidate_specs:
+                if self.settings.wechat_auto_publish_mode:
+                    self._write_daily_workflow_report(status="no_topics", final_attempt={}, attempts=[])
                 self.notification_service._broadcast(
                     "【定时任务】今日无可用选题",
                     f"账号: {self.settings.account_label}\n"
@@ -2787,6 +2799,9 @@ class ContentFactoryAppService:
         if not available_topics:
             return []
 
+        if self.settings.wechat_auto_publish_mode:
+            self._enrich_wechat_candidates(available_topics)
+
         # Scheduled long articles need enough source material to support a
         # grounded narrative. Thin/title-only topics remain in the daily topic
         # pool, where the priority WeiToutiao path can use them as short posts.
@@ -2800,6 +2815,8 @@ class ContentFactoryAppService:
             }
             evidence = int(getattr(topic, "evidence_strength", 0) or 0)
             quality = int(getattr(topic, "quality_score", 0) or 0)
+            if self.settings.wechat_auto_publish_mode and (getattr(topic, "_wechat_original_gate_passed", True) is False or not topic.source_records):
+                continue
             if evidence < 55 or quality < 55 or flags.intersection(blocked_quality_flags):
                 self.logger.info(
                     "Routing thin topic to WeiToutiao instead of scheduled article: %s "
@@ -2872,6 +2889,9 @@ class ContentFactoryAppService:
             *remaining_topics,
             *hot_topics,
         ]
+        if self.settings.wechat_auto_publish_mode:
+            self._wechat_eligible_candidate_count = len(ordered)
+            max_attempts = min(5, max_attempts)
         return [
             {
                 "rank": available_rank,
@@ -2880,6 +2900,47 @@ class ContentFactoryAppService:
             }
             for available_rank, topic in enumerate(ordered[:max_attempts], start=1)
         ]
+
+    def _enrich_wechat_candidates(self, topics: list[TopicCandidate]) -> None:
+        """Spend a separate, bounded allowance before applying the original gate."""
+        if not hasattr(self, "_wechat_enrichment_deadline"):
+            self._wechat_enrichment_deadline = time.monotonic() + 300
+            self._wechat_enrichment_count = 0
+            self._wechat_enriched_topics = {}
+        collector = TopicCollectionService(self.settings, self.logger)
+        from collections import defaultdict
+        for topic in topics:
+            key = (topic.title, topic.url)
+            if key in self._wechat_enriched_topics:
+                previous = self._wechat_enriched_topics[key]
+                topic.__dict__.update(previous.__dict__)
+                continue
+            flags = set(topic.quality_flags)
+            thin = not topic.source_records or len(topic.snippet or "") < 600 or bool(flags & {"title_only", "weak_evidence"})
+            if not thin:
+                continue
+            if not collector._has_concrete_industry_keyword(topic) or not collector._filter_by_freshness([topic], defaultdict(int)):
+                topic._wechat_original_gate_passed = False
+                self._wechat_enriched_topics[key] = topic
+                continue
+            if self._wechat_enrichment_count >= 10 or time.monotonic() >= self._wechat_enrichment_deadline:
+                break
+            self._wechat_enrichment_count += 1
+            hydrated = self.topic_automation._hydrate_topic_material(
+                topic, deadline=min(self._wechat_enrichment_deadline, time.monotonic() + 60),
+            )
+            if hydrated:
+                # Original scoring derives flags from the newly fetched text.
+                collector._enrich_topic(topic)
+                topic._wechat_original_gate_passed = bool(
+                    collector._filter_by_freshness([topic], defaultdict(int))
+                    and collector._passes_topic_focus(topic, defaultdict(int)))
+            else:
+                topic._wechat_original_gate_passed = False
+            self._wechat_enriched_topics[key] = topic
+        # prepare_auto_run reloads the pool: carry provenance and rescored values
+        # through that boundary, without rewriting the shared daily topic file.
+        self.topic_automation._wechat_enriched_topics = self._wechat_enriched_topics
 
     def _resolve_run_dir_from_exports(self, exported_files: dict[str, str]) -> Path | None:
         run_dir_candidates = [
@@ -2958,6 +3019,8 @@ class ContentFactoryAppService:
             article_path = run_dir / "article.md"
         if article_path.exists():
             article_text = article_path.read_text(encoding="utf-8").replace("\n", "").replace(" ", "")
+            if self.settings.wechat_auto_publish_mode:
+                article_text = article_text.split("参考来源：", 1)[0]
             snapshot["article_char_count"] = len(article_text)
             if self.settings.wechat_auto_publish_mode:
                 snapshot["length_minimum"] = self._minimum_article_chars(None, score_snapshot=snapshot)
@@ -3241,6 +3304,8 @@ class ContentFactoryAppService:
         if not article_file.exists():
             return False, ["缺正文文件"], []
         article = article_file.read_text(encoding="utf-8")
+        if self.settings.wechat_auto_publish_mode:
+            article = article.split("参考来源：", 1)[0]
         body_chars = len(re.sub(r"\s+", "", article))
         minimum = self._minimum_article_chars(run_dir)
         if body_chars < minimum:
@@ -4269,6 +4334,9 @@ class ContentFactoryAppService:
             "final_attempt": final_attempt,
             "attempts": attempts,
         }
+        if self.settings.wechat_auto_publish_mode:
+            report_payload["enrichment_count"] = getattr(self, "_wechat_enrichment_count", 0)
+            report_payload["eligible_candidate_count"] = getattr(self, "_wechat_eligible_candidate_count", 0)
         if supporting_exports:
             report_payload["supporting_exports"] = dict(supporting_exports)
         report_path = self.settings.automation_dir / "last_daily_workflow_report.json"

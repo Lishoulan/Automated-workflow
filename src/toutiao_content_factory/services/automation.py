@@ -303,6 +303,10 @@ class TopicAutomationService:
         if topic is None:
             self.logger.warning("Auto topic selection failed: no eligible topics found.")
             return None
+        if self.settings.wechat_auto_publish_mode:
+            previous = getattr(self, "_wechat_enriched_topics", {}).get((topic.title, topic.url))
+            if previous is not None:
+                topic = previous
         # 热榜类选题只有标题、没有正文，必须先补真实素材。
         #
         # ⚠️ 2026-09-19（第一次修）：这里原来**忽略返回值**，抓不到素材也照样往下写、
@@ -437,7 +441,7 @@ class TopicAutomationService:
     #: 写作指令段落的分隔标记：`_build_input_text` 用空行把它与素材字段隔开
     _INSTRUCTION_SENTINEL = "请围绕"
 
-    def _hydrate_topic_material(self, topic: TopicCandidate) -> bool:
+    def _hydrate_topic_material(self, topic: TopicCandidate, *, deadline: float | None = None) -> bool:
         """为「只有标题」的选题补上真实报道正文。
 
         为什么必须补：热榜类选题（百度热搜 / 头条热榜）采集时只有标题，实测 snippet
@@ -457,6 +461,20 @@ class TopicAutomationService:
         if not title:
             return False
         existing = str(topic.snippet or "").strip()
+        wechat = self.settings.wechat_auto_publish_mode
+        if wechat and deadline is None:
+            import time
+            deadline = time.monotonic() + 60
+        if wechat and topic.source_records:
+            from toutiao_content_factory.services.material_search_service import MaterialBundle, MaterialSource, assess_material_evidence
+            restored = MaterialBundle(title, [MaterialSource(
+                title=source["title"], url=source["url"], body=source["original_text"], ok=True,
+                publisher=source.get("publisher", ""), published_at=source.get("published_at", ""),
+                date_verified=source.get("date_verified", False),
+            ) for source in topic.source_records])
+            if assess_material_evidence(restored).passed:
+                topic._verified_source_material = True
+                return True
         try:
             from toutiao_content_factory.services.material_search_service import (
                 MaterialBundle,
@@ -470,6 +488,7 @@ class TopicAutomationService:
             if (
                 len(existing) >= self.MATERIAL_MIN_CHARS
                 and topic.source_type not in {"baidu_hot", "hot_board"}
+                and not wechat
             ):
                 existing_bundle = MaterialBundle(
                     query=title,
@@ -487,16 +506,24 @@ class TopicAutomationService:
                 if existing_assessment.passed:
                     topic._verified_source_material = True
                     topic._material_evidence_assessment = asdict(existing_assessment)
+                    if wechat:
+                        from toutiao_content_factory.services.wechat_evidence import source_records
+                        topic.source_records = source_records(existing_bundle.usable)
                     return True
 
             bundle = collect_material(
                 title,
                 max_sources=self.MATERIAL_MAX_SOURCES,
                 min_body_chars=self.MATERIAL_MIN_BODY_CHARS,
-                cache_dir=self.settings.output_dir / "growth_ops" / "source_material",
+                cache_dir=self.settings.output_dir / "growth_ops" / ("wechat_source_material_v3" if wechat else "source_material"),
                 source_url=str(topic.url or ""),
+                **({"deadline": deadline, "preserve_sources": True} if wechat else {}),
             )
         except Exception as exc:
+            if wechat:
+                from toutiao_content_factory.services.material_search_service import MaterialBudgetExceeded
+                if not isinstance(exc, MaterialBudgetExceeded):
+                    raise
             self.logger.warning("选题素材抓取失败（非阻断）: %s | %s", title, exc)
             return False
         if not bundle.usable:
@@ -520,6 +547,12 @@ class TopicAutomationService:
             return False
         body = bundle.combined_text.strip()
         topic.snippet = body
+        if wechat:
+            from toutiao_content_factory.services.wechat_evidence import source_records
+            topic.source_records = source_records(bundle.usable)
+            dated = [record["published_at"] for record in topic.source_records if record["published_at"]]
+            if dated:
+                topic.published_at = max(dated)
         # Keep this run-local marker separate from persisted search digests.
         topic._verified_source_material = True
         # 摘要直接取自素材正文的首段（`_summarize_topic` 属于 TopicCollectionService，
@@ -762,6 +795,14 @@ class TopicAutomationService:
             topic_mode=topic_mode,
             primary_industry=primary_industry,
         )
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import build_facts, classify_kind, requirements
+            kind = classify_kind(topic.topic_type, build_facts(topic.source_records))
+            brief = requirements(kind)
+            suggested_angle = brief["suggested_angle"]
+            follow_up_focus = brief["follow_up_focus"]
+            writing_brief = brief["writing_brief"]
+            closing_instruction = "请围绕原文事实写稿。" + brief["instruction"]
         evidence_block = f"- 摘要：{summary}\n"
         if snippet:
             evidence_block += f"- 补充片段：{snippet}\n"

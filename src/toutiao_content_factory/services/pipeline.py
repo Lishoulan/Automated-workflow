@@ -52,7 +52,7 @@ class ContentFactoryPipeline:
             notification_service=self.notification_service,
         )
 
-    def run(self, paste_text: str | None = None, include_input_dir: bool = True) -> dict[str, str]:
+    def run(self, paste_text: str | None = None, include_input_dir: bool = True, *, source_records: list[dict] | None = None) -> dict[str, str]:
         if include_input_dir:
             self.logger.info("开始读取输入目录: %s", self.settings.input_dir)
         else:
@@ -61,6 +61,14 @@ class ContentFactoryPipeline:
         self.logger.info("已加载 %s 份输入材料。", len(documents))
 
         extraction = self.extractor.extract(documents)
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import build_facts, classify_kind, requirements
+            extraction.source_records = list(source_records or [])
+            extraction.fact_evidence = build_facts(extraction.source_records)
+            extraction.article_kind = classify_kind(extraction.topic_type, extraction.fact_evidence)
+            brief = requirements(extraction.article_kind)
+            for field in ("suggested_angle", "follow_up_focus", "writing_brief"):
+                setattr(extraction, field, brief[field])
         self.logger.info(
             "提取完成：核心数据 %s 条，趋势 %s 条，公司 %s 个。",
             len(extraction.core_data),

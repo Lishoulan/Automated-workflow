@@ -111,3 +111,17 @@ def test_account_state_is_saved_even_when_content_or_publish_gate_fails() -> Non
     assert "steps.restore-history-cache.outputs.cache-primary-key" in save["with"]["key"]
     assert steps.index(save) > next(i for i,s in enumerate(steps) if s.get("name") == "Collect performance data")
     assert steps.index(save) < next(i for i,s in enumerate(steps) if s.get("name") == "Enforce publish result")
+
+
+def test_checkpoint_recovery_downloads_one_artifact_for_selected_account() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/daily-run.yml").read_text(encoding="utf-8"))
+    recovery = next(s for s in workflow["jobs"]["daily-run"]["steps"] if s.get("name") == "Recover earlier checkpoint artifact")
+    assert workflow["permissions"]["actions"] == "read"
+    assert "workflow_dispatch" in recovery["if"]
+    script = recovery["run"]
+    assert '"$CHECKPOINT_RECOVERY_RUN" =~ ^[0-9]+$' in script
+    assert '--repo "$GITHUB_REPOSITORY"' in script
+    assert '--name "$RECOVERY_ARTIFACT"' in script
+    assert '--pattern' not in script
+    assert '/output/accounts/$ACCOUNT_SLUG/growth_checkpoints.json' in script
+    assert '"$ACCOUNT_OUTPUT_DIR/growth_checkpoint_recovery.json"' in script

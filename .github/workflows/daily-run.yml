@@ -681,8 +681,11 @@ jobs:
         run: |
           [[ "$CHECKPOINT_RECOVERY_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid recovery run ID"; exit 1; }
           RECOVERY_DIR="$RUNNER_TEMP/checkpoint-recovery-$GITHUB_RUN_ID"
+          RECOVERY_ARTIFACT="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKPOINT_RECOVERY_RUN/artifacts" \
+            --jq '.artifacts[] | select(.name | test("^daily-output-[0-9]+$")) | .name')"
+          [[ "$RECOVERY_ARTIFACT" =~ ^daily-output-[0-9]+$ ]] || { echo "Expected one primary output artifact"; exit 1; }
           gh run download "$CHECKPOINT_RECOVERY_RUN" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'daily-output-*' --dir "$RECOVERY_DIR"
+            --name "$RECOVERY_ARTIFACT" --dir "$RECOVERY_DIR"
           SOURCE="$RECOVERY_DIR/output/accounts/$ACCOUNT_SLUG/growth_checkpoints.json"
           [ -f "$SOURCE" ] || { echo "No checkpoint artifact for selected account"; exit 1; }
           cp -- "$SOURCE" "$ACCOUNT_OUTPUT_DIR/growth_checkpoint_recovery.json"

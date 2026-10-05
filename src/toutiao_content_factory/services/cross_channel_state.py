@@ -28,6 +28,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 STATE_BRANCH = "publish-state"
+WECHAT_STATE_BRANCH = "wechat-publish-state"
 STATE_PATH = "state/daily_publish_state.json"
 STATE_SCHEMA = 1
 GIT_TIMEOUT_SECONDS = 60
@@ -61,6 +62,7 @@ def read_remote_state(
     branch: str = STATE_BRANCH,
     path: str = STATE_PATH,
     refresh: bool = True,
+    strict: bool = False,
 ) -> dict[str, Any]:
     """从远端分支读共享状态。任何失败都返回 `{}`（**不要当成「今天没发」的肯定证据**）。"""
     if refresh:
@@ -86,16 +88,28 @@ def read_remote_state(
                 branch,
                 (fetched.stderr.strip() if fetched else "git unavailable"),
             )
+            missing = fetched is not None and "couldn't find remote ref" in fetched.stderr.lower()
+            if strict and not missing:
+                raise RuntimeError("Cannot read the remote publication guard.")
             return {}
     shown = _run_git(project_root, ["show", f"{remote}/{branch}:{path}"])
     if shown is None or shown.returncode != 0:
         logger.info("Cross-channel state file not present yet: %s:%s", f"{remote}/{branch}", path)
+        missing = shown is not None and any(
+            text in shown.stderr.lower() for text in ("does not exist", "exists on disk, but not in", "unknown revision")
+        )
+        if strict and not missing:
+            raise RuntimeError("Cannot read the publication state file.")
         return {}
     try:
         payload = json.loads(shown.stdout)
     except json.JSONDecodeError as exc:
         logger.warning("Cross-channel state file is not valid JSON: %s", exc)
+        if strict:
+            raise RuntimeError("Publication state is invalid.") from exc
         return {}
+    if strict and not isinstance(payload, dict):
+        raise RuntimeError("Publication state must be an object.")
     return payload if isinstance(payload, dict) else {}
 
 
@@ -161,7 +175,8 @@ def read_cloud_published_today(
     account: str | None = None,
 ) -> dict[str, Any] | None:
     """本地预检用：云端今天是否已发布指定平台内容（可按账号区分）。"""
-    state = read_remote_state(project_root, refresh=refresh)
+    branch = WECHAT_STATE_BRANCH if platform == "wechat" else STATE_BRANCH
+    state = read_remote_state(project_root, branch=branch, refresh=refresh)
     if not state:
         return None
     return published_on(

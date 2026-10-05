@@ -11,7 +11,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 try:
@@ -39,7 +39,11 @@ from toutiao_content_factory.constants.selectors import (
 )
 from toutiao_content_factory.exceptions import SessionExpiredException
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
-from toutiao_content_factory.services.browser_launch_guard import ensure_browser_session_ready, prepare_browser_profile
+from toutiao_content_factory.services.browser_launch_guard import (
+    backup_browser_storage_state,
+    ensure_browser_session_ready,
+    prepare_browser_profile,
+)
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
 from toutiao_content_factory.services.md2wechat_service import Md2WechatService
 from toutiao_content_factory.services.html_anything_service import HtmlAnythingService
@@ -124,7 +128,6 @@ class WechatPublishService:
             login_detected_fn=self._is_login_page,
             session_ready_fn=self._browser_session_ready,
             notification_service=self.notification_service,
-            navigate_fn=lambda target_page, _url: self._open_wechat_backend(target_page),
             goto_timeout_ms=max(self.settings.publishing.wait_timeout_ms, 20000),
         )
         if summary.get("login_detected") or not summary.get("session_ready"):
@@ -299,13 +302,14 @@ class WechatPublishService:
                     draft_media_id=draft_media_id,
                     title=title,
                 )
-            else:
-                publish_response = self._publish_via_browser_only(
-                    title=title,
-                    summary=summary,
-                    article_html=article_html,
-                    cover_path=cover_path,
-                )
+        if not api_available:
+            publish_response = self._publish_via_browser_only(
+                title=title,
+                summary=summary,
+                article_html=article_html,
+                cover_path=cover_path,
+                submit=should_submit,
+            )
         result_payload = {
             "published_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "platform": "wechat",
@@ -400,7 +404,6 @@ class WechatPublishService:
                     login_detected_fn=self._is_login_page,
                     session_ready_fn=self._browser_session_ready,
                     notification_service=self.notification_service,
-                    navigate_fn=lambda target_page, _url: self._open_wechat_backend(target_page),
                     goto_timeout_ms=max(self.settings.publishing.wait_timeout_ms, 20000),
                 )
                 if not session_summary.get("session_ready") or session_summary.get("login_detected"):
@@ -414,6 +417,15 @@ class WechatPublishService:
                         page.wait_for_timeout(1500)
                     if not self._browser_session_ready(page):
                         raise RuntimeError("WeChat login session was not confirmed within 10 minutes.")
+                    backup = backup_browser_storage_state(
+                        browser,
+                        platform="WeChat",
+                        profile_dir=profile_dir,
+                        account_runtime_dir=self.settings.account_runtime_dir,
+                        logger=self.logger,
+                    )
+                    if not backup.get("saved"):
+                        raise RuntimeError("WeChat QR login succeeded, but its session backup could not be saved.")
                 summary = {
                     "profile_dir": str(profile_dir),
                     "current_url": page.url,
@@ -1235,6 +1247,7 @@ class WechatPublishService:
         summary: str,
         article_html: str,
         cover_path: Path,
+        submit: bool = True,
     ) -> dict[str, Any]:
         if sync_playwright is None:
             raise RuntimeError("Playwright is not installed.")
@@ -1270,17 +1283,32 @@ class WechatPublishService:
                             page, token, title, summary, article_html, cover_path,
                         )
 
-                    if app_msg_id:
-                        self.logger.info("Draft saved with appMsgId=%s, skipping publish (draft-only mode).", app_msg_id)
-                    else:
-                        self.logger.info("Draft saved (no appMsgId), skipping publish (draft-only mode).")
+                    if not app_msg_id:
+                        raise RuntimeError("WeChat draft creation did not return an appMsgId.")
+
+                    original_declared = False
+                    if submit:
+                        # 用已保存的草稿 ID 打开编辑器，避免按标题选错文章。
+                        # Open the exact saved draft instead of selecting a duplicate title.
+                        editor_url = (
+                            f"{self.settings.wechat.base_url.rstrip('/')}/cgi-bin/appmsg"
+                            f"?t=media/appmsg_edit&action=edit&type=77&appmsgid={app_msg_id}"
+                            f"&token={token}&lang=zh_CN"
+                        )
+                        page.goto(editor_url, wait_until="domcontentloaded", timeout=30000)
+                        page.wait_for_timeout(3000)
+                        self._raise_if_session_expired(page)
+                        self._click_publish_button_on_wechat_page(page)
+                        original_declared = self._confirm_wechat_publish_dialog(page)
+                        self._wait_for_wechat_publish_success(page)
 
                     result = {
-                        "status": "draft_saved",
+                        "status": "submitted" if submit else "draft_saved",
                         "method": "browser_only",
                         "title": title,
                         "publish_url": page.url,
                         "app_msg_id": app_msg_id or "",
+                        "original_declared": original_declared,
                     }
                     return result
                 except SessionExpiredException:
@@ -1917,15 +1945,7 @@ class WechatPublishService:
             self.logger.debug("WeChat publish verification failed: %s", exc)
 
     def _submit_draft_via_browser(self, *, draft_media_id: str, title: str) -> dict[str, Any]:
-        # 草稿模式：只保存到草稿箱，不发表（发表需要扫码确认）
-        self.logger.info("Draft-only mode: skipping publish for draft_media_id=%s title=%s", draft_media_id, title)
-        return {
-            "status": "draft_saved",
-            "method": "browser",
-            "draft_media_id": draft_media_id,
-            "title": title,
-            "original_declared": False,
-        }
+        return self._submit_draft_via_browser_original(draft_media_id=draft_media_id, title=title)
 
     def _submit_draft_via_browser_original(self, *, draft_media_id: str, title: str) -> dict[str, Any]:
         if sync_playwright is None:
@@ -2536,7 +2556,14 @@ class WechatPublishService:
     def _wait_for_wechat_publish_success(self, page) -> None:
         success_markers = WECHAT_SUCCESS_MARKERS
         deadline = time.time() + 90
+        continued = False
         while time.time() < deadline:
+            self._raise_if_session_expired(page)
+            if not continued:
+                continue_button = page.get_by_role("button", name="继续发表", exact=True).first
+                if continue_button.is_visible(timeout=300):
+                    continue_button.click(timeout=1500)
+                    continued = True
             tip_result = page.evaluate("""() => {
                 const tips = document.querySelectorAll('.page_tips, .global_error, .toast');
                 for (const tip of tips) {
@@ -2563,11 +2590,15 @@ class WechatPublishService:
     def _browser_session_ready(self, page) -> bool:
         if self._is_login_page(page):
             return False
+        current_url = urlsplit(str(page.url or ""))
+        expected_host = urlsplit(self.settings.wechat.base_url).hostname
+        if current_url.hostname != expected_host or not self._extract_token(page):
+            return False
         with suppress(Exception):
             body_text = page.locator("body").inner_text(timeout=1000)
             if any(marker in body_text for marker in WECHAT_SESSION_READY_MARKERS):
                 return True
-        return any(marker in page.url for marker in ("mp.weixin.qq.com", "appmsg"))
+        return current_url.path.startswith("/cgi-bin/")
 
     def _is_login_page(self, page) -> bool:
         url = str(getattr(page, "url", "") or "")

@@ -966,7 +966,9 @@ class TopicCollectionService:
         local_tz = datetime.now().astimezone().tzinfo or timezone.utc
         now_local = datetime.now(local_tz)
 
-        if value in {"刚刚", "最新", "最新动态"}:
+        if value in {"最新", "最新动态"}:
+            return None
+        if value == "刚刚":
             return now_local
         relative_match = re.search(r"(\d+)\s*(分钟|小时|天)前", value)
         if relative_match:

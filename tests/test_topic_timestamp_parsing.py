@@ -177,3 +177,21 @@ def test_relative_phrases_still_work(collector: TopicCollectionService) -> None:
     assert just_now is not None and abs((now_local - just_now).total_seconds()) < 5
     assert three_hours is not None
     assert abs((now_local - three_hours) - timedelta(hours=3)).total_seconds() < 5
+
+
+@pytest.mark.parametrize("label", ["最新", "最新动态"])
+def test_section_labels_cannot_make_undated_articles_fresh(collector, label):
+    collector.topic_settings = collector.topic_settings.model_copy(update={
+        "drop_topics_without_timestamp": True,
+    })
+    topic = TopicCandidate(
+        title="Old article under a latest section",
+        url="https://example.test/news/2024-11/old",
+        source="industry_news", source_type="html",
+        published_at=label, snippet="An archived article from 2024",
+    )
+    filtered_out = {"stale": 0, "missing_timestamp": 0}
+
+    assert collector._parse_datetime(label) is None
+    assert collector._filter_by_freshness([topic], filtered_out) == []
+    assert filtered_out["missing_timestamp"] == 1

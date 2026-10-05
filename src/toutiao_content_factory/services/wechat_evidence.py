@@ -20,7 +20,7 @@ KINDS = {
 NUMBER = re.compile(r"(?<![A-Za-z\d])\d+(?:\.\d+)?\s*(?:万亿|亿|万|千|百)?\s*(?:千瓦时|千瓦|兆瓦|吉瓦|美元|人民币|亿元|万元|元|%|％|倍|台|套|家|项|吨|公里|小时|分钟|秒|人|片|个|GB|GW|MW|kWh|kW)?", re.I)
 PERIOD = re.compile(r"(?:截至(?:\d{4}年)?\d{1,2}月(?:\d{1,2}日|底|末)?|\d{4}年(?:\d{1,2}月(?:至\d{1,2}月)?|[上下]半年|[一二三四1234]季度)?|(?:今年|去年)?(?:[上下]半年|[一二三四1234]季度))")
 FINANCIAL = re.compile(r"营业收入|净利润|毛利率|财报|扣非|营收|经营现金流")
-BUSINESS_CLAIM = re.compile(r"利润兑现|利润释放|回款|合同验收|订单交付|订单转化|毛利改善|利润增长|客户复购")
+BUSINESS_CLAIM = re.compile(r"利润|盈利|毛利|回款|合同验收|订单|客户复购")
 
 
 def stable_id(prefix: str, *parts: str) -> str:
@@ -221,13 +221,55 @@ def supporting_facts(sentence: str, facts: list[dict]) -> list[dict]:
     return matches
 
 
+def _claim_text(sentence: str) -> str:
+    # Source titles can contain numbers, dates, and business terms. They are
+    # attribution metadata, not measurements asserted by this sentence.
+    return re.sub(r"^据《[^》]+》报道[，,]?", "", sentence.strip())
+
+
+def _unsupported_claim(sentence: str, facts: list[dict]) -> bool:
+    claim = _claim_text(sentence)
+    business = BUSINESS_CLAIM.search(claim)
+    if not _numbers(claim) and not business:
+        return False
+    matches = supporting_facts(claim, facts)
+    if not matches:
+        return True
+    if business:
+        # A source's general industry commentary is not company financial or
+        # order evidence. Keep the same object-bound match as for other facts.
+        company = r"[\u4e00-\u9fffA-Za-z]{2,}(?:公司|集团|股份)|英伟达|特斯拉|比亚迪|宁德时代|苹果|微软"
+        financial = any(FINANCIAL.search(fact["quote"]) and re.search(company, fact["quote"])
+                        and any(item["unit"] for item in fact["numbers"]) for fact in matches)
+        order = any(re.search(company, fact["quote"])
+                    and re.search(r"订单|合同", fact["quote"])
+                    and re.search(r"签订|签署|获得|收到|交付|验收|披露", fact["quote"]) for fact in matches)
+        if not financial and not order:
+            return True
+    return False
+
+
+def _mobile_paragraphs(text: str, limit: int) -> list[str]:
+    """Change only whitespace at existing punctuation, before full review."""
+    chunks, current = [], ""
+    for part in re.split(r"(?<=[。！？；])", text):
+        if not part:
+            continue
+        if current and len(current) + len(part) > limit:
+            chunks.append(current)
+            current = ""
+        current += part
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def unsupported_claims(article: str, facts: list[dict]) -> list[str]:
     if not facts:
         return []  # Old reports retain their existing independent gates.
     article = article.split("参考来源：", 1)[0]
     return [sentence.strip() for sentence in re.split(r"(?<=[。！？；])|\n+", article)
-            if sentence.strip() and (_numbers(sentence) or BUSINESS_CLAIM.search(sentence))
-            and not supporting_facts(sentence, facts)]
+            if sentence.strip() and _unsupported_claim(sentence, facts)]
 
 
 def prepare_article(article: str, report) -> str:
@@ -245,21 +287,25 @@ def prepare_article(article: str, report) -> str:
         sentences = [part.strip() for part in re.split(r"(?<=[。！？；])", paragraph) if part.strip()]
         kept, source_ids = [], []
         for sentence in sentences:
-            sentence = re.sub(r"^据《[^》]+》报道[，,]?", "", sentence)
+            sentence = _claim_text(sentence)
             matches = supporting_facts(sentence, report.fact_evidence)
-            if (_numbers(sentence) or BUSINESS_CLAIM.search(sentence)) and not matches:
+            if _unsupported_claim(sentence, report.fact_evidence):
                 continue
             kept.append(sentence)
             source_ids.extend(fact["source_id"] for fact in matches)
         if not kept:
             continue
-        text = "".join(kept)
-        if source_ids:
-            source = sources.get(source_ids[0], {})
-            name = source.get("publisher") or source.get("title")
-            if name and name not in text:
-                text = f"据《{source['title']}》报道，" + text
-        paragraphs.append(text)
+        citation_size = max((len(f"据《{sources[sid]['title']}》报道，")
+                             for sid in source_ids if sid in sources), default=0)
+        for text in _mobile_paragraphs("".join(kept), max(1, 180 - citation_size)):
+            chunk_sources = [fact["source_id"] for sentence in re.split(r"(?<=[。！？；])", text)
+                             for fact in supporting_facts(sentence, report.fact_evidence)]
+            if chunk_sources:
+                source = sources.get(chunk_sources[0], {})
+                name = source.get("publisher") or source.get("title")
+                if name and name not in text:
+                    text = f"据《{source['title']}》报道，" + text
+            paragraphs.append(text)
     references = []
     for source in report.source_records:
         date = source.get("published_at") or "发布日期未核实"
@@ -268,14 +314,21 @@ def prepare_article(article: str, report) -> str:
     return "\n\n".join(paragraphs) + "\n\n参考来源：\n" + "\n".join(references)
 
 
-def apply_requirements(report, extraction) -> None:
+def apply_requirements(report, extraction, trend_report=None) -> None:
     report.source_records = extraction.source_records
     report.fact_evidence = extraction.fact_evidence
     report.article_kind = extraction.article_kind or "industry_update"
     brief = requirements(report.article_kind)
     for field in ("suggested_angle", "follow_up_focus", "writing_brief"):
         setattr(report, field, brief[field])
+    report.format_brief = brief["writing_brief"]
+    report.paragraph_instruction = brief["instruction"] + "每段不超过180字；保持原句的统计对象、单位与统计期完整。"
     report.watch_metrics = brief["follow_up_focus"].split("、")
+    if trend_report is not None:
+        trend_report.recommended_angle = brief["suggested_angle"]
+        for field in ("hot_trends", "audience_hooks", "competitive_edges"):
+            setattr(trend_report, field, [item for item in getattr(trend_report, field)
+                                         if not unsupported_claims(item, report.fact_evidence)])
     report.source_facts = [fact["quote"] for fact in report.fact_evidence] or report.source_facts
     if report.fact_evidence:
         report.source_references = [f"《{source['title']}》；{source.get('publisher') or '发布机构未标注'}；{source.get('published_at') or '发布日期未核实'}；{source['url']}"

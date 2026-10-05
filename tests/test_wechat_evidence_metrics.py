@@ -97,6 +97,65 @@ def test_citations_restored_after_polish_before_audit_without_invented_sources()
     assert "参考来源：" in evidence.prepare_article(polished, report)
 
 
+def test_numeric_source_title_is_not_a_body_measurement_or_business_claim():
+    sources = evidence.source_records([material.MaterialSource(
+        "新型储能5年增长45倍，订单与利润仍需核实", "https://a.test/policy",
+        "能源机构发布管理办法，明确新能源项目适用条件和实施措施。", True)])
+    facts = evidence.build_facts(sources)
+    report = DataReport(source_records=sources, fact_evidence=facts)
+    article = evidence.prepare_article(sources[0]["original_text"], report)
+    assert "据《新型储能5年增长45倍" in article
+    assert evidence.unsupported_claims(article, facts) == []
+    assert evidence.unsupported_claims("据《新型储能5年增长45倍》报道，2026年装机容量达到99万千瓦。", facts)
+
+
+def test_generic_source_opinion_is_not_financial_or_order_evidence():
+    sources = evidence.source_records([material.MaterialSource(
+        "政策", "https://a.test/policy", "利润将向产业链核心环节集中。订单验证速度成为衡量产业链兑现能力的关键指标。", True)])
+    facts = evidence.build_facts(sources)
+    report = DataReport(source_records=sources, fact_evidence=facts)
+    prepared = evidence.prepare_article(sources[0]["original_text"] + "\n\n适用条件仍需进一步明确。", report)
+    assert "利润将" not in prepared and "订单验证速度" not in prepared
+    assert "适用条件仍需进一步明确" in prepared
+    financial = evidence.build_facts(evidence.source_records([material.MaterialSource(
+        "财报", "https://a.test/earnings", "2025年甲公司净利润达到10亿元。", True)]))
+    assert not evidence.unsupported_claims("2025年甲公司净利润达到10亿元。", financial)
+
+
+def test_mobile_splitting_preserves_complete_measurements_and_is_idempotent():
+    sentence = "2025年光伏装机容量达到10万千瓦，同比增长20%。"
+    prose = sentence + "政策适用范围仍需明确，各地实施条件和公开披露进展应持续跟踪。" * 6
+    sources = evidence.source_records([material.MaterialSource("装机5年数据", "https://a.test/policy", sentence, True)])
+    report = DataReport(source_records=sources, fact_evidence=evidence.build_facts(sources))
+    prepared = evidence.prepare_article(prose, report)
+    body = prepared.split("参考来源：", 1)[0].strip()
+    assert all(len(part) <= 180 for part in body.split("\n\n"))
+    assert sentence in body
+    assert evidence.unsupported_claims(prepared, report.fact_evidence) == []
+    assert evidence.prepare_article(prepared, report) == prepared
+
+
+def test_type_requirements_override_upstream_financial_and_format_instructions(app_settings):
+    from toutiao_content_factory.models import ExtractionResult, TrendReport
+    from toutiao_content_factory.agents.polish_agent import PolishAgent
+    enable_wechat(app_settings)
+    sources = evidence.source_records([material.MaterialSource(
+        "政策", "https://a.test/policy", "能源机构发布管理办法，明确新能源项目适用条件和实施措施。", True)])
+    extraction = ExtractionResult("", [], [], [], [], [], [], source_records=sources, fact_evidence=evidence.build_facts(sources), article_kind="policy_explainer")
+    report = DataReport(format_brief="预测产业链利润归属", paragraph_instruction="讨论订单验证速度")
+    trend = TrendReport(recommended_angle="利润将向产业链核心环节集中", hot_trends=["订单验证速度是兑现能力的关键指标"])
+    evidence.apply_requirements(report, extraction, trend)
+    brief = evidence.requirements("policy_explainer")
+    assert trend.recommended_angle == report.suggested_angle == brief["suggested_angle"]
+    assert trend.hot_trends == []
+    assert report.format_brief == brief["writing_brief"]
+    assert report.paragraph_instruction.startswith(brief["instruction"])
+    polish = PolishAgent(app_settings, MagicMock(), MagicMock(), MagicMock())
+    notes, _ = polish._validate_article("适用条件仍需进一步明确。", report, trend)
+    assert "正文主体感仍偏弱，建议明确公司、客户、订单方或交付项目。" not in notes
+    assert "正文对产业链位置展开还不够，建议补上环节分工与利润归属。" not in notes
+
+
 @pytest.mark.parametrize("topic_type,quote,expected", [
     ("policy_market", "能源机构发布管理办法，明确新能源项目适用条件和实施措施。", "policy_explainer"),
     ("product_launch", "机器人公司发布产品，完成室内测试，尚未完成户外验证。", "product_progress"),

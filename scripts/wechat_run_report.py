@@ -56,7 +56,11 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
         score = attempt.get("score_snapshot", {})
         if isinstance(score, dict):
             summary["scores"] = {key: value for key, value in score.items() if isinstance(value, (int, float, bool))}
-            if score.get("length_shortfall", 0):
+            if score.get("length_shortfall", 0) or (
+                isinstance(score.get("article_char_count"), (int, float))
+                and isinstance(score.get("length_minimum"), (int, float))
+                and score["article_char_count"] < score["length_minimum"]
+            ):
                 result["reason_codes"].append("article_too_short")
         run_dir = Path(str(attempt.get("run_dir", ""))).resolve()
         if run_dir.is_relative_to(settings.runs_dir.resolve()) and run_dir.is_dir():

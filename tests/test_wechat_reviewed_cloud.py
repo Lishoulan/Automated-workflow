@@ -378,3 +378,61 @@ def test_wechat_grounded_expansion_receives_sources_and_rejects_new_numbers(
     assert report.source_references[0] in prompt
     assert "Write 1-3" not in prompt
     assert "corporate revenue" in prompt
+
+
+@pytest.mark.parametrize("wechat, expected_calls", [(True, 3), (False, 1)])
+def test_length_repair_budget_reserves_revisions_but_remains_bounded(
+    app_settings, mock_openai_service, logger, wechat, expected_calls
+):
+    if wechat:
+        enable_wechat(app_settings)
+    object.__setattr__(app_settings.quality_review, "max_auto_revisions", 2)
+    writer = WriterAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    mock_openai_service.create_json_completion.return_value = {
+        "paragraphs": ["需要明确落实边界，不能从公开说明推断长期表现，每个环节的实际效果都需要连续记录。"]
+    }
+    report = DataReport(growth_numbers=["2024年"])
+    original = ["2024年发布了能源报告。"]
+    for _ in range(expected_calls):
+        assert writer._expand_article_via_llm(original, report, 1800) != original
+    assert writer._expand_article_via_llm(original, report, 1800) == original
+    assert mock_openai_service.create_json_completion.call_count == expected_calls
+    if wechat:
+        prompt = mock_openai_service.create_json_completion.call_args.kwargs["user_prompt"]
+        assert "合计至少补足" in prompt and "short paragraphs" not in prompt
+        polish = PolishAgent(app_settings, MagicMock(), mock_openai_service, logger)
+        assert "最低1750字" in polish._auto_publish_directive()
+        assert "不得按审核建议虚构" in polish._auto_publish_directive()
+
+
+def test_length_diagnostics_survive_early_quality_rejection(app_settings, logger):
+    enable_wechat(app_settings)
+    run_dir = app_settings.runs_dir / "short-reviewed-run"
+    write_report(run_dir / "content_score.json", {"scores": {}, "publish_recommendation": "manual_review"})
+    (run_dir / "article.md").write_text("政策信息。" * 100, encoding="utf-8")
+    app = ContentFactoryAppService(app_settings, logger)
+    score = app._load_run_score_snapshot(run_dir)
+    assert score["length_minimum"] == 1750
+    assert "length_shortfall" not in score  # diagnostics do not trigger another editing path
+    write_report(app_settings.automation_dir / "last_daily_workflow_report.json", {
+        "account_key": app_settings.account_key, "status": "review_required", "attempts": [{
+            "status": "review_required", "run_dir": str(run_dir), "score_snapshot": score
+        }]
+    })
+    report = review_diagnostics(app_settings, {"status": "review_required"}, time.time_ns() - 1_000_000_000)
+    assert "article_too_short" in report["reason_codes"]
+    assert report["publication_attempted"] is False
+
+
+
+def test_source_grounded_energy_terms_survive_without_allowing_unknown_companies(
+    app_settings, mock_openai_service, logger
+):
+    enable_wechat(app_settings)
+    writer = WriterAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    paragraph = "完善绿色能源消费机制，有助于把政策方向与需求端衔接，具体落实效果仍需观察。"
+    report = DataReport(source_facts=["完善绿色能源消费机制。"], growth_numbers=["2024年"])
+    assert writer._has_unknown_company_mention(paragraph, report) is False
+    assert writer._has_unknown_company_mention("虚构星河科技公司已取得项目订单。", report) is True
+    mock_openai_service.create_json_completion.return_value = {"paragraphs": [paragraph]}
+    assert paragraph in writer._expand_article_via_llm(["2024年发布了能源报告。"], report, 1800)

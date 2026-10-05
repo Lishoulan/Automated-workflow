@@ -930,6 +930,10 @@ class AppSettings:
             return "industry"
 
     @property
+    def wechat_auto_publish_mode(self) -> bool:
+        return self.platform == "wechat" and self.wechat.enabled and self.wechat.auto_publish
+
+    @property
     def account_runtime_dir(self) -> Path:
         if self.is_default_account:
             return self.project_root / ".runtime"
@@ -1055,6 +1059,18 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     wechat_final = _load_wechat_config_final(merged_payload, account_profile, wechat_config)
     image_final = _load_image_config(merged_payload, image_config)
     quality_review_final = _load_quality_review_config(merged_payload, quality_review_config)
+    if writing_overrides["platform"] == "wechat" and _env_flag_scoped(
+        "WECHAT_TECH_TOPICS_ONLY", account_profile.key, False
+    ):
+        topic_config = topic_config.model_copy(update={
+            "focus_industries": [
+                "humanoid_robot", "new_energy", "energy_storage", "ai_hardware",
+                "industrial_automation", "ai_applications",
+            ],
+            "keyword_map": {**topic_config.keyword_map, "ai_applications": [
+                "人工智能", "大模型", "生成式AI", "智能体", "AI应用", "机器学习",
+            ]},
+        })
     expert_council_payload = merged_payload.get("expert_council", {})
     if not isinstance(expert_council_payload, dict):
         expert_council_payload = {}

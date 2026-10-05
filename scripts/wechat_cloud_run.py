@@ -8,6 +8,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from toutiao_content_factory.config import load_settings
 from toutiao_content_factory.services import cross_channel_state as xstate
 from wechat_cloud_session import restore_session, save_session
+from wechat_run_report import cloud_exit_code, fresh_json
 
 logger = logging.getLogger("wechat_cloud")
 ACCEPTED_STATUSES = {"submitted", "submitted_for_review", "published", "success"}
@@ -36,6 +38,8 @@ def configure_environment(account: str) -> None:
         "TOUTIAO_PUBLISH_HEADLESS": "1", "TOUTIAO_PUBLISH_CHANNEL": "",
         "TOUTIAO_BROWSER_EXECUTABLE": "", "TOUTIAO_LOCAL_FALLBACK_AFTER_HOUR": "-1",
         "LETTA_ENABLED": "0", "DEERFLOW_ENABLED": "0", "PROMPT_OPTIMIZER_ENABLED": "0",
+        "WECHAT_TECH_TOPICS_ONLY": "1", "TOUTIAO_QUALITY_REVIEW_MAX_AUTO_REVISIONS": "2",
+        "TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS": "5",
     }
     for name, value in overrides.items():
         os.environ[name] = value
@@ -112,6 +116,8 @@ def main(argv: list[str] | None = None) -> int:
     encrypted = settings.account_runtime_dir / "automation" / "wechat_cloud_session.enc"
     result_path = settings.automation_dir / "wechat_cloud_result.json"
     key = os.environ.get("WECHAT_SESSION_KEY", "")
+    publication_started = False
+    record = None
     try:
         restore_session(settings, encrypted, key, os.environ.get("WECHAT_SESSION_SEED", ""))
         # 先读持久化去重状态，网络异常时停止，不把未知当作“今天没发”。
@@ -120,6 +126,9 @@ def main(argv: list[str] | None = None) -> int:
         today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
         recorded = xstate.published_on(state, today, platform="wechat", account=settings.account_slug)
         if args.mode == "publish" and recorded:
+            if recorded["status"] == "publish_uncertain":
+                result_path.write_text(json.dumps({"status": "publish_uncertain", "wechat_status": "publish_uncertain"}), encoding="utf-8")
+                return 1
             result_path.write_text(json.dumps({"status": "already_published", "wechat_status": recorded["status"]}), encoding="utf-8")
             return 0
         command = [sys.executable, str(ROOT / "scripts" / "scheduled_wechat_publish.py"), "--account", args.account]
@@ -131,16 +140,29 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "check":
             result_path.write_text(json.dumps({"status": "ready", "publication_requested": False}), encoding="utf-8")
             return 0
+        started = time.time_ns()
+        publication_started = True
         result = subprocess.run(command + ["--enable-auto-publish"], cwd=ROOT, timeout=2700)
         save_session(settings, encrypted, key)
         record = latest_accepted_record(settings.output_dir / settings.wechat.history_filename, today)
         if record:
             record_publication(settings, record, today)
-        report = json.loads((settings.automation_dir / "wechat_scheduled_result.json").read_text(encoding="utf-8"))
+        report = fresh_json(settings.automation_dir / "wechat_scheduled_result.json", started)
+        if not report:
+            raise RuntimeError("Missing current WeChat run report.")
+        if record:
+            report["publication_attempted"] = True
+        elif report.get("publication_attempted") is not False:
+            record_publication(settings, {"status": "publish_uncertain"}, today)
         result_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        return result.returncode
+        return cloud_exit_code(report, result.returncode)
     except Exception as exc:
         logger.error("WeChat cloud run stopped: %s", type(exc).__name__)
+        if publication_started and not record:
+            try:
+                record_publication(settings, {"status": "publish_uncertain"}, today)
+            except Exception as guard_exc:
+                logger.error("Cannot persist uncertain publication guard: %s", type(guard_exc).__name__)
         result_path.write_text(json.dumps({"status": "error", "error_type": type(exc).__name__}), encoding="utf-8")
         return 1
 

@@ -218,7 +218,9 @@ class AgentWorkflowService:
                 editorial_council=editorial_council_report,
                 fast_mode=fast_mode,
             )
-            if self._quality_review_article(content) != quality_reviewed_state[0]:
+            if self.settings.platform == "wechat":
+                quality_reviewed_state = self._quality_review_state(content)
+            elif self._quality_review_article(content) != quality_reviewed_state[0]:
                 self.logger.info(
                     "Quality review revision changed the article; regenerating the title before final audit."
                 )
@@ -234,7 +236,11 @@ class AgentWorkflowService:
             self._apply_review_pack(content, review_pack, cache_context)
             content_score = review_pack["content_score"]
 
-            if not fast_mode and self._should_run_second_polish(content, content_score):
+            wechat_revision_budget_available = (
+                self.settings.platform != "wechat" or quality_review_council_report is None
+                or quality_review_council_report.revision_round < self.settings.quality_review.max_auto_revisions
+            )
+            if not fast_mode and wechat_revision_budget_available and self._should_run_second_polish(content, content_score):
                 revision_focus = self._build_revision_focus(content, content_score)
                 revised_pack = self.polish_agent.run(
                     content,
@@ -373,6 +379,7 @@ class AgentWorkflowService:
         )
         revision_count = 0
         while can_auto_revise and revision_count < max_revisions:
+            audited_state = self._quality_review_state(content)
             revision_focus = self._build_quality_review_revision_focus(report)
             try:
                 revised_pack = self.polish_agent.run(
@@ -398,6 +405,11 @@ class AgentWorkflowService:
                 max_revisions,
             )
             self._apply_polish_pack(content, revised_pack, data_report)
+            if self.settings.platform == "wechat":
+                if self._quality_review_article(content) == audited_state[0]:
+                    self.logger.info("Revision produced no effective body change; retaining the audit.")
+                    break
+                self._refresh_titles(content, trend_report, data_report, style, cache_context)
             report = self.quality_review_council_agent.run(
                 content,
                 data_report,
@@ -407,6 +419,8 @@ class AgentWorkflowService:
                 revision_round=revision_count,
             )
             report.article_version = article_version
+            if self.settings.platform == "wechat":
+                report.revision_round = revision_count
             if not report.needs_revision:
                 break
 
@@ -1084,7 +1098,7 @@ class AgentWorkflowService:
             and getattr(publishing, "auto_publish", False)
             and not getattr(publishing, "draft_only", False)
         )
-        if toutiao_auto_publish:
+        if toutiao_auto_publish or self.settings.wechat_auto_publish_mode:
             # Concise formats can stay short in draft/manual mode, but every
             # auto-published article must leave room for publish-time cleanup
             # and still clear Toutiao's public 1500-char gate.

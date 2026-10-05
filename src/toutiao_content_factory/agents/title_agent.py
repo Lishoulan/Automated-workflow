@@ -671,6 +671,27 @@ class TitleAgent(BaseAgent):
             )
             chosen = emergency_pool
 
+        repair_pool: TitlePool | None = None
+        if (
+            not chosen.valid_titles and self.settings.wechat_auto_publish_mode
+            and body_reference.strip() and self.openai_service.available
+        ):
+            # One targeted retry, using only facts in the actual public body.
+            reasons = [pool.reason_summary() for pool in (model_pool, fallback_pool, emergency_pool) if pool]
+            repair_prompt = (
+                "以下标题均未通过校验。请只根据正文已有的具体主体、动作和数字重写最多6条标题。"
+                "每条10到30字，不能新增主体、数字或事实，不得使用抽象套话、内部指令或夸大结论。"
+                "标题必须与正文一致，只输出JSON对象，字段titles为字符串数组。\n"
+                + self.json_text({"rejection_reasons": reasons, "article": body_reference})
+            )
+            repair_payload = self.request_json(system_prompt, repair_prompt)
+            repair_titles = self._dedupe_titles(
+                repair_payload.get("titles", []) if isinstance(repair_payload, dict) else [], cache_context
+            )[:6]
+            repair_pool = self._build_title_pool("repair", repair_titles, body_reference, data_report, [])
+            if repair_pool.valid_titles:
+                chosen = repair_pool
+
         ranked_titles = list(chosen.valid_titles)
 
         if ranked_titles:
@@ -691,6 +712,8 @@ class TitleAgent(BaseAgent):
             "fallback": fallback_pool.to_dict() if fallback_pool else None,
             "emergency": emergency_pool.to_dict() if emergency_pool else None,
         }
+        if repair_pool is not None:
+            validation_payload["pools"]["repair"] = repair_pool.to_dict()
         validation_payload["validation_context"] = (
             "body" if str(body_reference or "").strip() else "unavailable"
         )

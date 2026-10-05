@@ -124,6 +124,28 @@ def _run(agent: TitleAgent) -> dict:
     )
 
 
+@pytest.mark.parametrize("repair_titles, passed", [([VALID_TITLES[0]], True), ([INVALID_TITLES[1]], False)])
+def test_wechat_targeted_retry_uses_body_and_keeps_title_gates(
+    app_settings, mock_openai_service, logger, monkeypatch, repair_titles, passed
+):
+    app_settings.platform = "wechat"
+    object.__setattr__(app_settings.wechat, "enabled", True)
+    object.__setattr__(app_settings.wechat, "auto_publish", True)
+    agent = _agent(app_settings, mock_openai_service, logger)
+    agent.openai_service.available = True
+    _stub_run(agent, monkeypatch, model_payload={"titles": INVALID_TITLES}, fallback=INVALID_TITLES, emergency=INVALID_TITLES)
+    requests = []
+    def request(system, prompt):
+        requests.append(prompt)
+        return {"titles": repair_titles} if len(requests) == 2 else {"titles": INVALID_TITLES}
+    monkeypatch.setattr(agent, "request_json", request)
+    result = _run(agent)
+    assert len(requests) == 2
+    assert BODY in requests[1]
+    assert bool(result["recommended_titles"]) is passed
+    assert "repair" in result["title_validation"]["pools"]
+
+
 def test_policy_topic_fallback_keeps_the_named_agency_subject(
     app_settings,
     mock_openai_service,

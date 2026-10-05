@@ -291,9 +291,11 @@ class PolishAgent(BaseAgent):
     def _auto_publish_mode(self) -> bool:
         publishing = getattr(self.settings, "publishing", None)
         return bool(
-            getattr(publishing, "enabled", False)
-            and getattr(publishing, "auto_publish", False)
-            and not getattr(publishing, "draft_only", False)
+            self.settings.wechat_auto_publish_mode or (
+                getattr(publishing, "enabled", False)
+                and getattr(publishing, "auto_publish", False)
+                and not getattr(publishing, "draft_only", False)
+            )
         )
 
     def _auto_publish_directive(self) -> str:

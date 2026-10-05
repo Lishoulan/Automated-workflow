@@ -3089,7 +3089,7 @@ class ContentFactoryAppService:
             getattr(publishing, "enabled", False)
             and getattr(publishing, "auto_publish", False)
             and not getattr(publishing, "draft_only", False)
-        )
+        ) or self.settings.wechat_auto_publish_mode
         snapshot = (
             score_snapshot
             if score_snapshot is not None

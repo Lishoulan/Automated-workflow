@@ -11,6 +11,7 @@ from pathlib import Path
 from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from toutiao_content_factory.config import load_settings
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
@@ -703,7 +704,8 @@ def main(argv: list[str] | None = None) -> int:
     except subprocess.TimeoutExpired:
         result_path.write_text(json.dumps({"status": "error", "message": "Daily workflow timed out."}), encoding="utf-8")
         return 1
-    result = {"status": "success" if completed.returncode == 0 else "error", "exit_code": completed.returncode}
+    result = {"status": "success" if completed.returncode == 0 else "error",
+              "exit_code": completed.returncode, "native_exit_code": completed.returncode}
     workflow_result = settings.automation_dir / "last_daily_run_result.json"
     report = {}
     if workflow_result.exists() and workflow_result.stat().st_mtime_ns >= workflow_started:
@@ -712,6 +714,12 @@ def main(argv: list[str] | None = None) -> int:
             result.update({key: report[key] for key in ("status", "wechat_status", "run_outcome") if key in report})
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Cannot read daily workflow status: %s", exc)
+    from wechat_run_report import review_diagnostics
+    diagnostics = review_diagnostics(settings, report, workflow_started)
+    result.update({key: diagnostics[key] for key in ("reason_codes", "attempt_count", "publication_attempted")})
+    (settings.automation_dir / "wechat_review_diagnostics.json").write_text(
+        json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     if (
         completed.returncode == 0
         and not args.dry_run

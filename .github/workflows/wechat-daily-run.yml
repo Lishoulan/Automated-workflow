@@ -80,6 +80,15 @@ jobs:
           payload = json.loads(result.read_text(encoding='utf-8')) if result.exists() else {'status': 'setup_failed'}
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:
               handle.write('WeChat cloud outcome: **' + str(payload.get('status', 'unknown')) + '**\n')
+              if payload.get('status') == 'review_required':
+                  handle.write('审核未通过，本次未发表。\n')
+                  handle.write('原因：' + ', '.join(payload.get('reason_codes', [])) + '\n')
+              elif payload.get('wechat_status') in ('submitted', 'submitted_for_review'):
+                  handle.write('已提交微信，待平台审核；尚未确认正式发表。\n')
+              elif payload.get('wechat_status') in ('published', 'success'):
+                  handle.write('微信报告已发表。\n')
+              elif payload.get('wechat_status') == 'draft_saved':
+                  handle.write('仅保存草稿，未发表。\n')
               handle.write('Login checks and review-required articles do not count as publications.\n')
           PY
       - name: Save outcome reports
@@ -91,5 +100,6 @@ jobs:
             output/automation/wechat_cloud_result.json
             output/automation/wechat_scheduled_result.json
             output/automation/wechat_login_check.json
+            output/automation/wechat_review_diagnostics.json
           if-no-files-found: ignore
           retention-days: 14

@@ -26,6 +26,8 @@ on:
     - cron: '0 0 * * 0,6'
     # 每日统一发送通知汇总 Beijing 22:00 = UTC 14:00
     - cron: '0 14 * * *'
+    # Read-only collection every six hours; never generate or publish content.
+    - cron: '17 */6 * * *'
   workflow_dispatch:
     inputs:
       account:
@@ -60,11 +62,15 @@ on:
         description: 'Optional prior run ID to recover earlier checkpoint captures for this account'
         required: false
         default: ''
+      collection_only:
+        description: 'Only collect account revenue and 24/72h checkpoints (true/false)'
+        required: false
+        default: 'false'
 
 concurrency:
   # The report-only schedule must not cancel an active content/publish run.
   group: daily-run-${{ github.ref }}-${{ github.event_name == 'schedule' && github.event.schedule == '0 14 * * *' && 'report' || 'content' }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   # write 是给「跨通道发布状态」用的：云端把当日发布结果提交到 publish-state
@@ -89,6 +95,7 @@ jobs:
       run-account: ${{ steps.extract-status.outputs.run-account }}
 
     env:
+      RUN_COLLECTION_ONLY: ${{ github.event.schedule == '17 */6 * * *' || github.event.inputs.collection_only == 'true' }}
       # ---- 敏感配置（从 GitHub Secrets 读取） ----
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
@@ -411,6 +418,11 @@ jobs:
           # input and Secret names compatible, but never enable the route.
           RUN_PUBLISH_WECHAT_VIA_135="false"
 
+          if [ "$RUN_COLLECTION_ONLY" = "true" ]; then
+            RUN_DRY_RUN="true"
+            RUN_PUBLISH_TOUTIAO="false"
+          fi
+
           TOUTIAO_AUTO_PUBLISH_VALUE="0"
           TOUTIAO_DRAFT_ONLY_VALUE="1"
           WECHAT_ENABLED_VALUE="0"
@@ -560,6 +572,7 @@ jobs:
           PY
 
       - name: Probe LLM endpoint
+        if: env.RUN_COLLECTION_ONLY != 'true'
         # 云端最隐蔽的故障模式：接口返回 HTTP 200，但 message.content 是一张 HTML 页面，
         # 于是每个 Agent 都静默退化成「本地兜底策略」，最终以
         # "Daily workflow did not produce any runnable candidates" 收场——
@@ -853,12 +866,14 @@ jobs:
         continue-on-error: true
 
       - name: Keep browser sessions alive
+        if: env.RUN_COLLECTION_ONLY != 'true'
         run: |
           echo "Refreshing browser cookies to prevent session expiry..."
           python scripts/keep_alive.py --headless --account "$RUN_ACCOUNT" || true
         continue-on-error: true
 
       - name: Run daily pipeline
+        if: env.RUN_COLLECTION_ONLY != 'true'
         run: |
           ARGS=(--account "$RUN_ACCOUNT" --skip-browser-check)
           if [ "$RUN_DRY_RUN" = "true" ]; then
@@ -873,7 +888,7 @@ jobs:
           python scripts/cloud_daily_run.py "${ARGS[@]}"
 
       - name: Run image API diagnostic
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.image_diagnostic == 'true'
+        if: env.RUN_COLLECTION_ONLY != 'true' && github.event_name == 'workflow_dispatch' && github.event.inputs.image_diagnostic == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -957,27 +972,29 @@ jobs:
         continue-on-error: true
 
       - name: Run monetization sync
-        if: env.MONETIZATION_ENABLED == '1'
+        if: env.RUN_COLLECTION_ONLY != 'true' && env.MONETIZATION_ENABLED == '1'
         run: |
           echo "Syncing monetization data..."
           python main.py --monetization-sync
         continue-on-error: true
 
       - name: Show matrix dashboard
-        if: env.MATRIX_ENABLED == '1'
+        if: env.RUN_COLLECTION_ONLY != 'true' && env.MATRIX_ENABLED == '1'
         run: |
           echo "Matrix operations dashboard:"
           python main.py --matrix-dashboard
         continue-on-error: true
 
       - name: Collect performance data
-        if: env.PERFORMANCE_COLLECT_ENABLED == '1'
+        id: collect-performance
+        if: env.RUN_COLLECTION_ONLY == 'true' || env.PERFORMANCE_COLLECT_ENABLED == '1'
         run: |
           echo "Collecting performance data (views/likes/comments/shares)..."
           python main.py --collect-performance --account "$RUN_ACCOUNT"
         continue-on-error: true
 
       - name: Snapshot published-work growth
+        id: collect-growth
         if: always()
         shell: bash
         run: |
@@ -1000,7 +1017,7 @@ jobs:
           find .runtime -name "precheck_report.json" -exec cat {} \; 2>/dev/null || echo "No precheck report found"
 
       - name: Monthly review and iteration
-        if: always()
+        if: always() && env.RUN_COLLECTION_ONLY != 'true'
         env:
           MONTHLY_REVIEW_ENABLED: ${{ env.MONTHLY_REVIEW_ENABLED }}
         shell: bash
@@ -1015,7 +1032,7 @@ jobs:
 
       - name: Extract run status
         id: extract-status
-        if: always()
+        if: always() && env.RUN_COLLECTION_ONLY != 'true'
         shell: bash
         run: |
           # 尝试 account-aware 路径，再回退到默认路径
@@ -1076,7 +1093,7 @@ jobs:
           fi
 
       - name: Record cross-channel publish state
-        if: always()
+        if: always() && env.RUN_COLLECTION_ONLY != 'true'
         shell: bash
         run: |
           # 把「今天发了什么」写进 state/daily_publish_state.json，供本地通道做跨通道
@@ -1088,7 +1105,7 @@ jobs:
         continue-on-error: true
 
       - name: Publish cross-channel state to the publish-state branch
-        if: always()
+        if: always() && env.RUN_COLLECTION_ONLY != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1159,7 +1176,7 @@ jobs:
           key: ${{ steps.restore-history-cache.outputs.cache-primary-key }}
 
       - name: Enforce publish result
-        if: always()
+        if: always() && env.RUN_COLLECTION_ONLY != 'true'
         shell: bash
         run: |
           if [ "$RUN_PUBLISH_TOUTIAO" != "true" ] && [ "$RUN_PUBLISH_WECHAT_VIA_135" != "true" ]; then
@@ -1189,6 +1206,17 @@ jobs:
               echo "Automatic publish result accepted: status=${RUN_STATUS:-unknown}"
               ;;
           esac
+
+      - name: Enforce collection result
+        if: always() && env.RUN_COLLECTION_ONLY == 'true'
+        env:
+          PERFORMANCE_OUTCOME: ${{ steps.collect-performance.outcome }}
+          GROWTH_OUTCOME: ${{ steps.collect-growth.outcome }}
+        run: |
+          [ "$PERFORMANCE_OUTCOME" = "success" ] && [ "$GROWTH_OUTCOME" = "success" ] || {
+            echo "::error::Read-only collection did not complete; saved existing state for retry."
+            exit 1
+          }
 
       - name: Upload output artifacts
         if: always()
@@ -1230,6 +1258,8 @@ jobs:
   daily-run-fallback:
     needs: daily-run
     if: >-
+      github.event.schedule != '17 */6 * * *' &&
+      github.event.inputs.collection_only != 'true' &&
       needs.daily-run.result == 'failure' &&
       (needs.daily-run.outputs.run-status == '' ||
        needs.daily-run.outputs.run-status == 'unknown' ||

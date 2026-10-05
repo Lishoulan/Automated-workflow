@@ -181,6 +181,7 @@ class RevenueExperimentService:
             },
             "formats": format_metrics,
             "per_content_attribution": attribution,
+            "content_income_collection": self._load_json(self.output_dir / "growth_ops" / "performance" / "content_income_collection.json"),
             "experiment": experiment,
             "feedback": {
                 "sample_count": int(growth_feedback.get("sample_count", 0) or 0),
@@ -204,6 +205,7 @@ class RevenueExperimentService:
         formats = dashboard.get("formats") or {}
         attribution = dashboard.get("per_content_attribution") or {}
         experiment = dashboard.get("experiment") or {}
+        collection = dashboard.get("content_income_collection") or {}
         lines = [
             "# 30天写作收益实验看板",
             "",
@@ -213,6 +215,7 @@ class RevenueExperimentService:
             f"- 最近7天收益：{self._money(income.get('latest_7d'))}",
             f"- 前7天收益：{self._money(income.get('previous_7d'))}",
             f"- 单篇精确收益覆盖：{attribution.get('exact_count', 0)}/{attribution.get('total_count', 0)}（{attribution.get('coverage_pct', 0)}%）",
+            f"- 收益页采集：{collection.get('status', 'unknown')}，匹配作品 {collection.get('matched_works', 0)}，金额冲突 {collection.get('conflicting_works', 0)}；采集时间 {collection.get('observed_at', '未知')}",
             "",
             "## 分体裁表现",
             "",

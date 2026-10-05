@@ -13,6 +13,7 @@ import json
 import logging
 import re
 from dataclasses import asdict
+from difflib import SequenceMatcher
 from datetime import datetime
 from itertools import islice
 from pathlib import Path
@@ -167,10 +168,14 @@ STORY_COMMENT_USER = """请围绕下面这件真实发生的事，写一条微�
    「老人剪断高空作业绳，这事最该说的是什么」。不要加"标题："前缀，
    不要用省略号故弄玄虚，不要用"震惊""竟然"这类标题党词。
 2. 正文 250-400 字，2-4 个短段，每段最多 3 行，顺序是：
+   - 【前两句】前40-60字直接交代具体人物、矛盾和已确认结果，不用“最近看到一则消息”等铺垫。
    - 【把事说清楚】用素材里的事实交代发生了什么、涉及谁、结果如何；素材没写的不要补。
    - 【当事人的处境】仅写素材明确提及的约束和做法，不猜测他为什么这样做。
-   - 【给读者的提醒】给一句具体可用的经验，例如涉及钱、合同、赡养、就医时该留什么证据、
-     该找谁、该走什么流程。不要写成空泛的"引人深思"。
+   - 【独立分析】围绕素材中的两项事实说明一个容易混淆的区别、判断条件或证据边界。
+     用“从这些事实看”标明这是作者分析，不当成当事人发言或法院新增结论。
+     说明哪些事能确认、哪些事不能从该案推出，给读者一个与本事直接相关的判断方法。
+     不添加未经核对的法律条文、办事流程或专业建议，不用“引人深思”“值得我们学习”等感想凑字。
+   - 不逐段改写报道，不保留报道的叙述顺序和评价套话；事实准确不等于原创，必须有实质分析。
 3. **严禁编造**：不得虚构任何人的姓名、身份、对话、心理活动或现场细节；
    不得编一个"我邻居""我朋友"的故事；**不得用第一人称说自己亲历了这件事**。
    只能写素材里明确有的事实，缺的地方就不写。
@@ -326,6 +331,20 @@ class WeiToutiaoStandaloneGenerator:
 
     # ── 写作 ──────────────────────────────────────────────
 
+    def _opening_experiment(self) -> dict[str, str]:
+        path = self.settings.output_dir / "growth_ops" / "performance" / "wtt_content_experiments.json"
+        try:
+            ledger = json.loads(path.read_text(encoding="utf-8-sig"))
+            records = ledger.get("records", {})
+        except (OSError, ValueError, AttributeError):
+            records = {}
+        counts = {"result_first": 0, "situation_first": 0}
+        for record in records.values() if isinstance(records, dict) else []:
+            if isinstance(record, dict) and record.get("variant") in counts:
+                counts[record["variant"]] += 1
+        variant = min(counts, key=counts.get)
+        return {"id": "story_opening_v1", "variable": "opening_order", "variant": variant}
+
     def generate_content(self, topic: TopicCandidate, persona: str = "hot_comment") -> str:
         """按人设模板写一条独立微头条（含标题行 + 正文 + 话题标签）。"""
         system_template, user_template = PERSONA_TEMPLATES.get(
@@ -337,6 +356,7 @@ class WeiToutiaoStandaloneGenerator:
         verified_story = self._is_story_context(topic, persona) and bool(
             getattr(topic, "_verified_source_material", False)
         )
+
         if verified_story:
             summary = str(topic.snippet or summary).strip()
         user_prompt = user_template.format(
@@ -352,6 +372,14 @@ class WeiToutiaoStandaloneGenerator:
             ),
             case_summary=str(topic.summary or "未提供")[:400],
         )
+        if verified_story and persona == "story_comment" and not self._is_public_policy_topic(topic, persona):
+            topic._content_experiment = self._opening_experiment()
+            opening = (
+                "第一句先说素材已确认的处置结果，第二句交代人物和矛盾。"
+                if topic._content_experiment["variant"] == "result_first"
+                else "第一句先说人物面对的具体处境和矛盾，第二句交代已确认的处置结果。"
+            )
+            user_prompt += f"\n本轮只测试开头顺序：{opening}标题、篇幅、分析结构与其他要求保持一致。没有处置结果则明确尚未确认，不编造。"
         raw = self.openai_service.create_text_completion(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -374,7 +402,10 @@ class WeiToutiaoStandaloneGenerator:
                     "区分丢失者、捡拾者和处置人员，不能把某人的动作或提醒套给另一人。"
                     "不能把监控提供线索改成直接发现物品，不能把查找过程改成持续追查某个人。"
                     "保留历史报道年份和案件裁判范围，不能把旧案写成今日新闻。"
-                    "读者提醒应与事件事实分段，只保留原文明确的提醒。"
+                    "事实复述和作者分析必须分段。分析只能基于素材中能核对的事实，"
+                    "用‘从这些事实看’标明推断，保留有依据的区别和证据边界，不把分析写成报道事实。"
+                    "删去空泛道理，大段照搬报道应改为事实概要加实质分析，不仅换词重排。"
+                    "前两句按指定顺序交代具体人物、矛盾和已确认结果；标题准确对应正文，不藏结果诱导点击。"
                     "输出纠正后的完整微头条：标题加250至400字正文和话题标签。"
                     "不输出核对说明，不增加健康或投资建议；素材不足时只输出‘素材不足’。"
                 ),
@@ -470,7 +501,21 @@ class WeiToutiaoStandaloneGenerator:
             return "story_health_advice_guard"
         if re.search(r"(?:你|大家).{0,12}(?:先|选择).{0,16}还是", compact):
             return "story_safety_guard"
+        if getattr(topic, "_verified_source_material", False) and self._source_copy_share(topic, content) >= 0.8:
+            return "story_source_copy_guard"
         return ""
+
+    @staticmethod
+    def _source_copy_share(topic: TopicCandidate, content: str) -> float:
+        # This detects direct copying of the supplied material, not global
+        # plagiarism or semantic originality. Short factual phrases are ignored.
+        lines = [line.strip() for line in str(content).splitlines() if line.strip() and not line.strip().startswith("#")]
+        body = re.sub(r"\W+", "", "".join(lines[1:]))
+        source = re.sub(r"\W+", "", str(topic.snippet or "")[:6000])
+        if len(body) < MIN_WTT_CHARS or not source:
+            return 0.0
+        copied = sum(block.size for block in SequenceMatcher(None, body, source, autojunk=False).get_matching_blocks() if block.size >= 18)
+        return round(copied / len(body), 3)
 
     @staticmethod
     def _content_char_count(content: str) -> int:
@@ -637,6 +682,8 @@ class WeiToutiaoStandaloneGenerator:
             "generation_mode": generation_mode,
             "generation_fallback_reason": generation_fallback_reason,
             "content_char_count": self._content_char_count(content),
+            "content_experiment": getattr(topic, "_content_experiment", {}) if generation_mode == "model" else {},
+            "source_copy_share": self._source_copy_share(topic, content),
         }
         (publish_dir / "publish_meta.json").write_text(
             json.dumps(publish_meta, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1031,6 +1078,28 @@ class WeiToutiaoStandaloneGenerator:
         path.parent.mkdir(parents=True, exist_ok=True)
         normalized = {**payload, "platform": "toutiao_weitoutiao", "run_dir": str(run_dir)}
         path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        if str(payload.get("status", "")) in WTT_ACCEPTED_STATUSES:
+            meta_path = run_dir / self.settings.review.publish_dirname / "publish_meta.json"
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                experiment = meta.get("content_experiment")
+                if isinstance(experiment, dict) and experiment.get("id") == "story_opening_v1":
+                    ledger_path = self.settings.output_dir / "growth_ops" / "performance" / "wtt_content_experiments.json"
+                    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
+                    except (OSError, ValueError):
+                        ledger = {"schema": 1, "records": {}}
+                    ledger["records"][run_dir.name] = {
+                        **experiment, "title": meta["selected_title"],
+                        "submitted_at": str(payload.get("published_at") or datetime.now().astimezone().isoformat()),
+                        "status": str(payload["status"]),
+                    }
+                    temporary = ledger_path.with_suffix(".tmp")
+                    temporary.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")
+                    temporary.replace(ledger_path)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                self.logger.warning("Opening experiment metadata could not be persisted.")
         return path
 
     def _finalize_batch_result(self, result: dict[str, Any], *, purpose: str) -> dict[str, Any]:

@@ -18,6 +18,8 @@ TOPIC_TAGS: dict[str, tuple[str, ...]] = {
     "婚恋家庭": ("相亲", "婚介", "夫妻", "婚姻", "离婚", "育儿"),
 }
 CHECKPOINT_TOLERANCE_HOURS = {"24h": 12, "72h": 24}
+TOPIC_WEIGHT_MIN_SAMPLES = 30
+ARTICLE_CALIBRATION_MIN_SAMPLES = 8
 
 
 def classify_checkpoint_capture(label: str, delay_hours: float) -> str:
@@ -125,12 +127,18 @@ def build_growth_feedback(
     # Late captures remain visible in the report, but they are not comparable
     # enough to tune tomorrow's title and topic weights automatically.
     benchmarks = _format_benchmarks(on_schedule_rows or rows)
+    comparable_benchmarks = {
+        label: _format_benchmarks([row for row in on_schedule_rows if row["checkpoint"] == label])
+        for label in ("24h", "72h")
+    }
+    qualified_wtt_count = sum(row["type"] == "weitoutiao" and row["impressions"] > 0 for row in on_schedule_rows)
+    qualified_article_count = sum(row["type"] == "article" and row["impressions"] > 0 for row in on_schedule_rows)
 
     evaluated: list[dict[str, Any]] = []
     tag_scores: dict[str, list[float]] = defaultdict(list)
     signal_scores: dict[str, list[float]] = defaultdict(list)
     for row in rows:
-        benchmark = benchmarks.get(row["type"], {})
+        benchmark = comparable_benchmarks.get(row["checkpoint"], {}).get(row["type"], {}) or benchmarks.get(row["type"], {})
         index = _performance_index(row, benchmark)
         tags = infer_topic_tags(row["title"])
         signals = title_signals(row["title"])
@@ -145,7 +153,7 @@ def build_growth_feedback(
             status = "stop"
         item = {**row, "performance_index": index, "status": status, "topic_tags": tags, "title_signals": signals}
         evaluated.append(item)
-        if row["capture_quality"] == "on_schedule" and row["type"] == "weitoutiao":
+        if row["capture_quality"] == "on_schedule" and row["type"] == "weitoutiao" and row["impressions"] > 0:
             for tag in tags:
                 tag_scores[tag].append(index)
         if (
@@ -160,7 +168,7 @@ def build_growth_feedback(
     topic_evidence: dict[str, dict[str, Any]] = {}
     for tag, scores in sorted(tag_scores.items()):
         average = sum(scores) / len(scores)
-        weight = max(-30, min(20, round((average - 1.0) * 20))) if len(scores) >= 2 else 0
+        weight = max(-30, min(20, round((average - 1.0) * 20))) if qualified_wtt_count >= TOPIC_WEIGHT_MIN_SAMPLES and len(scores) >= 5 else 0
         topic_weights[tag] = weight
         topic_evidence[tag] = {"samples": len(scores), "average_performance_index": round(average, 3)}
 
@@ -168,7 +176,7 @@ def build_growth_feedback(
     signal_evidence: dict[str, dict[str, Any]] = {}
     for signal, scores in sorted(signal_scores.items()):
         average = sum(scores) / len(scores)
-        adjustment = max(-6, min(6, round((average - 1.0) * 5))) if len(scores) >= 3 else 0
+        adjustment = max(-6, min(6, round((average - 1.0) * 5))) if qualified_article_count >= ARTICLE_CALIBRATION_MIN_SAMPLES and len(scores) >= 3 else 0
         signal_adjustments[signal] = adjustment
         signal_evidence[signal] = {"samples": len(scores), "average_performance_index": round(average, 3)}
 
@@ -215,6 +223,10 @@ def build_growth_feedback(
         "sample_count": len(evaluated),
         "benchmarks": benchmarks,
         "topic_feedback": {
+            "status": "active" if qualified_wtt_count >= TOPIC_WEIGHT_MIN_SAMPLES else "collecting",
+            "qualified_samples": qualified_wtt_count,
+            "minimum_samples": TOPIC_WEIGHT_MIN_SAMPLES,
+            "minimum_samples_per_tag": 5,
             "weights": topic_weights,
             "evidence": topic_evidence,
             "stop_titles": stop_titles,
@@ -225,9 +237,10 @@ def build_growth_feedback(
             ],
         },
         "creative_calibration": {
-            "status": "active" if any(len(scores) >= 3 for scores in signal_scores.values()) else "collecting",
+            "status": "active" if qualified_article_count >= ARTICLE_CALIBRATION_MIN_SAMPLES and any(len(scores) >= 3 for scores in signal_scores.values()) else "collecting",
+            "minimum_article_samples": ARTICLE_CALIBRATION_MIN_SAMPLES,
             "minimum_samples_per_signal": 3,
-            "ready_signals": sorted(signal for signal, scores in signal_scores.items() if len(scores) >= 3),
+            "ready_signals": sorted(signal for signal, scores in signal_scores.items() if qualified_article_count >= ARTICLE_CALIBRATION_MIN_SAMPLES and len(scores) >= 3),
             "signal_adjustments": signal_adjustments,
             "evidence": signal_evidence,
             "article_samples": sum(
@@ -247,7 +260,32 @@ def build_growth_feedback(
         "winners": winners[:10],
         "stop_loss": stopped_for_report[:20],
         "current_summary": snapshot.get("summary", {}) if isinstance(snapshot, dict) else {},
+        "opening_experiment": opening_experiment_summary(checkpoints),
     }
+
+
+def opening_experiment_summary(checkpoints: dict[str, Any]) -> dict[str, Any]:
+    groups: list[dict[str, Any]] = []
+    works = checkpoints.get("works", {})
+    for label in ("24h", "72h"):
+        for variant in ("result_first", "situation_first"):
+            samples = []
+            for work in works.values() if isinstance(works, dict) else []:
+                if not isinstance(work, dict) or work.get("type") != "weitoutiao":
+                    continue
+                experiment = work.get("content_experiment", {})
+                if not isinstance(experiment, dict) or experiment.get("id") != "story_opening_v1" or experiment.get("variant") != variant:
+                    continue
+                sample = (work.get("checkpoints") or {}).get(label)
+                if isinstance(sample, dict) and classify_checkpoint_capture(label, float(sample.get("capture_delay_hours", 0))) == "on_schedule" and int(sample.get("impressions", 0)) > 0:
+                    samples.append(sample)
+            impressions = sum(int(s.get("impressions", 0)) for s in samples)
+            reads = sum(int(s.get("reads", 0)) for s in samples)
+            groups.append({"checkpoint": label, "variant": variant, "samples": len(samples), "impressions": impressions, "reads": reads,
+                           "read_rate_pct": round(reads * 100 / impressions, 3) if impressions else None})
+    ready = any(all(g["samples"] >= 15 and g["impressions"] >= 1000 for g in groups if g["checkpoint"] == label) for label in ("24h", "72h"))
+    return {"id": "story_opening_v1", "variable": "opening_order", "status": "comparison_ready" if ready else "collecting", "groups": groups,
+            "note": "不同真实作品的描述性比较；24h和72h分开统计，迟到采样排除，不据此自动推断因果或收益。"}
 
 
 def topic_feedback_score(title: str, feedback: dict[str, Any]) -> tuple[int, list[str]]:
@@ -313,6 +351,14 @@ def render_daily_growth_report(feedback: dict[str, Any]) -> str:
     if negative and negative[0][1] < 0:
         lines.append(f"- 降低“{negative[0][0]}”相关选题频次，等待新角度或新事实。")
     lines.append("- 新作品继续在 24 小时和 72 小时回收展现、阅读与评论数据。")
+    topic_feedback = feedback.get("topic_feedback", {})
+    lines.append(f"- 题材调权：{topic_feedback.get('status', 'collecting')}，合格样本 {topic_feedback.get('qualified_samples', 0)}/{TOPIC_WEIGHT_MIN_SAMPLES}；单题材至少5条才调权。")
+    experiment = feedback.get("opening_experiment", {})
+    lines.extend(["", "## 开头顺序实验", "", f"状态：{experiment.get('status', 'collecting')}（同一窗口每组至少15条、1000展现后可比较）", "", "| 窗口 | 开头 | 合格样本 | 展现 | 阅读 | 阅读率 |", "|---|---|---:|---:|---:|---:|"])
+    for group in experiment.get("groups", []):
+        rate = group["read_rate_pct"]
+        lines.append(f"| {group['checkpoint']} | {group['variant']} | {group['samples']} | {group['impressions']} | {group['reads']} | {str(rate) + '%' if rate is not None else '未知'} |")
+    lines.append(str(experiment.get("note", "")))
     return "\n".join(lines).rstrip() + "\n"
 
 

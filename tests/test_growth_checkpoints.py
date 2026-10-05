@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from scripts.collect_growth_snapshot import build_snapshot, merge_recovered_checkpoints, update_checkpoints
+from scripts.collect_growth_snapshot import attach_opening_experiments, build_snapshot, merge_recovered_checkpoints, update_checkpoints
 
 
 def _work(created: datetime, impressions: int, reads: int) -> dict:
@@ -21,6 +21,22 @@ def _work(created: datetime, impressions: int, reads: int) -> dict:
             ]
         },
     }
+
+
+def test_opening_experiment_requires_unique_exact_title_time_and_type_match():
+    created = datetime(2026, 10, 5, 9, tzinfo=timezone(timedelta(hours=8)))
+    snapshot = build_snapshot([_work(created, 100, 2)], created + timedelta(hours=25), 30)
+    record = {"id": "story_opening_v1", "variable": "opening_order", "variant": "result_first",
+              "title": snapshot["works"][0]["title"], "submitted_at": created.isoformat(), "status": "submitted_for_review"}
+    attach_opening_experiments(snapshot, {"records": {"one": record}})
+    assert snapshot["works"][0]["content_experiment"]["variant"] == "result_first"
+    for change in ({"submitted_at": (created - timedelta(days=1)).isoformat()}, {"title": "another story"}, {"status": "publish_uncertain"}):
+        trial = build_snapshot([_work(created, 100, 2)], created + timedelta(hours=25), 30)
+        attach_opening_experiments(trial, {"records": {"one": {**record, **change}}})
+        assert "content_experiment" not in trial["works"][0]
+    trial = build_snapshot([_work(created, 100, 2)], created + timedelta(hours=25), 30)
+    attach_opening_experiments(trial, {"records": {"one": record, "two": record}})
+    assert "content_experiment" not in trial["works"][0]
 
 
 def test_growth_checkpoints_capture_24h_then_72h_and_compute_delta() -> None:

@@ -21,6 +21,7 @@ from toutiao_content_factory.services.growth_feedback_service import (
     build_growth_feedback,
     classify_checkpoint_capture,
     write_growth_outputs,
+    normalize_title,
 )
 from toutiao_content_factory.services.revenue_experiment_service import (
     RevenueExperimentService,
@@ -29,6 +30,47 @@ from toutiao_content_factory.services.revenue_experiment_service import (
 ROOT = Path(__file__).resolve().parents[1]
 BEIJING = timezone(timedelta(hours=8))
 LIST_URL = "https://mp.toutiao.com/mp/agw/creator_center/list/v2"
+
+
+def attach_opening_experiments(snapshot: dict, experiments: dict) -> None:
+    """Join within this account by unique exact title and submission time.
+
+    Micro-post submission responses do not always expose a stable work ID.
+    Ambiguous, cross-type, stale or duplicate matches remain unassigned.
+    """
+    records = experiments.get("records", {})
+    if not isinstance(records, dict):
+        return
+    matches: dict[str, list[tuple[dict, dict]]] = {}
+    for work in snapshot.get("works", []):
+        if work.get("type") != "weitoutiao":
+            continue
+        candidates = []
+        for key, record in records.items():
+            if not isinstance(record, dict) or record.get("id") != "story_opening_v1":
+                continue
+            if record.get("variant") not in {"result_first", "situation_first"} or record.get("status") not in {"published", "submitted", "submitted_for_review", "success"}:
+                continue
+            title = normalize_title(record.get("title", ""))
+            if not title or title != normalize_title(work.get("title", "")):
+                continue
+            try:
+                submitted = datetime.fromisoformat(record["submitted_at"])
+                if submitted.tzinfo is None:
+                    submitted = submitted.replace(tzinfo=BEIJING)
+                created = datetime.fromisoformat(work["created_at"])
+                if created.tzinfo is None or abs((created - submitted).total_seconds()) > 600:
+                    continue
+            except (KeyError, ValueError, TypeError):
+                continue
+            candidates.append((key, record))
+        if len(candidates) == 1:
+            key, record = candidates[0]
+            matches.setdefault(key, []).append((work, record))
+    for group in matches.values():
+        if len(group) == 1:
+            work, record = group[0]
+            work["content_experiment"] = {k: record[k] for k in ("id", "variable", "variant") if k in record}
 
 
 def _counter(stat: dict, label: str, fallback: str) -> int:
@@ -124,6 +166,8 @@ def update_checkpoints(
                 },
             }
         )
+        if isinstance(work.get("content_experiment"), dict):
+            entry["content_experiment"] = work["content_experiment"]
         checkpoints = entry.get("checkpoints")
         checkpoints = dict(checkpoints) if isinstance(checkpoints, dict) else {}
         # Repair ledgers produced by schema 1, which could write the same late
@@ -341,6 +385,7 @@ def main() -> int:
             cutoff=observed_at - timedelta(days=args.days),
         )
         snapshot = build_snapshot(contents, observed_at, args.days)
+        attach_opening_experiments(snapshot, _load_json(output_dir / "growth_ops" / "performance" / "wtt_content_experiments.json"))
     except (OSError, ValueError, KeyError, RuntimeError) as exc:
         print(f"Toutiao growth snapshot unavailable: {type(exc).__name__}", file=sys.stderr)
         return 2

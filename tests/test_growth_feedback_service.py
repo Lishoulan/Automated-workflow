@@ -40,8 +40,9 @@ def test_feedback_boosts_winners_and_stops_repeated_low_performers(tmp_path: Pat
     feedback = build_growth_feedback(snapshot, checkpoints, generated_at="2026-09-30T08:00:00+08:00")
 
     weights = feedback["topic_feedback"]["weights"]
-    assert weights["房产继承"] > 0
-    assert weights["借贷纠纷"] < 0
+    assert weights["房产继承"] == 0
+    assert weights["借贷纠纷"] == 0
+    assert feedback["topic_feedback"]["status"] == "collecting"
     stopped_score, reasons = topic_feedback_score("老人借钱给亲戚没打借条", feedback)
     assert stopped_score == -100
     assert reasons == ["72小时低表现标题停止复用"]
@@ -63,7 +64,7 @@ def test_feedback_builds_creative_calibration_only_with_enough_samples() -> None
             1000 + index * 10,
             20 + index,
         )
-        for index in range(1, 4)
+        for index in range(1, 9)
     }
 
     feedback = build_growth_feedback({}, {"works": works})
@@ -72,9 +73,9 @@ def test_feedback_builds_creative_calibration_only_with_enough_samples() -> None
     assert calibration["status"] == "active"
     assert calibration["minimum_samples_per_signal"] == 3
     assert "mobile_length" in calibration["ready_signals"]
-    assert calibration["article_samples"] == 3
+    assert calibration["article_samples"] == 8
     assert "mobile_length" in calibration["signal_adjustments"]
-    assert calibration["evidence"]["mobile_length"]["samples"] == 3
+    assert calibration["evidence"]["mobile_length"]["samples"] == 8
 
 
 def test_zero_read_articles_with_impressions_still_calibrate_title_signals() -> None:
@@ -86,14 +87,14 @@ def test_zero_read_articles_with_impressions_still_calibrate_title_signals() -> 
             500 + index * 20,
             0,
         )
-        for index in range(1, 4)
+        for index in range(1, 9)
     }
 
     feedback = build_growth_feedback({}, {"works": works})
 
     calibration = feedback["creative_calibration"]
     assert calibration["status"] == "active"
-    assert calibration["article_samples"] == 3
+    assert calibration["article_samples"] == 8
     assert calibration["positive_read_article_samples"] == 0
     assert calibration["signal_adjustments"]["question_gap"] < 0
 
@@ -114,3 +115,29 @@ def test_feedback_marks_late_samples_and_groups_duplicate_stop_titles() -> None:
     assert len(feedback["topic_feedback"]["stop_titles"]) == 1
     assert feedback["topic_feedback"]["weights"] == {}
     assert feedback["creative_calibration"]["status"] == "collecting"
+
+
+def test_topic_weights_require_thirty_qualified_samples_and_five_per_tag():
+    works = {str(i): _entry(str(i), "weitoutiao", f"房产继承事实{i}" if i < 5 else f"现场记录{i}", 1000, 80 if i < 5 else 10) for i in range(30)}
+    feedback = build_growth_feedback({}, {"works": works})
+    assert feedback["topic_feedback"]["weights"]["房产继承"] > 0
+    works["29"]["checkpoints"]["72h"]["capture_delay_hours"] = 100
+    feedback = build_growth_feedback({}, {"works": works})
+    assert feedback["topic_feedback"]["qualified_samples"] == 29
+    assert feedback["topic_feedback"]["weights"]["房产继承"] == 0
+
+
+def test_opening_experiment_keeps_windows_separate_and_excludes_late_captures():
+    works = {}
+    for i in range(30):
+        work = _entry(str(i), "weitoutiao", f"真实事件{i}", 100, 5)
+        work["content_experiment"] = {"id": "story_opening_v1", "variant": "result_first" if i < 15 else "situation_first"}
+        work["checkpoints"]["24h"] = {"impressions": 50, "reads": 1, "capture_delay_hours": 0}
+        works[str(i)] = work
+    feedback = build_growth_feedback({}, {"works": works})
+    experiment = feedback["opening_experiment"]
+    assert experiment["status"] == "comparison_ready"
+    assert experiment["groups"][0]["read_rate_pct"] == 2
+    assert experiment["groups"][2]["read_rate_pct"] == 5
+    works["0"]["checkpoints"]["72h"]["capture_delay_hours"] = 100
+    assert build_growth_feedback({}, {"works": works})["opening_experiment"]["status"] == "collecting"

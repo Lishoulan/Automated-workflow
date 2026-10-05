@@ -15,6 +15,21 @@ def test_daily_run_defaults_to_dry_run_without_toutiao_publish() -> None:
     assert "publish_toutiao:\n        description: 'Publish to Toutiao instead of draft-only (true/false)'\n        required: false\n        default: 'false'" in workflow
 
 
+def test_collection_only_schedule_cannot_generate_publish_or_enter_fallback():
+    workflow = yaml.safe_load(Path(".github/workflows/daily-run.yml").read_text(encoding="utf-8"))
+    daily = workflow["jobs"]["daily-run"]
+    steps = {s["name"]: s for s in daily["steps"]}
+    assert workflow["concurrency"]["cancel-in-progress"] is False
+    assert "17 */6 * * *" in daily["env"]["RUN_COLLECTION_ONLY"]
+    for name in ("Run daily pipeline", "Probe LLM endpoint", "Monthly review and iteration", "Extract run status", "Record cross-channel publish state", "Publish cross-channel state to the publish-state branch", "Enforce publish result"):
+        assert "env.RUN_COLLECTION_ONLY != 'true'" in steps[name]["if"]
+    fallback = workflow["jobs"]["daily-run-fallback"]["if"]
+    assert "collection_only != 'true'" in fallback
+    assert "github.event.schedule != '17 */6 * * *'" in fallback
+    assert "collection_only" not in steps["Save publish history and checkpoints"]["if"]
+    assert "env.RUN_COLLECTION_ONLY == 'true'" in steps["Enforce collection result"]["if"]
+
+
 def test_robot_notes_live_switch_is_account_scoped_and_fails_closed() -> None:
     workflow = Path(".github/workflows/daily-run.yml").read_text(encoding="utf-8")
 

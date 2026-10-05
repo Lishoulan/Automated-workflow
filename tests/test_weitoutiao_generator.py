@@ -27,6 +27,31 @@ def _topic() -> TopicCandidate:
     )
 
 
+def test_opening_assignment_advances_only_after_accepted_model_submission(app_settings):
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
+    topic = _topic()
+    topic._content_experiment = generator._opening_experiment()
+    assert topic._content_experiment["variant"] == "result_first"
+    run_dir = generator.build_run_package(topic, "事实标题\n" + "事实与分析。" * 40, "story_comment")
+    generator._write_publish_result_artifact(run_dir, {"status": "publish_uncertain"})
+    assert generator._opening_experiment()["variant"] == "result_first"
+    generator._write_publish_result_artifact(run_dir, {"status": "submitted_for_review", "published_at": "2026-10-05T09:00:00+08:00"})
+    assert generator._opening_experiment()["variant"] == "situation_first"
+    generator._write_publish_result_artifact(run_dir, {"status": "submitted_for_review", "published_at": "2026-10-05T09:00:00+08:00"})
+    ledger = json.loads((app_settings.output_dir / "growth_ops/performance/wtt_content_experiments.json").read_text(encoding="utf-8"))
+    assert len(ledger["records"]) == 1
+
+
+def test_large_source_copy_is_blocked_but_short_fact_matches_are_allowed(app_settings):
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
+    topic = _topic()
+    topic._verified_source_material = True
+    topic.snippet = "民警沿着监控记录中的路线找到捡到包裹的老人，核对信息后将完好的包裹交还给报警的快递员。" * 10
+    copied = "包裹被寻回\n" + topic.snippet
+    assert generator._model_story_fallback_reason(topic, "story_comment", copied) == "story_source_copy_guard"
+    assert generator._source_copy_share(topic, "包裹被寻回\n民警交还包裹。\n从这些事实看，查到线索和找回物品是两步。") == 0
+
+
 def test_transient_model_failure_uses_local_fallback_and_publishes(app_settings, tmp_path: Path) -> None:
     object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))

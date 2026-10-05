@@ -12,6 +12,7 @@ from typing import Any
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.models import ArticlePerformance, PublishRecord, WorkflowResult
 from toutiao_content_factory.services import creator_account_service
+from toutiao_content_factory.services.content_income_service import ContentIncomeCollector
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
 from toutiao_content_factory.services.rpa_utils import run_sync_playwright_safe
 from toutiao_content_factory.services.t1_policy import infer_availability_status
@@ -235,6 +236,9 @@ class PerformanceService:
                 try:
                     page = browser.pages[0] if browser.pages else browser.new_page()
                     page.set_default_timeout(timeout_ms)
+                    income_collector = ContentIncomeCollector()
+                    if platform == "toutiao":
+                        page.on("response", income_collector.observe_response)
                     # 账号级快照必须先取：下面的 url 循环一旦拿到作品行就会 return，
                     # 挂在循环之后会永远执行不到。
                     if platform == "toutiao" and self.collect_account_snapshot:
@@ -300,6 +304,23 @@ class PerformanceService:
                                 platform,
                             )
                         parsed = self._normalize_metric_rows(all_rows)
+                        if platform == "toutiao" and parsed:
+                            income_error = ""
+                            try:
+                                income_collector.collect_ui(page, min(timeout_ms, 30000))
+                            except Exception as exc:
+                                income_error = type(exc).__name__
+                            matched_income = 0
+                            for metric in parsed:
+                                amount = income_collector.amount_for(metric.url)
+                                if amount is not None:
+                                    metric.platform_revenue = amount
+                                    matched_income += 1
+                            income_collector.write_report(
+                                self.settings.output_dir / "growth_ops" / "performance" / "content_income_collection.json",
+                                matched=matched_income, error=income_error,
+                            )
+                            self.logger.info("Content income collection: matched=%d conflicts=%d error=%s", matched_income, len(income_collector.conflicts), income_error or "none")
                         recent = [item for item in parsed if self._is_recent_or_unknown(item.publish_date)]
                         if recent:
                             return self._dedupe_metrics(recent)

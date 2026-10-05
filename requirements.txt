@@ -22,3 +22,4 @@ httpx>=0.27.0
 jieba>=0.42.1
 # 模块 C：演进规则相似度快速匹配
 rapidfuzz>=3.8.0
+cryptography>=43.0

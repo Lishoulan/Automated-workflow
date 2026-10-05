@@ -727,14 +727,32 @@ class ContentFactoryAppService:
                 from toutiao_content_factory.services.compliance_service import (
                     count_today_published_by_platform,
                 )
-                history_path = self.settings.output_dir / self.settings.publishing.history_filename
+                wechat_only = self.settings.wechat.enabled and not self.settings.publishing.enabled
+                history_filename = (
+                    self.settings.wechat.history_filename if wechat_only
+                    else self.settings.publishing.history_filename
+                )
+                target_platform = "wechat" if wechat_only else self.settings.publishing.platform
+                history_path = self.settings.output_dir / history_filename
                 # 只按「图文」平台计数判断今日图文是否已发布：
                 # 独立微头条（platform=toutiao_weitoutiao）不算图文已发布，
                 # 避免早间先发微头条导致当日图文被短路跳过。
                 local_today_count = count_today_published_by_platform(
-                    history_path, platform=self.settings.publishing.platform
+                    history_path, platform=target_platform
                 )
-                cloud_record = self._cloud_published_today()
+                if wechat_only:
+                    records = json.loads(history_path.read_text(encoding="utf-8")) if history_path.exists() else []
+                    if isinstance(records, dict):
+                        records = records.get("records", records.get("history", []))
+                    today = notification_now().strftime("%Y-%m-%d")
+                    local_today_count = sum(
+                        1 for record in records
+                        if isinstance(record, dict)
+                        and record.get("platform") == "wechat"
+                        and str(record.get("published_at", "")).startswith(today)
+                        and self._wechat_publish_succeeded(record)
+                    )
+                cloud_record = self._cloud_published_today("wechat") if wechat_only else self._cloud_published_today()
                 if local_today_count >= 1 or cloud_record is not None:
                     if cloud_record is not None:
                         self.logger.info(
@@ -748,13 +766,14 @@ class ContentFactoryAppService:
                             "Daily publish limit already reached for today; skipping generation to save tokens. "
                             "account=%s platform=%s",
                             self.settings.account_key,
-                            self.settings.publishing.platform,
+                            target_platform,
                         )
                     # 微头条高频化：图文已发但微头条未达每日目标时，后续时段补发独立微头条，
                     # 仍保持生成短内容的轻量成本，不重新走图文选题/写作/评分。
                     topup_exports: dict[str, Any] = {}
                     if (
-                        self.settings.publishing.weitoutiao_enabled
+                        self.settings.publishing.enabled
+                        and self.settings.publishing.weitoutiao_enabled
                         and self.settings.publishing.weitoutiao_standalone_enabled
                     ):
                         try:

@@ -555,7 +555,7 @@ def main() -> int:
     exported_files: dict[str, str] = {}
 
     try:
-        if args.daily_run or args.publish_latest_approved:
+        if (args.daily_run or args.publish_latest_approved) and settings.publishing.enabled:
             try:
                 profile_dir = Path(settings.publishing.user_data_dir)
                 if not profile_dir.is_absolute():
@@ -1368,6 +1368,9 @@ def _write_daily_run_success_result(
     elif publish_status == "draft_saved":
         status = "draft_only"
         message = "Scheduled pipeline saved a draft; the article was not submitted to Toutiao."
+    elif not publish_status and wechat_status in {"draft_saved", "draft_created"}:
+        status = "draft_only"
+        message = "Scheduled pipeline saved a WeChat draft; the article was not submitted."
     elif publish_status or wechat_status:
         platform_parts: list[str] = []
         if publish_status:
@@ -1925,7 +1928,7 @@ def _write_scheduled_runtime_status(
     wechat_status = str(summary.get("wechat_status", "")).strip().lower()
     if wechat_status:
         platforms["wechat"] = {
-            "status": "success" if wechat_status in {"submitted", "submitted_for_review", "success", "published", "draft_created", "draft_saved"} else "failed",
+            "status": "draft_only" if wechat_status in {"draft_created", "draft_saved"} else "success" if wechat_status in {"submitted", "submitted_for_review", "success", "published"} else "failed",
             "last_run": now,
             "message": str(summary.get("wechat_publish_url") or message),
         }

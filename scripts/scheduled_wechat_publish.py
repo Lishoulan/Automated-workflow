@@ -3,6 +3,10 @@ import json
 import re
 import base64
 import logging
+import argparse
+import os
+import subprocess
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -10,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from toutiao_content_factory.config import load_settings
 from toutiao_content_factory.services.browser_launch_guard import prepare_browser_profile
-from toutiao_content_factory.services.pipeline import ContentFactoryPipeline
+from toutiao_content_factory.services.browser_launch_guard import ensure_browser_session_ready
+from toutiao_content_factory.services.wechat_service import WechatPublishService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -176,6 +181,8 @@ def publish_wechat_article(title: str, content: str, settings) -> dict:
 
             token_match = re.search(r"token=(\d+)", page.url)
             token = token_match.group(1) if token_match else ""
+            if not token:
+                return {"status": "publish_login_required", "message": "WeChat session expired; refresh administrator QR login."}
             logger.info("Token: %s", token[:6] + "..." if token else "EMPTY")
 
             for _ in range(10):
@@ -604,94 +611,120 @@ def publish_wechat_article(title: str, content: str, settings) -> dict:
             browser.close()
 
 
-def main():
-    settings = load_settings(Path(__file__).resolve().parent.parent, account_key="default")
+def check_login(settings) -> dict:
+    """Read live login state without uploading or publishing content."""
+    from playwright.sync_api import sync_playwright
 
-    logger.info("=== Scheduled WeChat Publish Started ===")
+    service = WechatPublishService(settings, logger)
+    profile_dir = service._resolve_browser_profile_dir()
+    if not profile_dir.exists():
+        return {"status": "publish_login_required", "message": "WeChat browser profile is missing; initialize QR login first."}
+    with sync_playwright() as playwright:
+        browser = service._launch_persistent_browser(playwright, profile_dir=profile_dir, headless=True)
+        try:
+            page = browser.new_page()
+            session = ensure_browser_session_ready(
+                browser_context=browser,
+                page=page,
+                platform="WeChat",
+                profile_dir=profile_dir,
+                account_runtime_dir=settings.account_runtime_dir,
+                project_root=settings.project_root,
+                logger=logger,
+                probe_url=settings.wechat.base_url,
+                login_detected_fn=service._is_login_page,
+                session_ready_fn=service._browser_session_ready,
+                goto_timeout_ms=30000,
+            )
+            ready = bool(session.get("session_ready")) and not session.get("login_detected")
+            return {
+                "status": "ready" if ready else "publish_login_required",
+                "message": "WeChat login is ready." if ready else "WeChat session expired; refresh administrator QR login.",
+            }
+        finally:
+            browser.close()
 
-    title = ""
-    content = ""
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the reviewed WeChat-only daily workflow.")
+    parser.add_argument("--account", default="default")
+    parser.add_argument("--check-login", action="store_true")
+    parser.add_argument("--enable-auto-publish", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+    project_root = Path(__file__).resolve().parent.parent
+    settings = load_settings(project_root, account_key=args.account)
+    settings.automation_dir.mkdir(parents=True, exist_ok=True)
+    result_path = settings.automation_dir / (
+        "wechat_login_check.json" if args.check_login else "wechat_scheduled_result.json"
+    )
 
     try:
-        pipeline = ContentFactoryPipeline(settings, logger)
-        result = pipeline.run()
-        run_dir = result.get("run_dir", "")
-        logger.info("Pipeline completed. Run dir: %s", run_dir)
-
-        if run_dir:
-            run_path = Path(run_dir)
-            title_path = run_path / "review" / "title.txt"
-            article_path = run_path / "article.html"
-
-            if title_path.exists():
-                title = title_path.read_text(encoding="utf-8", errors="replace").strip()
-
-            if article_path.exists():
-                content = article_path.read_text(encoding="utf-8", errors="replace").strip()
-
-            if not content:
-                article_md = run_path / "article.md"
-                if article_md.exists():
-                    md_text = article_md.read_text(encoding="utf-8", errors="replace").strip()
-                    import markdown
-                    content = markdown.markdown(md_text)
-
-        if not title or not content:
-            output_dir = settings.output_dir
-            logger.info("run_dir empty or content missing, checking output dir: %s", output_dir)
-
-            if not title:
-                titles_file = output_dir / "titles.txt"
-                if titles_file.exists():
-                    lines = titles_file.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-                    for line in lines:
-                        stripped = line.strip()
-                        if stripped and re.match(r'^\d+\.', stripped):
-                            title = re.sub(r'^\d+\.\s*', '', stripped)
-                            break
-                    if not title and lines:
-                        for line in lines:
-                            stripped = line.strip()
-                            if stripped and not stripped.startswith("全部") and not stripped.startswith("推荐"):
-                                title = stripped
-                                break
-                    if title:
-                        logger.info("Title from output/titles.txt: %s", title)
-
-            if not content:
-                article_md = output_dir / "article.md"
-                if article_md.exists():
-                    md_text = article_md.read_text(encoding="utf-8", errors="replace").strip()
-                    if md_text:
-                        import markdown
-                        content = markdown.markdown(md_text)
-                        logger.info("Content from output/article.md, len=%d", len(content))
+        if not args.check_login and not (args.enable_auto_publish or settings.wechat.enabled):
+            result = {"status": "disabled", "message": "WeChat channel is disabled."}
+        else:
+            result = check_login(settings)
     except Exception as exc:
-        logger.warning("Pipeline failed: %s, using fallback content", exc)
+        logger.error("WeChat login check failed: %s", exc)
+        result = {"status": "error", "message": "WeChat login check failed; see scheduled log."}
+    result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("WeChat preflight: %s", result["status"])
+    if result["status"] != "ready":
+        return 2 if result["status"] == "publish_login_required" else 1
+    if args.check_login:
+        return 0
 
-    if not title:
-        title = f"科技产业观察-{datetime.now().strftime('%m月%d日%H:%M')}"
-        logger.info("Using fallback title: %s", title)
-
-    if not content:
-        now = datetime.now()
-        content = (
-            f'<p>发布时间：{now.strftime("%Y年%m月%d日 %H:%M")}。</p>'
-            '<p>科技产业动态观察与分享。</p>'
-            '<p>AI 技术持续推动产业变革，大模型应用落地加速。</p>'
-            '<p>半导体产业链国产替代稳步推进。</p>'
-            '<p>新能源与智能驾驶融合发展进入新阶段。</p>'
-            '<p>欢迎关注后续更新。</p>'
-        )
-        logger.info("Using fallback content")
-
-    logger.info("Publishing: %s", title)
-    pub_result = publish_wechat_article(title, content, settings)
-    logger.info("Publish result: %s", json.dumps(pub_result, ensure_ascii=False))
-
-    result_path = settings.output_dir / f"wechat_publish_{datetime.now().strftime('%Y%m%d%H%M%S')}.json"
-    result_path.write_text(json.dumps(pub_result, ensure_ascii=False, indent=2), encoding="utf-8")
+    # ?????????????????????????????????
+    # Reuse the reviewed workflow; never publish template or stale fallback content.
+    environment = dict(os.environ)
+    overrides = {
+        "TARGET_PLATFORM": "wechat",
+        "WECHAT_ENABLED": "1",
+        "WECHAT_AUTO_PUBLISH": "1" if args.enable_auto_publish or settings.wechat.auto_publish else "0",
+        "WECHAT_EDITOR_135_ENABLED": "0",
+        "TOUTIAO_PUBLISH_ENABLED": "0",
+        "TOUTIAO_AUTO_PUBLISH": "0",
+        "TOUTIAO_WEITOUTIAO_ENABLED": "0",
+        "DOUYIN_ENABLED": "0",
+        "DOUYIN_AUTO_PUBLISH": "0",
+        "TOUTIAO_LOCAL_FALLBACK_AFTER_HOUR": "-1",
+        "PYTHONUTF8": "1",
+    }
+    from toutiao_content_factory.config import account_env_name
+    for key, value in overrides.items():
+        environment[key] = value
+        environment[account_env_name(key, settings.account_key)] = value
+    command = [sys.executable, str(project_root / "main.py"), "--account", settings.account_key, "--daily-run"]
+    if args.dry_run:
+        command.append("--dry-run")
+    workflow_started = time.time_ns()
+    try:
+        completed = subprocess.run(command, cwd=str(project_root), env=environment, timeout=2400)
+    except subprocess.TimeoutExpired:
+        result_path.write_text(json.dumps({"status": "error", "message": "Daily workflow timed out."}), encoding="utf-8")
+        return 1
+    result = {"status": "success" if completed.returncode == 0 else "error", "exit_code": completed.returncode}
+    workflow_result = settings.automation_dir / "last_daily_run_result.json"
+    report = {}
+    if workflow_result.exists() and workflow_result.stat().st_mtime_ns >= workflow_started:
+        try:
+            report = json.loads(workflow_result.read_text(encoding="utf-8-sig"))
+            result.update({key: report[key] for key in ("status", "wechat_status", "run_outcome") if key in report})
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Cannot read daily workflow status: %s", exc)
+    if (
+        completed.returncode == 0
+        and not args.dry_run
+        and overrides["WECHAT_AUTO_PUBLISH"] == "1"
+        and report.get("wechat_status") not in {"submitted", "submitted_for_review", "success", "published"}
+        and report.get("run_outcome") != "already_published"
+    ):
+        result["exit_code"] = 3
+        if result["status"] == "success":
+            result["status"] = "publish_uncertain"
+    result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result["exit_code"]
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

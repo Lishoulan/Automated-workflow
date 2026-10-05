@@ -960,9 +960,11 @@ class PolishAgent(BaseAgent):
                 article = article.replace(phrase, "")
         article = re.sub(r"[，、]{2,}", "，", article)
         article = re.sub(r"[。]{2,}", "。", article)
-        article = re.sub(r"\s{2,}", " ", article)
+        whitespace = r"[^\S\n]{2,}" if self.settings.platform == "wechat" else r"\s{2,}"
+        article = re.sub(whitespace, " ", article)
         article = re.sub(r"^[，。、；：\s]+", "", article)
-        article = re.sub(r"[，。、；：\s]+$", "", article, flags=re.MULTILINE)
+        trailing = r"[，、；： \t]+$" if self.settings.platform == "wechat" else r"[，。、；：\s]+$"
+        article = re.sub(trailing, "", article, flags=re.MULTILINE)
         return article.strip()
 
     def _apply_evidence_boundary_edits(self, article: str) -> str:

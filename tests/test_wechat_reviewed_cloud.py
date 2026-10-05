@@ -16,6 +16,11 @@ from wechat_run_report import cloud_exit_code, fresh_json, review_diagnostics, s
 from toutiao_content_factory.config import load_settings
 from toutiao_content_factory.agents.writer_agent import WriterAgent
 from toutiao_content_factory.agents.polish_agent import PolishAgent
+from toutiao_content_factory.agents.data_agent import DataAgent
+from toutiao_content_factory.agents.quality_review_council_agent import QualityReviewCouncilAgent
+from toutiao_content_factory.models import ExtractionResult
+from toutiao_content_factory.services.prompt_repository import PromptRepository
+from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, QualityReviewReport, TrendReport, TopicCandidate
 from toutiao_content_factory.services.agent_workflow import AgentWorkflowService
 from toutiao_content_factory.services.app_service import ContentFactoryAppService
@@ -54,9 +59,12 @@ def test_wechat_writer_polish_and_publish_floor_agree(app_settings, mock_openai_
     enable_wechat(app_settings)
     writer = WriterAgent(app_settings, MagicMock(), mock_openai_service, logger)
     polish = PolishAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    data = DataAgent(app_settings, MagicMock(), mock_openai_service, logger)
     report = DataReport(content_format="quick_commentary", is_hot_topic=True, word_target=800)
     assert writer._auto_publish_mode() is True
     assert polish._auto_publish_mode() is True
+    assert data._auto_publish_mode() is True
+    assert data._word_target_for_format("quick_commentary") >= 1800
     assert int(writer._min_word_target_for(report)) >= 1750
     assert int(writer._article_word_target_for_prompt(report)) >= 1800
     assert "最低1750字" in polish._auto_publish_directive()
@@ -216,3 +224,56 @@ def test_accepted_or_uncertain_platform_prevents_switching_candidate(app_setting
     for status in ("submitted", "submitted_for_review", "published", "publish_uncertain"):
         platforms = {"toutiao": {"status": "failed", "error": "duplicate title"}, "wechat": {"status": status}}
         assert app._is_safe_title_duplicate_fallback(platforms, ["duplicate title"]) is False
+
+
+def test_policy_sector_phrases_are_not_wechat_company_subjects(app_settings, mock_openai_service, logger):
+    enable_wechat(app_settings)
+    agent = DataAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    extraction = ExtractionResult(merged_text="国家能源局表示，我国可再生能源增长，全国重点领域可再生能源发展。宁德时代发布储能电池。",
+                                  topic_title="国家能源局最新发布会", core_data=[], industry_trends=[], growth_numbers=[],
+                                  companies=[], supply_chain_keywords=[], key_points=[])
+    companies = agent._sanitize_companies(["我国可再生能源", "全国重点领域可再生能源", "可再生能源", "宁德时代"], extraction, 8)
+    assert "宁德时代" in companies
+    assert all("可再生能源" not in name for name in companies)
+
+
+def test_wechat_polish_keeps_paragraph_breaks(app_settings, mock_openai_service, logger):
+    enable_wechat(app_settings)
+    polish = PolishAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    assert polish._remove_ai_cliches("第一段有事实。\n\n第二段有边界。") == "第一段有事实。\n\n第二段有边界。"
+
+
+def test_repetition_is_removed_without_changing_qualifiers():
+    paragraph = (
+        "国家能源局公布了可再生能源的发展情况，报告分别说明新增装机与实际发电的统计口径，"
+        "前者记录建设规模，后者反映设备运行结果，两类数字不能混用，也不能单独证明储能项目已经获得订单。"
+    )
+    boundary = "储能项目尚未公布采购合同，具体收入仍需等待企业公告，不能把建设计划直接当成业绩。"
+    article = paragraph + "\n\n" + boundary + "\n\n" + paragraph
+    assert ArticleQualityChecker.check_body_integrity(article).passed is False
+    cleaned = AgentWorkflowService._remove_exact_repetition(article)
+    assert cleaned.count(paragraph) == 1
+    assert boundary in cleaned
+    assert ArticleQualityChecker.check_body_integrity(cleaned).passed is True
+
+
+def test_wechat_review_schema_has_no_preset_verdict_and_keeps_local_gate(
+    app_settings, mock_openai_service, logger
+):
+    enable_wechat(app_settings)
+    app_settings.prompts_dir = ROOT / "prompts"
+    agent = QualityReviewCouncilAgent(app_settings, PromptRepository(app_settings.prompts_dir), mock_openai_service, logger)
+    agent.openai_service.available = True
+    agent.request_json = MagicMock(return_value={
+        "overall_score": 90, "fact_score": 90, "logic_score": 90, "structure_score": 90,
+        "originality_score": 90, "compliance_score": 90, "verdict": "approved", "chief_editor_conclusion": "approved",
+    })
+    content = GeneratedContent(article="正文仍包含 manual_paste 内部标记，不能发表。", recommended_titles=["国家能源局发展情况观察"])
+    report = agent.run(content, DataReport(topic_title="国家能源局发展情况", core_data=["国家能源局公布发展情况"]),
+                       app_settings.get_style(), CacheContext())
+    prompt = agent.request_json.call_args.args[1]
+    assert '"overall_score": 82' not in prompt
+    assert '"verdict": "needs_revision"' not in prompt
+    assert '"enum"' in prompt
+    assert report.verdict == "blocked"
+    assert report.hard_blockers

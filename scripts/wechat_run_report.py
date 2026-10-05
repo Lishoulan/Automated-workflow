@@ -68,6 +68,8 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
                     if key in council and isinstance(council[key], (str, int, float, bool))
                 }
                 summary["required_revisions"] = [safe_text(item) for item in council.get("required_revisions", [])]
+                for field in ("hard_blockers", "fact_issues", "logic_issues", "structure_issues", "originality_issues", "compliance_issues"):
+                    summary[field] = [safe_text(item) for item in council.get(field, [])]
                 if council.get("verdict") != "approved":
                     result["reason_codes"].append("quality_review_required")
             archived = fresh_json(run_dir / "workflow_result.json", started)

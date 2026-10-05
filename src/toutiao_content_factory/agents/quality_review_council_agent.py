@@ -144,6 +144,27 @@ class QualityReviewCouncilAgent(BaseAgent):
             local_snapshot=self.json_text(local_snapshot),
             cache_note=self.cache_note(cache_context),
         )
+        if self.settings.platform == "wechat":
+            # Describe the wire format without supplying a pre-filled verdict
+            # and score that a small model can copy instead of auditing.
+            sample_start = prompt.rfind('\n{\n  "article_version":')
+            if sample_start >= 0:
+                prompt = prompt[:sample_start]
+            properties = {
+                name: {"type": "integer", "minimum": 0, "maximum": 100}
+                for name in ("overall_score", "fact_score", "logic_score", "structure_score", "originality_score", "compliance_score")
+            }
+            properties.update({
+                name: {"type": "array", "items": {"type": "string"}}
+                for name in ("hard_blockers", "fact_issues", "logic_issues", "structure_issues", "originality_issues",
+                             "compliance_issues", "required_revisions", "optional_improvements")
+            })
+            properties["verdict"] = {"type": "string", "enum": ["approved", "needs_revision", "blocked"]}
+            properties["chief_editor_conclusion"] = {"type": "string"}
+            properties["role_reviews"] = {"type": "array", "items": {"type": "object"}}
+            prompt += "\n输出审核结果，不要输出Schema本身。没有发现的问题返回空数组，不要编造问题。\n" + self.json_text({
+                "type": "object", "properties": properties, "required": list(properties),
+            })
         system_prompt = (
             "你是成稿质量审核总编，负责协调五名独立审校专家。"
             "审核对象是已经润色后的文章，不负责替作者补写事实。"

@@ -775,9 +775,11 @@ class DataAgent(BaseAgent):
     def _auto_publish_mode(self) -> bool:
         publishing = getattr(self.settings, "publishing", None)
         return bool(
-            getattr(publishing, "enabled", False)
-            and getattr(publishing, "auto_publish", False)
-            and not getattr(publishing, "draft_only", False)
+            self.settings.wechat_auto_publish_mode or (
+                getattr(publishing, "enabled", False)
+                and getattr(publishing, "auto_publish", False)
+                and not getattr(publishing, "draft_only", False)
+            )
         )
 
     def _word_target_for_format(self, content_format: str, content_mode: str = "generic") -> int:
@@ -866,6 +868,12 @@ class DataAgent(BaseAgent):
         for item in self._extract_company_like_names(extraction):
             if item not in candidates:
                 candidates.append(item)
+        if self.settings.platform == "wechat":
+            # Sector descriptions are not named companies, even when they occur
+            # in a verified policy source. Do not force titles to match them.
+            candidates = [item for item in candidates if not re.fullmatch(
+                r"(?:我国|全国(?:重点领域)?|国内)?可再生能源", item
+            )]
         return self.unique(candidates)[:limit]
 
     @staticmethod

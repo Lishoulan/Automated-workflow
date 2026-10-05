@@ -1091,6 +1091,8 @@ class AgentWorkflowService:
         content.polished_article = str(polish_pack.get("polished_article", "")).strip()
         if content.polished_article:
             content.article = content.polished_article
+        if self.settings.platform == "wechat":
+            content.article = self._remove_exact_repetition(content.article)
         is_hot_topic = bool(getattr(data_report, "is_hot_topic", False))
         publishing = getattr(self.settings, "publishing", None)
         toutiao_auto_publish = bool(
@@ -1117,10 +1119,39 @@ class AgentWorkflowService:
         content.article = self._ensure_article_min_chars(
             content.article, data_report, min_chars=effective_min_chars
         )
+        if self.settings.platform == "wechat":
+            content.article = self._remove_exact_repetition(content.article)
         content.polished_article = content.article
         if update_validation:
             content.validation_notes = list(polish_pack.get("validation_notes", []))
             content.validation_score = int(polish_pack.get("validation_score", 0))
+
+    @staticmethod
+    def _remove_exact_repetition(article: str) -> str:
+        """Keep each substantial sentence once; preserve distinct facts and qualifiers."""
+        import re
+        seen: set[str] = set()
+        seen_blocks: set[str] = set()
+        blocks: list[str] = []
+        for block in article.split("\n\n"):
+            normalized_block = re.sub(r"\s+", "", block)
+            if len(normalized_block) >= 70:
+                if normalized_block in seen_blocks:
+                    continue
+                seen_blocks.add(normalized_block)
+            sentences = re.split(r"(?<=[。！？!?])", block)
+            kept: list[str] = []
+            for sentence in sentences:
+                normalized = re.sub(r"\s+", "", sentence)
+                if len(normalized) >= 35:
+                    if normalized in seen:
+                        continue
+                    seen.add(normalized)
+                if sentence.strip():
+                    kept.append(sentence.strip())
+            if kept:
+                blocks.append("".join(kept))
+        return "\n\n".join(blocks)
 
     def _uses_narrative_domain(self) -> bool:
         """账号当前是否用叙事类写作领域（社会故事等）。"""

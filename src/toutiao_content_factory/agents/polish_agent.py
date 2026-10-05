@@ -872,7 +872,11 @@ class PolishAgent(BaseAgent):
             else:
                 notes.append("正文虽然没充分点名公司，但已经落到订单、客户和交付主体。")
         else:
-            notes.append("正文主体感仍偏弱，建议明确公司、客户、订单方或交付项目。")
+            if self.settings.wechat_auto_publish_mode:
+                from toutiao_content_factory.services.wechat_evidence import requirements
+                notes.append(requirements(data_report.article_kind)["instruction"])
+            else:
+                notes.append("正文主体感仍偏弱，建议明确公司、客户、订单方或交付项目。")
 
         keyword_hits = self._count_hits(article_lower, data_report.supply_chain_keywords[:5])
         if content_mode == "social_story":
@@ -888,7 +892,11 @@ class PolishAgent(BaseAgent):
             score += 10
             notes.append("正文已覆盖关键产业链环节，不只是复述新闻事件。")
         else:
-            notes.append("正文对产业链位置展开还不够，建议补上环节分工与利润归属。")
+            if self.settings.wechat_auto_publish_mode:
+                from toutiao_content_factory.services.wechat_evidence import requirements
+                notes.append(requirements(data_report.article_kind)["writing_brief"])
+            else:
+                notes.append("正文对产业链位置展开还不够，建议补上环节分工与利润归属。")
 
         angle = self.clean_publish_text(trend_report.recommended_angle).lower()
         if angle and angle[:10] in article_lower:

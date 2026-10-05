@@ -145,7 +145,7 @@ class AgentWorkflowService:
             data_report = self.data_agent._fallback(extraction, trend_report)
         if self.settings.wechat_auto_publish_mode:
             from toutiao_content_factory.services.wechat_evidence import apply_requirements
-            apply_requirements(data_report, extraction)
+            apply_requirements(data_report, extraction, trend_report)
         try:
             self._abort_if_low_quality(extraction, data_report)
             insight_report: InsightReport | None = None

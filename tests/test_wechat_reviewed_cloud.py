@@ -19,6 +19,8 @@ from toutiao_content_factory.agents.polish_agent import PolishAgent
 from toutiao_content_factory.agents.data_agent import DataAgent
 from toutiao_content_factory.agents.quality_review_council_agent import QualityReviewCouncilAgent
 from toutiao_content_factory.models import ExtractionResult
+from toutiao_content_factory.models import WorkflowResult, ContentScore
+from toutiao_content_factory.services.pipeline import ContentFactoryPipeline
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, QualityReviewReport, TrendReport, TopicCandidate
@@ -277,3 +279,33 @@ def test_wechat_review_schema_has_no_preset_verdict_and_keeps_local_gate(
     assert '"enum"' in prompt
     assert report.verdict == "blocked"
     assert report.hard_blockers
+
+
+@pytest.mark.parametrize("wechat", [True, False])
+def test_blocked_cache_is_regenerated_for_wechat_only(app_settings, logger, wechat):
+    if wechat:
+        enable_wechat(app_settings)
+    app_settings.cache_dir.mkdir(parents=True, exist_ok=True)
+    pipeline = ContentFactoryPipeline(app_settings, logger, force_mock=True)
+    extraction = ExtractionResult(merged_text="verified source", core_data=[], industry_trends=[], growth_numbers=[],
+                                  companies=[], supply_chain_keywords=[], key_points=[])
+    style = app_settings.get_style()
+    key = pipeline.cache_service.inspect(extraction.merged_text, style.key).cache_key
+    blocked = WorkflowResult(extraction=extraction, trend_report=TrendReport(), data_report=DataReport(),
+                             content=GeneratedContent(article="old blocked article"), content_score=ContentScore(),
+                             style_key=style.key, style_label=style.label, cache_key=key, model_used="test-model",
+                             cache_status="miss", created_at="2026-10-06T02:25:00")
+    pipeline.cache_service.save(blocked, extraction.merged_text)
+    assert pipeline.cache_service.inspect(extraction.merged_text, style.key).exact_hit is True
+    pipeline.loader.load = MagicMock(return_value=[])
+    pipeline.extractor.extract = MagicMock(return_value=extraction)
+    fresh = MagicMock()
+    pipeline.workflow.run = MagicMock(return_value=fresh)
+    pipeline.cache_service.save = MagicMock()
+    pipeline.exporter.export = MagicMock(return_value={})
+    pipeline.run(paste_text="verified source", include_input_dir=False)
+    assert pipeline.workflow.run.call_count == int(wechat)
+    if wechat:
+        assert pipeline.exporter.export.call_args.args[0] is fresh
+    else:
+        assert pipeline.exporter.export.call_args.args[0].content.article == "old blocked article"

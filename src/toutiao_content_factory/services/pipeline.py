@@ -72,7 +72,9 @@ class ContentFactoryPipeline:
         cache_context = self.cache_service.inspect(
             extraction.merged_text,
             style.key,
-            refresh_cache=self.refresh_cache,
+            # Retry held WeChat articles under the current generation and audit
+            # policy; a cached rejection cannot substitute for a new attempt.
+            refresh_cache=self.refresh_cache or self.settings.wechat_auto_publish_mode,
         )
         self.logger.info("缓存状态: %s", cache_context.status)
 

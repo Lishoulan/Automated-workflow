@@ -32,7 +32,32 @@
       "expected_publication": {},
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "37389688179:1",
+      "started_at": "2026-10-05T23:39:50.358039+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "article_too_short",
+        "quality_review_required"
+      ],
+      "attempt_count": 2,
+      "enrichment_count": 8,
+      "eligible_candidate_count": 2,
+      "audited_candidate_count": 2,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "文章存在从局部事件外推成行业趋势的问题，例如将新型储能的增长直接关联到全球能源结构调整和可再生能源发展，但未提供足够证据支持这一因果关系。",
+        "文章开头反直觉判断的提出不够明确，建议在开头段落中更清晰地指出新型储能产业的转型趋势，并提供数据支持。",
+        "互动吸引力不足，建议补充具体公司/数字/对立观点/互动话术"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-06T07:32:45.899974+08:00"
+  "updated_at": "2026-10-06T07:52:53.097217+08:00"
 }

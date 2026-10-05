@@ -416,7 +416,12 @@ class RevenueExperimentService:
             if isinstance(growth_feedback.get("creative_calibration"), dict)
             else {}
         )
-        mature_wtt_samples = int(wtt_benchmark.get("samples", 0) or 0)
+        topic_feedback = growth_feedback.get("topic_feedback")
+        mature_wtt_samples = int(
+            topic_feedback.get("qualified_samples", 0)
+            if isinstance(topic_feedback, dict)
+            else wtt_benchmark.get("samples", 0) or 0
+        )
         mature_article_samples = int(calibration.get("article_samples", 0) or 0)
         targets = [
             self._target("成熟微头条样本", mature_wtt_samples, self.WTT_SAMPLE_TARGET),

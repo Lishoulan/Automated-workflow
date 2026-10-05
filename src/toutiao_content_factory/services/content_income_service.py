@@ -82,6 +82,7 @@ class ContentIncomeCollector:
         self.conflicts: set[str] = set()
         self.sources: dict[str, str] = {}
         self.schemas: list[dict[str, Any]] = []
+        self.ui: dict[str, Any] = {}
 
     def observe_response(self, response: Any) -> None:
         parsed = urlsplit(response.url)
@@ -131,6 +132,12 @@ class ContentIncomeCollector:
         from toutiao_content_factory.services.creator_account_service import INCOME_OVERVIEW_URL
         page.goto(INCOME_OVERVIEW_URL, wait_until="domcontentloaded", timeout=timeout_ms)
         page.wait_for_timeout(4000)
+        # Keep only visible labels and same-site paths for diagnosing a changed
+        # UI. No cookies, response values, signed URLs or account balances.
+        self.ui = page.evaluate("""() => ({
+          labels: Array.from(document.querySelectorAll('a,button,[role="tab"],[role="menuitem"]')).map(e => (e.innerText || '').trim()).filter(t => t.length < 40 && /收益|收入|作品/.test(t)).slice(0,60),
+          income_links: Array.from(document.querySelectorAll('a[href]')).map(e => {try {const u = new URL(e.href); return u.hostname === 'mp.toutiao.com' && /income/.test(u.pathname) ? {label: (e.innerText || '').trim().slice(0,40), path: u.pathname} : null;} catch {return null;}}).filter(Boolean).slice(0,30)
+        })""")
         # Use only controls actually present on the income page.
         for label in ("作品收益", "单篇收益"):
             control = page.get_by_text(label, exact=True)
@@ -156,6 +163,7 @@ class ContentIncomeCollector:
             "identified_works": len(self.amounts),
             "conflicting_works": len(self.conflicts),
             "observed_schemas": self.schemas,
+            "income_ui": self.ui,
             "error_type": error,
             "reason": "Only explicit platform work IDs with explicit yuan amounts are attributed; missing or ambiguous values remain unknown.",
         }

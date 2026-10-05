@@ -173,3 +173,14 @@ def test_build_and_write_creates_operator_dashboard(tmp_path: Path) -> None:
     markdown = outputs["dashboard_md"].read_text(encoding="utf-8")
     assert "30天写作收益实验看板" in markdown
     assert "不会把账号日收益按阅读量猜测分摊" in markdown
+
+
+def test_experiment_target_does_not_count_late_fallback_benchmarks(tmp_path: Path):
+    service = RevenueExperimentService(tmp_path, logging.getLogger("test"))
+    dashboard = service.build_dashboard(
+        account_snapshot=_account_snapshot(), growth_snapshot=_growth_snapshot(),
+        growth_feedback={"benchmarks": {"weitoutiao": {"samples": 30}},
+                         "topic_feedback": {"qualified_samples": 0}},
+        performance={"records": []}, readiness={"status": "ready"},
+    )
+    assert dashboard["experiment"]["targets"][0]["current"] == 0

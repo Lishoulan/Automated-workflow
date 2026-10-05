@@ -436,3 +436,25 @@ def test_source_grounded_energy_terms_survive_without_allowing_unknown_companies
     assert writer._has_unknown_company_mention("虚构星河科技公司已取得项目订单。", report) is True
     mock_openai_service.create_json_completion.return_value = {"paragraphs": [paragraph]}
     assert paragraph in writer._expand_article_via_llm(["2024年发布了能源报告。"], report, 1800)
+
+
+@pytest.mark.parametrize("unsupported", ["比亚迪已经获得采购订单。", "2028年增幅达到99%，利润同比增长88%。"])
+@pytest.mark.parametrize("wechat", [True, False])
+def test_polish_keeps_verified_paragraphs_without_restoring_rejected_claims(
+    app_settings, mock_openai_service, logger, unsupported, wechat
+):
+    if wechat:
+        enable_wechat(app_settings)
+    polish = PolishAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    verified = "据公开统计，2024年的行业数据说明供需匹配仍需完善。比亚迪所在的环节需要继续关注实际落实进度，政策方向不能代替已确认的实施结果。"
+    report = DataReport(core_data=[verified], source_facts=[verified], growth_numbers=["2024年"], companies=["比亚迪"], evidence_strength=70)
+    result = polish._finalize_article(verified + "\n\n" + unsupported, report, TrendReport(),
+                                     original_char_count=3000, original_article=verified + "\n\n" + unsupported)
+    assert unsupported not in result
+    if wechat:
+        assert "政策方向不能代替已确认的实施结果" in result
+        assert "目前只能算阶段性进展" not in result
+        assert polish._unsupported_numeric_tokens(result, report) == []
+        assert polish._has_unsupported_order_claim(result, report) is False
+    else:
+        assert "目前只能算阶段性进展" in result

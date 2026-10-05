@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from scripts.collect_growth_snapshot import attach_opening_experiments, build_snapshot, merge_recovered_checkpoints, update_checkpoints
+from scripts.collect_growth_snapshot import attach_content_income, attach_opening_experiments, build_snapshot, merge_recovered_checkpoints, update_checkpoints
+from toutiao_content_factory.services.content_income_service import ARTICLE_INCOME_PATH
 
 
 def _work(created: datetime, impressions: int, reads: int) -> dict:
@@ -37,6 +38,23 @@ def test_opening_experiment_requires_unique_exact_title_time_and_type_match():
     trial = build_snapshot([_work(created, 100, 2)], created + timedelta(hours=25), 30)
     attach_opening_experiments(trial, {"records": {"one": record, "two": record}})
     assert "content_experiment" not in trial["works"][0]
+
+
+def test_precise_income_joins_by_id_time_title_and_type_and_keeps_zero_known():
+    created = datetime(2026, 10, 2, 9, tzinfo=timezone(timedelta(hours=8)))
+    observed = created + timedelta(days=3)
+    snapshot = build_snapshot([_work(created, 100, 2)], observed, 30)
+    work = snapshot["works"][0]
+    row = {"gid": work["gid"], "title": work["title"], "type": "weitoutiao", "created_at": work["created_at"],
+           "amount": 0, "status": "available", "source": ARTICLE_INCOME_PATH,
+           "scope": "cumulative_through_ready_date", "revenue_as_of_date": "2026-10-03"}
+    report = {"observed_at": observed.isoformat(), "works": [row]}
+    attach_content_income(snapshot, report, observed)
+    assert work["platform_revenue"] == 0
+    for patch in ({"title": "different"}, {"gid": "other"}, {"amount": True}, {"status": "pending_or_unknown"}, {"revenue_as_of_date": "2026-10-01"}):
+        trial = build_snapshot([_work(created, 100, 2)], observed, 30)
+        attach_content_income(trial, {"observed_at": observed.isoformat(), "works": [{**row, **patch}]}, observed)
+        assert "platform_revenue" not in trial["works"][0]
 
 
 def test_growth_checkpoints_capture_24h_then_72h_and_compute_delta() -> None:

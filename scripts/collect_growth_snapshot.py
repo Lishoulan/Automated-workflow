@@ -8,6 +8,7 @@ import argparse
 import copy
 import json
 import logging
+import math
 import os
 import sys
 from collections import Counter
@@ -26,6 +27,7 @@ from toutiao_content_factory.services.growth_feedback_service import (
 from toutiao_content_factory.services.revenue_experiment_service import (
     RevenueExperimentService,
 )
+from toutiao_content_factory.services.content_income_service import ARTICLE_INCOME_PATH
 
 ROOT = Path(__file__).resolve().parents[1]
 BEIJING = timezone(timedelta(hours=8))
@@ -71,6 +73,41 @@ def attach_opening_experiments(snapshot: dict, experiments: dict) -> None:
         if len(group) == 1:
             work, record = group[0]
             work["content_experiment"] = {k: record[k] for k in ("id", "variable", "variant") if k in record}
+
+
+def attach_content_income(snapshot: dict, income_report: dict, observed_at: datetime) -> None:
+    try:
+        captured = datetime.fromisoformat(income_report["observed_at"])
+        if captured.tzinfo is None or not 0 <= (observed_at - captured).total_seconds() <= 12 * 3600:
+            return
+    except (KeyError, ValueError, TypeError):
+        return
+    by_gid: dict[str, list[dict]] = {}
+    for row in income_report.get("works") or []:
+        if isinstance(row, dict):
+            by_gid.setdefault(str(row.get("gid", "")), []).append(row)
+    for work in snapshot.get("works", []):
+        candidates = by_gid.get(str(work.get("gid", "")), [])
+        if len(candidates) != 1:
+            continue
+        row = candidates[0]
+        if row.get("status") != "available" or row.get("source") != ARTICLE_INCOME_PATH or row.get("scope") != "cumulative_through_ready_date":
+            continue
+        if row.get("type") != work.get("type") or normalize_title(row.get("title", "")) != normalize_title(work.get("title", "")):
+            continue
+        amount = row.get("amount")
+        if type(amount) not in (int, float) or not math.isfinite(amount) or amount < 0:
+            continue
+        try:
+            created = datetime.fromisoformat(work["created_at"])
+            income_created = datetime.fromisoformat(row["created_at"])
+            ready = datetime.fromisoformat(row["revenue_as_of_date"]).date()
+            if abs((created - income_created).total_seconds()) > 2 or not created.date() <= ready < observed_at.date():
+                continue
+        except (KeyError, ValueError, TypeError):
+            continue
+        work.update(platform_revenue=amount, platform_revenue_status="available", revenue_amount_known=True,
+                    revenue_as_of_date=ready.isoformat(), revenue_scope=row["scope"])
 
 
 def _counter(stat: dict, label: str, fallback: str) -> int:
@@ -386,6 +423,7 @@ def main() -> int:
         )
         snapshot = build_snapshot(contents, observed_at, args.days)
         attach_opening_experiments(snapshot, _load_json(output_dir / "growth_ops" / "performance" / "wtt_content_experiments.json"))
+        attach_content_income(snapshot, _load_json(output_dir / "growth_ops" / "performance" / "content_income_collection.json"), observed_at)
     except (OSError, ValueError, KeyError, RuntimeError) as exc:
         print(f"Toutiao growth snapshot unavailable: {type(exc).__name__}", file=sys.stderr)
         return 2

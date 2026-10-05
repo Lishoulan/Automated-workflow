@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from toutiao_content_factory.services.content_income_service import platform_item_id
 
 
 class RevenueExperimentService:
@@ -157,7 +158,22 @@ class RevenueExperimentService:
         daily_rows = [row for row in (income.get("daily") or []) if isinstance(row, dict)]
         income_summary = self._income_summary(daily_rows, reference_time)
         format_metrics = self._format_metrics(growth_snapshot, income_summary)
-        attribution = self._per_content_attribution(performance)
+        income_records = list(performance.get("records") or [])
+        # The published-work API exposes micro-posts that the management DOM
+        # omits. Use their platform IDs; never match earnings by fuzzy title.
+        works = [w for w in growth_snapshot.get("works", []) if isinstance(w, dict) and w.get("gid") and "created_at" in w]
+        work_ids = {str(w["gid"]) for w in works}
+        income_records = [r for r in income_records if isinstance(r, dict) and platform_item_id(r.get("url", "")) not in work_ids]
+        for work in works:
+            income_records.append({
+                "content_id": "toutiao_work:" + str(work["gid"]), "platform": "toutiao_weitoutiao" if work.get("type") == "weitoutiao" else "toutiao",
+                "title": work.get("title", ""), "publish_date": work["created_at"][:10],
+                "impression_count": work.get("impressions", 0), "read_count": work.get("reads", 0),
+                "platform_revenue": work.get("platform_revenue"), "platform_revenue_status": work.get("platform_revenue_status", "unknown"),
+                "revenue_amount_known": work.get("revenue_amount_known", False),
+                "revenue_as_of_date": work.get("revenue_as_of_date", ""), "counters_as_of_date": observed_at[:10],
+            })
+        attribution = self._per_content_attribution({"records": income_records})
         experiment = self._experiment_status(
             growth_snapshot=growth_snapshot,
             growth_feedback=growth_feedback,
@@ -374,9 +390,10 @@ class RevenueExperimentService:
                     "reads": reads,
                     "revenue": exact_revenue,
                     "revenue_status": "exact" if exact else str(record.get("revenue_status", "unknown")),
+                    "revenue_as_of_date": record.get("revenue_as_of_date", ""),
                     "revenue_per_1000_impressions": (
                         round(exact_revenue * 1000 / impressions, 4)
-                        if exact and impressions
+                        if exact and impressions and (not record.get("revenue_as_of_date") or record.get("revenue_as_of_date") == record.get("counters_as_of_date"))
                         else None
                     ),
                 }

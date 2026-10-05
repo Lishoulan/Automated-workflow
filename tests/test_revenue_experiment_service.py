@@ -184,3 +184,19 @@ def test_experiment_target_does_not_count_late_fallback_benchmarks(tmp_path: Pat
         performance={"records": []}, readiness={"status": "ready"},
     )
     assert dashboard["experiment"]["targets"][0]["current"] == 0
+
+
+def test_growth_api_works_expose_precise_income_when_management_dom_omits_them(tmp_path: Path):
+    service = RevenueExperimentService(tmp_path, logging.getLogger("test"))
+    growth = {"observed_at": "2026-10-05T12:00:00+08:00", "window_days": 30, "works": [
+        {"gid": "101", "title": "真实事件", "type": "weitoutiao", "created_at": "2026-10-02T09:00:00+08:00", "impressions": 1000, "reads": 20,
+         "platform_revenue": 0.03, "platform_revenue_status": "available", "revenue_amount_known": True, "revenue_as_of_date": "2026-10-03"},
+        {"gid": "102", "title": "新作品", "type": "weitoutiao", "created_at": "2026-10-05T09:00:00+08:00", "impressions": 100, "reads": 1},
+    ]}
+    dashboard = service.build_dashboard(account_snapshot=_account_snapshot(), growth_snapshot=growth,
+        growth_feedback={}, performance={"records": []}, readiness={"status": "ready"})
+    attributed = dashboard["per_content_attribution"]
+    assert attributed["exact_count"] == 1
+    assert attributed["rows"][0]["revenue"] == 0.03
+    assert attributed["rows"][0]["revenue_per_1000_impressions"] is None
+    assert attributed["rows"][1]["revenue"] is None

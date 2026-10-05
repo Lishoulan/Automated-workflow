@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from toutiao_content_factory.services.content_income_service import (
-    ContentIncomeCollector, content_income_rows, exact_yuan, platform_item_id,
+    ARTICLE_INCOME_PATH, ContentIncomeCollector, content_income_rows, exact_yuan, platform_item_id, verified_article_income_rows,
 )
 
 
@@ -47,3 +47,30 @@ def test_failed_or_unrelated_api_responses_are_ignored():
                                    json=lambda: {"code": code, "item_id": "101", "total_income": "2元"})
         collector.observe_response(response)
     assert collector.amounts == {}
+
+
+def test_observed_income_api_uses_fen_not_yuan_and_requires_cumulative_schema():
+    payload = {"code": 0, "data": {"columns": [{"key": "total_income", "tip": "单篇内容的累计收益"}],
+               "toutiao_article_income": [{"item_id": "1876783431192644", "article_income": 3,
+                "income_data": {"total_income": {"amount": "3"}}, "create_time": 1789840155644,
+                "genre_type": 3, "title": "真实标题\n正文"}]}}
+    rows = verified_article_income_rows(payload)
+    assert rows[0]["amount"] == 0.03
+    assert rows[0]["gid"] == "1876783431192644"
+    payload["data"]["columns"][0]["tip"] = "账号收益"
+    assert verified_article_income_rows(payload) == []
+
+
+def test_current_day_income_is_not_treated_as_settled_zero(tmp_path):
+    collector = ContentIncomeCollector()
+    collector.ready_date = "2026-10-03"
+    collector.work_rows = {
+        "101": {"gid": "101", "amount": 0, "created_at": "2026-10-05T09:00:00+08:00"},
+        "102": {"gid": "102", "amount": 0, "created_at": "2026-10-02T09:00:00+08:00"},
+    }
+    path = tmp_path / "report.json"
+    collector.write_report(path, matched=0)
+    import json
+    works = json.loads(path.read_text())["works"]
+    assert works[0]["amount"] is None
+    assert works[1]["amount"] == 0

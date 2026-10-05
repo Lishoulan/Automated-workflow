@@ -782,6 +782,8 @@ class WriterAgent(BaseAgent):
 
     def _paragraph_instruction_for_prompt(self, data_report: DataReport) -> str:
         instruction = str(getattr(data_report, "paragraph_instruction", "") or "5到7段，每段2到3句。").strip()
+        if self.settings.wechat_auto_publish_mode:
+            return "10到14段，每段只论证一个问题，围绕已有事实、来源、机制和证据边界展开；全文目标1800字，最低1750字。"
         if self._auto_publish_mode():
             if self._is_narrative_run():
                 return "至少10段，每段围绕一个已核实的细节或不同当事人的处境推进；只用素材中的事实，避免产业链、订单和商业化套话。"
@@ -2701,6 +2703,9 @@ class WriterAgent(BaseAgent):
 
     def _max_expansion_calls_for_run(self) -> int:
         """本次 run 允许的扩展次数上限（叙事体裁多一次）。"""
+        if self.settings.wechat_auto_publish_mode:
+            # One initial length repair and one for each permitted revision.
+            return 1 + min(2, max(0, self.settings.quality_review.max_auto_revisions))
         return (
             self.NARRATIVE_MAX_LLM_EXPANSION_CALLS
             if self._is_narrative_run()
@@ -2824,7 +2829,8 @@ class WriterAgent(BaseAgent):
             paragraph_count = min(8, max(2, (deficit + 199) // 200))
             user_prompt = user_prompt.replace("Write 1-3 extra paragraphs", f"Write {paragraph_count} extra paragraphs")
             user_prompt += (
-                f"\nFor this WeChat draft, write {paragraph_count} short paragraphs totalling roughly {deficit} Chinese characters. "
+                f"\n本次输出{paragraph_count}个中文段落，每段至少{(deficit + paragraph_count - 1) // paragraph_count}个汉字，"
+                f"合计至少补足{deficit}个汉字。字数来自不同的证据和机制说明，不得凑数。"
                 "Use distinct mechanisms supported by the evidence, with source and statistical period attribution. "
                 "Do not impose corporate revenue, margin, cash collection or contract acceptance analysis on policy or sector data. "
                 "Do not repeat existing facts or assume multiple materials are the same disclosure."
@@ -3363,6 +3369,11 @@ class WriterAgent(BaseAgent):
                 and mention.endswith(("材料", "资料"))
             )
         ]
+        if self.settings.wechat_auto_publish_mode:
+            # Industry terms such as "绿色能源" can match the broad company
+            # suffix regex. The source ledger already establishes these
+            # exact mentions even when there is no corporate entity list.
+            mentions = [mention for mention in mentions if mention.casefold() not in source_fact_text]
         if not mentions:
             return False
         if not known:

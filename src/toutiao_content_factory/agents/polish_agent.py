@@ -301,6 +301,15 @@ class PolishAgent(BaseAgent):
     def _auto_publish_directive(self) -> str:
         if not self._auto_publish_mode():
             return ""
+        if self.settings.wechat_auto_publish_mode:
+            return (
+                "当前是微信自动发布候选：润色后正文目标1800字，最低1750字，约10到14个自然段。"
+                "每段只论证一个问题，保留有效事实与因果解释，不得压成短评。"
+                "source_references是已提供的报道出处；关键数字写清统计期和统计对象，报道日期不是统计期。"
+                "政策或行业总量不等于企业利润、订单、合同验收或量产进度；没有这些证据时，删除对应断言和结尾问题，"
+                "改为解释素材中具体政策措施作用于哪个环节以及尚不能确认的结果。"
+                "仅用已有证据补足论证，不得按审核建议虚构缺失的数字、报告名称、出处或案例，也不得重复句段凑字数。"
+            )
         if self._is_narrative_domain():
             # 保留原有的"轻度编辑"约束（此前无条件要求 1800 字，导致润色把
             # 843 字砍成 187~413 字，触发「Polish was too aggressive」反复空跑）。

@@ -2959,6 +2959,8 @@ class ContentFactoryAppService:
         if article_path.exists():
             article_text = article_path.read_text(encoding="utf-8").replace("\n", "").replace(" ", "")
             snapshot["article_char_count"] = len(article_text)
+            if self.settings.wechat_auto_publish_mode:
+                snapshot["length_minimum"] = self._minimum_article_chars(None, score_snapshot=snapshot)
         return snapshot
 
     #: 单次 daily_run 的候选轮换时间预算（秒）。

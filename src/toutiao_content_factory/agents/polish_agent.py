@@ -239,6 +239,10 @@ class PolishAgent(BaseAgent):
             auto_publish_directive=self._auto_publish_directive(),
         )
         prompt = prompt + self.ANTI_AI_FLAVOR_APPENDIX
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import requirements
+            prompt += "\n" + requirements(data_report.article_kind)["instruction"]
+            prompt += "\nfact_evidence的数字须逐项核对原句对象、单位和统计期。保留正文自然出处与末尾参考来源，不得新增来源或把报道日期当作统计期。"
         auto_publish_directive = self._auto_publish_directive()
         if auto_publish_directive:
             prompt = prompt + "\n\n" + auto_publish_directive
@@ -1059,6 +1063,11 @@ class PolishAgent(BaseAgent):
 
 
     def _rebuild_cautious_article(self, data_report: DataReport, trend_report: TrendReport) -> str:
+        if self.settings.wechat_auto_publish_mode and data_report.fact_evidence:
+            from toutiao_content_factory.services.wechat_evidence import requirements
+            brief = requirements(data_report.article_kind)
+            return "\n\n".join([*(fact["quote"] for fact in data_report.fact_evidence[:4]),
+                                 "现有证据的适用范围仍需结合后续公开披露核对。", brief["closing"]])
         content_mode = self._content_mode(data_report)
         if content_mode == "social_story":
             # 故事体裁不走「产业链位置」式重建 —— 那套骨架会把社会新闻写成产业分析。
@@ -1137,6 +1146,9 @@ class PolishAgent(BaseAgent):
         ).strip()
 
     def _build_closing_question(self, data_report: DataReport) -> str:
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import requirements
+            return requirements(data_report.article_kind)["closing"]
         content_mode = self._content_mode(data_report)
         primary = self._topic_subject_label(data_report, fallback="这个方向")
         if content_mode == "social_story":

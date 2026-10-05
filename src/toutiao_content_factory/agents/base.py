@@ -801,6 +801,9 @@ class BaseAgent:
         return mentions
 
     def _build_company_or_order_anchor(self, data_report):
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import requirements
+            return requirements(data_report.article_kind)["suggested_angle"] + "，结论仍须限定在原文披露范围内。"
         companies = self._company_candidates(data_report)[:2]
         metrics = self.clean_publish_list(getattr(data_report, "watch_metrics", [])[:4], limit=4)
         follow_up = [item for item in re.split(r"[、，,；;]", getattr(data_report, "follow_up_focus", "")) if str(item).strip()]

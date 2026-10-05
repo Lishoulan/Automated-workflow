@@ -55,9 +55,10 @@ jobs:
           path: |
             .runtime/automation/wechat_cloud_session.enc
             output/wechat_publish_history.json
-            cache/
-          key: wechat-default-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: wechat-default-v1-
+          key: wechat-default-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            wechat-default-v2-
+            wechat-default-v1-
       - name: Validate login or run reviewed publication
         id: publish
         run: python scripts/wechat_cloud_run.py --account default --mode "$RUN_MODE"
@@ -68,8 +69,7 @@ jobs:
           path: |
             .runtime/automation/wechat_cloud_session.enc
             output/wechat_publish_history.json
-            cache/
-          key: wechat-default-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          key: wechat-default-v2-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Summarize actual outcome
         if: always()
         run: |
@@ -86,10 +86,22 @@ jobs:
               elif payload.get('wechat_status') in ('submitted', 'submitted_for_review'):
                   handle.write('已提交微信，待平台审核；尚未确认正式发表。\n')
               elif payload.get('wechat_status') in ('published', 'success'):
-                  handle.write('微信报告已发表。\n')
+                  handle.write('提交已返回，尚需核对后台记录与公开文章。\n')
               elif payload.get('wechat_status') == 'draft_saved':
                   handle.write('仅保存草稿，未发表。\n')
               handle.write('Login checks and review-required articles do not count as publications.\n')
+              if payload.get('formal_publication_confirmed'):
+                  handle.write('正式发表已确认：后台账号、标题、时间及公开正文匹配。\n')
+              else:
+                  handle.write('正式发表验收尚未完成。\n')
+              if payload.get('metrics_error'):
+                  handle.write('统计持久化失败：' + str(payload['metrics_error']) + '；保留真实发表结果及防重复状态。\n')
+              for days, metrics in payload.get('metrics', {}).items():
+                  rate = metrics.get('publication_rate')
+                  review_rate = metrics.get('review_pass_rate')
+                  handle.write(f"\n{days}天：正式发表 {metrics['confirmed_articles']}/{metrics['actual_publish_runs']}，发表率 " + (f'{rate:.1%}' if rate is not None else '暂无样本') + '\n')
+                  handle.write(f"合格候选 {metrics['eligible_candidate_count']}；审核通过 {metrics['review_pass_count']}/{metrics['audited_candidate_count']}，通过率 " + (f'{review_rate:.1%}' if review_rate is not None else '暂无样本') + '\n')
+                  handle.write('常见拒绝原因：' + json.dumps(metrics['common_rejection_reasons'], ensure_ascii=False) + '\n')
           PY
       - name: Save outcome reports
         if: always()
@@ -101,5 +113,6 @@ jobs:
             output/automation/wechat_scheduled_result.json
             output/automation/wechat_login_check.json
             output/automation/wechat_review_diagnostics.json
+            output/automation/wechat_metrics_report.json
           if-no-files-found: ignore
           retention-days: 14

@@ -212,12 +212,15 @@ def test_candidate_limit_retains_evidence_gates(app_settings, logger):
     enable_wechat(app_settings)
     object.__setattr__(app_settings.automation, "max_daily_topic_attempts", 5)
     topics = [TopicCandidate(title=f"储能项目进展{i}", url=f"https://example.test/{i}", source="test", source_type="rss",
+                             snippet="储能公司披露项目已完成测试，后续应用需要明确边界。" * 40,
+                             source_records=[{"source_id": f"test_{i}", "title": "储能项目", "url": f"https://example.test/{i}", "original_text": "储能项目已完成测试。" * 100}],
                              evidence_strength=75, quality_score=85, total_score=80) for i in range(8)]
     topics.insert(0, TopicCandidate(title="薄素材热点", url="https://example.test/thin", source="test", source_type="hot_board",
                                    evidence_strength=20, quality_score=95, total_score=99))
     app = ContentFactoryAppService(app_settings, logger)
     app.topic_automation._load_daily_topics = MagicMock(return_value=MagicMock(topics=topics))
     app.topic_automation._available_topics = MagicMock(return_value=topics)
+    app.topic_automation._hydrate_topic_material = MagicMock(return_value=False)
     candidates = app._build_daily_candidate_specs(topic_rank=None, topic_title=None, refresh_cache=False, dry_run=False)
     assert len(candidates) == 5
     assert all(item["url"] != "https://example.test/thin" for item in candidates)

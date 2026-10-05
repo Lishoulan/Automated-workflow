@@ -716,7 +716,7 @@ def main(argv: list[str] | None = None) -> int:
             logger.warning("Cannot read daily workflow status: %s", exc)
     from wechat_run_report import review_diagnostics
     diagnostics = review_diagnostics(settings, report, workflow_started)
-    result.update({key: diagnostics[key] for key in ("reason_codes", "attempt_count", "publication_attempted")})
+    result.update({key: diagnostics[key] for key in ("reason_codes", "attempt_count", "publication_attempted", "enrichment_count", "eligible_candidate_count")})
     (settings.automation_dir / "wechat_review_diagnostics.json").write_text(
         json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding="utf-8"
     )

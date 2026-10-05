@@ -40,6 +40,23 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
+
+class MaterialBudgetExceeded(TimeoutError):
+    """The bounded enrichment allowance has ended; no further I/O may start."""
+
+
+class MaterialSearchError(RuntimeError):
+    """Infrastructure failure, distinct from a candidate with weak evidence."""
+
+
+def _remaining_ms(deadline: float | None, maximum: int) -> int:
+    if deadline is None:
+        return maximum
+    remaining = int((deadline - time.monotonic()) * 1000)
+    if remaining <= 0:
+        raise MaterialBudgetExceeded("Material enrichment deadline exhausted")
+    return min(maximum, remaining)
+
 #: 完整的浏览器请求头。
 #: ⚠️ 只发 User-Agent + Accept-Language 会被百度判定为机器人并跳到验证码页
 #: （实测：返回 `wappass.baidu.com/static/captcha/tuxing_v2.html`，页面仅 1438 字节、
@@ -118,6 +135,9 @@ class MaterialSource:
     ok: bool = False
     error: str = ""
     evidence_type: str = "article"
+    publisher: str = ""
+    published_at: str = ""
+    date_verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -296,7 +316,7 @@ def _looks_like_antispider(page_html: str, final_url: str) -> bool:
     return any(marker in haystack for marker in _ANTISPIDER_MARKERS)
 
 
-def fetch_text_with_browser(url: str, timeout_ms: int = 45000) -> tuple[str, str]:
+def fetch_text_with_browser(url: str, timeout_ms: int = 45000, *, deadline: float | None = None) -> tuple[str, str]:
     """用真实浏览器抓页面，返回 (页面 HTML, 最终地址)。
 
     ⚠️ 2026-09-19 实测：`weixin.sogou.com` 的搜索结果给的是 **`/link?url=...` 跳转链接**，
@@ -306,37 +326,40 @@ def fetch_text_with_browser(url: str, timeout_ms: int = 45000) -> tuple[str, str
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        browser = pw.chromium.launch(headless=True, **({"timeout": _remaining_ms(deadline, timeout_ms)} if deadline is not None else {}))
         try:
             context = browser.new_context(locale="zh-CN", user_agent=USER_AGENT)
             page = context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            page.wait_for_timeout(3000)
+            page.goto(url, wait_until="domcontentloaded", timeout=_remaining_ms(deadline, timeout_ms))
+            page.wait_for_timeout(min(3000, _remaining_ms(deadline, 3000)))
+            _remaining_ms(deadline, timeout_ms)
             return page.content(), page.url
         finally:
             browser.close()
 
 
-def fetch_text_smart(url: str, timeout: int = 20) -> tuple[str, str, str]:
+def fetch_text_smart(url: str, timeout: int = 20, *, deadline: float | None = None) -> tuple[str, str, str]:
     """先走 HTTP，遇到反爬页自动改用真实浏览器。返回 (html, final_url, how)。
 
     `how` 是 "http" 或 "browser"，便于日志里看清是哪条路径拿到的。
     """
     try:
-        page_html, final_url = fetch_text(url, timeout=timeout)
+        page_html, final_url = fetch_text(url, timeout=timeout, **({"deadline": deadline} if deadline is not None else {}))
     except Exception:
         page_html, final_url = "", url
     if page_html and not _looks_like_antispider(page_html, final_url):
         return page_html, final_url, "http"
     # HTTP 拿不到（反爬/异常）→ 换浏览器
     try:
-        page_html, final_url = fetch_text_with_browser(url)
+        page_html, final_url = fetch_text_with_browser(url, **({"deadline": deadline} if deadline is not None else {}))
     except Exception:
+        if deadline is not None:
+            raise
         return page_html, final_url, "browser-failed"
     return page_html, final_url, "browser"
 
 
-def fetch_text(url: str, timeout: int = 20, follow_redirects: bool = True) -> tuple[str, str]:
+def fetch_text(url: str, timeout: int = 20, follow_redirects: bool = True, *, deadline: float | None = None) -> tuple[str, str]:
     """抓取 URL 并解码为文本，返回 (页面文本, 最终地址)。
 
     - 带完整浏览器请求头与 cookie 会话（否则百度会跳验证码页）
@@ -351,8 +374,25 @@ def fetch_text(url: str, timeout: int = 20, follow_redirects: bool = True) -> tu
         urllib.request.HTTPSHandler(context=ctx),
         urllib.request.HTTPRedirectHandler(),
     )
-    with opener.open(req, timeout=timeout) as resp:
-        raw = resp.read()
+    with opener.open(req, timeout=_remaining_ms(deadline, int(timeout * 1000)) / 1000) as resp:
+        if deadline is None:
+            raw = resp.read()
+        else:
+            chunks = []
+            total_bytes = 0
+            while True:
+                remaining_seconds = _remaining_ms(deadline, int(timeout * 1000)) / 1000
+                socket = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+                if socket is not None:
+                    socket.settimeout(remaining_seconds)
+                chunk = resp.read1(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total_bytes += len(chunk)
+                if total_bytes > 8_000_000:
+                    raise ValueError("Material response exceeds size limit")
+            raw = b"".join(chunks)
         final_url = resp.geturl()
         # 收下 cookie，供后续请求复用
         for header in resp.headers.get_all("Set-Cookie") or []:
@@ -524,7 +564,7 @@ def _save_cached_material(cache_dir: Path, bundle: MaterialBundle) -> None:
                 logging.getLogger(__name__).warning("Material cache temporary file cleanup failed")
 
 
-def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2.0) -> list[dict]:
+def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2.0, deadline: float | None = None) -> list[dict]:
     """搜索候选报道，返回 [{title, url}]。
 
     ## 为什么要多后端
@@ -552,11 +592,18 @@ def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2
     """
     merged: list[dict] = []
     seen_urls: set[str] = set()
+    failures = []
     for backend in SEARCH_BACKENDS:
+        _remaining_ms(deadline, 45000)
         name = backend[0]
         if name in _DEAD_BACKENDS:
             continue
-        hits = _search_with_backend(backend, query, retries=retries, pause=pause)
+        try:
+            hits = _search_with_backend(backend, query, retries=retries, pause=pause,
+                                        **({"deadline": deadline} if deadline is not None else {}))
+        except MaterialSearchError as exc:
+            failures.append(exc)
+            continue
         for hit in hits:
             url = str(hit.get("url", "") or "").strip()
             if not url or url in seen_urls:
@@ -567,6 +614,8 @@ def search_web(query: str, limit: int = 6, *, retries: int = 2, pause: float = 2
         if sum(1 for item in merged if _fetch_priority(str(item.get("url", ""))) >= 2) >= limit:
             break
     merged.sort(key=lambda item: -_fetch_priority(str(item.get("url", ""))))
+    if deadline is not None and not merged and (failures or all(backend[0] in _DEAD_BACKENDS for backend in SEARCH_BACKENDS)):
+        raise MaterialSearchError("All attempted material search backends failed")
     # ⚠️ 2026-09-19：**不要把已知拿不到正文的链接交给抓取**。
     # 搜狗微信的 `/link?url=` 实测 100% 落到 antispider（正文恒 0 字），
     # 而它在结果列表里常常占掉一大半。抓取预算只有 3 条，
@@ -709,6 +758,7 @@ def _search_with_backend(
     *,
     retries: int = 2,
     pause: float = 2.0,
+    deadline: float | None = None,
 ) -> list[dict]:
     """用单个后端搜索；失败（含反爬页）返回空列表，由调用方换下一个后端。"""
     name, template, extractor = backend
@@ -717,29 +767,42 @@ def _search_with_backend(
     url = template.replace("{q}", urllib.parse.quote(query))
     out: list[dict] = []
     backend_unavailable = True
+    failure = None
     for attempt in range(1, max(retries, 1) + 1):
+        _remaining_ms(deadline, 45000)
         try:
             with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True)
-                context = browser.new_context(locale="zh-CN", user_agent=USER_AGENT)
-                page = context.new_page()
-                response = page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(3500)
-                blocked = (response is not None and response.status in {403, 429, 500, 502, 503, 504}) or _looks_like_antispider(page.content(), page.url)
-                if not blocked:
-                    out = page.evaluate(extractor)
-                    backend_unavailable = False
-                browser.close()
-        except Exception:
+                browser = pw.chromium.launch(headless=True, **({"timeout": _remaining_ms(deadline, 45000)} if deadline is not None else {}))
+                try:
+                    context = browser.new_context(locale="zh-CN", user_agent=USER_AGENT)
+                    page = context.new_page()
+                    page.set_default_timeout(_remaining_ms(deadline, 45000))
+                    response = page.goto(url, wait_until="domcontentloaded", timeout=_remaining_ms(deadline, 45000))
+                    page.wait_for_timeout(min(3500, _remaining_ms(deadline, 3500)))
+                    _remaining_ms(deadline, 45000)
+                    blocked = (response is not None and response.status in {403, 429, 500, 502, 503, 504}) or _looks_like_antispider(page.content(), page.url)
+                    if not blocked:
+                        out = page.evaluate(extractor)
+                        backend_unavailable = False
+                    elif deadline is not None:
+                        failure = MaterialSearchError("Material search backend unavailable")
+                finally:
+                    browser.close()
+        except MaterialBudgetExceeded:
+            raise
+        except Exception as exc:
+            failure = exc
             out = []
         if out:
             break
         if attempt < retries:
-            time.sleep(pause * attempt)
+            time.sleep(min(pause * attempt, _remaining_ms(deadline, int(pause * attempt * 1000)) / 1000))
     if out:
         return _filter_relevant_hits(name, query, out)
     if backend_unavailable:
         _DEAD_BACKENDS.add(name)
+    if deadline is not None and failure and backend_unavailable:
+        raise MaterialSearchError("Material browser/search failed") from failure
     return []
 
 
@@ -849,6 +912,8 @@ def collect_material(
     timeout: int = 20,
     cache_dir: Path | None = None,
     source_url: str = "",
+    deadline: float | None = None,
+    preserve_sources: bool = False,
 ) -> MaterialBundle:
     """按标题找报道并抓正文。
 
@@ -877,20 +942,21 @@ def collect_material(
         if assess_material_evidence(bundle).passed:
             return
         for phrase in _search_phrases(title):
-            found = search_web(phrase, limit=limit)
+            found = search_web(phrase, limit=limit, **({"deadline": deadline} if deadline is not None else {}))
             if found:
                 hits.extend(found)
                 yield from found
                 return
 
-    fetch_deadline: float | None = None
+    fetch_deadline: float | None = deadline
+    system_failures = 0
     for hit in candidates():
         if fetch_deadline is None:
             fetch_deadline = time.monotonic() + MATERIAL_FETCH_BUDGET_SECONDS
         if time.monotonic() >= fetch_deadline:
             logging.getLogger(__name__).warning("Material fetch budget exhausted after %d sources: %s", len(bundle.sources), title)
             break
-        if sum(item.evidence_type == "article" for item in bundle.usable) >= max_sources or assess_material_evidence(bundle).passed:
+        if (len(bundle.sources) if preserve_sources else sum(item.evidence_type == "article" for item in bundle.usable)) >= max_sources or assess_material_evidence(bundle).passed:
             break
         url = hit["url"]
         if any(host in url for host in SKIP_HOSTS) and _fetch_priority(url) != 2:
@@ -902,8 +968,16 @@ def collect_material(
         source = MaterialSource(title=hit["title"], url=url)
         try:
             # `fetch_text_smart`：HTTP 拿到反爬页时自动改用真实浏览器。
-            page, final_url, how = fetch_text_smart(url, timeout=timeout)
+            page, final_url, how = fetch_text_smart(url, timeout=timeout,
+                                                  **({"deadline": fetch_deadline} if deadline is not None else {}))
             source.url = final_url or url
+            if preserve_sources:
+                from toutiao_content_factory.services.wechat_evidence import source_metadata
+                metadata = source_metadata(page)
+                source.publisher = metadata["publisher"]
+                source.published_at = metadata["published_at"]
+                source.date_verified = metadata["date_verified"]
+                source.title = metadata["page_title"] or source.title
             body = extract_article_body(page, min_chars=min_body_chars)
             if body:
                 source.body = body
@@ -914,6 +988,9 @@ def collect_material(
         except urllib.error.HTTPError as exc:
             source.error = f"HTTP {exc.code}"
         except Exception as exc:
+            if isinstance(exc, MaterialBudgetExceeded):
+                break
+            system_failures += 1
             source.error = f"{type(exc).__name__}: {str(exc)[:80]}"
 
         # ── 兜底：正文抓不到时，用搜索结果自带的描述片段 ────────────────────
@@ -923,7 +1000,7 @@ def collect_material(
         # Bing 每条结果下面那两行摘要通常已经含「时间 + 地点 + 人物 + 经过 + 结果」，
         # 是**有来源、可核对**的事实，比"什么都发不出去"或"让模型凭空编"都好。
         # 标注 `[搜索结果摘要]`，writer 侧仍受反虚构约束（不得补造细节）。
-        if not source.ok:
+        if not source.ok and not preserve_sources:
             snippet = str(hit.get("snippet", "") or "").strip()
             snippet = re.sub(r"\s+", " ", snippet)
             if len(snippet) >= 40:
@@ -934,7 +1011,9 @@ def collect_material(
         bundle.sources.append(source)
 
     # 若逐条抓取拿到的正文太少，把所有结果的摘要合并成一份兜底素材
-    if sum(len(item.body) for item in bundle.usable) < min_body_chars:
+    if preserve_sources and system_failures and not bundle.usable:
+        raise MaterialSearchError("Material retrieval failed without usable original sources")
+    if not preserve_sources and sum(len(item.body) for item in bundle.usable) < min_body_chars:
         merged = _merge_snippet_material(hits)
         if merged:
             bundle.sources.append(

@@ -214,8 +214,8 @@ class WriterAgent(BaseAgent):
             paragraph_instruction=self._paragraph_instruction_for_prompt(data_report),
             evidence_strength=str(data_report.evidence_strength or 0),
             topic_quality_score=str(data_report.topic_quality_score or 0),
-            domain_execution_rules=self._domain_execution_rules(style),
-            domain_thinking_rules=self._domain_thinking_rules(style),
+            domain_execution_rules=self._dynamic_rules_for(data_report) if self.settings.wechat_auto_publish_mode else self._domain_execution_rules(style),
+            domain_thinking_rules=self._dynamic_rules_for(data_report) if self.settings.wechat_auto_publish_mode else self._domain_thinking_rules(style),
             auto_publish_directive=self._auto_publish_directive(),
         )
         system_prompt = f"{self._writer_system_prompt(style)}{self._dynamic_rules_for(data_report)}"
@@ -312,8 +312,8 @@ class WriterAgent(BaseAgent):
             format_brief=self._format_brief_for_prompt(data_report),
             paragraph_instruction=self._paragraph_instruction_for_prompt(data_report),
             best_practices=self.best_practices_instruction(),
-            domain_execution_rules=self._domain_execution_rules(style),
-            domain_thinking_rules=self._domain_thinking_rules(style),
+            domain_execution_rules=self._dynamic_rules_for(data_report) if self.settings.wechat_auto_publish_mode else self._domain_execution_rules(style),
+            domain_thinking_rules=self._dynamic_rules_for(data_report) if self.settings.wechat_auto_publish_mode else self._domain_thinking_rules(style),
             auto_publish_directive=self._auto_publish_directive(),
         )
         system_prompt = f"{self._writer_system_prompt(style)}{self._dynamic_rules_for(data_report)}"
@@ -773,6 +773,9 @@ class WriterAgent(BaseAgent):
         return str(target)
 
     def _format_brief_for_prompt(self, data_report: DataReport) -> str:
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import requirements
+            return requirements(data_report.article_kind)["writing_brief"]
         brief = str(getattr(data_report, "format_brief", "") or "写成完整产业分析稿。").strip()
         if self._auto_publish_mode() and self._is_narrative_run():
             return brief if brief != "写成完整产业分析稿。" else "围绕已核实的事件经过、人物处境和实际影响写成完整故事观察稿。"
@@ -1714,6 +1717,9 @@ class WriterAgent(BaseAgent):
         return "\n".join(lines)
 
     def _dynamic_rules_for(self, data_report: DataReport) -> str:
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import requirements
+            return "\n" + requirements(data_report.article_kind)["instruction"] + "\nsource_records与fact_evidence共同构成事实记录。每个数字必须匹配原句的对象、单位与统计期，不得仅按数值匹配。正文自然注明出处，末尾列参考来源；不得编造发布机构或日期。"
         """根据本次 ExtractionResult 的行业分类，动态筛选 TOP 3 写作规则注入。
 
         避免一次性将所有规则塞入 System Prompt，缓解"中间遗忘"问题。
@@ -1914,6 +1920,8 @@ class WriterAgent(BaseAgent):
         return f"迭代调整-首段结构：{text}"
 
     def _viral_template_instruction(self, style: StyleProfile, self_benchmark_context: dict[str, object] | None) -> str:
+        if self.settings.wechat_auto_publish_mode:
+            return "按照article_kind对应的事实、机制、限制和跟踪变量组织文章，避免套用订单利润模板。"
         patterns = self._self_benchmark_patterns(self_benchmark_context)
         pattern_text = "；".join(patterns[:4]) if patterns else "钩子开场；事实还原；冲突拆解；变量判断；互动收口"
         return (
@@ -2001,6 +2009,9 @@ class WriterAgent(BaseAgent):
         return tail
 
     def _finalize_comment_prompt(self, raw_prompt: object, data_report: DataReport | None) -> str:
+        if self.settings.wechat_auto_publish_mode and data_report is not None:
+            from toutiao_content_factory.services.wechat_evidence import requirements
+            return requirements(data_report.article_kind)["closing"]
         text = self.strip_prompt_leakage(str(raw_prompt or "")).replace("\n", " ").strip()
         text = re.sub(r"\s+", " ", text)
         if not text or not self._comment_prompt_is_concrete(text, data_report):
@@ -2493,6 +2504,8 @@ class WriterAgent(BaseAgent):
         *,
         self_benchmark_context: dict[str, object] | None = None,
     ) -> list[str]:
+        if self.settings.wechat_auto_publish_mode:
+            return paragraphs
         patterns = self._self_benchmark_patterns(self_benchmark_context)
         if not patterns or not paragraphs:
             return paragraphs
@@ -2595,6 +2608,9 @@ class WriterAgent(BaseAgent):
         return companies[0] if companies else ""
 
     def _build_company_or_order_anchor(self, data_report: DataReport) -> str:
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import requirements
+            return requirements(data_report.article_kind)["suggested_angle"] + "，结论仍须限定在原文披露范围内。"
         primary = self._primary_keyword(data_report)
         companies = self._company_candidates(data_report)[:2]
         follow_up = self._follow_up_points(data_report)
@@ -2809,6 +2825,10 @@ class WriterAgent(BaseAgent):
             )
         if self.settings.wechat_auto_publish_mode and data_report.source_references:
             data_summary_parts.append("Source attribution: " + " / ".join(data_report.source_references))
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import requirements
+            data_summary_parts.append(requirements(data_report.article_kind)["instruction"])
+            data_summary_parts.append("逐项匹配统计对象、单位和统计期；引用出处不得丢失。事实记录：" + self.json_text(data_report.fact_evidence))
         data_summary = "\n".join(data_summary_parts) if data_summary_parts else "No extra evidence."
 
         system_prompt = (

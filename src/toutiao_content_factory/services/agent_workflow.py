@@ -143,6 +143,9 @@ class AgentWorkflowService:
         except Exception as exc:
             self.logger.error("DataAgent failed, using fallback data report: %s", exc)
             data_report = self.data_agent._fallback(extraction, trend_report)
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import apply_requirements
+            apply_requirements(data_report, extraction)
         try:
             self._abort_if_low_quality(extraction, data_report)
             insight_report: InsightReport | None = None
@@ -241,6 +244,8 @@ class AgentWorkflowService:
                 or quality_review_council_report.revision_round < self.settings.quality_review.max_auto_revisions
             )
             if not fast_mode and wechat_revision_budget_available and self._should_run_second_polish(content, content_score):
+                previous_quality_report = quality_review_council_report
+                previous_quality_body = self._quality_review_article(content)
                 revision_focus = self._build_revision_focus(content, content_score)
                 revised_pack = self.polish_agent.run(
                     content,
@@ -258,6 +263,10 @@ class AgentWorkflowService:
                     content.validation_score = max(int(revised_pack.get("validation_score", 0)), content.validation_score)
 
                     self._refresh_titles(content, trend_report, data_report, style, cache_context)
+                    if self.settings.wechat_auto_publish_mode and previous_quality_report is not None:
+                        from toutiao_content_factory.services.wechat_revision import begin_revision
+                        content.revision_trace.append(begin_revision(previous_quality_report, previous_quality_body,
+                            self._quality_review_article(content), previous_quality_report.revision_round + 1))
 
                     review_pack = self.review_agent.run(content, data_report, style, cache_context)
                     self._apply_review_pack(content, review_pack, cache_context)
@@ -283,6 +292,11 @@ class AgentWorkflowService:
                     article_version="post_review",
                     allow_auto_revise=False,
                 )
+                if self.settings.wechat_auto_publish_mode and content.revision_trace:
+                    from toutiao_content_factory.services.wechat_revision import finish_revision
+                    trace = content.revision_trace[-1]
+                    quality_review_council_report.revision_round = trace["revision_round"]
+                    finish_revision(trace, quality_review_council_report, self._quality_review_article(content), data_report.fact_evidence)
 
             if skip_publish_review:
                 publish_review = self.publish_review_agent._fallback(
@@ -367,8 +381,13 @@ class AgentWorkflowService:
                 revision_round=0,
             )
         report.article_version = article_version
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_revision import bind_issues
+            bind_issues(report, self._quality_review_article(content), data_report.fact_evidence)
 
         max_revisions = int(getattr(quality_settings, "max_auto_revisions", 1))
+        if self.settings.wechat_auto_publish_mode:
+            max_revisions = min(2, max_revisions)
         can_auto_revise = bool(
             report.needs_revision
             and getattr(quality_settings, "auto_revise", True)
@@ -381,6 +400,9 @@ class AgentWorkflowService:
         while can_auto_revise and revision_count < max_revisions:
             audited_state = self._quality_review_state(content)
             revision_focus = self._build_quality_review_revision_focus(report)
+            if self.settings.wechat_auto_publish_mode:
+                revision_focus = [f"{issue['issue_id']}：{issue['requirement']}；原段落：{issue['paragraph'] or '未能定位，勿猜测'}；证据：{','.join(issue['evidence_ids']) or '未知'}"
+                                  for issue in report.issues]
             try:
                 revised_pack = self.polish_agent.run(
                     content,
@@ -395,6 +417,9 @@ class AgentWorkflowService:
                 break
             revised_article = str(revised_pack.get("polished_article", "")).strip()
             if not revised_article or revised_article == content.article:
+                if self.settings.wechat_auto_publish_mode:
+                    from toutiao_content_factory.services.wechat_revision import begin_revision
+                    content.revision_trace.append(begin_revision(report, audited_state[0], audited_state[0], revision_count + 1))
                 self.logger.info("Quality review council requested revision, but the polish pass produced no new article.")
                 break
 
@@ -406,10 +431,19 @@ class AgentWorkflowService:
             )
             self._apply_polish_pack(content, revised_pack, data_report)
             if self.settings.platform == "wechat":
-                if self._quality_review_article(content) == audited_state[0]:
+                import re
+                if re.sub(r"\s+", "", self._quality_review_article(content)) == re.sub(r"\s+", "", audited_state[0]):
+                    if self.settings.wechat_auto_publish_mode:
+                        from toutiao_content_factory.services.wechat_revision import begin_revision
+                        content.revision_trace.append(begin_revision(report, audited_state[0], audited_state[0], revision_count))
                     self.logger.info("Revision produced no effective body change; retaining the audit.")
                     break
                 self._refresh_titles(content, trend_report, data_report, style, cache_context)
+            trace = None
+            if self.settings.wechat_auto_publish_mode:
+                from toutiao_content_factory.services.wechat_revision import begin_revision
+                trace = begin_revision(report, audited_state[0], self._quality_review_article(content), revision_count)
+                content.revision_trace.append(trace)
             report = self.quality_review_council_agent.run(
                 content,
                 data_report,
@@ -419,6 +453,10 @@ class AgentWorkflowService:
                 revision_round=revision_count,
             )
             report.article_version = article_version
+            if trace is not None:
+                from toutiao_content_factory.services.wechat_revision import bind_issues, finish_revision
+                bind_issues(report, self._quality_review_article(content), data_report.fact_evidence)
+                finish_revision(trace, report, self._quality_review_article(content), data_report.fact_evidence)
             if self.settings.platform == "wechat":
                 report.revision_round = revision_count
             if not report.needs_revision:
@@ -1161,6 +1199,11 @@ class AgentWorkflowService:
         )
 
     def _refresh_titles(self, content, trend_report, data_report, style, cache_context) -> None:
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import prepare_article
+            article = prepare_article(self._quality_review_article(content), data_report)
+            content.article = article
+            content.polished_article = article
         title_pack = self.title_agent.run(content, trend_report, data_report, style, cache_context)
         self._apply_title_pack(content, title_pack)
         self._filter_titles_by_quality(content)

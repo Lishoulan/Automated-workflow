@@ -47,6 +47,9 @@ class ExtractionResult:
     is_hot_topic: bool = False
     # 模块 C 合并新增：演进规则提取结果（向下兼容，旧序列化文件无此字段时默认空列表）
     extracted_rules: list[dict[str, Any]] = field(default_factory=list)
+    source_records: list[dict[str, Any]] = field(default_factory=list)
+    fact_evidence: list[dict[str, Any]] = field(default_factory=list)
+    article_kind: str = ""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ExtractionResult":
@@ -80,6 +83,9 @@ class ExtractionResult:
             source_summaries=list(payload.get("source_summaries", [])),
             is_hot_topic=bool(payload.get("is_hot_topic", False)),
             extracted_rules=list(payload.get("extracted_rules", [])),
+            source_records=list(payload.get("source_records") or []),
+            fact_evidence=list(payload.get("fact_evidence") or []),
+            article_kind=str(payload.get("article_kind") or ""),
         )
 
 
@@ -140,6 +146,9 @@ class DataReport:
 
     # Attribution is context, not additional factual evidence or a score boost.
     source_references: list[str] = field(default_factory=list)
+    source_records: list[dict[str, Any]] = field(default_factory=list)
+    fact_evidence: list[dict[str, Any]] = field(default_factory=list)
+    article_kind: str = ""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DataReport":
@@ -174,6 +183,9 @@ class DataReport:
             is_hot_topic=bool(payload.get("is_hot_topic", False)),
             source_facts=list(payload.get("source_facts", [])),
             source_references=list(payload.get("source_references", [])),
+            source_records=list(payload.get("source_records") or []),
+            fact_evidence=list(payload.get("fact_evidence") or []),
+            article_kind=str(payload.get("article_kind") or ""),
         )
 
 
@@ -242,6 +254,7 @@ class GeneratedContent:
     # 只加这两个字段，不再另建一套平行的统计结构。
     selected_title_source: str = ""
     title_validation: dict[str, Any] = field(default_factory=dict)
+    revision_trace: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "GeneratedContent":
@@ -268,6 +281,7 @@ class GeneratedContent:
             content_format_label=str(payload.get("content_format_label", "")),
             selected_title_source=str(payload.get("selected_title_source", "") or ""),
             title_validation=dict(payload.get("title_validation") or {}),
+            revision_trace=list(payload.get("revision_trace") or []),
         )
 
 
@@ -446,6 +460,7 @@ class TopicCandidate:
     source_type: str
     published_at: str = ""
     snippet: str = ""
+    source_records: list[dict[str, Any]] = field(default_factory=list)
     summary: str = ""
     matched_industries: list[str] = field(default_factory=list)
     matched_keywords: list[str] = field(default_factory=list)
@@ -488,6 +503,7 @@ class TopicCandidate:
             source_type=str(payload.get("source_type", "")),
             published_at=str(payload.get("published_at", "")),
             snippet=str(payload.get("snippet", "")),
+            source_records=list(payload.get("source_records") or []),
             summary=str(payload.get("summary", "")),
             matched_industries=list(payload.get("matched_industries", [])),
             matched_keywords=list(payload.get("matched_keywords", [])),
@@ -759,6 +775,8 @@ class QualityReviewReport:
     reviewed_char_count: int = 0
     revision_round: int = 0
     used_fallback: bool = False
+    issues: list[dict[str, Any]] = field(default_factory=list)
+    issue_evaluations: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         for name in (
@@ -862,6 +880,8 @@ class QualityReviewReport:
             reviewed_char_count=score_value("reviewed_char_count"),
             revision_round=score_value("revision_round"),
             used_fallback=bool(payload.get("used_fallback", False)),
+            issues=dict_list("issues"),
+            issue_evaluations=dict_list("issue_evaluations"),
         )
 
     def has_valid_scores(self) -> bool:

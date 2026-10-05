@@ -45,6 +45,8 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
         "status": native.get("status", "error"), "publication_attempted": attempted,
         "attempt_count": len(attempts) if isinstance(attempts, list) else 0,
         "reason_codes": [], "attempts": [],
+        "enrichment_count": workflow.get("enrichment_count", 0),
+        "eligible_candidate_count": workflow.get("eligible_candidate_count", 0),
     }
     if not isinstance(attempts, list):
         return result
@@ -68,7 +70,7 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
             if council:
                 summary["quality_review"] = {
                     key: safe_text(council[key]) if isinstance(council[key], str) else council[key]
-                    for key in ("verdict", "overall_score", "revision_round")
+                    for key in ("verdict", "overall_score", "revision_round", "used_fallback")
                     if key in council and isinstance(council[key], (str, int, float, bool))
                 }
                 summary["required_revisions"] = [safe_text(item) for item in council.get("required_revisions", [])]
@@ -78,6 +80,20 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
                     result["reason_codes"].append("quality_review_required")
             archived = fresh_json(run_dir / "workflow_result.json", started)
             content = archived.get("content", {})
+            data = archived.get("data_report", {})
+            if isinstance(data, dict):
+                summary["article_kind"] = safe_text(data.get("article_kind", ""))
+                summary["source_records"] = [{key: safe_text(source.get(key, ""))
+                                               for key in ("source_id", "title", "publisher", "published_at")}
+                                              for source in data.get("source_records", []) if isinstance(source, dict)]
+                summary["fact_evidence_count"] = len(data.get("fact_evidence", []))
+            if isinstance(content, dict):
+                summary["revision_trace"] = [{"revision_round": trace.get("revision_round", 0),
+                    "issues": [{key: safe_text(issue.get(key, ""))[:350]
+                                for key in ("issue_id", "category", "requirement", "before", "after", "status", "verification")}
+                               | {"evidence_ids": [safe_text(value) for value in issue.get("evidence_ids", [])]}
+                               for issue in trace.get("issues", []) if isinstance(issue, dict)]}
+                    for trace in content.get("revision_trace", []) if isinstance(trace, dict)]
             validation = content.get("title_validation", {}) if isinstance(content, dict) else {}
             if isinstance(validation, dict) and validation:
                 summary["title_validation"] = {

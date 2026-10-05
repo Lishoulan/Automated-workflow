@@ -45,6 +45,9 @@ class QualityReviewCouncilAgent(BaseAgent):
         "risk_flags",
         "source_facts",
         "source_references",
+        "source_records",
+        "fact_evidence",
+        "article_kind",
         "is_hot_topic",
     )
     _INTERNAL_LEAK_RE = re.compile(
@@ -163,6 +166,19 @@ class QualityReviewCouncilAgent(BaseAgent):
             properties["verdict"] = {"type": "string", "enum": ["approved", "needs_revision", "blocked"]}
             properties["chief_editor_conclusion"] = {"type": "string"}
             properties["role_reviews"] = {"type": "array", "items": {"type": "object"}}
+            properties["issues"] = {"type": "array", "items": {"type": "object", "properties": {
+                "requirement": {"type": "string"}, "paragraph": {"type": "string"}, "category": {"type": "string"}}}}
+            properties["issue_evaluations"] = {"type": "array", "items": {"type": "object", "properties": {
+                "issue_id": {"type": "string"}, "status": {"enum": ["resolved", "still_present", "unverifiable"]},
+                "after_quote": {"type": "string"}, "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                "verification": {"type": "string"}}}}
+            if self.settings.wechat_auto_publish_mode:
+                from toutiao_content_factory.services.wechat_evidence import requirements
+                prompt += "\n" + requirements(data_report.article_kind)["instruction"]
+                prompt += "\n逐条使用fact_evidence核对数字、单位、统计对象和统计期；发布日期不是统计期。issues的requirement须对应意见数组，paragraph须为正文原段落。"
+                prompt += "\n对待核实问题逐项复核并返回issue_evaluations。遗漏问题或只有措辞变化不能判定已解决；resolved需给出现稿原句、证据编号和核实理由。不确定则unverifiable。\n"
+                if content.revision_trace:
+                    prompt += self.json_text(content.revision_trace[-1])
             prompt += "\n输出审核结果，不要输出Schema本身。没有发现的问题返回空数组，不要编造问题。\n" + self.json_text({
                 "type": "object", "properties": properties, "required": list(properties),
             })
@@ -369,6 +385,9 @@ class QualityReviewCouncilAgent(BaseAgent):
             require_body=True,
         )
         unsupported = self._unsupported_numeric_tokens(article, data_report)
+        if self.settings.wechat_auto_publish_mode and data_report.fact_evidence:
+            from toutiao_content_factory.services.wechat_evidence import unsupported_claims
+            unsupported = unsupported_claims(article, data_report.fact_evidence)
         internal_leaks = self._INTERNAL_LEAK_RE.findall(article)
         hard_blockers: list[str] = list(integrity.get("hard_blockers", []))
         if not clean_article:

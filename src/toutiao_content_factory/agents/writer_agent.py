@@ -722,6 +722,17 @@ class WriterAgent(BaseAgent):
     def _auto_publish_directive(self) -> str:
         if not self._auto_publish_mode():
             return ""
+        if self.settings.wechat_auto_publish_mode:
+            return (
+                "当前是微信自动发布候选：正文目标约1800字，最低1750字，约10到14个自然段，每段只论证一个问题。"
+                "每个关键数字必须交代统计年份、统计对象与已提供的报道来源；报道日期不是数据统计年份。"
+                "source_references是采集到的来源信息，不是新增事实，也不代表多个素材出自同一份披露。"
+                "只依据source_facts和已有证据扩展因果解释，明确区分事实、分析假设和待验证结果。"
+                "政策、行业总量和企业业绩不能混用：没有企业财务、订单或验收证据时，"
+                "不要引入毛利、回款、利润兑现或合同验收的企业叙事。"
+                "分析政策时解释具体措施作用于哪个环节、如何影响已有事实以及哪些结果仍未知；"
+                "不得把公开政策措施说成内部流程，不得虚构案例，不得靠重复事实或通用模板凑篇幅。"
+            )
         if self._is_narrative_run():
             # 保留约 1700 字的内部质量目标，以便写清事实、来源、影响和读者价值；
             # 这不是平台首发的字数资格线。
@@ -2791,6 +2802,8 @@ class WriterAgent(BaseAgent):
                 "Source facts: "
                 + " / ".join(str(fact) for fact in data_report.source_facts[:12])
             )
+        if self.settings.wechat_auto_publish_mode and data_report.source_references:
+            data_summary_parts.append("Source attribution: " + " / ".join(data_report.source_references))
         data_summary = "\n".join(data_summary_parts) if data_summary_parts else "No extra evidence."
 
         system_prompt = (
@@ -2807,6 +2820,15 @@ class WriterAgent(BaseAgent):
             "Write 1-3 extra paragraphs in Chinese. Each paragraph must introduce a new analytical angle, "
             "must stay consistent with the industry/topic already in the article, and must not add unsupported facts."
         )
+        if self.settings.wechat_auto_publish_mode:
+            paragraph_count = min(8, max(2, (deficit + 199) // 200))
+            user_prompt = user_prompt.replace("Write 1-3 extra paragraphs", f"Write {paragraph_count} extra paragraphs")
+            user_prompt += (
+                f"\nFor this WeChat draft, write {paragraph_count} short paragraphs totalling roughly {deficit} Chinese characters. "
+                "Use distinct mechanisms supported by the evidence, with source and statistical period attribution. "
+                "Do not impose corporate revenue, margin, cash collection or contract acceptance analysis on policy or sector data. "
+                "Do not repeat existing facts or assume multiple materials are the same disclosure."
+            )
 
         try:
             result_data = self.openai_service.create_json_completion(
@@ -3058,6 +3080,11 @@ class WriterAgent(BaseAgent):
         existing_paragraphs: list[str] | None = None,
         target_chars: int | None = None,
     ) -> list[str]:
+        if self.settings.wechat_auto_publish_mode:
+            # Generic corporate templates mislabeled policy/sector facts.
+            # Use the existing grounded model expansion; an insufficient
+            # draft must remain below the unchanged publication length gate.
+            return []
         # ⚠️ 2026-09-19：叙事领域（社会故事）必须走自己的补充段落，不能用下面那套
         # 「订单、验收、收入和回款」「产品与业务描述」的产业分析文案。
         # 实测：模型只写了 3 段故事，这套硬编码补段把正文后半截填成了产业链分析，

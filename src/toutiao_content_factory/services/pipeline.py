@@ -37,7 +37,7 @@ class ContentFactoryPipeline:
         self.refresh_cache = refresh_cache
         self.fast_mode = fast_mode
         self.loader = DocumentLoader(settings.input_dir, settings.max_input_chars)
-        self.extractor = SignalExtractor()
+        self.extractor = SignalExtractor(include_source_provenance=settings.wechat_auto_publish_mode)
         self.prompt_repository = PromptRepository(settings.prompts_dir)
         self.openai_service = OpenAIContentService(settings, logger, force_mock=force_mock)
         self.workflow = AgentWorkflowService(settings, self.prompt_repository, self.openai_service, logger)

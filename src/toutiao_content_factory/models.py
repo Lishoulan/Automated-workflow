@@ -138,6 +138,9 @@ class DataReport:
     # when the model provider is unavailable.
     source_facts: list[str] = field(default_factory=list)
 
+    # Attribution is context, not additional factual evidence or a score boost.
+    source_references: list[str] = field(default_factory=list)
+
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DataReport":
         return cls(
@@ -170,6 +173,7 @@ class DataReport:
             word_target=int(payload.get("word_target", 0)),
             is_hot_topic=bool(payload.get("is_hot_topic", False)),
             source_facts=list(payload.get("source_facts", [])),
+            source_references=list(payload.get("source_references", [])),
         )
 
 

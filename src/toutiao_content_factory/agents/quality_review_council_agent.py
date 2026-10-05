@@ -44,6 +44,7 @@ class QualityReviewCouncilAgent(BaseAgent):
         "evidence_notes",
         "risk_flags",
         "source_facts",
+        "source_references",
         "is_hot_topic",
     )
     _INTERNAL_LEAK_RE = re.compile(

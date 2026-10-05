@@ -19,6 +19,8 @@ from toutiao_content_factory.agents.polish_agent import PolishAgent
 from toutiao_content_factory.agents.data_agent import DataAgent
 from toutiao_content_factory.agents.quality_review_council_agent import QualityReviewCouncilAgent
 from toutiao_content_factory.models import ExtractionResult
+from toutiao_content_factory.models import SourceDocument
+from toutiao_content_factory.services.extractor import SignalExtractor
 from toutiao_content_factory.models import WorkflowResult, ContentScore
 from toutiao_content_factory.services.pipeline import ContentFactoryPipeline
 from toutiao_content_factory.services.prompt_repository import PromptRepository
@@ -309,3 +311,70 @@ def test_blocked_cache_is_regenerated_for_wechat_only(app_settings, logger, wech
         assert pipeline.exporter.export.call_args.args[0] is fresh
     else:
         assert pipeline.exporter.export.call_args.args[0].content.article == "old blocked article"
+
+
+@pytest.mark.parametrize("wechat", [True, False])
+def test_source_attribution_survives_generation_without_becoming_evidence(
+    app_settings, mock_openai_service, logger, wechat
+):
+    if wechat:
+        enable_wechat(app_settings)
+    document = SourceDocument(source_type="paste", title="manual_paste", content=(
+        "标题：能源发布会\n来源：公开新闻网站\n发布日期：2026-10-05\n"
+        "原文链接：https://example.test/energy\n摘要：2024年新增装机2.1亿千瓦。"
+    ))
+    extraction = SignalExtractor(include_source_provenance=wechat).extract([document])
+    agent = DataAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    report = agent._fallback(extraction, TrendReport())
+    if wechat:
+        assert report.source_references
+        assert "2026-10-05" in report.source_references[0]
+        assert "公开新闻网站" in report.source_references[0]
+        assert report.source_references == DataReport.from_dict(report.__dict__).source_references
+        assert "source_references" in QualityReviewCouncilAgent._fact_payload(report)
+        assert "https://example.test/energy" in agent._format_source_digest(extraction)
+    else:
+        assert report.source_references == []
+        assert "source_references" not in QualityReviewCouncilAgent._fact_payload(report)
+    assert all("原文链接" not in item for item in report.source_facts)
+    assert DataReport.from_dict({"source_facts": ["旧事实"]}).source_references == []
+
+
+def test_missing_source_headers_do_not_invent_provenance():
+    document = SourceDocument(source_type="paste", title="manual_paste", content="新能源装机增长。")
+    extraction = SignalExtractor(include_source_provenance=True).extract([document])
+    assert "source_reference" not in extraction.source_summaries[0]
+
+
+@pytest.mark.parametrize("wechat", [True, False])
+def test_wechat_length_expansion_avoids_corporate_template_injection(
+    app_settings, mock_openai_service, logger, wechat
+):
+    if wechat:
+        enable_wechat(app_settings)
+    writer = WriterAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    report = DataReport(source_facts=["2024年可再生能源装机同比增长。", "政策鼓励绿色能源消费。"])
+    supplements = writer._build_supplementary_paragraphs(report, existing_paragraphs=[])
+    if wechat:
+        assert supplements == []
+        assert "政策、行业总量和企业业绩不能混用" in writer._auto_publish_directive()
+    else:
+        assert any("财务与收入" in paragraph for paragraph in supplements)
+
+
+def test_wechat_grounded_expansion_receives_sources_and_rejects_new_numbers(
+    app_settings, mock_openai_service, logger
+):
+    enable_wechat(app_settings)
+    writer = WriterAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    writer._llm_expansion_call_count = 0
+    mock_openai_service.create_json_completion.return_value = {
+        "paragraphs": ["凭借政策支持，利润将增长99%。"]
+    }
+    report = DataReport(growth_numbers=["2024年"], source_facts=["完善绿色能源消费机制。"], source_references=["来源：公开报道；发布日期：2026-10-05"])
+    original = ["完善绿色能源消费机制有助于解释需求端的政策方向。"]
+    assert writer._expand_article_via_llm(original, report, 1800) == original
+    prompt = mock_openai_service.create_json_completion.call_args.kwargs["user_prompt"]
+    assert report.source_references[0] in prompt
+    assert "Write 1-3" not in prompt
+    assert "corporate revenue" in prompt

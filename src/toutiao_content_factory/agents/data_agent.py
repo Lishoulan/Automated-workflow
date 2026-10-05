@@ -289,6 +289,7 @@ class DataAgent(BaseAgent):
 
         return DataReport(
             core_data=core_data,
+            source_references=self._source_references(extraction),
             industry_trends=industry_trends,
             growth_numbers=growth_numbers,
             companies=companies,
@@ -545,6 +546,7 @@ class DataAgent(BaseAgent):
 
         return DataReport(
             core_data=core_data,
+            source_references=self._source_references(extraction),
             industry_trends=industry_trends,
             growth_numbers=self.clean_publish_list(extraction.growth_numbers[:8], limit=8),
             companies=companies,
@@ -1417,8 +1419,18 @@ class DataAgent(BaseAgent):
     def _format_source_digest(self, extraction: ExtractionResult) -> str:
         return "\n".join(
             f"- {item['title']} [{item['source_type']}] {item['preview']}"
+            + (f"\n  {item['source_reference']}" if self.settings.wechat_auto_publish_mode and item.get("source_reference") else "")
             for item in extraction.source_summaries
         )
+
+    def _source_references(self, extraction: ExtractionResult) -> list[str]:
+        if not self.settings.wechat_auto_publish_mode:
+            return []
+        return list(dict.fromkeys(
+            str(item["source_reference"]).strip()
+            for item in extraction.source_summaries
+            if item.get("source_reference")
+        ))[:4]
 
     def _extraction_payload(self, extraction: ExtractionResult) -> dict:
         return {

@@ -16,6 +16,9 @@ from toutiao_content_factory.services.company_entities import (
 
 
 class SignalExtractor:
+    def __init__(self, *, include_source_provenance: bool = False) -> None:
+        self.include_source_provenance = include_source_provenance
+
     GENERIC_COMPANY_EXCLUSIONS = SHARED_GENERIC_COMPANY_EXCLUSIONS
     MAX_KEYWORDS_COUNT = 6
     MAX_COMPANIES_COUNT = 4
@@ -243,12 +246,22 @@ class SignalExtractor:
         title = str(document.title or "untitled").strip()
         if title.lower() in {"manual_paste", "source_document", "source_material"}:
             title = "公开材料"
-        return {
+        summary = {
             "title": title or "公开材料",
             "source_type": document.source_type,
             "path": str(document.path) if document.path else "",
             "preview": preview,
         }
+        if self.include_source_provenance:
+            parts: list[str] = []
+            # These fields are collected source headers, not model guesses.
+            for label in ("标题", "来源", "发布日期", "原文链接"):
+                match = re.search(rf"(?m)^\s*{label}[：:]\s*([^\n]+)", document.content)
+                if match:
+                    parts.append(f"{label}：{match.group(1).strip()}")
+            if parts:
+                summary["source_reference"] = "；".join(parts)
+        return summary
 
     def _build_factual_text(self, text: str) -> str:
         """Keep facts from generated input while dropping editorial controls."""

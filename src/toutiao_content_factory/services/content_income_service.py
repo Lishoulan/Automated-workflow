@@ -87,7 +87,10 @@ class ContentIncomeCollector:
 
     def observe_response(self, response: Any) -> None:
         parsed = urlsplit(response.url)
-        if parsed.hostname != "mp.toutiao.com" or not any(part in parsed.path for part in ("/income/", "/statistic/")) or response.status != 200:
+        # Work analytics can use paths outside /income/ and /statistic/.
+        # Observe first-party JSON actually requested by the UI; the record
+        # parser still requires an explicit work ID, amount, unit and scope.
+        if parsed.hostname != "mp.toutiao.com" or response.status != 200:
             return
         try:
             if "json" not in response.headers.get("content-type", ""):

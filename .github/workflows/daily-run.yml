@@ -56,6 +56,10 @@ on:
         description: 'Run a standalone image API diagnostic after content generation (true/false)'
         required: false
         default: 'false'
+      checkpoint_recovery_run:
+        description: 'Optional prior run ID to recover earlier checkpoint captures for this account'
+        required: false
+        default: ''
 
 concurrency:
   # The report-only schedule must not cancel an active content/publish run.
@@ -67,6 +71,7 @@ permissions:
   # 分支，本地通道才能看见「云端今天已经发过」，避免同一天各发一篇。
   # 只往该分支写一个小 JSON，不碰 main。
   contents: write
+  actions: read
 
 jobs:
   daily-run:
@@ -639,7 +644,8 @@ jobs:
         # 「daily_topics.json is missing or empty → 长青选题兜底」，
         # 于是云端选题脱离热点、永远只发常青稿。本地因为一直落盘所以没这问题。
         # （注释写在这里而不是 path 块内，避免被当成 glob 模式。）
-        uses: actions/cache@v4
+        id: restore-history-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             output/accounts/*/publish_history.json
@@ -663,9 +669,23 @@ jobs:
             output/growth_ops/revenue_attribution/
             output/accounts/*/growth_ops/source_material/
             output/growth_ops/source_material/
-          key: daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-${{ github.run_id }}
+          key: daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-
+
+      - name: Recover earlier checkpoint artifact
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.checkpoint_recovery_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKPOINT_RECOVERY_RUN: ${{ github.event.inputs.checkpoint_recovery_run }}
+        run: |
+          [[ "$CHECKPOINT_RECOVERY_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid recovery run ID"; exit 1; }
+          RECOVERY_DIR="$RUNNER_TEMP/checkpoint-recovery-$GITHUB_RUN_ID"
+          gh run download "$CHECKPOINT_RECOVERY_RUN" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'daily-output-*' --dir "$RECOVERY_DIR"
+          SOURCE="$RECOVERY_DIR/output/accounts/$ACCOUNT_SLUG/growth_checkpoints.json"
+          [ -f "$SOURCE" ] || { echo "No checkpoint artifact for selected account"; exit 1; }
+          cp -- "$SOURCE" "$ACCOUNT_OUTPUT_DIR/growth_checkpoint_recovery.json"
 
       - name: Restore notification log cache
         # Keep the ServerChan daily de-duplication state across ephemeral
@@ -1106,6 +1126,34 @@ jobs:
             && echo "Cross-channel state published to branch publish-state." \
             || echo "Failed to publish cross-channel state (non-fatal)."
         continue-on-error: true
+
+      - name: Save publish history and checkpoints
+        if: always() && steps.restore-history-cache.outputs.cache-primary-key != '' && steps.restore-history-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            output/accounts/*/publish_history.json
+            output/publish_history.json
+            output/accounts/*/wechat_publish_history.json
+            output/accounts/*/automation/last_daily_run_result.json
+            output/automation/last_daily_run_result.json
+            output/accounts/*/daily_topics.json
+            output/daily_topics.json
+            output/accounts/*/growth_checkpoints.json
+            output/growth_checkpoints.json
+            output/accounts/*/growth_feedback.json
+            output/growth_feedback.json
+            output/accounts/*/creative_score_calibration.json
+            output/creative_score_calibration.json
+            output/accounts/*/performance_metrics.json
+            output/performance_metrics.json
+            output/accounts/*/growth_ops/performance/
+            output/growth_ops/performance/
+            output/accounts/*/growth_ops/revenue_attribution/
+            output/growth_ops/revenue_attribution/
+            output/accounts/*/growth_ops/source_material/
+            output/growth_ops/source_material/
+          key: ${{ steps.restore-history-cache.outputs.cache-primary-key }}
 
       - name: Enforce publish result
         if: always()

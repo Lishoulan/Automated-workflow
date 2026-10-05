@@ -14,8 +14,9 @@ import logging
 import re
 from dataclasses import asdict
 from datetime import datetime
+from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import AIRequestError, AIResponseFormatError
@@ -218,6 +219,10 @@ class WeiToutiaoStandaloneGenerator:
     # ── 选题 ──────────────────────────────────────────────
 
     def select_topics(self, count: int = 1) -> list[TopicCandidate]:
+        """Return up to count eligible topics without fetching unused reserves."""
+        return list(islice(self._iter_eligible_topics(count), max(0, int(count))))
+
+    def _iter_eligible_topics(self, count: int) -> Iterator[TopicCandidate]:
         """从当日选题池独立选题：账号边界过滤 + 今日已用去重 + 按 rank 取前 N。
 
         复用主管线 topic_automation 的选题引擎（_load_daily_topics 会回退到常青选题库），
@@ -279,19 +284,17 @@ class WeiToutiaoStandaloneGenerator:
             count,
         )
         personas = list(self.settings.publishing.weitoutiao_personas) or ["hot_comment"]
-        selected: list[TopicCandidate] = []
+        selected_count = 0
         # Bound searches per slot while allowing the next candidate to replace
         # a headline that cannot be backed by real reporting.
         for topic in ranked[:candidate_limit]:
-            if len(selected) >= count:
-                break
-            persona = personas[len(selected) % len(personas)]
+            persona = personas[selected_count % len(personas)]
             if self._is_story_context(topic, persona):
                 if not self.topic_automation._hydrate_topic_material(topic):
                     self.logger.info("WeiToutiao skipped insufficient source material: %s", topic.title)
                     continue
-            selected.append(topic)
-        return selected
+            selected_count += 1
+            yield topic
 
     @staticmethod
     def _topic_key(topic: TopicCandidate) -> str:
@@ -758,13 +761,15 @@ class WeiToutiaoStandaloneGenerator:
             for item in (exclude_topic_titles or [])
             if str(item).strip()
         }
-        topics = self.select_topics(count=requested)
+        topics = self._iter_eligible_topics(requested)
+        selected_count = 0
         personas = list(self.settings.publishing.weitoutiao_personas) or ["hot_comment"]
         published: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         exports: dict[str, str] = {}
 
         for index, topic in enumerate(topics, start=1):
+            selected_count = index
             normalized = self.topic_automation._normalize_text(topic.title)
             if normalized in exclude_titles:
                 self.logger.info("WeiToutiao standalone skipped duplicate topic: %s", topic.title)
@@ -804,6 +809,8 @@ class WeiToutiaoStandaloneGenerator:
                             "generation_mode": "model",
                         }
                     )
+                    if isinstance(exc, AIRequestError):
+                        break
                     continue
 
             story_fallback_reason = self._model_story_fallback_reason(topic, persona, content)
@@ -861,7 +868,7 @@ class WeiToutiaoStandaloneGenerator:
                 )
                 result_payload = self._resolve_publish_result_payload(run_dir, result)
                 status = str(result_payload.get("status", "")).strip().lower() or "unknown"
-                if status in WTT_FAILURE_STATUSES:
+                if status not in WTT_ACCEPTED_STATUSES | WTT_DRAFT_STATUSES:
                     error = self._safe_error(
                         result_payload.get("error")
                         or result_payload.get("message")
@@ -881,7 +888,7 @@ class WeiToutiaoStandaloneGenerator:
                             "run_dir": str(run_dir),
                         }
                     )
-                    continue
+                    break
                 self._write_publish_result_artifact(run_dir, {**result_payload, "status": status})
                 published.append(
                     {
@@ -903,6 +910,8 @@ class WeiToutiaoStandaloneGenerator:
                     topic.title,
                     status,
                 )
+                if len(published) >= requested:
+                    break
             except Exception as exc:
                 self.logger.warning("WeiToutiao standalone publish failed: %s", exc)
                 if run_dir is not None:
@@ -924,6 +933,7 @@ class WeiToutiaoStandaloneGenerator:
                         "run_dir": str(run_dir) if run_dir is not None else "",
                     }
                 )
+                break
 
         accepted = sum(
             1
@@ -940,17 +950,17 @@ class WeiToutiaoStandaloneGenerator:
             for item in [*published, *skipped]
             if str(item.get("generation_mode", "")).strip().lower() == "local_fallback"
         )
-        selection_shortfall = max(0, requested - len(topics))
-        all_selected_accepted = bool(topics) and accepted == len(topics) and not skipped
-        if not topics:
+        selection_shortfall = max(0, requested - selected_count)
+        all_selected_accepted = selected_count > 0 and accepted == selected_count and not skipped
+        if not selected_count:
             status = "no_topics"
             message = "No eligible topics were available for the WeiToutiao batch."
-        elif all_selected_accepted:
+        elif accepted >= requested or all_selected_accepted:
             status = "success"
             if selection_shortfall:
                 message = (
                     "WeiToutiao batch completed all eligible candidates without publish failures; "
-                    f"requested={requested}, selected={len(topics)}, accepted={accepted}. "
+                    f"requested={requested}, selected={selected_count}, accepted={accepted}. "
                     "No additional eligible topics were available for this slot."
                 )
             else:
@@ -970,7 +980,7 @@ class WeiToutiaoStandaloneGenerator:
                 "status": status,
                 "message": message,
                 "requested": requested,
-                "selected": len(topics),
+                "selected": selected_count,
                 "selection_shortfall": selection_shortfall,
                 "attempted": len(published) + len(skipped),
                 "generated": sum(1 for item in [*published, *skipped] if str(item.get("run_dir", "")).strip()),

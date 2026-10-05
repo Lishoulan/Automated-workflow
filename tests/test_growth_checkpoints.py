@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from scripts.collect_growth_snapshot import build_snapshot, update_checkpoints
+from scripts.collect_growth_snapshot import build_snapshot, merge_recovered_checkpoints, update_checkpoints
 
 
 def _work(created: datetime, impressions: int, reads: int) -> dict:
@@ -111,3 +111,42 @@ def test_late_24h_and_72h_observations_do_not_claim_an_exact_window_delta() -> N
     assert entry["checkpoints"]["24h"]["capture_quality"] == "late"
     assert entry["checkpoints"]["72h"]["capture_quality"] == "late"
     assert "change_24h_to_72h" not in entry
+
+
+def test_recovery_restores_real_early_capture_and_preserves_latest_counters():
+    created = datetime(2026, 10, 3, 12, tzinfo=timezone(timedelta(hours=8)))
+    first_observed = created + timedelta(hours=25)
+    later_observed = created + timedelta(hours=46)
+    first, _ = update_checkpoints(build_snapshot([_work(created, 61, 1)], first_observed, 30), {}, first_observed)
+    later, _ = update_checkpoints(build_snapshot([_work(created, 100, 2)], later_observed, 30), {}, later_observed)
+    merged, count = merge_recovered_checkpoints(later, first)
+    gid = next(iter(first['works']))
+    assert count == 1
+    assert merged['works'][gid]['checkpoints']['24h']['impressions'] == 61
+    assert merged['works'][gid]['checkpoints']['24h']['capture_quality'] == 'on_schedule'
+    assert merged['works'][gid]['latest'] == later['works'][gid]['latest']
+    assert later['works'][gid]['checkpoints']['24h']['impressions'] == 100
+    assert merge_recovered_checkpoints(merged, first)[1] == 0
+    assert merge_recovered_checkpoints(first, later)[1] == 0
+
+
+def test_recovery_rejects_changed_work_identity_and_invalid_captures():
+    import copy
+    created = datetime(2026, 10, 3, 12, tzinfo=timezone(timedelta(hours=8)))
+    observed = created + timedelta(hours=25)
+    source, _ = update_checkpoints(build_snapshot([_work(created, 61, 1)], observed, 30), {}, observed)
+    gid = next(iter(source['works']))
+    current = copy.deepcopy(source)
+    current['works'][gid]['checkpoints'] = {}
+    for damage in ['identity', 'before_due', 'wrong_window', 'negative', 'invalid_container', 'unknown_work']:
+        corrupted = copy.deepcopy(source)
+        entry = corrupted['works'][gid]
+        if damage == 'identity': entry['title'] = 'Different work'
+        elif damage == 'before_due': entry['checkpoints']['24h']['captured_at'] = (created + timedelta(hours=5)).isoformat()
+        elif damage == 'wrong_window': entry['checkpoints']['24h']['captured_at'] = (created + timedelta(hours=90)).isoformat()
+        elif damage == 'negative': entry['checkpoints']['24h']['reads'] = -1
+        elif damage == 'invalid_container': entry['checkpoints'] = []
+        elif damage == 'unknown_work': corrupted['works'] = {'unknown': entry}
+        merged, count = merge_recovered_checkpoints(current, corrupted)
+        assert count == 0
+        assert merged == current

@@ -5,6 +5,7 @@ The cookie file is read locally and is never included in the snapshot or logs.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import os
@@ -208,6 +209,56 @@ def update_checkpoints(
     return ledger, {"captured_now": captured_now, "by_type": summary}
 
 
+def merge_recovered_checkpoints(previous: dict, recovered: dict) -> tuple[dict, int]:
+    """Restore earlier real captures without replacing latest counters or works."""
+    result = copy.deepcopy(previous)
+    restored = 0
+    if previous.get("schema") != 2 or recovered.get("schema") != 2:
+        return result, restored
+    current_works = result.get("works")
+    old_works = recovered.get("works")
+    if not isinstance(current_works, dict) or not isinstance(old_works, dict):
+        return result, restored
+    for gid, old in old_works.items():
+        current = current_works.get(gid)
+        if not isinstance(current, dict) or not isinstance(old, dict):
+            continue
+        if any(current.get(k) != old.get(k) for k in ("gid", "title", "type", "created_at")):
+            continue
+        old_checkpoints = old.get("checkpoints")
+        checkpoints = current.get("checkpoints")
+        if not isinstance(old_checkpoints, dict) or not isinstance(checkpoints, dict):
+            continue
+        for label, threshold in (("24h", 24), ("72h", 72)):
+            sample = old_checkpoints.get(label)
+            if not isinstance(sample, dict):
+                continue
+            try:
+                captured = datetime.fromisoformat(sample["captured_at"])
+                created = datetime.fromisoformat(current["created_at"])
+                if captured.tzinfo is None or created.tzinfo is None:
+                    continue
+                age = (captured - created).total_seconds() / 3600
+                if age < threshold or (label == "24h" and age >= 72):
+                    continue
+                if any(type(sample.get(k)) is not int or sample[k] < 0 for k in ("impressions", "reads", "comments")):
+                    continue
+                existing = checkpoints.get(label)
+                if existing and datetime.fromisoformat(existing["captured_at"]) <= captured:
+                    continue
+                replacement = dict(sample)
+                delay = round(age - threshold, 1)
+                replacement.update(observed_age_hours=round(age, 1), capture_delay_hours=delay,
+                                   capture_quality=classify_checkpoint_capture(label, delay),
+                                   read_rate_pct=round(sample["reads"] * 100 / sample["impressions"], 3) if sample["impressions"] else 0.0)
+                checkpoints[label] = replacement
+                current.pop("change_24h_to_72h", None)
+                restored += 1
+            except (KeyError, TypeError, ValueError):
+                continue
+    return result, restored
+
+
 def _load_json(path: Path) -> dict:
     try:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -295,9 +346,14 @@ def main() -> int:
         return 2
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / "growth_checkpoints.json"
+    previous = _load_json(checkpoint_path)
+    recovery_path = output_dir / "growth_checkpoint_recovery.json"
+    if recovery_path.exists():
+        previous, restored = merge_recovered_checkpoints(previous, _load_json(recovery_path))
+        print(f"Recovered earlier checkpoint captures: {restored}")
     checkpoints, checkpoint_summary = update_checkpoints(
         snapshot,
-        _load_json(checkpoint_path),
+        previous,
         observed_at,
     )
     _write_json_atomic(checkpoint_path, checkpoints)

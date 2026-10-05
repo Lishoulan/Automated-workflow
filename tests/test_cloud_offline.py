@@ -93,3 +93,21 @@ def test_probe_never_sends_real_credential_to_other_candidate_providers() -> Non
     assert len(credential_loops) == 1
     assert re.findall(r'https?://[^\s"\\]+', credential_loops[0][0]) == []
     assert '"$OPENAI_BASE_URL"' in credential_loops[0][0]
+
+
+def test_account_state_is_saved_even_when_content_or_publish_gate_fails() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/daily-run.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["daily-run"]["steps"]
+    restore = next(step for step in steps if step.get("id") == "restore-history-cache")
+    save = next(step for step in steps if step.get("name") == "Save publish history and checkpoints")
+    assert restore["uses"] == "actions/cache/restore@v4"
+    assert save["uses"] == "actions/cache/save@v4"
+    assert "always()" in save["if"]
+    assert "success()" not in save["if"]
+    assert "cache-primary-key != ''" in save["if"]
+    assert save["with"]["path"] == restore["with"]["path"]
+    assert "growth_checkpoints.json" in save["with"]["path"]
+    assert "github.run_attempt" in restore["with"]["key"]
+    assert "steps.restore-history-cache.outputs.cache-primary-key" in save["with"]["key"]
+    assert steps.index(save) > next(i for i,s in enumerate(steps) if s.get("name") == "Collect performance data")
+    assert steps.index(save) < next(i for i,s in enumerate(steps) if s.get("name") == "Enforce publish result")

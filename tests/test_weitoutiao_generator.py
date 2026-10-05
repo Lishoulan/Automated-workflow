@@ -30,7 +30,7 @@ def _topic() -> TopicCandidate:
 def test_transient_model_failure_uses_local_fallback_and_publishes(app_settings, tmp_path: Path) -> None:
     object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
-    generator.select_topics = MagicMock(return_value=[_topic()])
+    generator._iter_eligible_topics = MagicMock(return_value=[_topic()])
     generator.generate_content = MagicMock(
         side_effect=AIRequestError("upstream returned 502 Bad Gateway")
     )
@@ -73,7 +73,7 @@ def test_transient_model_failure_uses_local_fallback_and_publishes(app_settings,
 def test_html_model_output_is_blocked_before_publish_or_history(app_settings) -> None:
     object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
-    generator.select_topics = MagicMock(return_value=[_topic()])
+    generator._iter_eligible_topics = MagicMock(return_value=[_topic()])
     generator.generate_content = MagicMock(
         return_value="<!doctype html><html><body>gateway page</body></html>"
     )
@@ -93,7 +93,7 @@ def test_html_model_output_is_blocked_before_publish_or_history(app_settings) ->
 def test_non_transient_model_failure_is_recorded_without_fallback(app_settings) -> None:
     object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
-    generator.select_topics = MagicMock(return_value=[_topic()])
+    generator._iter_eligible_topics = MagicMock(return_value=[_topic()])
     generator.generate_content = MagicMock(side_effect=AIRequestError("401 Unauthorized"))
     generator.publish_service.publish_weitoutiao = MagicMock()
 
@@ -111,7 +111,7 @@ def test_non_transient_model_failure_is_recorded_without_fallback(app_settings) 
 def test_unconfigured_model_does_not_generate_low_quality_fallback(app_settings) -> None:
     object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
-    generator.select_topics = MagicMock(return_value=[_topic()])
+    generator._iter_eligible_topics = MagicMock(return_value=[_topic()])
     generator.generate_content = MagicMock(
         side_effect=AIRequestError("Model client is not available")
     )
@@ -142,7 +142,7 @@ def test_insufficient_balance_uses_local_fallback_for_all_selected_topics(app_se
             total_score=85,
         ),
     ]
-    generator.select_topics = MagicMock(return_value=topics)
+    generator._iter_eligible_topics = MagicMock(return_value=topics)
     generator.generate_content = MagicMock(
         side_effect=[
             AIRequestError("Model request disabled for this run because the provider account balance is insufficient."),
@@ -167,7 +167,7 @@ def test_insufficient_balance_uses_local_fallback_for_all_selected_topics(app_se
 def test_incomplete_topic_pool_with_all_selected_items_accepted_is_success(app_settings) -> None:
     object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt"))
-    generator.select_topics = MagicMock(return_value=[_topic()])
+    generator._iter_eligible_topics = MagicMock(return_value=[_topic()])
     generator.generate_content = MagicMock(return_value="有效内容 " * 80)
     generator.publish_service.publish_weitoutiao = MagicMock(
         return_value={"status": "submitted_for_review"}
@@ -206,6 +206,65 @@ def test_topic_ranking_uses_72_hour_feedback(app_settings) -> None:
     ranked = generator._rank_topics([weak, strong])
 
     assert ranked[0].title == strong.title
+
+
+def test_generation_failure_uses_next_topic_without_fetching_unused_reserves(app_settings):
+    from types import SimpleNamespace
+
+    object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
+    object.__setattr__(app_settings.publishing, "weitoutiao_personas", ["story_comment"])
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.retry"))
+    topics = [_topic() for _ in range(3)]
+    for i, topic in enumerate(topics):
+        topic.title = f"老人房产继承案例第{i}件"
+        topic.rank = i + 1
+    generator.topic_automation._load_daily_topics = MagicMock(return_value=SimpleNamespace(topics=topics))
+    generator.topic_automation._available_topics = MagicMock(side_effect=lambda items: items)
+    generator.topic_automation.topic_pool_service.build_fallback_report = MagicMock(return_value=SimpleNamespace(topics=[]))
+    generator.topic_automation._hydrate_topic_material = MagicMock(return_value=True)
+    generator.generate_content = MagicMock(side_effect=["字数不足", "公开报道的事件经过。" * 35])
+    generator.build_local_fallback_content = MagicMock(return_value="")
+    generator.publish_service.publish_weitoutiao = MagicMock(return_value={"status": "submitted_for_review"})
+
+    result = generator.publish_standalone(count=1)
+
+    assert result["status"] == "success"
+    assert result["accepted"] == 1
+    assert result["selected"] == 2
+    assert result["skipped"][0]["reason"] == "content_too_short"
+    assert result["published"][0]["topic_title"] == topics[1].title
+    assert generator.topic_automation._hydrate_topic_material.call_count == 2
+    generator.publish_service.publish_weitoutiao.assert_called_once()
+
+
+def test_replacement_attempts_stop_at_budget_and_publication_uncertainty(app_settings):
+    from types import SimpleNamespace
+
+    object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.retry"))
+    topics = [_topic() for _ in range(6)]
+    for i,t in enumerate(topics):
+        t.title = f"AI订单第{i}件"
+        t.rank = i + 1
+    generator.topic_automation._load_daily_topics = MagicMock(return_value=SimpleNamespace(topics=topics))
+    generator.topic_automation._available_topics = MagicMock(side_effect=lambda items: items)
+    generator.generate_content = MagicMock(return_value="短稿")
+    generator.build_local_fallback_content = MagicMock(return_value="")
+    generator.publish_service.publish_weitoutiao = MagicMock()
+    result = generator.publish_standalone(count=1)
+    assert result["selected"] == 4
+    assert result["accepted"] == 0
+    assert generator.generate_content.call_count == 4
+    generator.publish_service.publish_weitoutiao.assert_not_called()
+
+    for failure in [{"status": "publish_uncertain"}, {"status": "publish_login_required"},
+                    {"status": "blocked_by_ip"}, {"status": "unknown"}, TimeoutError("submit may have succeeded")]:
+        generator.generate_content = MagicMock(return_value="有效事件经过。" * 50)
+        generator.publish_service.publish_weitoutiao = MagicMock(side_effect=[failure])
+        result = generator.publish_standalone(count=1)
+        assert result["accepted"] == 0
+        assert result["selected"] == 1
+        generator.publish_service.publish_weitoutiao.assert_called_once()
 
 
 def test_case_prompt_keeps_original_year_and_limited_gift_scope(app_settings):
@@ -252,7 +311,7 @@ def test_verified_story_uses_corrected_review_and_review_failures_block_publish(
     assert topic.snippet in review["user_prompt"]
     assert "待复核稿" in review["user_prompt"]
     assert review["temperature"] == 0.1
-    generator.select_topics = MagicMock(return_value=[topic])
+    generator._iter_eligible_topics = MagicMock(return_value=[topic])
     generator.publish_service.publish_weitoutiao = MagicMock()
     for failed_review in [AIRequestError("review unavailable"), "<html><body>gateway</body></html>"]:
         generator.openai_service.create_text_completion = MagicMock(side_effect=[corrected, failed_review])
@@ -316,7 +375,7 @@ def test_weak_evidence_story_preview_does_not_pad_unsafe_content(app_settings) -
         quality_flags=["weak_subject", "weak_evidence"],
     )
     object.__setattr__(app_settings.publishing, "weitoutiao_personas", ["story_comment"])
-    generator.select_topics = MagicMock(return_value=[topic])
+    generator._iter_eligible_topics = MagicMock(return_value=[topic])
     generator.generate_content = MagicMock(
         return_value=("两个宝宝都安全了。你会先保住孩子还是自己？" * 20)
     )
@@ -354,7 +413,7 @@ def test_verified_story_uses_report_body_instead_of_short_hotlist_summary(app_se
     topic.summary = "群众参加国庆合唱活动。"
     topic.snippet = "【来源：现场报道】\n" + "广场举行合唱活动。" * 55 + "妈妈请执勤女警帮忙照看孩子。"
     topic._verified_source_material = True
-    generator.select_topics = MagicMock(return_value=[topic])
+    generator._iter_eligible_topics = MagicMock(return_value=[topic])
     generator.openai_service.create_text_completion = MagicMock(
         return_value="根据报道，广场举行合唱活动，妈妈请执勤女警帮忙照看孩子。" * 12
     )
@@ -373,7 +432,7 @@ def test_verified_story_uses_report_body_instead_of_short_hotlist_summary(app_se
 
 def test_short_local_fallback_is_rechecked_before_publishing(app_settings) -> None:
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.short"))
-    generator.select_topics = MagicMock(return_value=[_topic()])
+    generator._iter_eligible_topics = MagicMock(return_value=[_topic()])
     generator.generate_content = MagicMock(return_value="不足字数")
     generator.build_local_fallback_content = MagicMock(return_value="仍不足字数")
     generator.publish_service.publish_weitoutiao = MagicMock()
@@ -390,7 +449,7 @@ def test_verified_story_still_blocks_speculation_and_health_advice(app_settings)
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.guards"))
     topic = _topic()
     topic._verified_source_material = True
-    generator.select_topics = MagicMock(return_value=[topic])
+    generator._iter_eligible_topics = MagicMock(return_value=[topic])
     generator.publish_service.publish_weitoutiao = MagicMock()
 
     for unsafe_text in (
@@ -425,7 +484,7 @@ def test_story_model_content_without_tags_gets_story_tags(app_settings) -> None:
 
 def test_standalone_preview_builds_package_without_publishing(app_settings) -> None:
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.preview"))
-    generator.select_topics = MagicMock(return_value=[_topic()])
+    generator._iter_eligible_topics = MagicMock(return_value=[_topic()])
     generator.generate_content = MagicMock(return_value="有效的微头条正文。" * 40)
     generator.publish_service.publish_weitoutiao = MagicMock()
 
@@ -448,7 +507,7 @@ def test_policy_story_preview_replaces_hallucinated_model_case(app_settings) -> 
         matched_keywords=[],
     )
     object.__setattr__(app_settings.publishing, "weitoutiao_personas", ["story_comment"])
-    generator.select_topics = MagicMock(return_value=[topic])
+    generator._iter_eligible_topics = MagicMock(return_value=[topic])
     generator.generate_content = MagicMock(
         return_value="当事人当年被要求交公粮，还保留了合同、收据和转账记录。" * 10
     )

@@ -187,11 +187,12 @@
           }
         },
         "37426734397:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T06:58:37.856429+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
+          "elapsed_seconds": 479.113,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
+          "outcome": "review_required"
         }
       },
       "dispatches": {},
@@ -279,11 +280,22 @@
             "强化文章开头的反直觉判断。",
             "减少重复句式，避免空泛拔高。"
           ]
+        },
+        {
+          "fingerprint": "94478f5fe3ea0a8a1aa257a60b14173db90777282f162b377c5357d5af9790ea",
+          "source_fingerprint": "dcd5da1f1e40f77016574ce7ea2adad9c7834c73d9f236ce446e85dd7e489cd0",
+          "requirements": [
+            "对 BFC 型号的关键事实进行独立验证或引用权威来源。",
+            "明确区分内部代号和抽样政策的描述，避免泄露内部信息。",
+            "精简重复段落，提升文章结构清晰度。",
+            "丰富文章表述，提供具体观察或案例以增强原创性。",
+            "优化标题，增加信息密度，有效传达核心内容。"
+          ]
         }
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "aba5cd2e2a67762e5de1ae753ff9cd5eb9567b03",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",

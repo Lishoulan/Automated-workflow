@@ -1072,7 +1072,7 @@ class ArticleQualityChecker:
         element_count = sum(
             [
                 bool(has_number or has_company or has_place),
-                bool(_ACTION_PATTERN.search(title) or (self.wechat_mode and re.search(r"预告|预览|披露|测试|验证|部署", title))),
+                bool(_ACTION_PATTERN.search(title) or (self.wechat_mode and re.search(r"预告|预览|披露|测试|验证|部署|支持|兼容|适配|上线|搭载|开源", title))),
                 bool(_RESULT_PATTERN.search(title)),
             ]
         )

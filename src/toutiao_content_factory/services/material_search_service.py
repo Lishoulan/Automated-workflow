@@ -984,12 +984,17 @@ def collect_material(
                                                   **({"deadline": fetch_deadline} if deadline is not None else {}))
             source.url = final_url or url
             if preserve_sources:
-                from toutiao_content_factory.services.wechat_evidence import source_metadata
+                from toutiao_content_factory.services.wechat_evidence import source_metadata, is_event_article
                 metadata = source_metadata(page, source_url=source.url)
                 source.publisher = metadata["publisher"]
                 source.published_at = metadata["published_at"]
                 source.date_verified = metadata["date_verified"]
                 source.title = metadata["page_title"] or source.title
+                if not is_event_article(source.title, source.url):
+                    source.evidence_type = "aggregation"
+                    source.error = "专题或游戏目录页不是对应事件的原始报道"
+                    bundle.sources.append(source)
+                    continue
             # A short original report still supplies the event/date anchor.
             # Keep it for supplementary retrieval; the unchanged bundle gate
             # decides whether the combined current-event material is sufficient.

@@ -183,7 +183,11 @@ class WriterAgent(BaseAgent):
             + "\n完整事实记录：" + self.json_text(data_report.fact_evidence)
             + "\n出处：" + self.json_text([{key: source.get(key, "") for key in
                 ("source_id", "title", "url", "publisher", "published_at")} for source in data_report.source_records])
-            + '\n输出JSON：{"sections":[{"section_id":0,"section":"大纲节名","fact_ids":["事实编号"],"text":"约350字正文"}],"summary":"摘要","tags":[]}'
+            + "\n输出JSON必须包含全部六节，section_id为0到5，不得只返回一节。以下结构的节名和编号须原样保留，"
+              "每节text替换为约350字正文，fact_ids只保留该节实际使用的绑定事实编号："
+            + self.json_text({"sections": [{"section_id": index, "section": section["section"],
+                "fact_ids": section["fact_ids"], "text": "替换为本节正文"}
+                for index, section in enumerate(data_report.writing_outline)], "summary": "摘要", "tags": []})
             + "\n结尾只提出一个与原文变量相关的问题：" + requirements(data_report.article_kind)["closing"])
         payload = self.request_json(
             "你是微信公众号事实编辑，只输出调用提示定义的合法JSON。严格使用给定分类大纲及其证据编号。"

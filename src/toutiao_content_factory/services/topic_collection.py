@@ -1185,6 +1185,14 @@ class TopicCollectionService:
     )
 
     def _has_concrete_industry_keyword(self, topic: TopicCandidate) -> bool:
+        if self.settings.wechat_auto_publish_mode:
+            # Matched keywords include consumer/business words from RSS feeds.
+            # They cannot alone authorize a technology topic for this account.
+            text = f"{topic.title} {topic.summary} {topic.snippet}"
+            tech = ("人工智能", "大模型", "生成式AI", "智能体", "机器学习", "机器人", "机器狗", "机械臂",
+                    "灵巧手", "具身智能", "自动驾驶", "芯片", "半导体", "晶圆", "光刻", "新能源", "储能",
+                    "光伏", "风电", "动力电池", "固态电池", "智能制造", "工业自动化", "工业互联网", "智能工厂")
+            return any(word in text for word in tech) or bool(re.search(r"(?<![A-Za-z])AI(?:硬件|模型|应用|技术|芯片)", text, re.I))
         return any(
             str(keyword).strip().casefold() not in self.GENERIC_KEYWORD_BLACKLIST_LOWER
             for keyword in (topic.matched_keywords or [])

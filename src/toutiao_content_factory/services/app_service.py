@@ -717,6 +717,9 @@ class ContentFactoryAppService:
         skip_wait: bool = False,
     ) -> dict[str, str]:
         if self.settings.wechat_auto_publish_mode:
+            self.settings.automation_dir.mkdir(parents=True, exist_ok=True)
+            (self.settings.automation_dir / "wechat_publish_phase.json").write_text(json.dumps({
+                "account_key": self.settings.account_key, "phase": "preparing", "publication_attempted": False}), encoding="utf-8")
             self._wechat_enrichment_deadline = time.monotonic() + 300
             self._wechat_enrichment_count = 0
             self._wechat_enriched_topics = {}

@@ -950,11 +950,13 @@ def collect_material(
 
     fetch_deadline: float | None = deadline
     system_failures = 0
+    budget_exhausted = False
     for hit in candidates():
         if fetch_deadline is None:
             fetch_deadline = time.monotonic() + MATERIAL_FETCH_BUDGET_SECONDS
         if time.monotonic() >= fetch_deadline:
             logging.getLogger(__name__).warning("Material fetch budget exhausted after %d sources: %s", len(bundle.sources), title)
+            budget_exhausted = True
             break
         if (len(bundle.sources) if preserve_sources else sum(item.evidence_type == "article" for item in bundle.usable)) >= max_sources or assess_material_evidence(bundle).passed:
             break
@@ -989,6 +991,7 @@ def collect_material(
             source.error = f"HTTP {exc.code}"
         except Exception as exc:
             if isinstance(exc, MaterialBudgetExceeded):
+                budget_exhausted = True
                 break
             system_failures += 1
             source.error = f"{type(exc).__name__}: {str(exc)[:80]}"
@@ -1013,6 +1016,8 @@ def collect_material(
     # 若逐条抓取拿到的正文太少，把所有结果的摘要合并成一份兜底素材
     if preserve_sources and system_failures and not bundle.usable:
         raise MaterialSearchError("Material retrieval failed without usable original sources")
+    if preserve_sources and budget_exhausted and not bundle.usable:
+        raise MaterialBudgetExceeded("Material candidate enrichment budget exhausted")
     if not preserve_sources and sum(len(item.body) for item in bundle.usable) < min_body_chars:
         merged = _merge_snippet_material(hits)
         if merged:

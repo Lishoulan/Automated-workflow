@@ -39,6 +39,12 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
     attempted = not trusted or any(
         "platform_results" in item or "platform_errors" in item for item in attempts
     )
+    phase = fresh_json(settings.automation_dir / "wechat_publish_phase.json", started)
+    if (phase.get("account_key") == settings.account_key and phase.get("phase") == "preparing"
+            and phase.get("publication_attempted") is False and not native.get("wechat_status")
+            and isinstance(attempts, list) and not any("platform_results" in row or "platform_errors" in row
+                                                     for row in attempts if isinstance(row, dict))):
+        attempted = False
     if native.get("run_outcome") == "no_topics" and not native.get("wechat_status") and not native.get("error"):
         attempted = False
     result: dict[str, Any] = {

@@ -68,8 +68,11 @@ def reserve(state: dict, day: str, key: str, started_at: str, *, parent: str = "
                 or not grant.get("expires_at")
                 or datetime.fromisoformat(started_at.replace("Z", "+00:00")) >= datetime.fromisoformat(grant["expires_at"].replace("Z", "+00:00"))):
             return state, "invalid_validation_grant"
-        if any(row.get("manual_validation_id") for row in entry["runs"].values()):
-            return state, "validation_already_used"
+        previous = [(run_key, row) for run_key, row in entry["runs"].items() if row.get("manual_validation_id")]
+        if previous:
+            last_key, last_run = previous[-1]
+            if grant.get("resume_after_preparation_failure") != last_key or last_run.get("preparation_failure_verified") is not True:
+                return state, "validation_already_used"
     if (len(entry["runs"]) >= MAX_RUNS and grant is None) or remaining(entry) < 120:
         return state, "daily_budget_exhausted"
     entry["runs"][key] = {"status": "running", "started_at": started_at, "parent": parent, "elapsed_seconds": 0}

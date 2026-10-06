@@ -382,3 +382,52 @@ def test_manual_validation_never_bypasses_other_safety_boundaries(case):
         with pytest.raises(RuntimeError): retry.reserve(state, day, "4:1", now, validation_id=validation_id, head_sha=head_sha)
     else:
         assert retry.reserve(state, day, "4:1", now, validation_id=validation_id, head_sha=head_sha)[1] != "reserved"
+
+
+def test_validation_continuation_requires_verified_preparation_failure_and_fresh_authorization():
+    state, day, now = validation_state()
+    state, _ = retry.reserve(state, day, "4:1", now, validation_id="once", head_sha="approved-sha")
+    state = retry.complete(state, day, "4:1", 100, {"status": "failed"}, {})
+    grant = state["days"][day]["manual_validation_grants"]["once"]
+    grant.update(status="authorized", resume_after_preparation_failure="4:1")
+    assert retry.reserve(state, day, "5:1", now, validation_id="once", head_sha="approved-sha")[1] == "validation_already_used"
+    state["days"][day]["runs"]["4:1"]["preparation_failure_verified"] = True
+    resumed, status = retry.reserve(state, day, "5:1", now, validation_id="once", head_sha="approved-sha")
+    assert status == "reserved" and len(resumed["days"][day]["runs"]) == 5
+    assert retry.remaining(resumed["days"][day]) == 4400
+
+
+def test_wechat_refund_consumer_keywords_do_not_enter_technology_enrichment(app_settings, logger):
+    from toutiao_content_factory.services.topic_collection import TopicCollectionService
+    from toutiao_content_factory.models import TopicCandidate
+    enable(app_settings)
+    collector = TopicCollectionService(app_settings, logger)
+    unrelated = TopicCandidate("“退款成功”四个字不该成为套路", "", "rss", "rss", matched_keywords=["平台", "消费者", "监管"])
+    assert not collector._has_concrete_industry_keyword(unrelated)
+    assert collector._has_concrete_industry_keyword(TopicCandidate("陕西风光新规让储能重回硬指标", "", "rss", "rss"))
+    object.__setattr__(app_settings, "platform", "toutiao")
+    assert collector._has_concrete_industry_keyword(unrelated)
+
+
+@pytest.mark.parametrize("phase,account,expected", [("preparing", "default", False), ("submitting", "default", True), ("preparing", "other", True)])
+def test_failed_run_phase_proves_no_submit_without_changing_real_failure(app_settings, phase, account, expected):
+    import time
+    app_settings.automation_dir.mkdir(parents=True, exist_ok=True)
+    started = time.time_ns()
+    (app_settings.automation_dir / "wechat_publish_phase.json").write_text(json.dumps({"account_key": account,
+        "phase": phase, "publication_attempted": phase != "preparing"}), encoding="utf-8")
+    diagnostic = review_diagnostics(app_settings, {"status": "failed"}, started)
+    assert diagnostic["publication_attempted"] is expected
+    assert cloud_exit_code({"status": "failed", "native_exit_code": 1, "publication_attempted": expected}, 1) == 1
+
+
+def test_material_budget_is_distinct_from_system_failure(monkeypatch):
+    from toutiao_content_factory.services import material_search_service as material
+    import time
+    monkeypatch.setattr(material, "search_web", lambda *a, **kw: [{"title": "机器人发布", "url": "https://a.test/report", "snippet": ""}])
+    monkeypatch.setattr(material, "fetch_text_smart", MagicMock(side_effect=material.MaterialBudgetExceeded("deadline")))
+    with pytest.raises(material.MaterialBudgetExceeded):
+        material.collect_material("机器人发布", preserve_sources=True, deadline=time.monotonic()+60)
+    monkeypatch.setattr(material, "fetch_text_smart", MagicMock(side_effect=RuntimeError("browser crashed")))
+    with pytest.raises(material.MaterialSearchError):
+        material.collect_material("机器人发布", preserve_sources=True, deadline=time.monotonic()+60)

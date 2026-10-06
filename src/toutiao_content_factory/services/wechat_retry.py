@@ -44,7 +44,8 @@ def remaining(entry: dict) -> float:
     return max(0.0, MAX_SECONDS - sum(row.get("elapsed_seconds", 0) for row in entry["runs"].values()))
 
 
-def reserve(state: dict, day: str, key: str, started_at: str, *, parent: str = "", parent_day: str = "") -> tuple[dict, str]:
+def reserve(state: dict, day: str, key: str, started_at: str, *, parent: str = "", parent_day: str = "",
+            validation_id: str = "", head_sha: str = "") -> tuple[dict, str]:
     state = validate(state)
     entry = today_entry(state, day)
     if parent:
@@ -58,9 +59,23 @@ def reserve(state: dict, day: str, key: str, started_at: str, *, parent: str = "
         raise RuntimeError("Unresolved WeChat daily reservation")
     if key in entry["runs"]:
         return state, "duplicate_run"
-    if len(entry["runs"]) >= MAX_RUNS or remaining(entry) < 120:
+    grant = None
+    if validation_id:
+        grant = entry.get("manual_validation_grants", {}).get(validation_id)
+        if (parent or not grant or grant.get("status") != "authorized"
+                or grant.get("purpose") != "verify_formal_publication" or not head_sha
+                or grant.get("head_sha") != head_sha or day_of(started_at) != day
+                or not grant.get("expires_at")
+                or datetime.fromisoformat(started_at.replace("Z", "+00:00")) >= datetime.fromisoformat(grant["expires_at"].replace("Z", "+00:00"))):
+            return state, "invalid_validation_grant"
+        if any(row.get("manual_validation_id") for row in entry["runs"].values()):
+            return state, "validation_already_used"
+    if (len(entry["runs"]) >= MAX_RUNS and grant is None) or remaining(entry) < 120:
         return state, "daily_budget_exhausted"
     entry["runs"][key] = {"status": "running", "started_at": started_at, "parent": parent, "elapsed_seconds": 0}
+    if grant is not None:
+        grant.update(status="claimed", run_key=key)
+        entry["runs"][key]["manual_validation_id"] = validation_id
     if parent:
         entry["dispatches"][parent].update(status="claimed", child=key)
     # Old days cannot authorize a new run. Retain a small operational window.
@@ -74,6 +89,8 @@ def complete(state: dict, day: str, key: str, elapsed: float, report: dict, diag
     entry = today_entry(state, day)
     row = entry["runs"][key]
     row.update(status="completed", elapsed_seconds=max(0, elapsed), outcome=report.get("status", "error"))
+    if row.get("manual_validation_id"):
+        entry["manual_validation_grants"][row["manual_validation_id"]]["status"] = "consumed"
     for attempt in diagnostics.get("attempts", []):
         fingerprint = attempt.get("draft_fingerprint")
         if fingerprint and attempt.get("quality_review", {}).get("verdict") != "approved":

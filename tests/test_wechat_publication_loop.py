@@ -340,3 +340,45 @@ def test_workflow_summary_compiles_and_retains_crons_permissions_and_artifact_al
     compile(summary.split("\n", 1)[1].rsplit("\nPY", 1)[0], "workflow-summary", "exec")
     upload = next(row for row in steps if row.get("name") == "Save outcome reports")
     assert "browser_state" not in upload["with"]["path"] and "source_material" not in upload["with"]["path"]
+
+
+def validation_state():
+    now = datetime.now(timezone.utc)
+    day = retry.day_of(now.isoformat())
+    state = {"schema_version": 1, "days": {day: {"runs": {str(i): {"status": "completed", "elapsed_seconds": 300}
+            for i in range(3)}, "dispatches": {}, "failed_inputs": [], "manual_validation_grants": {
+            "once": {"status": "authorized", "purpose": "verify_formal_publication", "head_sha": "approved-sha",
+                     "expires_at": (now + timedelta(hours=1)).isoformat()}}}}}
+    return state, day, now.isoformat()
+
+
+def test_one_use_validation_preserves_counts_budget_and_normal_limit():
+    state, day, now = validation_state()
+    assert retry.reserve(state, day, "4:1", now)[1] == "daily_budget_exhausted"
+    state, result = retry.reserve(state, day, "4:1", now, validation_id="once", head_sha="approved-sha")
+    assert result == "reserved" and len(state["days"][day]["runs"]) == 4
+    assert state["days"][day]["manual_validation_grants"]["once"]["run_key"] == "4:1"
+    state = retry.complete(state, day, "4:1", 400, normal(), {})
+    assert retry.remaining(state["days"][day]) == 4100
+    assert state["days"][day]["manual_validation_grants"]["once"]["status"] == "consumed"
+    assert retry.reserve(state, day, "5:1", now, validation_id="once", head_sha="approved-sha")[1] == "invalid_validation_grant"
+    assert retry.reserve(state, day, "5:1", now)[1] == "daily_budget_exhausted"
+    assert not retry.can_relay(state["days"][day], normal(), 0)
+
+
+@pytest.mark.parametrize("case", ["unknown", "wrong_sha", "expired", "wrong_purpose", "consumed", "budget", "running"])
+def test_manual_validation_never_bypasses_other_safety_boundaries(case):
+    state, day, now = validation_state()
+    grant = state["days"][day]["manual_validation_grants"]["once"]
+    validation_id, head_sha = "once", "approved-sha"
+    if case == "unknown": validation_id = "unknown"
+    if case == "wrong_sha": head_sha = "different-sha"
+    if case == "expired": grant["expires_at"] = (datetime.fromisoformat(now) - timedelta(seconds=1)).isoformat()
+    if case == "wrong_purpose": grant["purpose"] = "bypass_review"
+    if case == "consumed": grant["status"] = "consumed"
+    if case == "budget": state["days"][day]["runs"]["0"]["elapsed_seconds"] = 5400
+    if case == "running": state["days"][day]["runs"]["0"]["status"] = "running"
+    if case == "running":
+        with pytest.raises(RuntimeError): retry.reserve(state, day, "4:1", now, validation_id=validation_id, head_sha=head_sha)
+    else:
+        assert retry.reserve(state, day, "4:1", now, validation_id=validation_id, head_sha=head_sha)[1] != "reserved"

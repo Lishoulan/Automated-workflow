@@ -119,6 +119,7 @@ def complete_run(settings, report: dict, exit_code: int, *, metrics_state: dict 
     for field, default in {"daily_run_count": None, "daily_processing_seconds": None,
                            "processing_elapsed_seconds": None, "retry_parent_run_id": "", "retry_status": ""}.items():
         report.setdefault(field, default)
+    report["manual_validation_id"] = os.environ.get("WECHAT_VALIDATION_ID", "")
     if run_key and metrics_state is not None:
         try:
             from wechat_run_report import safe_text
@@ -296,7 +297,8 @@ def main(argv: list[str] | None = None) -> int:
             retry_state = seed_retry_day(xstate.read_remote_state(ROOT, branch=xstate.WECHAT_STATE_BRANCH,
                                                                   path=retry.STATE_PATH, strict=True), metrics_state, today)
             retry_state, reservation = retry.reserve(retry_state, today, run_key, started_at,
-                parent=os.environ.get("WECHAT_RETRY_PARENT", ""), parent_day=os.environ.get("WECHAT_RETRY_DAY", ""))
+                parent=os.environ.get("WECHAT_RETRY_PARENT", ""), parent_day=os.environ.get("WECHAT_RETRY_DAY", ""),
+                validation_id=os.environ.get("WECHAT_VALIDATION_ID", ""), head_sha=os.environ.get("GITHUB_SHA", ""))
             if reservation != "reserved":
                 if reservation == "daily_budget_exhausted":
                     write_state_file(retry_state, retry.STATE_PATH, "chore(wechat): retain imported daily usage [skip ci]")

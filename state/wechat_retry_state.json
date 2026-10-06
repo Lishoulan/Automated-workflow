@@ -204,11 +204,12 @@
           }
         },
         "37428125664:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T07:12:24.437802+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
+          "elapsed_seconds": 598.927,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
+          "outcome": "review_required"
         }
       },
       "dispatches": {},
@@ -307,11 +308,20 @@
             "丰富文章表述，提供具体观察或案例以增强原创性。",
             "优化标题，增加信息密度，有效传达核心内容。"
           ]
+        },
+        {
+          "fingerprint": "c37736bce64b9fce39a12d6be02fe1dcbbccda2fcfa0d4f39a6435f49fb5289a",
+          "source_fingerprint": "c91fd19199db125e456acefee8c38883293d219f20dfe58e5685b37d3815bb37",
+          "requirements": [
+            "核实数据引用的具体来源，如‘截至2025年底，全国新能源汽车保有量达4397万辆，占汽车总量的12.01％。’",
+            "精简文章结构，去除重复段落，确保信息的新鲜度和逻辑性",
+            "检查并修正所有绝对化表述，使用更客观、准确的描述"
+          ]
         }
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "aba5cd2e2a67762e5de1ae753ff9cd5eb9567b03",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",

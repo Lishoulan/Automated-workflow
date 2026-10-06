@@ -221,11 +221,12 @@
           }
         },
         "37474754902:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T13:57:01.575783+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
+          "elapsed_seconds": 1086.54,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
+          "outcome": "review_required"
         }
       },
       "dispatches": {},
@@ -333,11 +334,29 @@
             "精简文章结构，去除重复段落，确保信息的新鲜度和逻辑性",
             "检查并修正所有绝对化表述，使用更客观、准确的描述"
           ]
+        },
+        {
+          "fingerprint": "8d7e6e41049f50b6bed56bdaafd396f63272d6faf5aa06f1cbfffa61b603b60c",
+          "source_fingerprint": "6b88622033f64e6691469e511c72f5b64812b8cb8fe02d56bf0846adaa5bdb78",
+          "requirements": [
+            "在标题中加入具体公司名或地名，以增加信息量和吸引力。",
+            "将超过180字的段落拆分成更短的段落，以适配手机阅读。",
+            "在标题中加入具体主体/数字和强动作或结果词，以提高信息密度。",
+            "补充具体公司/数字/对立观点/互动话术，以提高互动吸引力。"
+          ]
+        },
+        {
+          "fingerprint": "a90e2765e6a100bfc34031a7db4865202cdee7bcb5acb08700cb0cf5612541af",
+          "source_fingerprint": "f4fd7c612417a4c209c6aed2e230871392c58129e3fca34e7383615810c6d6af",
+          "requirements": [
+            "标题需补充具体数字、公司名或地名，增加信息量和具象性。",
+            "正文需增加因果、转折或条件边界，避免论点并列，并补充反方或失效条件。"
+          ]
         }
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "003a261cc50f4e2799bb1b096a62365e593d4e1c",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",

@@ -43,17 +43,25 @@ def today_entry(state: dict, day: str) -> dict:
 
 def budget_seconds(entry: dict, *, day: str = "") -> int:
     extension = entry.get("budget_extension")
-    if extension is None:
-        return MAX_SECONDS
-    if (not isinstance(extension, dict)
-            or extension.get("purpose") != "verify_formal_publication"
-            or extension.get("additional_seconds") != 1800
-            or type(extension.get("additional_seconds")) is not int
-            or not extension.get("authorization")
-            or not extension.get("day") or (day and extension["day"] != day)
-            or day_of(extension.get("authorized_at", "")) != extension["day"]):
-        raise ValueError("Invalid day-scoped WeChat budget authorization")
-    return MAX_SECONDS + extension["additional_seconds"]
+    grants = entry.get("additional_budget_grants", {})
+    if not isinstance(grants, dict) or any(not isinstance(key, str) or not key.strip() for key in grants):
+        raise ValueError("Invalid WeChat additional budget grant IDs")
+    extensions = ([extension] if extension is not None else []) + list(grants.values())
+    budget = MAX_SECONDS
+    owner_day = day
+    for extension in extensions:
+        if (not isinstance(extension, dict)
+                or extension.get("purpose") != "verify_formal_publication"
+                or extension.get("additional_seconds") != 1800
+                or type(extension.get("additional_seconds")) is not int
+                or not extension.get("authorization")
+                or not isinstance(extension.get("authorized_at"), str)
+                or not extension.get("day") or (owner_day and extension["day"] != owner_day)
+                or day_of(extension.get("authorized_at", "")) != extension["day"]):
+            raise ValueError("Invalid day-scoped WeChat budget authorization")
+        owner_day = extension["day"]
+        budget += extension["additional_seconds"]
+    return budget
 
 
 def remaining(entry: dict) -> float:

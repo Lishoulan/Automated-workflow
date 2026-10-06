@@ -156,6 +156,12 @@ def outcome(report: dict) -> str:
         return "pending_review"
     if status == "publish_uncertain" or report.get("status") == "publish_uncertain":
         return "submit_uncertain"
+    if (report.get("status") == "daily_retry_stopped"
+            and report.get("retry_status") == "daily_budget_exhausted"
+            and report.get("publication_attempted") is False
+            and not status and report.get("native_exit_code") is None
+            and not report.get("metrics_error") and not report.get("retry_state_error")):
+        return "not_started"
     if report.get("status") == "review_required" and report.get("publication_attempted") is False:
         return "not_published"
     if report.get("run_outcome") == "no_topics" and report.get("publication_attempted") is False:

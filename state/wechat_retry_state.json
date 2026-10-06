@@ -243,7 +243,15 @@
           "parent": "",
           "elapsed_seconds": 601.053,
           "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
-          "outcome": "review_required"
+          "outcome": "review_required",
+          "no_submission_verified": true,
+          "no_submission_evidence": {
+            "checked_at": "2026-10-06T14:39:48.426586+00:00",
+            "account": "小椰科技",
+            "pending_count": 0,
+            "publication_attempted": false,
+            "native_exit_code": 0
+          }
         }
       },
       "dispatches": {},
@@ -404,10 +412,11 @@
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",
           "expires_at": "2026-10-06T15:59:59+00:00",
           "authorization": "User requested immediate formal publication verification on 2026-10-06",
-          "dispatch_status": "intent",
+          "dispatch_status": "completed",
           "run_key": "37478907965:1",
           "reauthorized_at": "2026-10-06T14:25:42.539291+00:00",
-          "resume_after_not_published": "37474754902:1"
+          "resume_after_not_published": "37474754902:1",
+          "verification_status": "not_passed"
         }
       },
       "budget_extension": {
@@ -425,6 +434,24 @@
           "authorized_at": "2026-10-06T13:55:53.773010+00:00",
           "authorization": "User selected a second additional thirty minutes for today, then explicitly requested implementation of the 150-minute formal-publication plan"
         }
+      },
+      "formal_publication_validation": {
+        "status": "not_passed",
+        "run_key": "37478907965:1",
+        "checked_at": "2026-10-06T14:39:48.426586+00:00",
+        "account": "小椰科技",
+        "formal_publication_confirmed": false,
+        "publication_attempted": false,
+        "pending_count": 0,
+        "daily_budget_seconds": 9000,
+        "used_seconds": 8629.724,
+        "remaining_seconds": 370.27599999999984,
+        "minimum_new_draft_seconds": 690,
+        "stop_reason": "remaining_below_new_draft_minimum",
+        "reason_codes": [
+          "quality_review_required",
+          "title_all_rejected"
+        ]
       }
     }
   }

@@ -273,7 +273,39 @@
       "elapsed_seconds": 553.379,
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "37419925604:1",
+      "started_at": "2026-10-06T05:43:49.940478+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "article_too_short",
+        "quality_review_required",
+        "title_all_rejected"
+      ],
+      "attempt_count": 1,
+      "enrichment_count": 6,
+      "eligible_candidate_count": 1,
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "部分关键事实缺乏明确来源和证据支持，如 'BFC 型号将是 Nova Lake 产品线中最早发布的版本' 和 '首批桌面产品还将优先采用大容量缓存设计'。",
+        "部分统计对象和统计期不明确，如 '现有信息显示，Nova Lake 将先进入桌面平台' 和 '预计到 2026 年 12 月，随着更广泛的 DS 样品分发启动'。",
+        "存在从局部事件直接推导行业结论的情况，如 '这一举措旨在通过大容量缓存设计，凸显游戏处理器的定位，并提升游戏表现'。",
+        "把相关性写成因果的情况，如 '这种设计思路与 AMD Ryzen X3D 系列处理器的定位高度相似，显示出英特尔在高端处理器市场对竞争对手的密切关注和快速模仿能力'。",
+        "段落粘连问题，如 '据《英特尔 Nova Lake 处理器首发策略曝光：大容量缓存 BFC 型号先上市》报道，据《英特尔 Nova Lake 处理器首发策略曝光：大容量缓存 BFC 型号先上市》消息，根据先前泄露的资料，BFC。代表拥有额外缓存的 Nova Lake 芯片，其具体规格和性能数据尚未公布，但已知的型号均为四位数，并带有“BFC”后缀'。",
+        "重复段落问题，如 '相关处理器被限定在封闭测试小组中，未进入常规认证样品流程，因此早期的基准测试与硬件检测信息存在缺失。这一状况或于 2026 年 12 月有所改变，届时将进行更广泛的 DS 样品分发，包括认证样品'。",
+        "绝对化表达，如 '若爆料属实，首批桌面产品还将优先采用大容量缓存设计'。",
+        "误导性因果，如 '这种设计思路与 AMD Ryzen X3D 系列处理器的定位高度相似，显示出英特尔在高端处理器市场对竞争对手的密切关注和快速模仿能力'。"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 508.167,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-06T13:36:51.795167+08:00"
+  "updated_at": "2026-10-06T13:52:21.277266+08:00"
 }

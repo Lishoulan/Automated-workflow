@@ -397,7 +397,7 @@
       "started_at": "2026-10-06T12:03:28.020066+00:00",
       "mode": "publish",
       "excluded": true,
-      "outcome": "runtime_error",
+      "outcome": "not_started",
       "reason_codes": [],
       "attempt_count": 0,
       "enrichment_count": 0,
@@ -409,7 +409,10 @@
       "expected_publication": {},
       "elapsed_seconds": null,
       "runtime_status": "ok",
-      "native_exit_code": null
+      "native_exit_code": null,
+      "previous_outcome": "runtime_error",
+      "classification_verified_at": "2026-10-06T14:40:01.963626+00:00",
+      "classification_evidence": "Original cloud report: daily_retry_stopped, daily_budget_exhausted, no child execution, null native exit, no publication attempt or faults."
     },
     {
       "run_key": "37474754902:1",

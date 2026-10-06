@@ -167,7 +167,7 @@ class PolishAgent(BaseAgent):
 
     def _polish_wechat_paragraphs(self, content, trend_report, data_report, revision_focus):
         """Only apply explicit, source-bound paragraph patches; keep other prose."""
-        from toutiao_content_factory.services.wechat_evidence import prepare_article, requirements, effective_body_chars
+        from toutiao_content_factory.services.wechat_evidence import prepare_article, requirements, effective_body_chars, supporting_facts
         article = content.polished_article or content.article
         body = article.split("参考来源：", 1)[0]
         paragraphs = [part.strip() for part in re.split(r"\n\s*\n", body) if part.strip()]
@@ -183,7 +183,7 @@ class PolishAgent(BaseAgent):
                     + "\n事实：" + self.json_text(data_report.fact_evidence)
                     + "\n已核实出处元数据：" + self.json_text([{key: row.get(key, "") for key in ("source_id", "title", "publisher", "published_at")} for row in data_report.source_records])
                     + '\n输出格式：{"patches":[{"paragraph_id":0,"before":"完整原段落","after":"修改后段落"}]}。'
-                    "before必须逐字匹配，不改无关段落；只有问题本身缺乏依据时才允许after为空。"))
+                    "before必须逐字匹配，不改无关段落。删除或收窄无依据句子时保留其余有出处的事实；after不得为空，也不得丢掉原段落已绑定事实。"))
             patches = payload.get("patches", []) if isinstance(payload, dict) else []
             changed = set()
             for patch in patches if isinstance(patches, list) else []:
@@ -192,7 +192,18 @@ class PolishAgent(BaseAgent):
                 index = patch.get("paragraph_id")
                 if (type(index) is int and 0 <= index < len(paragraphs) and index not in changed
                         and patch.get("before") == paragraphs[index] and isinstance(patch.get("after"), str)):
-                    paragraphs[index] = patch["after"].strip()
+                    replacement = patch["after"].strip()
+                    if not replacement:
+                        continue
+                    before_facts = {fact["fact_id"] for sentence in re.split(r"(?<=[。！？；])", paragraphs[index])
+                                    for fact in supporting_facts(sentence, data_report.fact_evidence)}
+                    after_facts = {fact["fact_id"] for sentence in re.split(r"(?<=[。！？；])", replacement)
+                                   for fact in supporting_facts(sentence, data_report.fact_evidence)}
+                    # A patch may narrow unsupported conclusions, but cannot
+                    # discard the factual input that supports this paragraph.
+                    if before_facts and not before_facts.issubset(after_facts):
+                        continue
+                    paragraphs[index] = replacement
                     changed.add(index)
         revised = "\n\n".join(paragraphs)
         grounded = prepare_article(revised, data_report)

@@ -689,3 +689,44 @@ def test_product_requirements_keep_undisclosed_performance_unknown():
     for key in ["suggested_angle", "writing_brief", "instruction"]:
         assert "配置、性能、基准测试或独立验证未披露时明确保持未知" in brief[key]
         assert "保留报道归因" in brief[key]
+
+
+def test_sampling_policy_is_manufacturer_product_context():
+    facts = evidence.build_facts(evidence.source_records([MaterialSource("处理器进展", "https://a.test/report",
+        "英特尔处理器首发型号尚待确认。公开渠道罕见BFC硬件，可能源于抽样政策而非供货问题。", True)]))
+    assert evidence.classify_kind("policy_market", facts) == "product_progress"
+
+
+@pytest.mark.parametrize("after", ["", "配置与性能尚未披露。"])
+def test_polish_cannot_discard_bound_original_facts(app_settings, mock_openai_service, logger, after):
+    enable(app_settings)
+    data = report()
+    original = data.fact_evidence[0]["quote"]
+    agent = PolishAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    agent.openai_service.available = True
+    agent.openai_service.create_json_completion = MagicMock(return_value={"patches":[{"paragraph_id":0,"before":original,"after":after}]})
+    result = agent.run(GeneratedContent(article=original), TrendReport(), data, app_settings.get_style(), CacheContext(), ["收窄结论"])
+    assert original in result["polished_article"]
+
+
+def test_ascii_quoted_review_issue_binds_only_actual_body():
+    from toutiao_content_factory.services.wechat_revision import bind_issues
+    from toutiao_content_factory.models import QualityReviewReport
+    body = "英特尔公布处理器测试条件尚待核实。"
+    audit = QualityReviewReport(fact_issues=["核对 '英特尔公布处理器测试条件尚待核实' 的来源。", "核对 '不存在的另一段原文事实' 的出处。"])
+    bind_issues(audit, body, [])
+    assert audit.issues[0]["location_verified"] is True
+    assert audit.issues[1]["location_verified"] is False
+
+
+def test_polish_applies_source_preserving_narrowing(app_settings, mock_openai_service, logger):
+    enable(app_settings)
+    data = report()
+    original = data.fact_evidence[0]["quote"]
+    revised = original + "适用条件仍需按通知核对，不据此推导其他地区的结论。"
+    agent = PolishAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    agent.openai_service.available = True
+    agent.openai_service.create_json_completion = MagicMock(return_value={"patches":[{"paragraph_id":0,"before":original,"after":revised}]})
+    result = agent.run(GeneratedContent(article=original), TrendReport(), data, app_settings.get_style(), CacheContext(), ["收窄结论"])
+    assert original in result["polished_article"]
+    assert "不据此推导其他地区的结论" in result["polished_article"]

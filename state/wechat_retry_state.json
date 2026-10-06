@@ -136,11 +136,12 @@
           }
         },
         "37418545350:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T05:27:34.677416+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
+          "elapsed_seconds": 554.9,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
+          "outcome": "review_required"
         }
       },
       "dispatches": {},
@@ -194,11 +195,21 @@
             "检查文章中是否存在空泛拔高的表述，并进行必要的修改。",
             "核实文章中是否存在内部标签泄露，并进行必要的修改。"
           ]
+        },
+        {
+          "fingerprint": "bd90b6bf1158498d1403dfc203cc953d698a58a67dd411564c16343ce1d21441",
+          "source_fingerprint": "dcd5da1f1e40f77016574ce7ea2adad9c7834c73d9f236ce446e85dd7e489cd0",
+          "requirements": [
+            "补充 BFC 型号的具体配置和性能数据，并注明数据来源。",
+            "加强逻辑论证，增加具体案例和数据支撑，避免从局部事件推导行业结论。",
+            "优化文章结构，确保开头迅速给出判断，结尾明确保留风险边界和跟踪变量。",
+            "提升原创性，减少空泛拔高和重复句式，增加非模板化的表达。"
+          ]
         }
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "a74901599d9f0e19b304be3757ac30382427b158",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",

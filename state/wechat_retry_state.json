@@ -45,18 +45,19 @@
           }
         },
         "37412225453:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T04:08:44.148066+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
+          "elapsed_seconds": 114.286,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
+          "outcome": "failed"
         }
       },
       "dispatches": {},
       "failed_inputs": [],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "77e3d99524746a06a6d3adb841954910a617da3c",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",

@@ -755,3 +755,42 @@ def test_budget_extension_rejects_invalid_or_cross_day_authority(change):
         "authorized_at": datetime.now(timezone.utc).isoformat(), "authorization": "Explicit user authorization", **change}
     with pytest.raises(ValueError):
         retry.validate(state)
+
+
+def test_wechat_expansion_excludes_unverified_legacy_analysis(app_settings, mock_openai_service, logger):
+    enable(app_settings)
+    data = report()
+    data.article_kind = "product_progress"
+    data.source_facts = data.evidence_notes = data.risk_flags = ["未核实利润将增长99%"]
+    writer = WriterAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    writer._has_grounded_evidence = MagicMock(return_value=True)
+    writer.openai_service.available = True
+    writer.openai_service.create_json_completion = MagicMock(return_value={"paragraphs": []})
+    writer._expand_article_via_llm(["已有正文。"], data, min_chars=2100)
+    prompt = writer.openai_service.create_json_completion.call_args.kwargs["user_prompt"]
+    assert "未核实利润将增长99%" not in prompt
+    assert data.fact_evidence[0]["quote"] in prompt
+    assert "Only explain the measures, region, project types" not in prompt
+    assert "稿件类型：产品进展" in prompt
+
+
+@pytest.mark.parametrize("platform", ["wechat", "toutiao"])
+def test_review_prompt_fact_authority_is_channel_scoped(app_settings, logger, platform):
+    from toutiao_content_factory.agents.quality_review_council_agent import QualityReviewCouncilAgent
+    enable(app_settings)
+    object.__setattr__(app_settings, "platform", platform)
+    repo = MagicMock()
+    repo.render.return_value = "review prompt"
+    ai = MagicMock()
+    ai.available = True
+    ai.create_json_completion.return_value = {"verdict": "needs_revision", "overall_score": 60}
+    data = report()
+    data.key_points = data.source_facts = ["未核实利润将增长99%"]
+    agent = QualityReviewCouncilAgent(app_settings, repo, ai, logger)
+    agent.run(GeneratedContent(article="原文规定相关项目与新能源项目同期投产。"), data, app_settings.get_style(), CacheContext())
+    payload = json.loads(repo.render.call_args.kwargs["data_json"])
+    if platform == "wechat":
+        assert set(payload) == {"topic_title", "article_kind", "source_records", "fact_evidence"}
+        assert "未核实利润将增长99%" not in json.dumps(payload, ensure_ascii=False)
+    else:
+        assert payload["source_facts"] == data.source_facts

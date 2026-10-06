@@ -665,6 +665,10 @@ def test_stable_outline_id_preserves_binding_and_rejects_unknown_evidence(app_se
     assert "错误事实" not in result.article
     assert result.grounding_diagnostics[0]["accepted_section_count"] == 1
     assert result.grounding_diagnostics[0]["returned_section_count"] == 2
+    prompt = writer.request_json.call_args.args[1]
+    schema = json.loads(prompt.split("每节text替换为约350字正文，fact_ids只保留该节实际使用的绑定事实编号：", 1)[1].split("\n结尾", 1)[0])
+    assert [section["section_id"] for section in schema["sections"]] == list(range(6))
+    assert [section["fact_ids"] for section in schema["sections"]] == [section["fact_ids"] for section in data.writing_outline]
 
 
 @pytest.mark.parametrize("value,expected", [("2026/10/6 11:38:47", "2026-10-06T11:38:47"), ("2026年10月6日 11:38", "2026-10-06T11:38:00"), ("2026/10/6", "2026-10-06")])

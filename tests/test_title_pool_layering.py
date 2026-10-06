@@ -146,6 +146,36 @@ def test_wechat_targeted_retry_uses_body_and_keeps_title_gates(
     assert "repair" in result["title_validation"]["pools"]
 
 
+@pytest.mark.parametrize("wechat", [True, False])
+def test_primary_title_uses_complete_body_only_in_wechat(
+    app_settings, mock_openai_service, logger, monkeypatch, wechat
+):
+    if wechat:
+        app_settings.platform = "wechat"
+        object.__setattr__(app_settings.wechat, "enabled", True)
+        object.__setattr__(app_settings.wechat, "auto_publish", True)
+    agent = _agent(app_settings, mock_openai_service, logger)
+    _stub_run(agent, monkeypatch, model_payload={"titles": VALID_TITLES}, fallback=[], emergency=[])
+    monkeypatch.setattr(agent, "render_prompt", lambda *a, **k: "legacy industry prompt")
+    monkeypatch.setattr(agent, "best_practices_instruction", lambda: "legacy financial rules")
+    requests = []
+    monkeypatch.setattr(agent, "request_json", lambda system, prompt:
+                        requests.append((system, prompt)) or {"titles": VALID_TITLES})
+    content = GeneratedContent(article="旧稿", polished_article=BODY, summary="摘要没有数字")
+    result = agent.run(content, TrendReport(), _report(), app_settings.get_style(), CacheContext())
+    assert result["selected_title_source"] == TITLE_SOURCE_MODEL
+    assert len(requests) == 1
+    if wechat:
+        payload = __import__("json").loads(requests[0][1].split("\n", 1)[1])
+        assert payload["article"] == BODY
+        assert "460万台" in payload["concrete_anchors"]
+        assert "legacy financial rules" not in requests[0][0]
+        assert "legacy industry prompt" not in requests[0][1]
+    else:
+        assert requests[0][1] == "legacy industry prompt"
+        assert "legacy financial rules" in requests[0][0]
+
+
 def test_policy_topic_fallback_keeps_the_named_agency_subject(
     app_settings,
     mock_openai_service,

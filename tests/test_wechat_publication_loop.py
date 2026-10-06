@@ -578,7 +578,7 @@ def test_ofweek_header_date_excludes_related_article_dates():
 def test_article_header_date_not_statistics_or_related_link():
     page = '<span id="pubtime_baidu">2026/10/05 12:13</span><span id="source_baidu">IT之家</span><p>截至2025年底统计</p>'
     metadata = evidence.source_metadata(page)
-    assert metadata["published_at"] == "2026-10-05"
+    assert metadata["published_at"] == "2026-10-05T12:13:00"
     assert metadata["publisher"] == "IT之家"
 
 
@@ -594,3 +594,31 @@ def test_stable_outline_id_preserves_binding_and_rejects_unknown_evidence(app_se
     assert "错误事实" not in result.article
     assert result.grounding_diagnostics[0]["accepted_section_count"] == 1
     assert result.grounding_diagnostics[0]["returned_section_count"] == 2
+
+
+@pytest.mark.parametrize("value,expected", [("2026/10/6 11:38:47", "2026-10-06T11:38:47"), ("2026年10月6日 11:38", "2026-10-06T11:38:00"), ("2026/10/6", "2026-10-06")])
+def test_publication_timestamp_preserves_explicit_time_and_date_precision(value, expected):
+    metadata = evidence.source_metadata('<span id="pubtime_baidu">' + value + '</span>')
+    assert metadata["published_at"] == expected
+    assert metadata["date_verified"] is True
+
+
+def test_today_article_not_stale_after_time_preservation(app_settings, logger, monkeypatch):
+    from collections import defaultdict
+    import toutiao_content_factory.services.topic_collection as topic_module
+    from toutiao_content_factory.services.topic_collection import TopicCandidate, TopicCollectionService
+    enable(app_settings)
+    object.__setattr__(app_settings.topic_collection, "max_topic_age_hours", 12)
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            stamp = datetime(2026, 10, 6, 5, 12, tzinfo=timezone.utc)
+            return stamp.astimezone(tz) if tz else stamp.replace(tzinfo=None)
+    monkeypatch.setattr(topic_module, "datetime", FixedDatetime)
+    metadata = evidence.source_metadata('<span id="pubtime_baidu">2026/10/6 11:38:47</span>')
+    collector = TopicCollectionService(app_settings, logger)
+    # Chinese publication header time is explicitly interpreted in Beijing.
+    topic = TopicCandidate("人工智能大模型新品发布", "", "rss", "rss", published_at=metadata["published_at"] + "+08:00")
+    assert collector._filter_by_freshness([topic], defaultdict(int)) == [topic]
+    topic.published_at = "2026-10-06T00:00:00+08:00"
+    assert not collector._filter_by_freshness([topic], defaultdict(int))

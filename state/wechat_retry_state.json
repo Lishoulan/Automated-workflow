@@ -83,11 +83,12 @@
           }
         },
         "37414784960:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T04:41:02.775517+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
+          "elapsed_seconds": 663.42,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
+          "outcome": "review_required"
         }
       },
       "dispatches": {},
@@ -118,11 +119,34 @@
             "减少空泛拔高和模板化表达。",
             "修改绝对化表达为更严谨的表述。"
           ]
+        },
+        {
+          "fingerprint": "b0a7465ed13e5aeb445b00dda1214dc2bafcd7f1578a95bf8e5eb4930e80ff19",
+          "source_fingerprint": "b00b51853d3d9aff1e7044a1efa290054785339fa4998b330dac7bbd466119a8",
+          "requirements": [
+            "核实《新型储能5年增长45倍，国家能源局：十五五将聚焦应用场景与市场机制》的发布日期和机构。",
+            "补充对政策失效条件或市场逆转可能性的讨论。",
+            "精简部分重复表达的段落。",
+            "调整标题避免过度拔高。"
+          ]
+        },
+        {
+          "fingerprint": "7506a4ee70ece3cbd51bc1f9ff6d4522800501ff3b931ea623e20080a9afe979",
+          "source_fingerprint": "7775497393da1136f70f69bf4d5d63cedf78001c87390642384f3284db19ef12",
+          "requirements": [
+            "核实标题，确保包含具体主体/数字 + 强动作或结果词。",
+            "核实文章中提到的‘136号文’、‘白水驭源储能电站’、‘府谷能源新元公司’的火储联调项目等关键事实，并提供相应的证据。",
+            "检查文章中是否存在将相关性写为因果关系的问题，并进行必要的修正。",
+            "检查文章中是否存在论证跳跃，并进行必要的补充说明。",
+            "拆分部分过长的段落，以提高文章的可读性。",
+            "检查文章中是否存在空泛拔高的表述，并进行必要的修改。",
+            "核实文章中是否存在内部标签泄露，并进行必要的修改。"
+          ]
         }
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "17ac07017279a80d3228c8359f756ef72d5b3755",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",

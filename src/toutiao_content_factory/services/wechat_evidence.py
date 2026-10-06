@@ -122,6 +122,27 @@ def source_metadata(page_html: str, *, source_url: str = "") -> dict:
             nickname = html.unescape(match[1]) if match else ""
         if nickname:
             values.setdefault("article:publisher", nickname)
+    # Explicit article-header fields, never dates found in prose or related links.
+    for element_id, field in (("pubtime_baidu", "datepublished"), ("source_baidu", "article:publisher")):
+        match = re.search(r"<(?:span|time|div)[^>]+id=['\"]" + element_id + r"['\"][^>]*>(.*?)</(?:span|time|div)>", page_html, re.S | re.I)
+        if match:
+            value = html.unescape(re.sub(r"<[^>]+>", "", match[1])).strip()
+            if value:
+                values.setdefault(field, value)
+    host = urlsplit(source_url).hostname or ""
+    if host == "ofweek.com" or host.endswith(".ofweek.com"):
+        header = re.search(r'<div[^>]+class=[\"\'][^\"\']*\bartical-relative\b[^\"\']*[\"\'][^>]*>', page_html, re.I)
+        if header:
+            region = page_html[header.end():header.end() + 1200]
+            date = re.search(r'<div[^>]+class=[\"\'][^\"\']*\btime\b[^\"\']*[\"\'][^>]*>\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s*</div>', region, re.I)
+            if date:
+                values.setdefault("datepublished", date[1])
+            publisher = re.search(r'<a[^>]+href=[\"\']https?://mp\.ofweek\.com/[^>]+>(.*?)</a>', region, re.S | re.I)
+            if publisher:
+                text = html.unescape(re.sub(r"<[^>]+>", "", publisher[1])).strip()
+                name = text.splitlines()[0].strip() if text else ""
+                if name:
+                    values.setdefault("article:publisher", name)
     raw_date = next((values[k] for k in ("article:published_time", "datepublished", "pubdate", "publishdate", "publish_date", "pubtime", "publish-time", "dcterms.issued", "dc.date.issued") if values.get(k)), "")
     published_at = ""
     if raw_date:
@@ -404,7 +425,7 @@ def build_outline(report, retry_context: dict | None = None) -> None:
     # A relay starts from the issues rather than regenerating the same brief.
     if report.regeneration_requirements and len(facts) > 1:
         facts = facts[1:] + facts[:1]
-    report.writing_outline = [{"section": label, "fact_ids": [item["fact_id"] for item in facts[i::len(labels)]],
+    report.writing_outline = [{"section_id": i, "section": label, "fact_ids": [item["fact_id"] for item in facts[i::len(labels)]],
                                "target_chars": 350} for i, label in enumerate(labels)]
     # Sections with no distinct fact can explain boundaries of an existing fact.
     for section in report.writing_outline:

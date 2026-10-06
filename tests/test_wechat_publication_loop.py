@@ -565,3 +565,32 @@ def test_validation_review_hold_continuation_requires_separate_no_submission_pro
     resumed, status = retry.reserve(state, day, "5:1", now, validation_id="once", head_sha="approved-sha")
     assert status == "reserved"
     assert resumed["days"][day]["runs"]["4:1"]["elapsed_seconds"] == 300
+
+
+def test_ofweek_header_date_excludes_related_article_dates():
+    page = '<div class="artical-relative clearfix"><div class="time fl">2026-07-30 15:07</div><a href="https://mp.ofweek.com/account">来源账号\n<span>关注</span></a></div><span class="entries-time">2026-10-06</span>'
+    metadata = evidence.source_metadata(page, source_url="https://chuneng.ofweek.com/news/article")
+    assert metadata["published_at"] == "2026-07-30T15:07:00"
+    assert metadata["publisher"] == "来源账号"
+    assert not evidence.source_metadata(page, source_url="https://other.test")["date_verified"]
+
+
+def test_article_header_date_not_statistics_or_related_link():
+    page = '<span id="pubtime_baidu">2026/10/05 12:13</span><span id="source_baidu">IT之家</span><p>截至2025年底统计</p>'
+    metadata = evidence.source_metadata(page)
+    assert metadata["published_at"] == "2026-10-05"
+    assert metadata["publisher"] == "IT之家"
+
+
+def test_stable_outline_id_preserves_binding_and_rejects_unknown_evidence(app_settings, mock_openai_service, logger):
+    enable(app_settings)
+    data = report(); evidence.build_outline(data)
+    writer = WriterAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    writer.request_json = MagicMock(return_value={"sections": [
+        {"section_id": 0, "section": "改写了节名", "fact_ids": data.writing_outline[0]["fact_ids"], "text": "陕西储能措施应核对明确的适用条件。"},
+        {"section_id": 1, "fact_ids": ["unknown"], "text": "错误事实不应进入正文。"}]})
+    result = writer.run(TrendReport(), data, app_settings.get_style(), CacheContext())
+    assert "适用条件" in result.article
+    assert "错误事实" not in result.article
+    assert result.grounding_diagnostics[0]["accepted_section_count"] == 1
+    assert result.grounding_diagnostics[0]["returned_section_count"] == 2

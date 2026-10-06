@@ -471,10 +471,11 @@
           "outcome": "review_required"
         },
         "37497164284:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T16:38:38.419943+00:00",
           "parent": "37495013364:1",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 403.417,
+          "outcome": "review_required"
         }
       },
       "dispatches": {
@@ -519,6 +520,13 @@
             "优化段落之间的逻辑关系，增强段落之间的衔接。",
             "修改文章中存在的一些重复的表达，增强原创性。",
             "修改文章中存在的一些绝对化的表达，符合合规要求。"
+          ]
+        },
+        {
+          "fingerprint": "5443d5d82e4ae01d14d156e918bf10fbec97f894820138ba0ab40e8945c5d459",
+          "source_fingerprint": "5f302cc6fd2c8f2cf6328e2e7aab1ce842e2ff1f1f3b7dc7511023e02f9ca9fa",
+          "requirements": [
+            "在介绍RTX Spark处理器时，应明确指出这是英伟达的最新产品线，并说明其推出时间。"
           ]
         }
       ],

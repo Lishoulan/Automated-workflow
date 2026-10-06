@@ -178,12 +178,20 @@ def source_metadata(page_html: str, *, source_url: str = "") -> dict:
             "page_title": values.get("og:title", "")}
 
 
+def is_event_article(title: str, url: str) -> bool:
+    parsed = urlsplit(url)
+    return not (re.search(r"专题页|攻略汇总|游戏大全", title)
+                or (parsed.hostname == "cg.163.com" and parsed.path.startswith("/static/game/")))
+
+
 def source_records(sources) -> list[dict]:
     records = []
     for source in sources:
         url = public_url(str(source.url or ""))
         # Search snippets and anonymous digests are not verified original prose.
         if not source.ok or source.evidence_type != "article" or not url or not source.body:
+            continue
+        if not is_event_article(str(source.title or ""), url):
             continue
         records.append({"source_id": stable_id("src_", url), "title": source.title,
                         "url": url, "publisher": getattr(source, "publisher", ""),
@@ -330,13 +338,48 @@ def requirements(kind: str) -> dict:
             "instruction": f"稿件类型：{label}。{brief}。跟踪：{watch}。结尾问题：{question}。没有企业财务或订单原句时，不生成利润兑现、回款、合同验收等断言。"}
 
 
+def _strip_source_citations(text: str, *, anywhere: bool = False) -> str:
+    """Read balanced book-title delimiters, including old stacked citations."""
+    cursor = 0
+    while cursor < len(text):
+        start = text.find("据《", cursor) if anywhere else (0 if text.startswith("据《") else -1)
+        if start < 0:
+            break
+        depth, end = 1, None
+        for position in range(start + 2, len(text)):
+            if text[position] == "《":
+                depth += 1
+            elif text[position] == "》":
+                depth -= 1
+                if depth == 0:
+                    suffix = re.match(r"报道[，,]?", text[position + 1:])
+                    if suffix:
+                        end = position + 1 + suffix.end()
+                    break
+        if end is None:
+            if not anywhere:
+                break
+            cursor = start + 2
+            continue
+        text = text[:start] + text[end:]
+        cursor = start
+    return text
+
+
+def _source_prefix(source: dict) -> str:
+    # Preserve the source's actual title in metadata/footer. Inner book names
+    # use corner quotes so the outer attribution is unambiguous to readers.
+    title = source["title"].replace("《", "「").replace("》", "」")
+    return f"据《{title}》报道，"
+
+
 def supporting_facts(sentence: str, facts: list[dict]) -> list[dict]:
     """Conservative context match; a shared numeric value is insufficient.
 
     Paraphrases still undergo the independent council review. This check only
     supplies traceable candidates, and never establishes a verdict on its own.
     """
-    sentence = re.sub(r"^据《[^》]+》报道[，,]?", "", sentence.strip())
+    sentence = _claim_text(sentence)
     normalized = _normalize(sentence)
     numbers = _numbers(sentence)
     periods = PERIOD.findall(sentence)
@@ -377,7 +420,7 @@ def supporting_facts(sentence: str, facts: list[dict]) -> list[dict]:
 def _claim_text(sentence: str) -> str:
     # Source titles can contain numbers, dates, and business terms. They are
     # attribution metadata, not measurements asserted by this sentence.
-    return re.sub(r"^据《[^》]+》报道[，,]?", "", sentence.strip())
+    return _strip_source_citations(sentence.strip())
 
 
 def _requires_qualification(claim: str, fact: dict) -> bool:
@@ -445,7 +488,7 @@ def _mobile_paragraphs(text: str, limit: int) -> list[str]:
 def unsupported_claims(article: str, facts: list[dict]) -> list[str]:
     if not facts:
         return []  # Old reports retain their existing independent gates.
-    article = article.split("参考来源：", 1)[0]
+    article = _strip_source_citations(article.split("参考来源：", 1)[0], anywhere=True)
     return [sentence.strip() for sentence in re.split(r"(?<=[。！？；])|\n+", article)
             if sentence.strip() and _unsupported_claim(sentence, facts)]
 
@@ -464,6 +507,7 @@ def prepare_article(article: str, report) -> str:
     cited_sources = set()
     seen_sentences = set()
     for paragraph in re.split(r"\n\s*\n", body):
+        paragraph = _claim_text(paragraph)
         sentences = [part.strip() for part in re.split(r"(?<=[。！？；])", paragraph) if part.strip()]
         kept, source_ids = [], []
         for sentence in sentences:
@@ -485,7 +529,7 @@ def prepare_article(article: str, report) -> str:
             source_ids.extend(fact["source_id"] for fact in matches)
         if not kept:
             continue
-        citation_size = max((len(f"据《{sources[sid]['title']}》报道，")
+        citation_size = max((len(_source_prefix(sources[sid]))
                              for sid in source_ids if sid in sources), default=0)
         for text in _mobile_paragraphs("".join(kept), max(1, 180 - citation_size)):
             chunk_sources = [fact["source_id"] for sentence in re.split(r"(?<=[。！？；])", text)
@@ -494,7 +538,7 @@ def prepare_article(article: str, report) -> str:
                 source = sources.get(chunk_sources[0], {})
                 name = source.get("publisher") or source.get("title")
                 if name and name not in text and source.get("source_id") not in cited_sources:
-                    text = f"据《{source['title']}》报道，" + text
+                    text = _source_prefix(source) + text
                 cited_sources.add(source.get("source_id"))
             paragraphs.append(text)
     references = []
@@ -510,7 +554,7 @@ def prepare_article(article: str, report) -> str:
 
 def effective_body_chars(article: str) -> int:
     body = article.split("参考来源：", 1)[0]
-    body = re.sub(r"据《[^》]+》报道[，,]?", "", body)
+    body = _strip_source_citations(body, anywhere=True)
     body = re.sub(r"https?://\S+", "", body)
     return len(re.sub(r"\s+", "", body))
 

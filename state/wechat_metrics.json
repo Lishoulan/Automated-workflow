@@ -243,7 +243,37 @@
       "elapsed_seconds": 55.482,
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "37418545350:1",
+      "started_at": "2026-10-06T05:27:34.677416+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "quality_review_required"
+      ],
+      "attempt_count": 1,
+      "enrichment_count": 7,
+      "eligible_candidate_count": 1,
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "部分关键事实缺乏明确数据支持，如 BFC 型号的具体配置和性能数据。",
+        "关于首批桌面产品采用大容量缓存设计的发布顺序，证据来源单一，需补充多方信息。",
+        "相关处理器被限定在封闭测试组，未进入常规认证样品流程，因此早期基准测试与硬件检测信息缺失。",
+        "文章在论述英特尔 BFC 型号对产业链各环节的影响时，缺乏具体案例和数据支撑，逻辑链条不够严密。",
+        "部分段落存在从局部事件直接推导行业结论的情况，如将 BFC 型号的发布与高端市场领导地位直接关联。",
+        "文章开头未能迅速给出判断，部分段落存在并列堆砌和论证跳跃，如对 BFC 型号定位和适用范围的描述分散在多个段落。",
+        "结尾部分未能清晰保留风险边界和跟踪变量，如未明确指出哪些适用条件需要进一步明确。",
+        "文章在描述英特尔首发策略时，使用了‘巩固其领导地位’等绝对化表达，需谨慎处理。"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 553.379,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-06T13:17:50.717430+08:00"
+  "updated_at": "2026-10-06T13:36:51.795167+08:00"
 }

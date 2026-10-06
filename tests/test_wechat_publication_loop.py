@@ -431,3 +431,67 @@ def test_material_budget_is_distinct_from_system_failure(monkeypatch):
     monkeypatch.setattr(material, "fetch_text_smart", MagicMock(side_effect=RuntimeError("browser crashed")))
     with pytest.raises(material.MaterialSearchError):
         material.collect_material("机器人发布", preserve_sources=True, deadline=time.monotonic()+60)
+
+
+def test_lazy_enrichment_stops_before_unused_source_failure(app_settings, logger, monkeypatch):
+    from toutiao_content_factory.services.app_service import ContentFactoryAppService
+    from toutiao_content_factory.services.topic_collection import TopicCollectionService, TopicCandidate
+    from toutiao_content_factory.services.material_search_service import MaterialSearchError
+    enable(app_settings)
+    app = ContentFactoryAppService(app_settings, logger)
+    topics = [TopicCandidate("机器人新产品发布" + str(i), "https://a.test/" + str(i), "rss", "rss",
+        published_at=datetime.now(metrics.BEIJING).isoformat(), matched_keywords=["机器人"]) for i in range(2)]
+    def hydrate(topic, **kwargs):
+        if topic is topics[1]: raise MaterialSearchError("unused source failed")
+        topic.snippet = "机器人产品已完成测试。" * 100
+        topic.source_records = [{"source_id": "source-1"}]
+        return True
+    def score(self, topic):
+        topic.evidence_strength = topic.quality_score = 80
+        topic.quality_flags = []
+    hydrator = MagicMock(side_effect=hydrate)
+    monkeypatch.setattr(app.topic_automation, "_hydrate_topic_material", hydrator)
+    monkeypatch.setattr(TopicCollectionService, "_enrich_topic", score)
+    monkeypatch.setattr(TopicCollectionService, "_passes_topic_focus", lambda *args: True)
+    app._enrich_wechat_candidates(topics)
+    assert hydrator.call_count == 1
+    # If the writer rejects the ready article, the next source really is needed.
+    # Its system failure must still propagate, not turn into insufficient evidence.
+    with pytest.raises(MaterialSearchError): app._enrich_wechat_candidates(topics[1:])
+
+
+def test_lazy_enrichment_budget_excludes_time_spent_writing(app_settings, logger):
+    import time
+    from toutiao_content_factory.services.app_service import ContentFactoryAppService
+    from toutiao_content_factory.services.topic_collection import TopicCandidate
+    enable(app_settings)
+    app = ContentFactoryAppService(app_settings, logger)
+    app._wechat_enrichment_deadline = time.monotonic() - 100
+    app._wechat_enrichment_remaining_seconds = 40
+    app._wechat_enrichment_count = 0
+    app._wechat_enriched_topics = {}
+    def hydrate(topic, **kwargs):
+        assert time.monotonic() < kwargs["deadline"] <= time.monotonic() + 40
+        return False
+    app.topic_automation._hydrate_topic_material = MagicMock(side_effect=hydrate)
+    topic = TopicCandidate("机器人新产品发布", "https://a.test", "rss", "rss", published_at=datetime.now(metrics.BEIJING).isoformat())
+    app._enrich_wechat_candidates([topic])
+    app.topic_automation._hydrate_topic_material.assert_called_once()
+    assert 0 < app._wechat_enrichment_remaining_seconds <= 40
+
+
+def test_lazy_candidates_exclude_attempted_titles_and_keep_unique_eligible_count(app_settings, logger):
+    from toutiao_content_factory.services.app_service import ContentFactoryAppService
+    from toutiao_content_factory.services.topic_collection import TopicCandidate
+    enable(app_settings)
+    app = ContentFactoryAppService(app_settings, logger)
+    topics = [TopicCandidate("机器人产品发布" + str(i), "https://a.test/" + str(i), "rss", "rss",
+        snippet="机器人产品已经完成测试。" * 100, source_records=[{"source_id": str(i)}], evidence_strength=80, quality_score=80) for i in range(2)]
+    app.topic_automation._load_daily_topics = MagicMock(return_value=MagicMock(topics=topics))
+    app.topic_automation._available_topics = MagicMock(return_value=topics)
+    initial = app._build_daily_candidate_specs(topic_rank=None, topic_title=None, refresh_cache=False, dry_run=False)
+    assert len(initial) == 2
+    app._wechat_attempted_candidate_titles = {topics[0].title}
+    later = app._build_daily_candidate_specs(topic_rank=None, topic_title=None, refresh_cache=False, dry_run=False)
+    assert [row["title"] for row in later] == [topics[1].title]
+    assert app._wechat_eligible_candidate_count == 2

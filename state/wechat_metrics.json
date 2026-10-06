@@ -522,7 +522,43 @@
       "elapsed_seconds": 726.201,
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "37495013364:1",
+      "started_at": "2026-10-06T16:22:04.115218+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "quality_review_required",
+        "article_too_short"
+      ],
+      "attempt_count": 2,
+      "enrichment_count": 8,
+      "eligible_candidate_count": 2,
+      "audited_candidate_count": 2,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "存在绝对化表述：'无疑'",
+        "正文存在重复的长段表述，请合并或重写后再发布。",
+        "互动吸引力不足，建议补充具体公司/数字/对立观点/互动话术",
+        "有2个段落超过180字，建议拆短以适配手机阅读。",
+        "存在绝对化表述：'无疑'",
+        "正文存在重复的长段表述，请合并或重写后再发布。",
+        "互动吸引力不足，建议补充具体公司/数字/对立观点/互动话术",
+        "正文存在重复的长段表述，请合并或重写后再发布。",
+        "文章中提到的‘我国沙漠最大油田采出超深油气突破2600万吨’和‘塔里木盆地超深地层油气储量丰厚，是我国油气增储上产重要潜力区’等信息，需要核实数据来源和准确性。",
+        "文章中提到的‘我国在塔里木盆地已探明油气储量超过50亿吨，其中，超过一半来自超深地层’等信息，需要核实数据来源和准确性。",
+        "文章中缺少对技术进展的深入分析和对可能存在的失效条件的讨论，建议补充相关内容。",
+        "文章的结构较为松散，段落之间的逻辑关系不够清晰，建议优化段落之间的衔接。",
+        "文章中存在一些绝对化的表达，建议进行适当的修改以符合合规要求。"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 909.703,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-07T00:21:02.251785+08:00"
+  "updated_at": "2026-10-07T00:37:19.255470+08:00"
 }

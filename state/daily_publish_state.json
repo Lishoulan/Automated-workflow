@@ -1,14 +1,26 @@
 {
   "schema": 1,
-  "updated_at": "2026-10-06T03:58:05.450181+00:00",
+  "updated_at": "2026-10-06T04:07:38.646795+00:00",
   "entries": {
     "2026-10-06::default": {
       "wechat": {
         "channel": "cloud",
-        "status": "publish_uncertain",
+        "status": "not_submitted_verified",
         "title": "",
         "publish_url": "",
-        "recorded_at": "2026-10-06T03:58:05.450165+00:00"
+        "recorded_at": "2026-10-06T03:58:05.450165+00:00",
+        "previous_status": "publish_uncertain",
+        "no_submission_evidence": {
+          "run_key": "37411229998:1",
+          "checked_at": "2026-10-06T04:01:36.555653+00:00",
+          "account": "小椰科技",
+          "stage": "candidate_enrichment_before_writing",
+          "candidate_attempt_count": 0,
+          "pending_count": 0,
+          "backend_latest_date": "07月25日",
+          "publications_today": 0,
+          "native_exit_code": 1
+        }
       }
     }
   }

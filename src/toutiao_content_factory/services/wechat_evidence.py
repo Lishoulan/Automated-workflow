@@ -245,15 +245,19 @@ def classify_kind(topic_type: str, facts: list[dict]) -> str:
         for item in facts
     ):
         return "company_earnings"
-    if topic_type == "policy_market" and re.search(r"通知|办法|政策|意见|措施|规定", prose):
+    if topic_type == "policy_market" and re.search(r"通知|管理办法|实施办法|政策|指导意见|实施细则|条例", prose):
         return "policy_explainer"
-    if topic_type in {"product_launch", "project_progress"} and re.search(r"发布|推出|产品|测试|验证|部署|投产", prose):
+    if (topic_type in {"product_launch", "project_progress", "policy_market"}
+            and re.search(r"产品|处理器|芯片|机器人|模型|设备", prose)
+            and re.search(r"发布|推出|测试|验证|部署|投产|型号|首发", prose)):
         return "product_progress"
     return "industry_update"
 
 
 def requirements(kind: str) -> dict:
     label, brief, watch, question = KINDS.get(kind, KINDS["industry_update"])
+    if kind == "product_progress":
+        brief += "；配置、性能、基准测试或独立验证未披露时明确保持未知，不推导性能提升、市场领导地位或产业链收益。消息源未经官方确认时保留报道归因，不把路线图或预测写成已实现事实"
     return {"label": label, "suggested_angle": brief, "follow_up_focus": watch,
             "writing_brief": brief + "。所有数字逐项绑定原句、统计对象、单位和统计期；缺失信息保持未知。",
             "closing": question,

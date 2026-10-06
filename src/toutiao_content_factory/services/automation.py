@@ -517,7 +517,7 @@ class TopicAutomationService:
                 title,
                 max_sources=self.MATERIAL_MAX_SOURCES,
                 min_body_chars=self.MATERIAL_MIN_BODY_CHARS,
-                cache_dir=None if regenerate else self.settings.output_dir / "growth_ops" / ("wechat_source_material_v3" if wechat else "source_material"),
+                cache_dir=None if regenerate else self.settings.output_dir / "growth_ops" / ("wechat_source_material_v4" if wechat else "source_material"),
                 source_url=str(topic.url or ""),
                 **({"deadline": deadline, "preserve_sources": True} if wechat else {}),
             )

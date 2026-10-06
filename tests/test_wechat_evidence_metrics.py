@@ -421,7 +421,7 @@ def test_wechat_hydration_uses_new_cache_and_does_not_upgrade_legacy_snippet(app
     monkeypatch.setattr(material, "collect_material", collector)
     topic = TopicCandidate("机器人新品", "https://a.test", "rss", "rss", snippet="【来源：匿名旧汇总】" + "机器人此前达到99台。" * 100)
     assert app.topic_automation._hydrate_topic_material(topic)
-    assert "wechat_source_material_v3" in str(collector.call_args.kwargs["cache_dir"])
+    assert "wechat_source_material_v4" in str(collector.call_args.kwargs["cache_dir"])
     assert topic.source_records[0]["original_text"] == source.body
     assert "99" not in topic.source_records[0]["original_text"]
 

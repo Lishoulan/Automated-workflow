@@ -183,7 +183,7 @@ class WriterAgent(BaseAgent):
             + "\n完整事实记录：" + self.json_text(data_report.fact_evidence)
             + "\n出处：" + self.json_text([{key: source.get(key, "") for key in
                 ("source_id", "title", "url", "publisher", "published_at")} for source in data_report.source_records])
-            + '\n输出JSON：{"sections":[{"section":"大纲节名","fact_ids":["事实编号"],"text":"约350字正文"}],"summary":"摘要","tags":[]}'
+            + '\n输出JSON：{"sections":[{"section_id":0,"section":"大纲节名","fact_ids":["事实编号"],"text":"约350字正文"}],"summary":"摘要","tags":[]}'
             + "\n结尾只提出一个与原文变量相关的问题：" + requirements(data_report.article_kind)["closing"])
         payload = self.request_json(
             "你是微信公众号事实编辑，只输出调用提示定义的合法JSON。严格使用给定分类大纲及其证据编号。"
@@ -194,12 +194,13 @@ class WriterAgent(BaseAgent):
         if not payload:
             return self._fallback(trend_report, data_report, style, cache_context)
         bindings = {item["section"]: set(item["fact_ids"]) for item in data_report.writing_outline}
+        section_names = {i: item["section"] for i, item in enumerate(data_report.writing_outline)}
         sections = payload.get("sections", [])
         parts, seen = [], set()
         for item in sections if isinstance(sections, list) else []:
             if not isinstance(item, dict) or not isinstance(item.get("fact_ids"), list):
                 continue
-            section = item.get("section")
+            section = section_names.get(item["section_id"]) if type(item.get("section_id")) is int else item.get("section")
             if (isinstance(section, str) and section in bindings and section not in seen
                     and isinstance(item.get("text"), str) and item["fact_ids"]
                     and all(isinstance(value, str) and value in bindings[section] for value in item["fact_ids"])):
@@ -210,7 +211,8 @@ class WriterAgent(BaseAgent):
         grounded = prepare_article(article, data_report)
         return GeneratedContent(article=grounded, summary=str(payload.get("summary", "")),
             grounding_diagnostics=[{"before_cleanup_chars": effective_body_chars(article),
-                "after_cleanup_chars": effective_body_chars(grounded), "final_body_chars": effective_body_chars(grounded)}],
+                "after_cleanup_chars": effective_body_chars(grounded), "final_body_chars": effective_body_chars(grounded), "accepted_section_count": len(seen),
+                "returned_section_count": len(sections) if isinstance(sections, list) else 0}],
             comment_prompt=requirements(data_report.article_kind)["closing"], style_name=style.label,
             article_angle=data_report.suggested_angle, cache_note=cache_context.note,
             tags=self._sanitize_tags(payload.get("tags"), data_report), content_format=data_report.content_format,

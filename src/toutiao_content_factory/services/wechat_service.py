@@ -188,6 +188,10 @@ class WechatPublishService:
         if force_editor_135:
             raise RuntimeError(WECHAT_EDITOR_135_DISABLED_MESSAGE)
         self._ensure_enabled()
+        if self.settings.wechat_auto_publish_mode:
+            self.settings.automation_dir.mkdir(parents=True, exist_ok=True)
+            (self.settings.automation_dir / "wechat_publish_phase.json").write_text(json.dumps({
+                "account_key": self.settings.account_key, "phase": "submitting", "publication_attempted": True}), encoding="utf-8")
         publish_dir = run_dir / self.settings.review.publish_dirname
         if not publish_dir.exists():
             raise FileNotFoundError(f"Publish package not found: {publish_dir}")

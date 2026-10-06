@@ -453,6 +453,25 @@
           "title_all_rejected"
         ]
       }
+    },
+    "2026-10-07": {
+      "runs": {},
+      "dispatches": {},
+      "failed_inputs": [],
+      "formal_publication_validation": {
+        "intent_id": "daily-2026-10-07-pr26",
+        "created_at": "2026-10-06T16:07:27.832118+00:00",
+        "head_sha": "10e7734b4ebfa283d34e7c3c97abaf64ea166b8c",
+        "purpose": "verify_formal_publication",
+        "status": "intent",
+        "authorization_source": "User requested daily automatic publication and fixes to three causes",
+        "uses_normal_daily_allowance": true,
+        "daily_budget_seconds": 5400,
+        "preflight_checked_at": "2026-10-06T16:06:17.092168+00:00",
+        "preflight_account": "小椰科技",
+        "preflight_pending_count": 0,
+        "formal_publication_confirmed": false
+      }
     }
   }
 }

@@ -305,7 +305,40 @@
       "elapsed_seconds": 508.167,
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "37424688582:1",
+      "started_at": "2026-10-06T06:37:45.700742+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "quality_review_required",
+        "title_all_rejected"
+      ],
+      "attempt_count": 1,
+      "enrichment_count": 7,
+      "eligible_candidate_count": 1,
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "部分关键事实（如 BFC 型号具体配置和性能数据）未披露，需明确标注不确定性。",
+        "消息源 @jaykihn0 的推文内容未完整引用，影响信息准确性。",
+        "文章存在“内部流程标签泄露”的风险，如“DS”代号芯片的描述。",
+        "部分段落存在重复句式，如多次强调 BFC 型号的首发地位。",
+        "部分表达空泛拔高，如“提升产业链位置、订单验证、交付效率、盈利兑现”，建议具体化。",
+        "文章存在从局部事件（BFC 型号首发）推导行业结论（英特尔高端处理器市场策略）的情况。",
+        "部分段落逻辑跳跃，如从 BFC 型号设计能力直接推导英特尔竞争姿态。",
+        "部分段落过长，如关于 BFC 型号能力和市场接受度的段落，建议拆分。",
+        "文章开头未能迅速给出判断，建议强化反直觉观点。",
+        "文章存在“内部流程标签泄露”的风险，如“DS”代号芯片的描述。"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 594.458,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-06T13:52:21.277266+08:00"
+  "updated_at": "2026-10-06T14:47:44.058594+08:00"
 }

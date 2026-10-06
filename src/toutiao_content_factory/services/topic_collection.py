@@ -929,6 +929,10 @@ class TopicCollectionService:
         matched_industries: list[str] = []
         matched_keywords: list[str] = []
         for industry, keywords in self.topic_settings.keyword_map.items():
+            if self.settings.wechat_auto_publish_mode and industry == "ai_hardware":
+                # The WeChat AI track covers processors and AI models as well
+                # as hardware. Keep this vocabulary local to WeChat scoring.
+                keywords = [*keywords, "处理器", "人工智能", "大模型", "生成式AI", "机器学习", "智能体"]
             current_keywords = [keyword for keyword in keywords if keyword.lower() in lowered]
             if current_keywords:
                 matched_industries.append(industry)
@@ -1190,7 +1194,7 @@ class TopicCollectionService:
             # They cannot alone authorize a technology topic for this account.
             text = f"{topic.title} {topic.summary} {topic.snippet}"
             tech = ("人工智能", "大模型", "生成式AI", "智能体", "机器学习", "机器人", "机器狗", "机械臂",
-                    "灵巧手", "具身智能", "自动驾驶", "芯片", "半导体", "晶圆", "光刻", "新能源", "储能",
+                    "灵巧手", "具身智能", "自动驾驶", "芯片", "处理器", "半导体", "晶圆", "光刻", "新能源", "储能",
                     "光伏", "风电", "动力电池", "固态电池", "智能制造", "工业自动化", "工业互联网", "智能工厂")
             return any(word in text for word in tech) or bool(re.search(r"(?<![A-Za-z])AI(?:硬件|模型|应用|技术|芯片)", text, re.I))
         return any(
@@ -1528,7 +1532,7 @@ class TopicCollectionService:
         )
         return cjk_count >= 10 and readable_signal_count == 0
 
-    def _is_unusable_topic_snippet(self, text: str) -> bool:
+    def _is_unusable_topic_snippet(self, text: str, *, verified_original: bool = False) -> bool:
         cleaned = self._clean_text(text)
         if not cleaned:
             return True
@@ -1547,6 +1551,10 @@ class TopicCollectionService:
         # financial figures.  Keep them when they have a subject and several
         # report/data markers; length alone is not a reliable quality signal.
         if self._is_evidence_rich_topic_text(cleaned):
+            return False
+        # These length/list heuristics classify feed previews. A fetched original
+        # that passes the material gate is a different input, not a thin preview.
+        if verified_original:
             return False
         if len(cleaned) > self.MAX_SNIPPET_LENGTH_FOR_UNUSABLE_CHECK_1 and len(re.findall(r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d+\s*(?:分钟前|小时前|天前))", cleaned)) >= 2:
             return True
@@ -1963,7 +1971,21 @@ class TopicCollectionService:
 
     def _is_title_only_topic(self, topic: TopicCandidate) -> bool:
         snippet = self._clean_text(topic.snippet)
-        return not snippet or len(snippet) < 18 or self._is_unusable_topic_snippet(snippet)
+        verified_original = False
+        if (self.settings.wechat_auto_publish_mode
+                and getattr(topic, "_verified_source_material", False) is True
+                and topic.source_records):
+            from toutiao_content_factory.services.material_search_service import (
+                MaterialBundle, MaterialSource, assess_material_evidence,
+            )
+            bundle = MaterialBundle(topic.title, [MaterialSource(
+                title=record.get("title", ""), url=record.get("url", ""),
+                body=record.get("original_text", ""), ok=True,
+            ) for record in topic.source_records])
+            verified_original = (bundle.combined_text.strip() == str(topic.snippet or "").strip()
+                                 and assess_material_evidence(bundle).passed)
+        return (not snippet or len(snippet) < 18
+                or self._is_unusable_topic_snippet(snippet, verified_original=verified_original))
 
     def _high_performance_pattern_score(self, topic: TopicCandidate) -> int:
         text = f"{topic.title} {topic.summary} {topic.snippet}"

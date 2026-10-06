@@ -622,3 +622,53 @@ def test_today_article_not_stale_after_time_preservation(app_settings, logger, m
     assert collector._filter_by_freshness([topic], defaultdict(int)) == [topic]
     topic.published_at = "2026-10-06T00:00:00+08:00"
     assert not collector._filter_by_freshness([topic], defaultdict(int))
+
+
+@pytest.mark.parametrize("verified,matching,platform,expected", [
+    (True, True, "wechat", False), (False, True, "wechat", True),
+    (True, False, "wechat", True), (True, True, "toutiao", True),
+])
+def test_full_original_body_rescored_without_preview_length_heuristics(app_settings, logger, verified, matching, platform, expected):
+    from toutiao_content_factory.services.topic_collection import TopicCandidate, TopicCollectionService
+    from toutiao_content_factory.services.material_search_service import MaterialBundle
+    enable(app_settings)
+    object.__setattr__(app_settings, "platform", platform)
+    body = "\n".join(f"芯片公司发布第{i}项处理器测试，测试条件由公司披露，结果为{i + 10}台，独立验证情况尚未公开。" for i in range(30))
+    bundle = MaterialBundle("芯片进展", [MaterialSource("处理器报道", "https://a.test/report", body, True)])
+    topic = TopicCandidate("芯片处理器测试发布", "https://a.test/report", "rss", "rss", snippet=bundle.combined_text,
+        source_records=evidence.source_records(bundle.usable))
+    topic._verified_source_material = verified
+    if not matching:
+        topic.snippet += "未在原文披露的额外断言。"
+    collector = TopicCollectionService(app_settings, logger)
+    collector._enrich_topic(topic)
+    assert collector._is_title_only_topic(topic) is expected
+    assert ("title_only" in topic.quality_flags) is expected
+
+
+def test_original_body_does_not_bypass_page_safety_or_material_gate(app_settings, logger):
+    from toutiao_content_factory.services.topic_collection import TopicCandidate, TopicCollectionService
+    from toutiao_content_factory.services.material_search_service import MaterialBundle
+    enable(app_settings)
+    collector = TopicCollectionService(app_settings, logger)
+    for body in ["芯片发布完成10台测试。", "copyright 当前位置 " + "芯片公司披露20台测试，条件尚未核对。" * 80]:
+        bundle = MaterialBundle("芯片进展", [MaterialSource("处理器报道", "https://a.test/report", body, True)])
+        topic = TopicCandidate("芯片进展", "https://a.test/report", "rss", "rss", snippet=bundle.combined_text,
+            source_records=evidence.source_records(bundle.usable))
+        topic._verified_source_material = True
+        assert collector._is_title_only_topic(topic)
+
+
+@pytest.mark.parametrize("keyword", ["处理器", "人工智能", "大模型", "智能体"])
+def test_wechat_ai_vocabulary_matches_existing_track_without_mutating_toutiao(app_settings, logger, keyword):
+    from copy import deepcopy
+    from toutiao_content_factory.services.topic_collection import TopicCollectionService
+    object.__setattr__(app_settings.topic_collection, "keyword_map", {"ai_hardware": ["芯片", "GPU"]})
+    original = deepcopy(app_settings.topic_collection.keyword_map)
+    enable(app_settings)
+    collector = TopicCollectionService(app_settings, logger)
+    industries, words = collector._match_industries(keyword + "产品更新")
+    assert "ai_hardware" in industries and keyword in words
+    assert app_settings.topic_collection.keyword_map == original
+    object.__setattr__(app_settings, "platform", "toutiao")
+    assert keyword not in collector._match_industries(keyword + "产品更新")[1]

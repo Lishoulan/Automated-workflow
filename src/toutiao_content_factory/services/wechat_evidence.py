@@ -245,7 +245,11 @@ def classify_kind(topic_type: str, facts: list[dict]) -> str:
         for item in facts
     ):
         return "company_earnings"
-    if topic_type == "policy_market" and re.search(r"通知|管理办法|实施办法|政策|指导意见|实施细则|条例", prose):
+    policy = any(
+        re.search(r"通知|管理办法|实施办法|政策|指导意见|实施细则|条例", item["quote"])
+        and re.search(r"国务院|政府|能源局|发改委|发展改革|工信部|财政部|委员会|能源机构|主管部门|(?:省|市|自治区)(?:发布|印发|出台|规定|政府)", item["quote"])
+        for item in facts)
+    if topic_type == "policy_market" and policy:
         return "policy_explainer"
     if (topic_type in {"product_launch", "project_progress", "policy_market"}
             and re.search(r"产品|处理器|芯片|机器人|模型|设备", prose)

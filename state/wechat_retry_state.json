@@ -64,18 +64,47 @@
           }
         },
         "37412838488:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T04:16:12.242469+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
+          "elapsed_seconds": 572.846,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
+          "outcome": "review_required"
         }
       },
       "dispatches": {},
-      "failed_inputs": [],
+      "failed_inputs": [
+        {
+          "fingerprint": "14c4e0cb725f49f6ad419dfbef1504f70eaee6f17c21d467f7c9e7d0b10833a6",
+          "source_fingerprint": "b00b51853d3d9aff1e7044a1efa290054785339fa4998b330dac7bbd466119a8",
+          "requirements": [
+            "核实并补充《新型储能5年增长45倍，国家能源局：十五五将聚焦应用场景与市场机制》的发布日期和发布机构。",
+            "明确“新型储能装机规模在‘十四五’以来增长约45倍”的统计起始时间。",
+            "补充具体案例或数据支持新型储能产业从规模扩张转向系统调节功能的转变。",
+            "精简引用来源，避免重复。",
+            "核实“‘十四五’期间按照‘先顶层设计、后专项推动、梯次实施’的思路”的官方表述，并补充核实信息。"
+          ]
+        },
+        {
+          "fingerprint": "189c10d4a83d2a04dbde5007030a2a933362aa71ff0785ced9b6d903a461ab2e",
+          "source_fingerprint": "7775497393da1136f70f69bf4d5d63cedf78001c87390642384f3284db19ef12",
+          "requirements": [
+            "核实并补充文章发布日期和作者信息。",
+            "核实‘2026年1月，国家将电网侧独立储能纳入发电侧容量电价体系，各省自行制定补偿标准。’的具体来源和核实日期。",
+            "增加具体案例和数据支持局部事件推导行业结论的逻辑。",
+            "增加具体省份对比数据以解释因果关系。",
+            "优化文章开头，迅速给出判断。",
+            "加强中段证据和机制展开。",
+            "在结尾保留更多风险边界和跟踪变量。",
+            "优化段落衔接，减少粘连问题。",
+            "减少空泛拔高和模板化表达。",
+            "修改绝对化表达为更严谨的表述。"
+          ]
+        }
+      ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "81a58652b5880910ce3ca7c3e8dc823c26b54786",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",

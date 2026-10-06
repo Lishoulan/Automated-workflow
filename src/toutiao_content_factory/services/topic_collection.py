@@ -1528,7 +1528,7 @@ class TopicCollectionService:
         )
         return cjk_count >= 10 and readable_signal_count == 0
 
-    def _is_unusable_topic_snippet(self, text: str) -> bool:
+    def _is_unusable_topic_snippet(self, text: str, *, verified_original: bool = False) -> bool:
         cleaned = self._clean_text(text)
         if not cleaned:
             return True
@@ -1547,6 +1547,10 @@ class TopicCollectionService:
         # financial figures.  Keep them when they have a subject and several
         # report/data markers; length alone is not a reliable quality signal.
         if self._is_evidence_rich_topic_text(cleaned):
+            return False
+        # These length/list heuristics classify feed previews. A fetched original
+        # that passes the material gate is a different input, not a thin preview.
+        if verified_original:
             return False
         if len(cleaned) > self.MAX_SNIPPET_LENGTH_FOR_UNUSABLE_CHECK_1 and len(re.findall(r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d+\s*(?:分钟前|小时前|天前))", cleaned)) >= 2:
             return True
@@ -1963,7 +1967,21 @@ class TopicCollectionService:
 
     def _is_title_only_topic(self, topic: TopicCandidate) -> bool:
         snippet = self._clean_text(topic.snippet)
-        return not snippet or len(snippet) < 18 or self._is_unusable_topic_snippet(snippet)
+        verified_original = False
+        if (self.settings.wechat_auto_publish_mode
+                and getattr(topic, "_verified_source_material", False) is True
+                and topic.source_records):
+            from toutiao_content_factory.services.material_search_service import (
+                MaterialBundle, MaterialSource, assess_material_evidence,
+            )
+            bundle = MaterialBundle(topic.title, [MaterialSource(
+                title=record.get("title", ""), url=record.get("url", ""),
+                body=record.get("original_text", ""), ok=True,
+            ) for record in topic.source_records])
+            verified_original = (bundle.combined_text.strip() == str(topic.snippet or "").strip()
+                                 and assess_material_evidence(bundle).passed)
+        return (not snippet or len(snippet) < 18
+                or self._is_unusable_topic_snippet(snippet, verified_original=verified_original))
 
     def _high_performance_pattern_score(self, topic: TopicCandidate) -> int:
         text = f"{topic.title} {topic.summary} {topic.snippet}"

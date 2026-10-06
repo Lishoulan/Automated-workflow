@@ -929,6 +929,10 @@ class TopicCollectionService:
         matched_industries: list[str] = []
         matched_keywords: list[str] = []
         for industry, keywords in self.topic_settings.keyword_map.items():
+            if self.settings.wechat_auto_publish_mode and industry == "ai_hardware":
+                # The WeChat AI track covers processors and AI models as well
+                # as hardware. Keep this vocabulary local to WeChat scoring.
+                keywords = [*keywords, "处理器", "人工智能", "大模型", "生成式AI", "机器学习", "智能体"]
             current_keywords = [keyword for keyword in keywords if keyword.lower() in lowered]
             if current_keywords:
                 matched_industries.append(industry)
@@ -1190,7 +1194,7 @@ class TopicCollectionService:
             # They cannot alone authorize a technology topic for this account.
             text = f"{topic.title} {topic.summary} {topic.snippet}"
             tech = ("人工智能", "大模型", "生成式AI", "智能体", "机器学习", "机器人", "机器狗", "机械臂",
-                    "灵巧手", "具身智能", "自动驾驶", "芯片", "半导体", "晶圆", "光刻", "新能源", "储能",
+                    "灵巧手", "具身智能", "自动驾驶", "芯片", "处理器", "半导体", "晶圆", "光刻", "新能源", "储能",
                     "光伏", "风电", "动力电池", "固态电池", "智能制造", "工业自动化", "工业互联网", "智能工厂")
             return any(word in text for word in tech) or bool(re.search(r"(?<![A-Za-z])AI(?:硬件|模型|应用|技术|芯片)", text, re.I))
         return any(

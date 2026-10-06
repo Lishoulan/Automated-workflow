@@ -657,3 +657,18 @@ def test_original_body_does_not_bypass_page_safety_or_material_gate(app_settings
             source_records=evidence.source_records(bundle.usable))
         topic._verified_source_material = True
         assert collector._is_title_only_topic(topic)
+
+
+@pytest.mark.parametrize("keyword", ["处理器", "人工智能", "大模型", "智能体"])
+def test_wechat_ai_vocabulary_matches_existing_track_without_mutating_toutiao(app_settings, logger, keyword):
+    from copy import deepcopy
+    from toutiao_content_factory.services.topic_collection import TopicCollectionService
+    object.__setattr__(app_settings.topic_collection, "keyword_map", {"ai_hardware": ["芯片", "GPU"]})
+    original = deepcopy(app_settings.topic_collection.keyword_map)
+    enable(app_settings)
+    collector = TopicCollectionService(app_settings, logger)
+    industries, words = collector._match_industries(keyword + "产品更新")
+    assert "ai_hardware" in industries and keyword in words
+    assert app_settings.topic_collection.keyword_map == original
+    object.__setattr__(app_settings, "platform", "toutiao")
+    assert keyword not in collector._match_industries(keyword + "产品更新")[1]

@@ -134,6 +134,13 @@
             "publication_attempted": false,
             "candidate_attempt_count": 0
           }
+        },
+        "37418545350:1": {
+          "status": "running",
+          "started_at": "2026-10-06T05:27:34.677416+00:00",
+          "parent": "",
+          "elapsed_seconds": 0,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
         }
       },
       "dispatches": {},
@@ -191,14 +198,14 @@
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "authorized",
+          "status": "claimed",
           "purpose": "verify_formal_publication",
           "head_sha": "a74901599d9f0e19b304be3757ac30382427b158",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",
           "expires_at": "2026-10-06T06:26:26.661178+00:00",
           "authorization": "User requested immediate formal publication verification on 2026-10-06",
           "dispatch_status": "intent",
-          "run_key": "37417662989:1",
+          "run_key": "37418545350:1",
           "reauthorized_at": "2026-10-06T05:26:26.661178+00:00",
           "resume_after_not_published": "37417662989:1"
         }

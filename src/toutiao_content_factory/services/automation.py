@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from difflib import SequenceMatcher
 import shutil
@@ -462,10 +463,11 @@ class TopicAutomationService:
             return False
         existing = str(topic.snippet or "").strip()
         wechat = self.settings.wechat_auto_publish_mode
+        regenerate = wechat and os.environ.get("WECHAT_REGENERATING") == "1"
         if wechat and deadline is None:
             import time
             deadline = time.monotonic() + 60
-        if wechat and topic.source_records:
+        if wechat and topic.source_records and not regenerate:
             from toutiao_content_factory.services.material_search_service import MaterialBundle, MaterialSource, assess_material_evidence
             restored = MaterialBundle(title, [MaterialSource(
                 title=source["title"], url=source["url"], body=source["original_text"], ok=True,
@@ -515,7 +517,7 @@ class TopicAutomationService:
                 title,
                 max_sources=self.MATERIAL_MAX_SOURCES,
                 min_body_chars=self.MATERIAL_MIN_BODY_CHARS,
-                cache_dir=self.settings.output_dir / "growth_ops" / ("wechat_source_material_v3" if wechat else "source_material"),
+                cache_dir=None if regenerate else self.settings.output_dir / "growth_ops" / ("wechat_source_material_v3" if wechat else "source_material"),
                 source_url=str(topic.url or ""),
                 **({"deadline": deadline, "preserve_sources": True} if wechat else {}),
             )

@@ -166,6 +166,50 @@ class WriterAgent(BaseAgent):
             else ""
         )
 
+    def _write_wechat(self, trend_report, data_report, style, cache_context):
+        from toutiao_content_factory.services.wechat_evidence import prepare_article, build_outline, requirements, effective_body_chars
+        if not data_report.writing_outline:
+            build_outline(data_report)
+        self._llm_expansion_call_count = 0
+        prompt = ("为微信公众号撰写完整中文文章。正文2000～2200字，最低1750字；参考来源和引用模板不计篇幅。"
+            "按六节大纲，每节330～370字，组织成自然短段落，每段不超过180字。开头直接说明具体主体、变化和适用范围。"
+            "每节仅依据绑定的事实解释已经披露的措施、能力、限制或数据关系。"
+            "不能扩展到未披露的地区、项目、全球趋势、成本、利润或收益；来源不足时收窄，而非编造。"
+            "避免重复数字、重复结论、机械风险清单和抽象行业套话。事实、解释和未披露边界清楚区分。"
+            + self._dynamic_rules_for(data_report)
+            + "\n选题：" + data_report.topic_title
+            + "\n写作简报：" + data_report.writing_brief
+            + "\n完整事实记录：" + self.json_text(data_report.fact_evidence)
+            + "\n出处：" + self.json_text([{key: source.get(key, "") for key in
+                ("source_id", "title", "url", "publisher", "published_at")} for source in data_report.source_records])
+            + '\n输出JSON：{"sections":[{"section":"大纲节名","fact_ids":["事实编号"],"text":"约350字正文"}],"summary":"摘要","tags":[]}'
+            + "\n结尾只提出一个与原文变量相关的问题：" + requirements(data_report.article_kind)["closing"])
+        payload = self.request_json(self._writer_system_prompt(style), prompt)
+        if not payload:
+            return self._fallback(trend_report, data_report, style, cache_context)
+        bindings = {item["section"]: set(item["fact_ids"]) for item in data_report.writing_outline}
+        sections = payload.get("sections", [])
+        parts, seen = [], set()
+        for item in sections if isinstance(sections, list) else []:
+            if not isinstance(item, dict) or not isinstance(item.get("fact_ids"), list):
+                continue
+            section = item.get("section")
+            if (isinstance(section, str) and section in bindings and section not in seen
+                    and isinstance(item.get("text"), str) and item["fact_ids"]
+                    and all(isinstance(value, str) and value in bindings[section] for value in item["fact_ids"])):
+                parts.append(item["text"])
+                seen.add(section)
+        # The old JSON shape remains readable; it still passes all grounding gates.
+        article = "\n\n".join(parts) or str(payload.get("article", ""))
+        grounded = prepare_article(article, data_report)
+        return GeneratedContent(article=grounded, summary=str(payload.get("summary", "")),
+            grounding_diagnostics=[{"before_cleanup_chars": effective_body_chars(article),
+                "after_cleanup_chars": effective_body_chars(grounded), "final_body_chars": effective_body_chars(grounded)}],
+            comment_prompt=requirements(data_report.article_kind)["closing"], style_name=style.label,
+            article_angle=data_report.suggested_angle, cache_note=cache_context.note,
+            tags=self._sanitize_tags(payload.get("tags"), data_report), content_format=data_report.content_format,
+            content_format_label=data_report.content_format_label)
+
     def run(
         self,
         trend_report: TrendReport,
@@ -173,6 +217,8 @@ class WriterAgent(BaseAgent):
         style: StyleProfile,
         cache_context: CacheContext,
     ) -> GeneratedContent:
+        if self.settings.wechat_auto_publish_mode:
+            return self._write_wechat(trend_report, data_report, style, cache_context)
         # 记录本次的写作领域，供字数要求与自动发布指令分支使用
         self._current_content_domain = getattr(style, "content_domain", "industry")
         benchmark_track = self.clean_publish_text(data_report.focus_industry).strip() or self.infer_benchmark_track(
@@ -271,6 +317,8 @@ class WriterAgent(BaseAgent):
         style: StyleProfile,
         cache_context: CacheContext,
     ) -> GeneratedContent:
+        if self.settings.wechat_auto_publish_mode:
+            return self._write_wechat(trend_report, data_report, style, cache_context)
         # 记录本次的写作领域，供字数要求与自动发布指令分支使用
         self._current_content_domain = getattr(style, "content_domain", "industry")
         benchmark_track = self.clean_publish_text(data_report.focus_industry).strip() or self.infer_benchmark_track(
@@ -764,6 +812,8 @@ class WriterAgent(BaseAgent):
         )
 
     def _article_word_target_for_prompt(self, data_report: DataReport) -> str:
+        if self.settings.wechat_auto_publish_mode:
+            return "2000～2200"
         target = int(getattr(data_report, "word_target", 0) or self.settings.article_word_target or 0)
         if self._auto_publish_mode():
             if self._is_narrative_run():
@@ -775,7 +825,7 @@ class WriterAgent(BaseAgent):
     def _format_brief_for_prompt(self, data_report: DataReport) -> str:
         if self.settings.wechat_auto_publish_mode:
             from toutiao_content_factory.services.wechat_evidence import requirements
-            return requirements(data_report.article_kind)["writing_brief"]
+            return data_report.writing_brief or requirements(data_report.article_kind)["writing_brief"]
         brief = str(getattr(data_report, "format_brief", "") or "写成完整产业分析稿。").strip()
         if self._auto_publish_mode() and self._is_narrative_run():
             return brief if brief != "写成完整产业分析稿。" else "围绕已核实的事件经过、人物处境和实际影响写成完整故事观察稿。"
@@ -1719,7 +1769,11 @@ class WriterAgent(BaseAgent):
     def _dynamic_rules_for(self, data_report: DataReport) -> str:
         if self.settings.wechat_auto_publish_mode:
             from toutiao_content_factory.services.wechat_evidence import requirements
-            return "\n" + requirements(data_report.article_kind)["instruction"] + "\nsource_records与fact_evidence共同构成事实记录。每个数字必须匹配原句的对象、单位与统计期，不得仅按数值匹配。正文自然注明出处，末尾列参考来源；不得编造发布机构或日期。"
+            return ("\n" + requirements(data_report.article_kind)["instruction"]
+                    + "\n正文目标2000～2200字，最低1750字。按以下分类大纲逐节写，每节约350字，只解释绑定事实及其明确边界，禁止虚构全球趋势、成本构成和收益。"
+                    + self.json_text(data_report.writing_outline)
+                    + "\n需修复的问题：" + self.json_text(data_report.regeneration_requirements)
+                    + "\nsource_records与fact_evidence共同构成事实记录。每个数字必须匹配原句的对象、单位与统计期，不得仅按数值匹配。正文自然注明出处，末尾列参考来源；不得编造发布机构或日期。")
         """根据本次 ExtractionResult 的行业分类，动态筛选 TOP 3 写作规则注入。
 
         避免一次性将所有规则塞入 System Prompt，缓解"中间遗忘"问题。
@@ -1745,6 +1799,8 @@ class WriterAgent(BaseAgent):
         ⚠️ 这里给的是**生成用的最低要求**，不是发布门槛。发布侧的硬下限是
         `NARRATIVE_ARTICLE_MIN_CHARS`（700）—— 两者故意不同，理由见该常量的注释。
         """
+        if self.settings.wechat_auto_publish_mode:
+            return "1750"
         if self._auto_publish_mode():
             if self._is_narrative_run():
                 return str(self.NARRATIVE_ARTICLE_PROMPT_FLOOR)
@@ -2785,7 +2841,7 @@ class WriterAgent(BaseAgent):
         return result
 
     def _expand_article_via_llm(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 1200) -> list[str]:
-        if self._content_mode(data_report) == "hot_topic" and not self._has_sufficient_hot_topic_facts(data_report):
+        if not self.settings.wechat_auto_publish_mode and self._content_mode(data_report) == "hot_topic" and not self._has_sufficient_hot_topic_facts(data_report):
             return paragraphs
         if not self._has_grounded_evidence(data_report):
             return paragraphs
@@ -2805,6 +2861,9 @@ class WriterAgent(BaseAgent):
 
         current_text = "\n\n".join(paragraphs)
         current_chars = sum(len(p.replace("\n", "").replace(" ", "")) for p in paragraphs)
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import effective_body_chars
+            current_chars = effective_body_chars(current_text)
         deficit = min_chars - current_chars
         if deficit <= 0:
             return paragraphs
@@ -2854,9 +2913,13 @@ class WriterAgent(BaseAgent):
                 "Use distinct mechanisms supported by the evidence, with source and statistical period attribution. "
                 "Do not impose corporate revenue, margin, cash collection or contract acceptance analysis on policy or sector data. "
                 "Do not repeat existing facts or assume multiple materials are the same disclosure."
+                " Only explain the measures, region, project types and boundaries actually stated in the evidence;"
+                " do not infer global trends, cost composition or financial returns."
             )
 
         try:
+            if self.settings.wechat_auto_publish_mode:
+                self._llm_expansion_call_count += 1
             result_data = self.openai_service.create_json_completion(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -2889,7 +2952,8 @@ class WriterAgent(BaseAgent):
             # Count only a completed expansion. A format error, timeout or
             # unusable response must not consume the one useful retry that is
             # reserved for the final post-polish length check.
-            self._llm_expansion_call_count += 1
+            if not self.settings.wechat_auto_publish_mode:
+                self._llm_expansion_call_count += 1
             result = list(paragraphs)
             insert_pos = max(1, len(result) - 1)
             for offset, para in enumerate(new_paragraphs):
@@ -2909,6 +2973,15 @@ class WriterAgent(BaseAgent):
         allow_llm_expansion: bool = True,
     ) -> list[str]:
         explicit_min_chars = min_chars > 0
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import prepare_article, effective_body_chars
+            article = prepare_article("\n\n".join(paragraphs), data_report)
+            body = article.split("参考来源：", 1)[0]
+            paragraphs = [item.strip() for item in body.split("\n\n") if item.strip()]
+            if allow_llm_expansion and effective_body_chars(article) < (min_chars or 2100):
+                paragraphs = self._expand_article_via_llm(paragraphs, data_report, min_chars=min_chars or 2100)
+            grounded = prepare_article("\n\n".join(paragraphs), data_report)
+            return [item.strip() for item in grounded.split("\n\n") if item.strip()]
         content_mode = self._content_mode(data_report)
         if min_chars <= 0:
             if self._is_narrative_run():

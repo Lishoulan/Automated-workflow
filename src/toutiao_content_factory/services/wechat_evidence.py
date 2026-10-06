@@ -289,6 +289,11 @@ def prepare_article(article: str, report) -> str:
         for sentence in sentences:
             sentence = _claim_text(sentence)
             matches = supporting_facts(sentence, report.fact_evidence)
+            if report.article_kind == "policy_explainer":
+                prose = "\n".join(fact["quote"] for fact in report.fact_evidence)
+                if any(token in sentence and token not in prose for token in
+                       ("全球", "世界各国", "全球趋势", "成本构成", "投资收益", "收益率")):
+                    continue
             if _unsupported_claim(sentence, report.fact_evidence):
                 continue
             kept.append(sentence)
@@ -312,6 +317,51 @@ def prepare_article(article: str, report) -> str:
         publisher = source.get("publisher") or "发布机构未标注"
         references.append(f"《{source['title']}》；{publisher}；{date}；{source['url']}")
     return "\n\n".join(paragraphs) + "\n\n参考来源：\n" + "\n".join(references)
+
+
+def effective_body_chars(article: str) -> int:
+    body = article.split("参考来源：", 1)[0]
+    body = re.sub(r"据《[^》]+》报道[，,]?", "", body)
+    body = re.sub(r"https?://\S+", "", body)
+    return len(re.sub(r"\s+", "", body))
+
+
+def build_outline(report, retry_context: dict | None = None) -> None:
+    """Bind each section to existing facts; never manufacture missing analysis."""
+    import hashlib
+    import json
+
+    context = retry_context or {}
+    report.source_fingerprint = hashlib.sha256(json.dumps(report.fact_evidence, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    matching = [item for item in context.get("failed_inputs", []) if item.get("source_fingerprint") == report.source_fingerprint]
+    report.regeneration_requirements = list(dict.fromkeys(reason for item in matching
+        for reason in item.get("requirements", [])))[:12] or list(context.get("requirements", []))[:12]
+    labels = {
+        "policy_explainer": ["发生了什么变化", "措施及作用环节", "适用地区和项目类型", "原文规定的实施条件", "边界及未披露信息", "后续核对变量"],
+        "product_progress": ["产品及披露进展", "已披露能力", "能力的作用环节", "验证条件与结果", "限制及未验证范围", "后续核对变量"],
+        "company_earnings": ["企业及统计期", "原文财务数据", "业务分类与变化", "数据可比范围", "披露限制", "后续核对变量"],
+    }.get(report.article_kind, ["事件及主体", "已披露进展", "相关技术环节", "事实之间的关系", "证据边界", "后续核对变量"])
+    facts = list(report.fact_evidence)
+    # A relay starts from the issues rather than regenerating the same brief.
+    if report.regeneration_requirements and len(facts) > 1:
+        facts = facts[1:] + facts[:1]
+    report.writing_outline = [{"section": label, "fact_ids": [item["fact_id"] for item in facts[i::len(labels)]],
+                               "target_chars": 350} for i, label in enumerate(labels)]
+    # Sections with no distinct fact can explain boundaries of an existing fact.
+    for section in report.writing_outline:
+        if not section["fact_ids"] and facts:
+            section["fact_ids"] = [facts[0]["fact_id"]]
+    payload = {"facts": report.fact_evidence, "kind": report.article_kind,
+               "outline": report.writing_outline, "requirements": report.regeneration_requirements}
+    report.draft_fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    if report.draft_fingerprint in context.get("failed_fingerprints", []):
+        from toutiao_content_factory.exceptions import LowQualityAbortException
+        raise LowQualityAbortException("同一素材、大纲和要求已失败，换题。")
+    report.word_target = 2100
+    report.writing_brief += " 正文目标2000～2200字，最低1750字；按writing_outline逐节展开，每节仅使用绑定证据。参考来源、网址和重复引用不计篇幅。"
+    if report.regeneration_requirements:
+        report.writing_brief += " 本轮重点：" + "；".join(report.regeneration_requirements)
+    report.format_brief = report.writing_brief
 
 
 def apply_requirements(report, extraction, trend_report=None) -> None:

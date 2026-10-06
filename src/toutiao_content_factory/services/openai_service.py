@@ -120,6 +120,8 @@ class OpenAIContentService:
             }
             if settings.openai_base_url:
                 client_kwargs["base_url"] = settings.openai_base_url
+            if settings.wechat_auto_publish_mode and os.environ.get("WECHAT_RUN_DEADLINE_EPOCH"):
+                client_kwargs["max_retries"] = 0
             self.client = OpenAI(**client_kwargs)
 
         # 部分第三方中转站不支持 response_format 结构化参数（会返回 502/4xx），
@@ -278,6 +280,12 @@ class OpenAIContentService:
             kwargs["max_tokens"] = self.DEFAULT_MAX_TOKENS
         last_exc: Exception | None = None
         for attempt in range(1, self.MAX_RETRIES + 1):
+            deadline = os.environ.get("WECHAT_RUN_DEADLINE_EPOCH") if self.settings.wechat_auto_publish_mode else None
+            if deadline:
+                remaining = float(deadline) - time.time()
+                if remaining <= 0:
+                    raise AIRequestError("WeChat processing deadline exhausted")
+                kwargs["timeout"] = min(self.REQUEST_TIMEOUT, remaining)
             try:
                 return self.client.chat.completions.create(**kwargs)
             except Exception as exc:
@@ -304,6 +312,10 @@ class OpenAIContentService:
                     exc,
                     delay,
                 )
+                if deadline:
+                    remaining = float(deadline) - time.time()
+                    if delay >= remaining:
+                        raise AIRequestError("WeChat retry exceeds processing deadline") from exc
                 time.sleep(delay)
         raise AIRequestError(
             f"Model request failed after {self.MAX_RETRIES} attempts: {last_exc}"

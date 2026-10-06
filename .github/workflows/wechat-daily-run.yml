@@ -12,6 +12,14 @@ on:
         type: choice
         options: [check, publish]
         default: check
+      retry_parent_run_id:
+        description: 'Internal relay parent run and attempt'
+        type: string
+        default: ''
+      retry_day:
+        description: 'Internal relay Beijing date'
+        type: string
+        default: ''
 
 concurrency:
   group: wechat-default
@@ -19,6 +27,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   wechat:
@@ -39,6 +48,8 @@ jobs:
       WECHAT_SESSION_KEY: ${{ secrets.WECHAT_SESSION_KEY }}
       WECHAT_SESSION_SEED: ${{ secrets.WECHAT_SESSION_SEED_DEFAULT }}
       RUN_MODE: ${{ inputs.mode || 'publish' }}
+      WECHAT_RETRY_PARENT: ${{ inputs.retry_parent_run_id || '' }}
+      WECHAT_RETRY_DAY: ${{ inputs.retry_day || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -90,6 +101,11 @@ jobs:
               elif payload.get('wechat_status') == 'draft_saved':
                   handle.write('仅保存草稿，未发表。\n')
               handle.write('Login checks and review-required articles do not count as publications.\n')
+              if payload.get('retry_status'):
+                  handle.write('自动接力：' + str(payload['retry_status']) + '；当天运行 ' + str(payload.get('daily_run_count', '')) + ' 次，累计处理 ' + str(payload.get('daily_processing_seconds', '')) + ' 秒。\n')
+                  handle.write(str(payload.get('retry_message', '')) + '\n')
+              if payload.get('retry_state_error'):
+                  handle.write('每日状态保存或接力触发失败：' + str(payload['retry_state_error']) + '；停止补跑。\n')
               if payload.get('formal_publication_confirmed'):
                   handle.write('正式发表已确认：后台账号、标题、时间及公开正文匹配。\n')
               else:

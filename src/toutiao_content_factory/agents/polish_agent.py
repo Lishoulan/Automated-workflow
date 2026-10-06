@@ -165,6 +165,41 @@ class PolishAgent(BaseAgent):
             else {}
         )
 
+    def _polish_wechat_paragraphs(self, content, trend_report, data_report, revision_focus):
+        """Only apply explicit, source-bound paragraph patches; keep other prose."""
+        from toutiao_content_factory.services.wechat_evidence import prepare_article, requirements, effective_body_chars
+        article = content.polished_article or content.article
+        body = article.split("参考来源：", 1)[0]
+        paragraphs = [part.strip() for part in re.split(r"\n\s*\n", body) if part.strip()]
+        if revision_focus and self.openai_service.available:
+            payload = self.openai_service.create_json_completion(
+                system_prompt=self.POLISH_SYSTEM_PROMPT,
+                user_prompt=("逐项修复审核问题，仅返回需修改段落的补丁。保留所有其余段落；不得整篇压缩。"
+                    "正文目标2000～2200字，最低1750字。篇幅不足由后续证据补写负责。"
+                    "无法补证的全球趋势、成本构成、收益删除或收窄，禁止补造分析。"
+                    + requirements(data_report.article_kind)["instruction"]
+                    + "\n审核要求：" + self.json_text(revision_focus)
+                    + "\n段落：" + self.json_text([{"paragraph_id": i, "text": text} for i, text in enumerate(paragraphs)])
+                    + "\n事实：" + self.json_text(data_report.fact_evidence)
+                    + '\n输出格式：{"patches":[{"paragraph_id":0,"before":"完整原段落","after":"修改后段落"}]}。'
+                    "before必须逐字匹配，不改无关段落；只有问题本身缺乏依据时才允许after为空。"))
+            patches = payload.get("patches", []) if isinstance(payload, dict) else []
+            changed = set()
+            for patch in patches if isinstance(patches, list) else []:
+                if not isinstance(patch, dict):
+                    continue
+                index = patch.get("paragraph_id")
+                if (type(index) is int and 0 <= index < len(paragraphs) and index not in changed
+                        and patch.get("before") == paragraphs[index] and isinstance(patch.get("after"), str)):
+                    paragraphs[index] = patch["after"].strip()
+                    changed.add(index)
+        revised = "\n\n".join(paragraphs)
+        grounded = prepare_article(revised, data_report)
+        notes, score = self._validate_article(grounded, data_report, trend_report)
+        return {"polished_article": grounded, "validation_notes": notes, "validation_score": score,
+                "grounding_diagnostics": [{"before_cleanup_chars": effective_body_chars(revised),
+                    "after_cleanup_chars": effective_body_chars(grounded), "final_body_chars": effective_body_chars(grounded)}]}
+
     def _iteration_engagement_directive(self) -> str:
         """根据 iteration_overrides.engagement_template_weights 生成互动话术覆盖指令。
 
@@ -199,6 +234,8 @@ class PolishAgent(BaseAgent):
         cache_context: CacheContext,
         revision_focus: list[str] | None = None,
     ) -> dict[str, object]:
+        if self.settings.wechat_auto_publish_mode:
+            return self._polish_wechat_paragraphs(content, trend_report, data_report, revision_focus or [])
         if self._is_narrative_domain() and str(getattr(content, "article", "") or "").strip():
             # ⚠️ 2026-09-19：**叙事稿跳过 LLM 润色**。
             #

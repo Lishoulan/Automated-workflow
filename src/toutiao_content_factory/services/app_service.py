@@ -963,10 +963,10 @@ class ContentFactoryAppService:
                     len(candidate_specs),
                     exc,
                 )
-                attempt_record.update(
-                    {"status": "too_short_skipped", "skip_reason": str(exc)}
-                )
-                losing_attempts.append(attempt_record)
+                losing_attempts.append({"attempt_index": attempt_index, "candidate_rank": int(candidate["rank"]),
+                    "topic_title": str(candidate["title"]), "topic_url": str(candidate["url"]),
+                    "run_dir": "", "score_snapshot": {}, "qualified_for_auto_approval": False,
+                    "status": "too_short_skipped", "skip_reason": str(exc)})
                 continue
             except LowQualityAbortException as exc:
                 self.logger.info(
@@ -2917,6 +2917,7 @@ class ContentFactoryAppService:
                 continue
             flags = set(topic.quality_flags)
             thin = not topic.source_records or len(topic.snippet or "") < 600 or bool(flags & {"title_only", "weak_evidence"})
+            thin = thin or os.environ.get("WECHAT_REGENERATING") == "1"
             if not thin:
                 continue
             if not collector._has_concrete_industry_keyword(topic) or not collector._filter_by_freshness([topic], defaultdict(int)):
@@ -3020,8 +3021,10 @@ class ContentFactoryAppService:
         if article_path.exists():
             article_text = article_path.read_text(encoding="utf-8").replace("\n", "").replace(" ", "")
             if self.settings.wechat_auto_publish_mode:
-                article_text = article_text.split("参考来源：", 1)[0]
-            snapshot["article_char_count"] = len(article_text)
+                from toutiao_content_factory.services.wechat_evidence import effective_body_chars
+                snapshot["article_char_count"] = effective_body_chars(article_text)
+            else:
+                snapshot["article_char_count"] = len(article_text)
             if self.settings.wechat_auto_publish_mode:
                 snapshot["length_minimum"] = self._minimum_article_chars(None, score_snapshot=snapshot)
         return snapshot

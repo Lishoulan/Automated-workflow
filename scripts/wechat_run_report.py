@@ -87,7 +87,12 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
                                                for key in ("source_id", "title", "publisher", "published_at")}
                                               for source in data.get("source_records", []) if isinstance(source, dict)]
                 summary["fact_evidence_count"] = len(data.get("fact_evidence", []))
+                summary["draft_fingerprint"] = safe_text(data.get("draft_fingerprint", ""))
+                summary["source_fingerprint"] = safe_text(data.get("source_fingerprint", ""))
             if isinstance(content, dict):
+                summary["grounding_diagnostics"] = [{key: row[key] for key in
+                    ("before_cleanup_chars", "after_cleanup_chars", "final_body_chars")
+                    if type(row.get(key)) is int} for row in content.get("grounding_diagnostics", []) if isinstance(row, dict)]
                 summary["revision_trace"] = [{"revision_round": trace.get("revision_round", 0),
                     "issues": [{key: safe_text(issue.get(key, ""))[:350]
                                 for key in ("issue_id", "category", "requirement", "before", "after", "status", "verification")}
@@ -113,11 +118,11 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
 def cloud_exit_code(report: dict[str, Any], child_code: int) -> int:
     # A fresh native success plus proof that publication was never attempted.
     if (
-        child_code == 3 and report.get("status") == "review_required"
+        child_code == 3 and report.get("status") in {"review_required", "no_topics"}
         and report.get("native_exit_code") == 0
         and report.get("publication_attempted") is False
         and not report.get("wechat_status")
-        and report.get("run_outcome", "") in {"", "review_required"}
+        and report.get("run_outcome", "") in {"", "review_required", "no_topics"}
     ):
         return 0
     return child_code

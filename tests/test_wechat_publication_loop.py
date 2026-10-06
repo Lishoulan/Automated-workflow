@@ -582,6 +582,71 @@ def test_article_header_date_not_statistics_or_related_link():
     assert metadata["publisher"] == "IT之家"
 
 
+def test_thepaper_header_preserves_real_publication_not_current_hot_topic(app_settings, logger):
+    from collections import defaultdict
+    from toutiao_content_factory.services.topic_collection import TopicCandidate, TopicCollectionService
+    page = '<div class="header"><div id="title">新能源汽车维修为啥又贵又难？</div><div class="info link"><img/><span>媒体：经济日报&nbsp;2026-06-03 17:49</span></div></div><article>截至2025年底保有量4397万辆。</article><div class="info link">媒体：另一账号 2026-10-06 15:00</div>'
+    metadata = evidence.source_metadata(page, source_url="https://m.thepaper.cn/baijiahao_33300881")
+    assert metadata["publisher"] == "经济日报"
+    assert metadata["published_at"] == "2026-06-03T17:49:00"
+    assert metadata["page_title"] == "新能源汽车维修为啥又贵又难？"
+    enable(app_settings)
+    topic = TopicCandidate(metadata["page_title"], "", "rss", "rss", published_at=metadata["published_at"])
+    assert not TopicCollectionService(app_settings, logger)._filter_by_freshness([topic], defaultdict(int))
+    assert not evidence.source_metadata(page, source_url="https://other.test/article")["date_verified"]
+
+
+@pytest.mark.parametrize("page", [
+    '<article><div class="info link">媒体：经济日报 2026-10-06 15:00</div></article>',
+    '<div class="header"><div class="info link">媒体：经济日报 日期未知</div></div><article>截至2025年底。</article>',
+])
+def test_thepaper_unknown_header_never_uses_prose_or_related_date(page):
+    assert not evidence.source_metadata(page, source_url="https://m.thepaper.cn/baijiahao_1")["date_verified"]
+
+
+def test_grounding_removes_only_exact_repeated_sentences_and_keeps_distinct_facts():
+    records = evidence.source_records([MaterialSource("科技测试", "https://a.test/report",
+        "机器人公司完成产品测试，实际验证范围仍需进一步核对。芯片公司公布测试结果，实际配置和性能尚待确认。", True)])
+    data = DataReport(source_records=records, fact_evidence=evidence.build_facts(records))
+    first, second = [fact["quote"] for fact in data.fact_evidence[:2]]
+    article = first + "\n\n" + first + second
+    grounded = evidence.prepare_article(article, data)
+    body = grounded.split("参考来源：", 1)[0]
+    assert body.count(first) == 1
+    assert second in body
+    assert evidence.prepare_article(grounded, data) == grounded
+
+
+def test_grounding_does_not_turn_expert_opinion_into_implemented_policy():
+    source = MaterialSource("维修观察", "https://a.test/report", "专家认为，未来新能源汽车维修行业将逐步开放技术数据。", True)
+    records = evidence.source_records([source]);facts = evidence.build_facts(records)
+    data = DataReport(topic_title="新能源汽车维修", source_records=records, fact_evidence=facts, article_kind="industry_update")
+    assertion = "未来新能源汽车维修行业将逐步开放技术数据。"
+    assert evidence.supporting_facts(assertion, facts)
+    assert assertion not in evidence.prepare_article(assertion, data).split("参考来源：", 1)[0]
+    qualified = "专家认为，未来新能源汽车维修行业将逐步开放技术数据。"
+    assert qualified in evidence.prepare_article(qualified, data)
+
+
+def test_estimate_keeps_original_uncertainty_even_when_numbers_match():
+    source = MaterialSource("维修市场", "https://a.test/report", "机构预测，2029年新能源汽车维修市场规模达到3万亿元。", True)
+    records = evidence.source_records([source]);facts = evidence.build_facts(records)
+    data = DataReport(source_records=records, fact_evidence=facts)
+    assertion = "2029年新能源汽车维修市场规模达到3万亿元。"
+    assert evidence.supporting_facts(assertion, facts)
+    assert assertion not in evidence.prepare_article(assertion, data).split("参考来源：", 1)[0]
+    assert source.body in evidence.prepare_article(source.body, data)
+
+
+def test_later_forecast_does_not_turn_established_data_into_a_forecast():
+    source = MaterialSource("机器人测试进展", "https://a.test/report", "机器人公司目前已完成20台设备测试，预计下一批设备将进入验证阶段。", True)
+    records = evidence.source_records([source]);facts = evidence.build_facts(records)
+    data = DataReport(source_records=records, fact_evidence=facts)
+    actual = "机器人公司目前已完成20台设备测试。"
+    assert evidence.supporting_facts(actual, facts)
+    assert actual in evidence.prepare_article(actual, data)
+
+
 def test_stable_outline_id_preserves_binding_and_rejects_unknown_evidence(app_settings, mock_openai_service, logger):
     enable(app_settings)
     data = report(); evidence.build_outline(data)

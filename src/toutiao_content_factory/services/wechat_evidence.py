@@ -23,6 +23,7 @@ NUMBER = re.compile(r"(?<![A-Za-z\d])\d+(?:\.\d+)?\s*(?:万亿|亿|万|千|百)?
 PERIOD = re.compile(r"(?:截至(?:\d{4}年)?\d{1,2}月(?:\d{1,2}日|底|末)?|\d{4}年(?:\d{1,2}月(?:至\d{1,2}月)?|[上下]半年|[一二三四1234]季度)?|(?:今年|去年)?(?:[上下]半年|[一二三四1234]季度))")
 FINANCIAL = re.compile(r"营业收入|净利润|毛利率|财报|扣非|营收|经营现金流")
 BUSINESS_CLAIM = re.compile(r"利润|盈利|毛利|回款|合同验收|订单|客户复购")
+QUALIFIED_CLAIM = re.compile(r"认为|预计|估算|预测|可能|有望|据传|爆料|尚未|未确认")
 
 
 def stable_id(prefix: str, *parts: str) -> str:
@@ -130,6 +131,20 @@ def source_metadata(page_html: str, *, source_url: str = "") -> dict:
             if value:
                 values.setdefault(field, value)
     host = urlsplit(source_url).hostname or ""
+    if host == "m.thepaper.cn":
+        header = re.search(r'<div[^>]+class=[\"\'][^\"\']*\bheader\b[^\"\']*[\"\'][^>]*>', page_html, re.I)
+        if header:
+            region = re.split(r"<article\b", page_html[header.end():], maxsplit=1, flags=re.I)[0][:2000]
+            info = re.search(r'<div[^>]+class=[\"\'][^\"\']*\binfo\b[^\"\']*[\"\'][^>]*>(.*?)</div>', region, re.S | re.I)
+            if info:
+                text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", info[1]))).strip()
+                match = re.fullmatch(r"媒体[：:]\s*(.{1,100}?)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?)", text)
+                if match:
+                    values.setdefault("article:publisher", match[1])
+                    values.setdefault("datepublished", match[2])
+            title = re.search(r'<div[^>]+id=[\"\']title[\"\'][^>]*>(.*?)</div>', region, re.S | re.I)
+            if title:
+                values.setdefault("og:title", html.unescape(re.sub(r"<[^>]+>", "", title[1])).strip())
     if host == "ofweek.com" or host.endswith(".ofweek.com"):
         header = re.search(r'<div[^>]+class=[\"\'][^\"\']*\bartical-relative\b[^\"\']*[\"\'][^>]*>', page_html, re.I)
         if header:
@@ -262,6 +277,7 @@ def requirements(kind: str) -> dict:
     label, brief, watch, question = KINDS.get(kind, KINDS["industry_update"])
     if kind == "product_progress":
         brief += "；配置、性能、基准测试或独立验证未披露时明确保持未知，不推导性能提升、市场领导地位或产业链收益。消息源未经官方确认时保留报道归因，不把路线图或预测写成已实现事实"
+    brief += "；保留原句中的消息来源、发言人及认为、预测、估算、可能等限定，观点和预测不得写成已实施政策或确定事实"
     return {"label": label, "suggested_angle": brief, "follow_up_focus": watch,
             "writing_brief": brief + "。所有数字逐项绑定原句、统计对象、单位和统计期；缺失信息保持未知。",
             "closing": question,
@@ -315,9 +331,29 @@ def _claim_text(sentence: str) -> str:
     return re.sub(r"^据《[^》]+》报道[，,]?", "", sentence.strip())
 
 
+def _requires_qualification(claim: str, fact: dict) -> bool:
+    qualifier = QUALIFIED_CLAIM.search(fact["quote"])
+    if not qualifier:
+        return False
+    # A later forecast does not change an earlier, already established fact.
+    prefix = fact["quote"][:qualifier.start()].rstrip("，,：: ")
+    if prefix:
+        established = {**fact, "quote": prefix, "numbers": _numbers(prefix),
+                       "measurements": _measurements(prefix),
+                       "statistical_period": list(dict.fromkeys(PERIOD.findall(prefix)))}
+        if supporting_facts(claim, [established]):
+            return False
+    return True
+
+
 def _unsupported_claim(sentence: str, facts: list[dict]) -> bool:
     claim = _claim_text(sentence)
     business = BUSINESS_CLAIM.search(claim)
+    unqualified_assertion = (_numbers(claim) or re.search(r"将|必然|一定", claim)) and not QUALIFIED_CLAIM.search(claim)
+    if unqualified_assertion:
+        matches = supporting_facts(claim, facts)
+        if matches and all(_requires_qualification(claim, fact) for fact in matches):
+            return True
     if not _numbers(claim) and not business:
         return False
     matches = supporting_facts(claim, facts)
@@ -372,6 +408,7 @@ def prepare_article(article: str, report) -> str:
     body = article.split("参考来源：", 1)[0].strip()
     paragraphs = []
     cited_sources = set()
+    seen_sentences = set()
     for paragraph in re.split(r"\n\s*\n", body):
         sentences = [part.strip() for part in re.split(r"(?<=[。！？；])", paragraph) if part.strip()]
         kept, source_ids = [], []
@@ -385,6 +422,11 @@ def prepare_article(article: str, report) -> str:
                     continue
             if _unsupported_claim(sentence, report.fact_evidence):
                 continue
+            normalized = re.sub(r"\s+", "", sentence)
+            if len(normalized) >= 12 and normalized in seen_sentences:
+                continue
+            if len(normalized) >= 12:
+                seen_sentences.add(normalized)
             kept.append(sentence)
             source_ids.extend(fact["source_id"] for fact in matches)
         if not kept:

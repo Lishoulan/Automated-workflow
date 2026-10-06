@@ -235,6 +235,15 @@ class OpenAIContentService:
             )
         # 先尝试带 response_format 的结构化模式（单次尝试，不重试）：
         # 若中转站不支持则快速回退到 prompt-only JSON 模式，而不是浪费重试次数。
+        request_options = {}
+        if self.settings.wechat_auto_publish_mode:
+            request_options["max_tokens"] = self.DEFAULT_MAX_TOKENS
+            deadline = os.environ.get("WECHAT_RUN_DEADLINE_EPOCH")
+            if deadline:
+                remaining = float(deadline) - time.time()
+                if remaining <= 0:
+                    raise AIRequestError("WeChat processing deadline exhausted")
+                request_options["timeout"] = min(self.REQUEST_TIMEOUT, remaining)
         try:
             return self.client.chat.completions.create(
                 model=self.model,
@@ -244,6 +253,7 @@ class OpenAIContentService:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
+                **request_options,
             )
         except Exception as exc:
             if self._is_insufficient_balance_error(exc):

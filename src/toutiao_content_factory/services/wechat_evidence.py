@@ -149,10 +149,12 @@ def source_metadata(page_html: str, *, source_url: str = "") -> dict:
         try:
             published_at = datetime.fromisoformat(raw_date.replace("Z", "+00:00")).isoformat()
         except ValueError:
-            match = re.fullmatch(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?", raw_date)
+            match = re.fullmatch(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?", raw_date)
             if match:
                 try:
-                    published_at = datetime(*map(int, match.groups())).date().isoformat()
+                    parts = [int(value) if value is not None else 0 for value in match.groups()]
+                    stamp = datetime(*parts)
+                    published_at = stamp.isoformat() if match[4] is not None else stamp.date().isoformat()
                 except ValueError:
                     pass
     return {"publisher": values.get("article:publisher", values.get("og:site_name", "")),

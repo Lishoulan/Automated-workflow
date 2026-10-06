@@ -181,6 +181,7 @@ class PolishAgent(BaseAgent):
                     + "\n审核要求：" + self.json_text(revision_focus)
                     + "\n段落：" + self.json_text([{"paragraph_id": i, "text": text} for i, text in enumerate(paragraphs)])
                     + "\n事实：" + self.json_text(data_report.fact_evidence)
+                    + "\n已核实出处元数据：" + self.json_text([{key: row.get(key, "") for key in ("source_id", "title", "publisher", "published_at")} for row in data_report.source_records])
                     + '\n输出格式：{"patches":[{"paragraph_id":0,"before":"完整原段落","after":"修改后段落"}]}。'
                     "before必须逐字匹配，不改无关段落；只有问题本身缺乏依据时才允许after为空。"))
             patches = payload.get("patches", []) if isinstance(payload, dict) else []

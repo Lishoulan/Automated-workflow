@@ -466,7 +466,7 @@
       },
       "dispatches": {
         "37493259299:1": {
-          "status": "intent",
+          "status": "dispatched",
           "child": ""
         }
       },

@@ -153,11 +153,12 @@
           }
         },
         "37419925604:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T05:43:49.940478+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
+          "elapsed_seconds": 509.78,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
+          "outcome": "review_required"
         }
       },
       "dispatches": {},
@@ -221,11 +222,24 @@
             "优化文章结构，确保开头迅速给出判断，结尾明确保留风险边界和跟踪变量。",
             "提升原创性，减少空泛拔高和重复句式，增加非模板化的表达。"
           ]
+        },
+        {
+          "fingerprint": "8e28b5dfc68d97ff6a408c0f503b5ecdd3059c83e695a2b7220ebbae6f186c88",
+          "source_fingerprint": "dcd5da1f1e40f77016574ce7ea2adad9c7834c73d9f236ce446e85dd7e489cd0",
+          "requirements": [
+            "部分关键事实缺乏明确来源和证据支持，如 'BFC 型号将是 Nova Lake 产品线中最早发布的版本' 和 '首批桌面产品还将优先采用大容量缓存设计'。",
+            "对于 'BFC 型号将是 Nova Lake 产品线中最早发布的版本'，需要提供明确的来源和证据支持。",
+            "对于 '首批桌面产品还将优先采用大容量缓存设计'，需要提供明确的来源和证据支持。",
+            "对于 '现有信息显示，Nova Lake 将先进入桌面平台'，需要明确统计对象和统计期。",
+            "对于 '预计到 2026 年 12 月，随着更广泛的 DS 样品分发启动'，需要明确统计对象和统计期。",
+            "对于 '显示出英特尔在高端处理器市场对竞争对手的密切关注和快速模仿能力'，需要避免空泛拔高。",
+            "对于 '若爆料属实，首批桌面产品还将优先采用大容量缓存设计'，需要避免绝对化表达。"
+          ]
         }
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "d0980fc5ccb19e1ba67b63f0839655f8460752a4",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",

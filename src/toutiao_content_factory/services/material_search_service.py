@@ -418,8 +418,9 @@ def strip_tags(text: str) -> str:
 class _ArticleContainerParser(HTMLParser):
     """Isolate a known primary article container, including nested divs."""
 
-    def __init__(self):
+    def __init__(self, container_ids: tuple[str, ...] = ("artibody",)):
         super().__init__(convert_charrefs=True)
+        self.container_ids = container_ids
         self.depth = 0
         self.found = False
         self.complete = False
@@ -428,7 +429,7 @@ class _ArticleContainerParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if self.complete:
             return
-        if tag == "div" and (self.depth or dict(attrs).get("id") == "artibody"):
+        if tag == "div" and (self.depth or dict(attrs).get("id") in self.container_ids):
             self.depth += 1
             self.found = True
         if self.depth:
@@ -446,7 +447,7 @@ class _ArticleContainerParser(HTMLParser):
             self.parts.append(html.escape(data))
 
 
-def extract_article_body(page_html: str, min_chars: int = 600) -> str:
+def extract_article_body(page_html: str, min_chars: int = 600, *, wechat_mode: bool = False) -> str:
     """从页面 HTML 里抽出正文段落。
 
     做法：按块级标签切段，逐行剔除导航/版权类噪声，保留足够长的中文句子，
@@ -462,7 +463,7 @@ def extract_article_body(page_html: str, min_chars: int = 600) -> str:
     # 取 <body> 范围，避免 head 里的 meta 干扰
     m = re.search(r"(?is)<body[^>]*>(.*?)</body>", page_html)
     fragment = m.group(1) if m else page_html
-    primary = _ArticleContainerParser()
+    primary = _ArticleContainerParser(("artibody", "paragraph", "js_content") if wechat_mode else ("artibody",))
     primary.feed(fragment)
     if primary.found:
         if not primary.complete:
@@ -929,6 +930,15 @@ def collect_material(
     bundle = MaterialBundle(query=title)
     hits: list[dict] = []
 
+    def sufficient():
+        if not preserve_sources:
+            return assess_material_evidence(bundle).passed
+        from toutiao_content_factory.services.wechat_evidence import public_url, source_records, scope_source_records
+        records = scope_source_records(source_records(bundle.usable), source_url)
+        active = {record["url"] for record in records if record.get("source_role") != "background"}
+        current = MaterialBundle(title, [source for source in bundle.usable if public_url(source.url) in active])
+        return assess_material_evidence(current).passed
+
     def candidates():
         # Source-backed evergreen cases can fetch their original report even
         # when search is unavailable. Search/result pages are not article seeds.
@@ -939,7 +949,7 @@ def collect_material(
             direct = False
         if direct and _fetch_priority(source_url) > 0:
             yield {"title": title, "url": source_url, "snippet": ""}
-        if assess_material_evidence(bundle).passed:
+        if sufficient():
             return
         for phrase in _search_phrases(title):
             found = search_web(phrase, limit=limit, **({"deadline": deadline} if deadline is not None else {}))
@@ -958,7 +968,7 @@ def collect_material(
             logging.getLogger(__name__).warning("Material fetch budget exhausted after %d sources: %s", len(bundle.sources), title)
             budget_exhausted = True
             break
-        if (len(bundle.sources) if preserve_sources else sum(item.evidence_type == "article" for item in bundle.usable)) >= max_sources or assess_material_evidence(bundle).passed:
+        if (len(bundle.sources) if preserve_sources else sum(item.evidence_type == "article" for item in bundle.usable)) >= max_sources or sufficient():
             break
         url = hit["url"]
         if any(host in url for host in SKIP_HOSTS) and _fetch_priority(url) != 2:
@@ -980,7 +990,11 @@ def collect_material(
                 source.published_at = metadata["published_at"]
                 source.date_verified = metadata["date_verified"]
                 source.title = metadata["page_title"] or source.title
-            body = extract_article_body(page, min_chars=min_body_chars)
+            # A short original report still supplies the event/date anchor.
+            # Keep it for supplementary retrieval; the unchanged bundle gate
+            # decides whether the combined current-event material is sufficient.
+            body = extract_article_body(page, min_chars=1 if preserve_sources else min_body_chars,
+                                        **({"wechat_mode": True} if preserve_sources else {}))
             if body:
                 source.body = body
                 source.ok = True

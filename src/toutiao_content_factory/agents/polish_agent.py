@@ -167,10 +167,16 @@ class PolishAgent(BaseAgent):
 
     def _polish_wechat_paragraphs(self, content, trend_report, data_report, revision_focus):
         """Only apply explicit, source-bound paragraph patches; keep other prose."""
-        from toutiao_content_factory.services.wechat_evidence import prepare_article, requirements, effective_body_chars, supporting_facts
+        from toutiao_content_factory.services.wechat_evidence import prepare_article, requirements, effective_body_chars, supporting_facts, unsupported_claims
         article = content.polished_article or content.article
         body = article.split("参考来源：", 1)[0]
         paragraphs = [part.strip() for part in re.split(r"\n\s*\n", body) if part.strip()]
+        decisions = {"revision_patch_count": 0, "revision_patch_accepted": 0,
+                     "patch_rejected_identity": 0, "patch_rejected_unrelated": 0,
+                     "patch_rejected_fact_loss": 0, "patch_rejected_no_change": 0}
+        located_focus = any("原段落：" in focus for focus in revision_focus)
+        targeted = {i for i, paragraph in enumerate(paragraphs)
+                    if any(paragraph in focus for focus in revision_focus)}
         if revision_focus and self.openai_service.available:
             payload = self.openai_service.create_json_completion(
                 system_prompt=self.POLISH_SYSTEM_PROMPT,
@@ -179,6 +185,7 @@ class PolishAgent(BaseAgent):
                     "无法补证的全球趋势、成本构成、收益删除或收窄，禁止补造分析。"
                     + requirements(data_report.article_kind)["instruction"]
                     + "\n审核要求：" + self.json_text(revision_focus)
+                    + "\n原文未披露的比较对象、方法和验证结果只需说明未知并保留报道、发言人及预告限定。修复必须使用现有事实；不能核实的肯定断言删除或收窄，不通过编造对象或竞争优势满足要求。"
                     + "\n段落：" + self.json_text([{"paragraph_id": i, "text": text} for i, text in enumerate(paragraphs)])
                     + "\n事实：" + self.json_text(data_report.fact_evidence)
                     + "\n已核实出处元数据：" + self.json_text([{key: row.get(key, "") for key in ("source_id", "title", "publisher", "published_at")} for row in data_report.source_records])
@@ -189,28 +196,43 @@ class PolishAgent(BaseAgent):
             for patch in patches if isinstance(patches, list) else []:
                 if not isinstance(patch, dict):
                     continue
+                decisions["revision_patch_count"] += 1
                 index = patch.get("paragraph_id")
                 if (type(index) is int and 0 <= index < len(paragraphs) and index not in changed
                         and patch.get("before") == paragraphs[index] and isinstance(patch.get("after"), str)):
+                    if located_focus and index not in targeted:
+                        decisions["patch_rejected_unrelated"] += 1
+                        continue
                     replacement = patch["after"].strip()
                     if not replacement:
+                        decisions["patch_rejected_identity"] += 1
                         continue
+                    replacement = prepare_article(replacement, data_report).split("参考来源：", 1)[0].strip()
                     before_facts = {fact["fact_id"] for sentence in re.split(r"(?<=[。！？；])", paragraphs[index])
+                                    if not unsupported_claims(sentence, data_report.fact_evidence)
                                     for fact in supporting_facts(sentence, data_report.fact_evidence)}
                     after_facts = {fact["fact_id"] for sentence in re.split(r"(?<=[。！？；])", replacement)
                                    for fact in supporting_facts(sentence, data_report.fact_evidence)}
                     # A patch may narrow unsupported conclusions, but cannot
                     # discard the factual input that supports this paragraph.
                     if before_facts and not before_facts.issubset(after_facts):
+                        decisions["patch_rejected_fact_loss"] += 1
+                        continue
+                    if not replacement or replacement == paragraphs[index]:
+                        decisions["patch_rejected_no_change"] += 1
                         continue
                     paragraphs[index] = replacement
                     changed.add(index)
+                    decisions["revision_patch_accepted"] += 1
+                else:
+                    decisions["patch_rejected_identity"] += 1
         revised = "\n\n".join(paragraphs)
         grounded = prepare_article(revised, data_report)
         notes, score = self._validate_article(grounded, data_report, trend_report)
         return {"polished_article": grounded, "validation_notes": notes, "validation_score": score,
                 "grounding_diagnostics": [{"before_cleanup_chars": effective_body_chars(revised),
-                    "after_cleanup_chars": effective_body_chars(grounded), "final_body_chars": effective_body_chars(grounded)}]}
+                    "after_cleanup_chars": effective_body_chars(grounded), "final_body_chars": effective_body_chars(grounded),
+                    **decisions}]}
 
     def _iteration_engagement_directive(self) -> str:
         """根据 iteration_overrides.engagement_template_weights 生成互动话术覆盖指令。

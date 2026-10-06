@@ -140,13 +140,20 @@ class QualityReviewCouncilAgent(BaseAgent):
             from toutiao_content_factory.services.wechat_evidence import requirements
             fact_payload = {name: getattr(data_report, name) for name in
                             ("topic_title", "article_kind", "source_records", "fact_evidence")}
+            fact_payload["source_records"] = [source for source in data_report.source_records
+                                              if source.get("source_role") != "background"]
             editorial_brief = requirements(data_report.article_kind)["instruction"]
+        review_style = self.style_digest(style)
+        if self.settings.wechat_auto_publish_mode:
+            review_style = (f"语气：{style.tone}。" + editorial_brief
+                            + "正文目标2000～2200字，最低1750字；每段不超过180字。"
+                            "结构围绕已披露事实、解释及证据边界，不强行讨论订单、利润或竞争优势。")
         prompt = self.render_prompt(
             "quality_review_council_prompt.md",
             platform=self.settings.platform,
             topic_title=data_report.topic_title,
             role_context=role_context,
-            style_digest=self.style_digest(style),
+            style_digest=review_style,
             article=article,
             title=title,
             data_json=self.json_text(fact_payload),
@@ -183,6 +190,8 @@ class QualityReviewCouncilAgent(BaseAgent):
                 prompt += "\n" + requirements(data_report.article_kind)["instruction"]
                 prompt += "\n逐条使用fact_evidence核对数字、单位、统计对象和统计期；发布日期不是统计期。issues的requirement须对应意见数组，paragraph须为正文原段落。"
                 prompt += "\n只把正文实际出现的表述列为稿件问题，不把出处元数据或写作要求当成正文。原文可核对的产品型号和技术缩写需按技术语境核验，不能仅因是缩写就当作自动化流程标签；真实流程标签仍须阻断。"
+                prompt += "\n原文没有披露比较对象、测试方法或独立验证结果时，检查正文是否明确写出未披露且保留发言人、报道及预告归因。准确说明未知边界本身不是缺失事实，不要求补造具体对象、测试结果或市场竞争优势；正文声称已验证或偷换对象仍须阻断。"
+                prompt += "\n每条必须修改的要求应能通过现有事实的补充、删除无依据断言或收窄表述完成。只针对成稿现存问题，不要求写出资料中不存在的信息。issues必须给出正文原段落；标题问题明确标为标题，不定位到正文。"
                 prompt += "\n对待核实问题逐项复核并返回issue_evaluations。遗漏问题或只有措辞变化不能判定已解决；resolved需给出现稿原句、证据编号和核实理由。不确定则unverifiable。\n"
                 if content.revision_trace:
                     prompt += self.json_text(content.revision_trace[-1])

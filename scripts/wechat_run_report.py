@@ -98,7 +98,9 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
                 summary["source_fingerprint"] = safe_text(data.get("source_fingerprint", ""))
             if isinstance(content, dict):
                 summary["grounding_diagnostics"] = [{key: row[key] for key in
-                    ("before_cleanup_chars", "after_cleanup_chars", "final_body_chars", "accepted_section_count", "returned_section_count")
+                    ("before_cleanup_chars", "after_cleanup_chars", "final_body_chars", "accepted_section_count", "returned_section_count",
+                     "revision_patch_count", "revision_patch_accepted", "patch_rejected_identity", "patch_rejected_unrelated",
+                     "patch_rejected_fact_loss", "patch_rejected_no_change")
                     if type(row.get(key)) is int} for row in content.get("grounding_diagnostics", []) if isinstance(row, dict)]
                 summary["revision_trace"] = [{"revision_round": trace.get("revision_round", 0),
                     "issues": [{key: safe_text(issue.get(key, ""))[:350]

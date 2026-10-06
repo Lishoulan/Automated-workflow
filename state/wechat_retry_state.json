@@ -62,20 +62,27 @@
             "native_exit_code": 1,
             "publication_attempted": false
           }
+        },
+        "37412838488:1": {
+          "status": "running",
+          "started_at": "2026-10-06T04:16:12.242469+00:00",
+          "parent": "",
+          "elapsed_seconds": 0,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
         }
       },
       "dispatches": {},
       "failed_inputs": [],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "authorized",
+          "status": "claimed",
           "purpose": "verify_formal_publication",
           "head_sha": "81a58652b5880910ce3ca7c3e8dc823c26b54786",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",
           "expires_at": "2026-10-06T05:15:16.461875+00:00",
           "authorization": "User requested immediate formal publication verification on 2026-10-06",
           "dispatch_status": "intent",
-          "run_key": "37412225453:1",
+          "run_key": "37412838488:1",
           "resume_after_preparation_failure": "37412225453:1",
           "reauthorized_at": "2026-10-06T04:15:16.461875+00:00"
         }

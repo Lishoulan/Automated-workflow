@@ -88,9 +88,10 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
             content = archived.get("content", {})
             data = archived.get("data_report", {})
             if isinstance(data, dict):
+                from toutiao_content_factory.services.wechat_evidence import public_url
                 summary["article_kind"] = safe_text(data.get("article_kind", ""))
                 summary["source_records"] = [{key: safe_text(source.get(key, ""))
-                                               for key in ("source_id", "title", "publisher", "published_at")}
+                                               for key in ("source_id", "title", "publisher", "published_at")} | {"url": public_url(str(source.get("url", "")))}
                                               for source in data.get("source_records", []) if isinstance(source, dict)]
                 summary["fact_evidence_count"] = len(data.get("fact_evidence", []))
                 summary["draft_fingerprint"] = safe_text(data.get("draft_fingerprint", ""))

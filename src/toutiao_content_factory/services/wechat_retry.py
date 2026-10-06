@@ -71,7 +71,11 @@ def reserve(state: dict, day: str, key: str, started_at: str, *, parent: str = "
         previous = [(run_key, row) for run_key, row in entry["runs"].items() if row.get("manual_validation_id")]
         if previous:
             last_key, last_run = previous[-1]
-            if grant.get("resume_after_preparation_failure") != last_key or last_run.get("preparation_failure_verified") is not True:
+            preparation = grant.get("resume_after_preparation_failure") == last_key and last_run.get("preparation_failure_verified") is True
+            unpublished = (grant.get("resume_after_not_published") == last_key
+                           and last_run.get("no_submission_verified") is True
+                           and last_run.get("outcome") in {"review_required", "no_topics"})
+            if not preparation and not unpublished:
                 return state, "validation_already_used"
     if (len(entry["runs"]) >= MAX_RUNS and grant is None) or remaining(entry) < 120:
         return state, "daily_budget_exhausted"

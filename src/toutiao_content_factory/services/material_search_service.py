@@ -975,7 +975,7 @@ def collect_material(
             source.url = final_url or url
             if preserve_sources:
                 from toutiao_content_factory.services.wechat_evidence import source_metadata
-                metadata = source_metadata(page)
+                metadata = source_metadata(page, source_url=source.url)
                 source.publisher = metadata["publisher"]
                 source.published_at = metadata["published_at"]
                 source.date_verified = metadata["date_verified"]

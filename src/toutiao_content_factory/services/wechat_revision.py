@@ -21,10 +21,10 @@ def bind_issues(report, article: str, facts: list[dict]) -> None:
             provided = next((i for i in supplied if i.get("requirement") == requirement), {})
             quote = str(provided.get("paragraph", "")).strip()
             if not quote:
-                excerpts = re.findall(r"[“\"]([^”\"]{8,})[”\"]", requirement)
-                quote = next((excerpt for excerpt in excerpts if excerpt in article), "")
+                excerpts = re.findall(r"[“\"‘]([^”\"’]{8,})[”\"’]", requirement)
+                quote = next((excerpt for excerpt in excerpts if re.sub(r"\s+", "", excerpt) in re.sub(r"\s+", "", article)), "")
             # A model-supplied quote is a locator only when it is in this body.
-            paragraph = next((p for p in paragraphs if quote and quote in p), "")
+            paragraph = next((p for p in paragraphs if quote and re.sub(r"\s+", "", quote) in re.sub(r"\s+", "", p)), "")
             issue_id = stable_id("issue_", category, re.sub(r"\s+", "", requirement))
             evidence = [fact for sentence in re.split(r"(?<=[。！？；])", paragraph)
                         for fact in supporting_facts(sentence, facts)] if paragraph else []

@@ -6,8 +6,10 @@ source bodies stay in the private working directory, never in cloud diagnostics.
 from __future__ import annotations
 
 import hashlib
+import json
+import html
 import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -46,17 +48,42 @@ class _MetadataParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.values = {}
+        self.ld_json = []
+        self._script = False
+        self._script_text = []
+        self._nickname = False
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "meta":
             key = attrs.get("property", attrs.get("name", attrs.get("itemprop", ""))).lower()
             self.values[key] = attrs.get("content", "").strip()
+        if tag == "script" and attrs.get("type") == "application/ld+json":
+            self._script = True
+            self._script_text = []
+        if attrs.get("id") == "js_name":
+            self._nickname = True
         if tag == "time" and attrs.get("datetime"):
             self.values.setdefault("datepublished", attrs["datetime"])
 
+    def handle_data(self, data):
+        if self._script:
+            self._script_text.append(data)
+        if self._nickname and data.strip():
+            self.values.setdefault("wechat:nickname", data.strip())
 
-def source_metadata(page_html: str) -> dict:
+    def handle_endtag(self, tag):
+        if tag == "script" and self._script:
+            try:
+                self.ld_json.append(json.loads("".join(self._script_text)))
+            except (ValueError, TypeError):
+                pass
+            self._script = False
+        if tag in {"a", "span"}:
+            self._nickname = False
+
+
+def source_metadata(page_html: str, *, source_url: str = "") -> dict:
     """Read explicit publication metadata before body/noise filtering.
 
     A collection timestamp, copyright year, modified date, or date in article
@@ -65,7 +92,37 @@ def source_metadata(page_html: str) -> dict:
     parser = _MetadataParser()
     parser.feed(page_html)
     values = parser.values
-    raw_date = next((values[k] for k in ("article:published_time", "datepublished", "pubdate", "publishdate", "publish_date") if values.get(k)), "")
+    structured_dates, structured_publishers = set(), set()
+    for payload in parser.ld_json:
+        entries = payload if isinstance(payload, list) else payload.get("@graph", [payload]) if isinstance(payload, dict) else []
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            types = entry.get("@type", [])
+            types = [types] if isinstance(types, str) else types
+            if not isinstance(types, list) or not any(isinstance(kind, str) and kind in {"Article", "NewsArticle", "BlogPosting"} for kind in types):
+                continue
+            if isinstance(entry.get("datePublished"), str):
+                structured_dates.add(entry["datePublished"])
+            publisher = entry.get("publisher", {})
+            name = publisher.get("name", "") if isinstance(publisher, dict) else publisher if isinstance(publisher, str) else ""
+            if isinstance(name, str) and name:
+                structured_publishers.add(name)
+    if len(structured_dates) == 1:
+        values.setdefault("datepublished", next(iter(structured_dates)))
+    if len(structured_publishers) == 1:
+        values.setdefault("article:publisher", next(iter(structured_publishers)))
+    if urlsplit(source_url).hostname == "mp.weixin.qq.com" and 'id="js_content"' in page_html:
+        stamp = re.search(r"(?:var\s+)?ct\s*=\s*['\"](\d{10})['\"]", page_html)
+        if stamp:
+            values.setdefault("datepublished", datetime.fromtimestamp(int(stamp[1]), timezone(timedelta(hours=8))).isoformat())
+        nickname = values.get("wechat:nickname", "")
+        if not nickname:
+            match = re.search(r"(?:var\s+)?nickname\s*=\s*['\"]([^'\"<>]{1,100})['\"]", page_html)
+            nickname = html.unescape(match[1]) if match else ""
+        if nickname:
+            values.setdefault("article:publisher", nickname)
+    raw_date = next((values[k] for k in ("article:published_time", "datepublished", "pubdate", "publishdate", "publish_date", "pubtime", "publish-time", "dcterms.issued", "dc.date.issued") if values.get(k)), "")
     published_at = ""
     if raw_date:
         try:
@@ -283,6 +340,7 @@ def prepare_article(article: str, report) -> str:
     sources = {item["source_id"]: item for item in report.source_records}
     body = article.split("参考来源：", 1)[0].strip()
     paragraphs = []
+    cited_sources = set()
     for paragraph in re.split(r"\n\s*\n", body):
         sentences = [part.strip() for part in re.split(r"(?<=[。！？；])", paragraph) if part.strip()]
         kept, source_ids = [], []
@@ -308,8 +366,9 @@ def prepare_article(article: str, report) -> str:
             if chunk_sources:
                 source = sources.get(chunk_sources[0], {})
                 name = source.get("publisher") or source.get("title")
-                if name and name not in text:
+                if name and name not in text and source.get("source_id") not in cited_sources:
                     text = f"据《{source['title']}》报道，" + text
+                cited_sources.add(source.get("source_id"))
             paragraphs.append(text)
     references = []
     for source in report.source_records:

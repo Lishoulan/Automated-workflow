@@ -495,3 +495,73 @@ def test_lazy_candidates_exclude_attempted_titles_and_keep_unique_eligible_count
     later = app._build_daily_candidate_specs(topic_rank=None, topic_title=None, refresh_cache=False, dry_run=False)
     assert [row["title"] for row in later] == [topics[1].title]
     assert app._wechat_eligible_candidate_count == 2
+
+
+def test_writer_receives_actual_outline_and_only_accepts_bound_sections(app_settings, logger):
+    enable(app_settings)
+    model = MagicMock(available=True)
+    data = report()
+    evidence.build_outline(data)
+    def completion(system_prompt, user_prompt, **kwargs):
+        prompt = user_prompt
+        for section in data.writing_outline:
+            assert section["section"] in prompt
+            assert section["fact_ids"][0] in prompt
+        return {"sections": [{"section": data.writing_outline[0]["section"],
+            "fact_ids": data.writing_outline[0]["fact_ids"], "text": "陕西要求储能项目与配套新能源项目同期投产。"}]}
+    model.create_json_completion.side_effect = completion
+    writer = WriterAgent(app_settings, MagicMock(), model, logger)
+    result = writer.run(TrendReport(), data, app_settings.get_style(), CacheContext())
+    assert "同期投产" in result.article
+
+
+def test_wechat_metadata_uses_platform_publication_not_collection_date():
+    page = '<div id="js_content">截至2025年底装机变化</div><a id="js_name">科技账号</a><script>var ct = "1791259200";</script>'
+    metadata = evidence.source_metadata(page, source_url="https://mp.weixin.qq.com/s/public")
+    assert metadata["publisher"] == "科技账号"
+    assert metadata["date_verified"] is True
+    assert metadata["published_at"] == datetime.fromtimestamp(1791259200, metrics.BEIJING).isoformat()
+    assert not evidence.source_metadata(page, source_url="https://other.test/page")["date_verified"]
+
+
+def test_structured_article_metadata_and_ambiguity():
+    payload = {"@type": ["NewsArticle"], "datePublished": "2026-10-05", "dateModified": "2026-10-06", "publisher": {"name": "公开发布机构"}}
+    page = '<script type="application/ld+json">' + json.dumps(payload) + '</script><p>截至2025年底</p>'
+    metadata = evidence.source_metadata(page)
+    assert metadata["published_at"].startswith("2026-10-05")
+    assert metadata["publisher"] == "公开发布机构"
+    payload = [payload, {"@type": "Article", "datePublished": "2020-01-01"}]
+    assert not evidence.source_metadata('<script type="application/ld+json">' + json.dumps(payload) + '</script>')["date_verified"]
+
+
+def test_citation_restore_does_not_readd_repeated_prefixes():
+    data = report()
+    body = "陕西要求储能项目与配套新能源项目同期投产。\n\n相关储能项目与配套新能源项目同期投产，适用条件按通知执行。"
+    first = evidence.prepare_article(body, data)
+    second = evidence.prepare_article(first, data)
+    assert first.count("据《陕西储能通知》报道") == 1
+    assert second == first
+    assert "参考来源：" in second
+
+
+def test_single_quoted_review_excerpts_bind_despite_whitespace():
+    from toutiao_content_factory.services.wechat_revision import bind_issues
+    body = "一个百兆瓦级光伏电站配两成储能，仍需核对具体条件。"
+    audit = QualityReviewReport(logic_issues=["核实‘一个百兆瓦级 光伏电站 配两成储能’，不要外推。"])
+    bind_issues(audit, body, [])
+    assert audit.issues[0]["paragraph"] == body
+    assert audit.issues[0]["location_verified"] is True
+
+
+def test_validation_review_hold_continuation_requires_separate_no_submission_proof():
+    state, day, now = validation_state()
+    state, _ = retry.reserve(state, day, "4:1", now, validation_id="once", head_sha="approved-sha")
+    state = retry.complete(state, day, "4:1", 300, normal(), {})
+    entry = state["days"][day]
+    grant = entry["manual_validation_grants"]["once"]
+    grant.update(status="authorized", resume_after_not_published="4:1")
+    assert retry.reserve(state, day, "5:1", now, validation_id="once", head_sha="approved-sha")[1] == "validation_already_used"
+    entry["runs"]["4:1"]["no_submission_verified"] = True
+    resumed, status = retry.reserve(state, day, "5:1", now, validation_id="once", head_sha="approved-sha")
+    assert status == "reserved"
+    assert resumed["days"][day]["runs"]["4:1"]["elapsed_seconds"] == 300

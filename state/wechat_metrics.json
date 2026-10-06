@@ -365,7 +365,33 @@
       "elapsed_seconds": 477.086,
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "37428125664:1",
+      "started_at": "2026-10-06T07:12:24.437802+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "quality_review_required"
+      ],
+      "attempt_count": 1,
+      "enrichment_count": 2,
+      "eligible_candidate_count": 1,
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "部分数据引用未核实具体来源，如‘截至2025年底，全国新能源汽车保有量达4397万辆，占汽车总量的12.01％。’",
+        "文章存在逻辑跳跃，如‘未来，新能源汽车维修行业将逐步放开合规备案的市场化维修权限，全面放开技术数据，打破4S店独家定价、独家维保的模式。’与前后文逻辑衔接不够紧密。",
+        "文章结尾段落内容与开头段落重复，缺乏新信息，如‘这一趋势凸显了新能源车维修市场的重要性和紧迫性。’",
+        "存在绝对化表述：'独家'"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 597.075,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-06T15:06:38.718676+08:00"
+  "updated_at": "2026-10-06T15:22:25.171973+08:00"
 }

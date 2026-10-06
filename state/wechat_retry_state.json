@@ -238,11 +238,12 @@
           }
         },
         "37478907965:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T14:27:00.055172+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
+          "elapsed_seconds": 601.053,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
+          "outcome": "review_required"
         }
       },
       "dispatches": {},
@@ -382,11 +383,22 @@
             "标题需补充具体数字、公司名或地名，增加信息量和具象性。",
             "正文需增加因果、转折或条件边界，避免论点并列，并补充反方或失效条件。"
           ]
+        },
+        {
+          "fingerprint": "cd0f17abcfa2be4d2b7ab578f6cbb7e847e22618509153dd8e8483844811fd96",
+          "source_fingerprint": "ee410f9f2854f63f6982198bc589b8a50bf553d9994b07f55ec625c262156a56",
+          "requirements": [
+            "明确新模型的具体比较对象和优于中国竞品的方面。",
+            "在预测性表述中保留限定词。",
+            "核实并注明投后估值和投资消息的来源。",
+            "补充说明Mistral AI如何获得市场竞争优势的具体逻辑。",
+            "精简开头重复表述。"
+          ]
         }
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "cae0191a255e6ea2f929d7eefbdb3e50283bf684",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",

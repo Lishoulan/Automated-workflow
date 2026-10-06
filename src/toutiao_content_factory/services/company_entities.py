@@ -496,3 +496,19 @@ def extract_known_company_names(text: object) -> list[str]:
             continue
         result.append(alias)
     return result
+
+
+# Explicit WeChat coverage; shared/Toutiao entity policy stays unchanged.
+# Public company identity: https://mistral.ai/about/
+_WECHAT_COMPANY_ALIAS = re.compile(r"(?<![A-Za-z0-9_])Mistral(?:[ \t]*AI)?(?![A-Za-z0-9_])", re.I)
+
+
+def extract_wechat_company_names(text: object) -> list[str]:
+    raw = re.sub(r"https?://\S+", " ", str(text or ""), flags=re.I)
+    names = extract_known_company_names(raw)
+    names.extend(match.group() for match in _WECHAT_COMPANY_ALIAS.finditer(raw))
+    return list(dict.fromkeys(names))
+
+
+def is_wechat_company_name(value: object) -> bool:
+    return is_valid_company_name(value) or bool(_WECHAT_COMPANY_ALIAS.fullmatch(str(value or "").strip()))

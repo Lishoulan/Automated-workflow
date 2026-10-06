@@ -182,7 +182,8 @@ class WriterAgent(BaseAgent):
             + "\n分类大纲与每节允许的证据编号：" + self.json_text(data_report.writing_outline)
             + "\n完整事实记录：" + self.json_text(data_report.fact_evidence)
             + "\n出处：" + self.json_text([{key: source.get(key, "") for key in
-                ("source_id", "title", "url", "publisher", "published_at")} for source in data_report.source_records])
+                ("source_id", "title", "url", "publisher", "published_at", "source_role")}
+                for source in data_report.source_records if source.get("source_role") != "background"])
             + "\n输出JSON必须包含全部六节，section_id为0到5，不得只返回一节。以下结构的节名和编号须原样保留，"
               "每节text替换为约350字正文，fact_ids只保留该节实际使用的绑定事实编号："
             + self.json_text({"sections": [{"section_id": index, "section": section["section"],

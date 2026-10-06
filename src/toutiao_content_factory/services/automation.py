@@ -474,8 +474,10 @@ class TopicAutomationService:
                 publisher=source.get("publisher", ""), published_at=source.get("published_at", ""),
                 date_verified=source.get("date_verified", False),
             ) for source in topic.source_records])
+            restored = self._scope_wechat_material(topic, restored)
             if assess_material_evidence(restored).passed:
                 topic._verified_source_material = True
+                topic.snippet = restored.combined_text.strip()
                 return True
         try:
             from toutiao_content_factory.services.material_search_service import (
@@ -535,6 +537,8 @@ class TopicAutomationService:
                 len(bundle.sources),
             )
             return False
+        if wechat:
+            bundle = self._scope_wechat_material(topic, bundle)
         assessment = assess_material_evidence(bundle)
         topic._material_evidence_assessment = asdict(assessment)
         if not assessment.passed:
@@ -549,12 +553,6 @@ class TopicAutomationService:
             return False
         body = bundle.combined_text.strip()
         topic.snippet = body
-        if wechat:
-            from toutiao_content_factory.services.wechat_evidence import source_records
-            topic.source_records = source_records(bundle.usable)
-            dated = [record["published_at"] for record in topic.source_records if record["published_at"]]
-            if dated:
-                topic.published_at = max(dated)
         # Keep this run-local marker separate from persisted search digests.
         topic._verified_source_material = True
         # 摘要直接取自素材正文的首段（`_summarize_topic` 属于 TopicCollectionService，
@@ -569,6 +567,20 @@ class TopicAutomationService:
             assessment.total_chars,
         )
         return True
+
+    def _scope_wechat_material(self, topic, bundle):
+        from toutiao_content_factory.services.material_search_service import MaterialBundle
+        from toutiao_content_factory.services.wechat_evidence import public_url, source_records, scope_source_records
+
+        records = scope_source_records(source_records(bundle.usable), topic.url,
+                                       event_published_at=topic.published_at)
+        topic.source_records = records  # Preserve background provenance for diagnostics.
+        primary = next((source for source in records if source.get("source_role") == "primary"
+                        and source.get("date_verified") is True and source.get("published_at")), None)
+        if primary:
+            topic.published_at = primary["published_at"]
+        active_urls = {source["url"] for source in records if source.get("source_role") != "background"}
+        return MaterialBundle(bundle.query, [source for source in bundle.usable if public_url(source.url) in active_urls])
 
     #: 素材补齐的门槛与上限
     MATERIAL_MIN_CHARS = 600
@@ -799,7 +811,7 @@ class TopicAutomationService:
         )
         if self.settings.wechat_auto_publish_mode:
             from toutiao_content_factory.services.wechat_evidence import build_facts, classify_kind, requirements
-            kind = classify_kind(topic.topic_type, build_facts(topic.source_records))
+            kind = classify_kind(topic.topic_type, build_facts(topic.source_records, include_background=False))
             brief = requirements(kind)
             suggested_angle = brief["suggested_angle"]
             follow_up_focus = brief["follow_up_focus"]

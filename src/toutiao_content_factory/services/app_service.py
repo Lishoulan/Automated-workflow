@@ -3502,7 +3502,7 @@ class ContentFactoryAppService:
                 if path.exists():
                     article = path.read_text(encoding="utf-8", errors="replace")
                     break
-            checker = ArticleQualityChecker()
+            checker = ArticleQualityChecker(wechat_mode=self.settings.wechat_auto_publish_mode)
             for candidate in candidates:
                 result = checker.check_title(candidate, article)
                 if not [item for item in result.get("issues", []) if str(item).strip()]:

@@ -88,7 +88,7 @@ class AgentWorkflowService:
         self.data_mining_agent = DataMiningAgent(settings, prompt_repository, openai_service, logger)
         self.editorial_council_agent = EditorialCouncilAgent(settings, prompt_repository, openai_service, logger)
         self.content_guard_service = ContentGuardService(settings, logger)
-        self.quality_checker = ArticleQualityChecker()
+        self.quality_checker = ArticleQualityChecker(wechat_mode=settings.wechat_auto_publish_mode)
         self.openai_service = openai_service
         # LLM expansion 调用计数器，跨 writer/polish/second_polish 阶段共享
         self._llm_expansion_call_count = 0

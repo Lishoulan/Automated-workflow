@@ -23,7 +23,8 @@ NUMBER = re.compile(r"(?<![A-Za-z\d])\d+(?:\.\d+)?\s*(?:万亿|亿|万|千|百)?
 PERIOD = re.compile(r"(?:截至(?:\d{4}年)?\d{1,2}月(?:\d{1,2}日|底|末)?|\d{4}年(?:\d{1,2}月(?:至\d{1,2}月)?|[上下]半年|[一二三四1234]季度)?|(?:今年|去年)?(?:[上下]半年|[一二三四1234]季度))")
 FINANCIAL = re.compile(r"营业收入|净利润|毛利率|财报|扣非|营收|经营现金流")
 BUSINESS_CLAIM = re.compile(r"利润|盈利|毛利|回款|合同验收|订单|客户复购")
-QUALIFIED_CLAIM = re.compile(r"认为|预计|估算|预测|可能|有望|据传|爆料|尚未|未确认")
+QUALIFIED_CLAIM = re.compile(r"认为|预计|估算|预测|可能|有望|据传|爆料|尚未|未确认|预告|宣称|声称|预览")
+COMPARATIVE_CLAIM = re.compile(r"优于|领先于|超越|击败|胜过|更强|更安全")
 
 
 def stable_id(prefix: str, *parts: str) -> str:
@@ -192,6 +193,46 @@ def source_records(sources) -> list[dict]:
     return records
 
 
+def scope_source_records(records: list[dict], topic_url: str, *, event_published_at: str = "") -> list[dict]:
+    """Keep provenance, but distinguish the selected event from dated background.
+
+    Event/RSS dates can delimit background; they never populate a missing source
+    date. A known selected-source date takes precedence over other reports.
+    """
+    scoped = [dict(source) for source in records]
+    primary = next((source for source in scoped if public_url(topic_url)
+                    and public_url(source.get("url", "")) == public_url(topic_url)), None)
+    if primary is None:
+        return scoped  # Unbound/legacy sources are not upgraded to current evidence.
+
+    def stamp(value):
+        try:
+            date = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            return date.replace(tzinfo=timezone(timedelta(hours=8))) if date.tzinfo is None else date
+        except (TypeError, ValueError):
+            return None
+
+    primary_date = primary.get("published_at", "") if primary.get("date_verified") is True else ""
+    reference_value = primary_date or event_published_at
+    reference = stamp(reference_value)
+    for source in scoped:
+        value = source.get("published_at", "") if source.get("date_verified") is True else ""
+        published = stamp(value)
+        role = "primary" if source is primary else "undated"
+        if source is not primary and published and reference:
+            # Date-only metadata cannot establish an hour-level difference.
+            exact_time = "T" in str(value) and "T" in str(reference_value)
+            if exact_time:
+                outside_window = abs(reference - published) > timedelta(hours=12)
+            else:
+                beijing = timezone(timedelta(hours=8))
+                outside_window = abs(reference.astimezone(beijing).date()
+                                     - published.astimezone(beijing).date()) > timedelta(days=1)
+            role = "background" if outside_window else "supporting"
+        source["source_role"] = role
+    return scoped
+
+
 def _normalize(text: str) -> str:
     return re.sub(r"[\s，,。；;：:、（）()“”\"'—-]+", "", text).lower().replace("％", "%")
 
@@ -232,9 +273,11 @@ def _measurements(sentence: str) -> list[dict]:
     return measurements
 
 
-def build_facts(records: list[dict]) -> list[dict]:
+def build_facts(records: list[dict], *, include_background: bool = True) -> list[dict]:
     facts, seen = [], set()
     for source in records:
+        if not include_background and source.get("source_role") == "background":
+            continue
         if not public_url(source.get("url", "")) or not source.get("original_text"):
             continue
         for sentence in re.split(r"(?<=[。！？；])|\n+", source["original_text"]):
@@ -249,6 +292,8 @@ def build_facts(records: list[dict]) -> list[dict]:
                           "numbers": _numbers(quote), "statistical_object": _subject(quote),
                           "measurements": _measurements(quote),
                           "statistical_period": list(dict.fromkeys(PERIOD.findall(quote)))})
+            if "source_role" in source:
+                facts[-1].update(source_role=source["source_role"], source_published_at=source.get("published_at", ""))
     return facts
 
 
@@ -277,6 +322,7 @@ def requirements(kind: str) -> dict:
     label, brief, watch, question = KINDS.get(kind, KINDS["industry_update"])
     if kind == "product_progress":
         brief += "；配置、性能、基准测试或独立验证未披露时明确保持未知，不推导性能提升、市场领导地位或产业链收益。消息源未经官方确认时保留报道归因，不把路线图或预测写成已实现事实"
+        brief += "；产品预告仍是预告，比较对象、测试方法或验证结果未披露时明确说未披露，不补造竞品名称或胜负结论；不以旧融资报道解释本次产品能力"
     brief += "；保留原句中的消息来源、发言人及认为、预测、估算、可能等限定，观点和预测不得写成已实施政策或确定事实"
     return {"label": label, "suggested_angle": brief, "follow_up_focus": watch,
             "writing_brief": brief + "。所有数字逐项绑定原句、统计对象、单位和统计期；缺失信息保持未知。",
@@ -295,9 +341,12 @@ def supporting_facts(sentence: str, facts: list[dict]) -> list[dict]:
     numbers = _numbers(sentence)
     periods = PERIOD.findall(sentence)
     measurements = _measurements(sentence)
+    comparison_targets = re.findall(r"(?:优于|领先于|超越|击败|胜过)([^，,。；;！？]+)", sentence)
     matches = []
     for fact in facts:
         quote = _normalize(fact["quote"])
+        if any(_normalize(target) not in quote for target in comparison_targets):
+            continue
         if any(number not in fact["numbers"] for number in numbers):
             continue
         if any(_normalize(period) not in quote for period in periods):
@@ -349,12 +398,17 @@ def _requires_qualification(claim: str, fact: dict) -> bool:
 def _unsupported_claim(sentence: str, facts: list[dict]) -> bool:
     claim = _claim_text(sentence)
     business = BUSINESS_CLAIM.search(claim)
-    unqualified_assertion = (_numbers(claim) or re.search(r"将|必然|一定", claim)) and not QUALIFIED_CLAIM.search(claim)
+    comparative = False
+    for clause in re.split(r"[，,。；;！？]", claim):
+        comparison = COMPARATIVE_CLAIM.search(clause)
+        if comparison and not re.search(r"不能证明|无法证明|没有证据|是否|能否|尚未证实|需要|应当", clause[:comparison.start()]):
+            comparative = True
+    unqualified_assertion = (_numbers(claim) or re.search(r"将|必然|一定", claim) or comparative) and not QUALIFIED_CLAIM.search(claim)
     if unqualified_assertion:
         matches = supporting_facts(claim, facts)
         if matches and all(_requires_qualification(claim, fact) for fact in matches):
             return True
-    if not _numbers(claim) and not business:
+    if not _numbers(claim) and not business and not comparative:
         return False
     matches = supporting_facts(claim, facts)
     if not matches:
@@ -444,7 +498,10 @@ def prepare_article(article: str, report) -> str:
                 cited_sources.add(source.get("source_id"))
             paragraphs.append(text)
     references = []
+    active_sources = {fact["source_id"] for fact in report.fact_evidence}
     for source in report.source_records:
+        if source.get("source_role") == "background" and source.get("source_id") not in active_sources:
+            continue
         date = source.get("published_at") or "发布日期未核实"
         publisher = source.get("publisher") or "发布机构未标注"
         references.append(f"《{source['title']}》；{publisher}；{date}；{source['url']}")

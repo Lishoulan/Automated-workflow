@@ -119,11 +119,12 @@
           }
         },
         "37417662989:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T05:16:51.395097+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
+          "elapsed_seconds": 57.498,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
+          "outcome": "no_topics"
         }
       },
       "dispatches": {},
@@ -181,7 +182,7 @@
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "0fc344d4de7389b3df6bc7938151e2b4252fede1",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",

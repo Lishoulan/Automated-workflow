@@ -9,6 +9,32 @@ from toutiao_content_factory.services.wechat_evidence import stable_id, supporti
 ISSUE_FIELDS = ("hard_blockers", "fact_issues", "logic_issues", "structure_issues", "originality_issues", "compliance_issues", "required_revisions")
 
 
+def verified_patch_locator(requirement: str, paragraph: str, quote: str) -> bool:
+    """A shared literal anchors an unlocated request; it proves no correction."""
+    if not isinstance(quote, str):
+        return False
+    normalized = re.sub(r"\s+", "", quote)
+    return (len(re.findall(r"\w", normalized)) >= 4
+            and normalized in re.sub(r"\s+", "", requirement)
+            and normalized in re.sub(r"\s+", "", paragraph))
+
+
+def bind_patch_locations(report, locations: list[dict], article: str, facts: list[dict]) -> None:
+    """Recover exact original paragraph locations without changing the verdict."""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", article.split("参考来源：", 1)[0]) if p.strip()]
+    for location in locations:
+        issue = next((row for row in report.issues if row["issue_id"] == location.get("issue_id")), None)
+        paragraph = location.get("paragraph", "")
+        if (not issue or issue["location_verified"] or paragraph not in paragraphs
+                or not verified_patch_locator(issue["requirement"], paragraph, location.get("locator_quote", ""))):
+            continue
+        issue["paragraph"] = paragraph
+        issue["location_verified"] = True
+        issue["evidence_ids"] = list(dict.fromkeys(fact["fact_id"]
+            for sentence in re.split(r"(?<=[。！？；])", paragraph)
+            for fact in supporting_facts(sentence, facts)))
+
+
 def bind_issues(report, article: str, facts: list[dict]) -> None:
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", article) if p.strip()]
     supplied = report.issues

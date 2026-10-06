@@ -168,6 +168,7 @@ class PolishAgent(BaseAgent):
     def _polish_wechat_paragraphs(self, content, trend_report, data_report, revision_focus):
         """Only apply explicit, source-bound paragraph patches; keep other prose."""
         from toutiao_content_factory.services.wechat_evidence import prepare_article, requirements, effective_body_chars, supporting_facts, unsupported_claims
+        from toutiao_content_factory.services.wechat_revision import verified_patch_locator
         article = content.polished_article or content.article
         body = article.split("参考来源：", 1)[0]
         paragraphs = [part.strip() for part in re.split(r"\n\s*\n", body) if part.strip()]
@@ -177,6 +178,13 @@ class PolishAgent(BaseAgent):
         located_focus = any("原段落：" in focus for focus in revision_focus)
         targeted = {i for i, paragraph in enumerate(paragraphs)
                     if any(paragraph in focus for focus in revision_focus)}
+        unlocated = {}
+        locations = []
+        for focus in revision_focus:
+            issue_id, separator, details = focus.partition("：")
+            requirement, _, location = details.partition("；原段落：")
+            if separator and location.startswith("未能定位，勿猜测"):
+                unlocated[issue_id] = requirement
         if revision_focus and self.openai_service.available:
             payload = self.openai_service.create_json_completion(
                 system_prompt=self.POLISH_SYSTEM_PROMPT,
@@ -189,7 +197,8 @@ class PolishAgent(BaseAgent):
                     + "\n段落：" + self.json_text([{"paragraph_id": i, "text": text} for i, text in enumerate(paragraphs)])
                     + "\n事实：" + self.json_text(data_report.fact_evidence)
                     + "\n已核实出处元数据：" + self.json_text([{key: row.get(key, "") for key in ("source_id", "title", "publisher", "published_at")} for row in data_report.source_records])
-                    + '\n输出格式：{"patches":[{"paragraph_id":0,"before":"完整原段落","after":"修改后段落"}]}。'
+                    + '\n输出格式：{"patches":[{"issue_id":"对应审核问题编号","locator_quote":"问题要求和原段落共同出现的原文短语","paragraph_id":0,"before":"完整原段落","after":"修改后段落"}]}。'
+                    "问题未定位时，必须提供issue_id及至少4个文字或字母的共同原文短语locator_quote，选择实际包含该问题的段落；没有共同短语则不修改，不猜测段落。"
                     "before必须逐字匹配，不改无关段落。删除或收窄无依据句子时保留其余有出处的事实；after不得为空，也不得丢掉原段落已绑定事实。"))
             patches = payload.get("patches", []) if isinstance(payload, dict) else []
             changed = set()
@@ -200,9 +209,15 @@ class PolishAgent(BaseAgent):
                 index = patch.get("paragraph_id")
                 if (type(index) is int and 0 <= index < len(paragraphs) and index not in changed
                         and patch.get("before") == paragraphs[index] and isinstance(patch.get("after"), str)):
+                    recovered_location = None
                     if located_focus and index not in targeted:
-                        decisions["patch_rejected_unrelated"] += 1
-                        continue
+                        patch_issue_id = patch.get("issue_id")
+                        requirement = unlocated.get(patch_issue_id, "") if isinstance(patch_issue_id, str) else ""
+                        if not verified_patch_locator(requirement, paragraphs[index], patch.get("locator_quote", "")):
+                            decisions["patch_rejected_unrelated"] += 1
+                            continue
+                        recovered_location = {"issue_id": patch["issue_id"], "paragraph": paragraphs[index],
+                                              "locator_quote": patch["locator_quote"]}
                     replacement = patch["after"].strip()
                     if not replacement:
                         decisions["patch_rejected_identity"] += 1
@@ -224,12 +239,15 @@ class PolishAgent(BaseAgent):
                     paragraphs[index] = replacement
                     changed.add(index)
                     decisions["revision_patch_accepted"] += 1
+                    if recovered_location:
+                        locations.append(recovered_location)
                 else:
                     decisions["patch_rejected_identity"] += 1
         revised = "\n\n".join(paragraphs)
         grounded = prepare_article(revised, data_report)
         notes, score = self._validate_article(grounded, data_report, trend_report)
         return {"polished_article": grounded, "validation_notes": notes, "validation_score": score,
+                "revision_issue_locations": locations,
                 "grounding_diagnostics": [{"before_cleanup_chars": effective_body_chars(revised),
                     "after_cleanup_chars": effective_body_chars(grounded), "final_body_chars": effective_body_chars(grounded),
                     **decisions}]}

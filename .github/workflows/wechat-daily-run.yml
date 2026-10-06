@@ -20,6 +20,10 @@ on:
         description: 'Internal relay Beijing date'
         type: string
         default: ''
+      validation_id:
+        description: 'One-use operator-authorized formal-publication verification grant'
+        type: string
+        default: ''
 
 concurrency:
   group: wechat-default
@@ -50,6 +54,7 @@ jobs:
       RUN_MODE: ${{ inputs.mode || 'publish' }}
       WECHAT_RETRY_PARENT: ${{ inputs.retry_parent_run_id || '' }}
       WECHAT_RETRY_DAY: ${{ inputs.retry_day || '' }}
+      WECHAT_VALIDATION_ID: ${{ inputs.validation_id || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -106,6 +111,8 @@ jobs:
                   handle.write(str(payload.get('retry_message', '')) + '\n')
               if payload.get('retry_state_error'):
                   handle.write('每日状态保存或接力触发失败：' + str(payload['retry_state_error']) + '；停止补跑。\n')
+              if payload.get('manual_validation_id'):
+                  handle.write('本次为用户明确授权的一次额外发表验证；保留实际计数与耗时，长期每日上限不变。\n')
               if payload.get('formal_publication_confirmed'):
                   handle.write('正式发表已确认：后台账号、标题、时间及公开正文匹配。\n')
               else:

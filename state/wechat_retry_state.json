@@ -535,14 +535,25 @@
         "created_at": "2026-10-06T16:07:27.832118+00:00",
         "head_sha": "10e7734b4ebfa283d34e7c3c97abaf64ea166b8c",
         "purpose": "verify_formal_publication",
-        "status": "intent",
+        "status": "not_passed_daily_run_limit",
         "authorization_source": "User requested daily automatic publication and fixes to three causes",
         "uses_normal_daily_allowance": true,
         "daily_budget_seconds": 5400,
         "preflight_checked_at": "2026-10-06T16:06:17.092168+00:00",
         "preflight_account": "小椰科技",
         "preflight_pending_count": 0,
-        "formal_publication_confirmed": false
+        "formal_publication_confirmed": false,
+        "updated_at": "2026-10-06T17:00:38.447417+00:00",
+        "run_chain": [
+          "37493259299:1",
+          "37495013364:1",
+          "37497164284:1"
+        ],
+        "latest_actual_head_sha": "d316ae572054f2eeff2cca430cca22933c1b2a7a",
+        "latest_code_head_sha": "6020c2a30c782b9fe15f1b0f267ce90bac81fabf",
+        "latest_fix_live_validation": "not_run_due_daily_run_limit",
+        "backend_checked_at": "2026-10-06T16:51:09.393966+00:00",
+        "stop_reason": "daily_run_count_limit"
       }
     }
   }

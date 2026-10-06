@@ -2819,6 +2819,7 @@ class ContentFactoryAppService:
         if self.settings.wechat_auto_publish_mode:
             attempted = getattr(self, "_wechat_attempted_candidate_titles", set())
             available_topics = [topic for topic in available_topics if topic.title not in attempted]
+            available_topics = sorted(available_topics, key=self._wechat_candidate_sort_key)
             self._enrich_wechat_candidates(available_topics)
 
         # Scheduled long articles need enough source material to support a
@@ -2864,6 +2865,9 @@ class ContentFactoryAppService:
                 -int(getattr(topic, "total_score", 0) or 0),
                 -int(getattr(topic, "title_potential_score", 0) or 0),
             )
+
+        if self.settings.wechat_auto_publish_mode:
+            topic_sort_key = self._wechat_candidate_sort_key
 
         grounded_material_topics = sorted(
             [
@@ -2922,6 +2926,23 @@ class ContentFactoryAppService:
             }
             for available_rank, topic in enumerate(ordered[:max_attempts], start=1)
         ]
+
+    @staticmethod
+    def _wechat_candidate_sort_key(topic: TopicCandidate) -> tuple[int, ...]:
+        """Prefer existing current-event facts before spending retrieval/writing time.
+
+        Ranking is not approval: the original freshness, focus, evidence and
+        quality gates still decide which candidates can be written.
+        """
+        from toutiao_content_factory.services.wechat_evidence import build_facts, scope_source_records
+        records = scope_source_records(topic.source_records, topic.url, event_published_at=topic.published_at)
+        facts = build_facts(records, include_background=False)
+        current_chars = sum(len(record.get("original_text", "")) for record in records
+                            if record.get("source_role") != "background")
+        return (-min(len(facts), 24), -min(current_chars, 2100),
+                -min(len(topic.snippet or ""), 900) if not records else 0,
+                -int(topic.evidence_strength or 0), -int(topic.quality_score or 0),
+                -int(topic.total_score or 0), -int(topic.title_potential_score or 0))
 
     def _enrich_wechat_candidates(self, topics: list[TopicCandidate]) -> None:
         """Spend a separate, bounded allowance before applying the original gate."""

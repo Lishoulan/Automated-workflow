@@ -534,12 +534,18 @@ def build_outline(report, retry_context: dict | None = None) -> None:
     # A relay starts from the issues rather than regenerating the same brief.
     if report.regeneration_requirements and len(facts) > 1:
         facts = facts[1:] + facts[:1]
-    report.writing_outline = [{"section_id": i, "section": label, "fact_ids": [item["fact_id"] for item in facts[i::len(labels)]],
-                               "target_chars": 350} for i, label in enumerate(labels)]
-    # Sections with no distinct fact can explain boundaries of an existing fact.
-    for section in report.writing_outline:
-        if not section["fact_ids"] and facts:
-            section["fact_ids"] = [facts[0]["fact_id"]]
+    signals = {
+        "policy_explainer": [r"发布|通知|政策|措施", r"要求|规定|支持|补贴", r"地区|项目|省|市|适用", r"同期|条件|投产|实施|期限", r"范围|仅|未|不得|边界", r"实施|日期|期限|披露|核对"],
+        "product_progress": [r"公司|企业|发布|预告|产品|模型", r"能力|功能|支持|性能|网络安全|网安", r"架构|芯片|工艺|机制|部署|接口", r"测试|验证|基准|结果|条件|披露", r"限制|尚未|未披露|未验证|边界|比较对象", r"测试|验证|发布时间|披露|进展"],
+        "company_earnings": [r"公司|企业|季度|半年|年", r"收入|利润|毛利|现金流|财报", r"业务|产品|增长|下降|占比", r"同比|环比|统计|期间|口径", r"未|限制|范围|仅|风险", r"财报|披露|统计期|日期"],
+    }.get(report.article_kind, [r"公司|企业|发布|事件", r"完成|发布|进展|上线", r"技术|设备|芯片|模型|工艺", r"条件|涉及|因为|因此|要求", r"未|限制|范围|边界", r"测试|验证|披露|实施|日期"])
+    report.writing_outline = []
+    for index, (label, signal) in enumerate(zip(labels, signals)):
+        matching_facts = [fact for fact in facts if re.search(signal, fact["quote"])]
+        bindings = matching_facts[:4] or facts[:1]
+        report.writing_outline.append({"section_id": index, "section": label,
+            "fact_ids": [fact["fact_id"] for fact in bindings], "target_chars": 350,
+            "evidence_scope": "direct" if matching_facts else "boundary_only"})
     payload = {"facts": report.fact_evidence, "kind": report.article_kind,
                "outline": report.writing_outline, "requirements": report.regeneration_requirements}
     report.draft_fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -547,7 +553,7 @@ def build_outline(report, retry_context: dict | None = None) -> None:
         from toutiao_content_factory.exceptions import LowQualityAbortException
         raise LowQualityAbortException("同一素材、大纲和要求已失败，换题。")
     report.word_target = 2100
-    report.writing_brief += " 正文目标2000～2200字，最低1750字；按writing_outline逐节展开，每节仅使用绑定证据。参考来源、网址和重复引用不计篇幅。"
+    report.writing_brief += " 正文目标2000～2200字，最低1750字；按writing_outline逐节展开，每节仅使用绑定证据。evidence_scope为boundary_only时只解释证据边界，不编造该节所需信息、不重复其他节结论。参考来源、网址和重复引用不计篇幅。"
     if report.regeneration_requirements:
         report.writing_brief += " 本轮重点：" + "；".join(report.regeneration_requirements)
     report.format_brief = report.writing_brief

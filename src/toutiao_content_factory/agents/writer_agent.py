@@ -180,6 +180,7 @@ class WriterAgent(BaseAgent):
             + "\n选题：" + data_report.topic_title
             + "\n写作简报：" + data_report.writing_brief
             + "\n分类大纲与每节允许的证据编号：" + self.json_text(data_report.writing_outline)
+            + "\nevidence_scope为boundary_only的节没有直接披露依据，只解释相应事实不能证明什么、还缺哪些核对条件；不得补造能力、机制、验证结果或重复前节。"
             + "\n完整事实记录：" + self.json_text(data_report.fact_evidence)
             + "\n出处：" + self.json_text([{key: source.get(key, "") for key in
                 ("source_id", "title", "url", "publisher", "published_at", "source_role")}

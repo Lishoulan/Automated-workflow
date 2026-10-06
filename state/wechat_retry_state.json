@@ -23,19 +23,27 @@
           "parent": "",
           "elapsed_seconds": 851.0,
           "outcome": "not_published"
+        },
+        "37411229998:1": {
+          "status": "running",
+          "started_at": "2026-10-06T03:56:17.464771+00:00",
+          "parent": "",
+          "elapsed_seconds": 0,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
         }
       },
       "dispatches": {},
       "failed_inputs": [],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "authorized",
+          "status": "claimed",
           "purpose": "verify_formal_publication",
           "head_sha": "5e89c56fd6ddfc08193a3524ea60ba29a0897898",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",
           "expires_at": "2026-10-06T04:54:52.573518+00:00",
           "authorization": "User requested immediate formal publication verification on 2026-10-06",
-          "dispatch_status": "intent"
+          "dispatch_status": "intent",
+          "run_key": "37411229998:1"
         }
       }
     }

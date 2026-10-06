@@ -672,3 +672,20 @@ def test_wechat_ai_vocabulary_matches_existing_track_without_mutating_toutiao(ap
     assert app_settings.topic_collection.keyword_map == original
     object.__setattr__(app_settings, "platform", "toutiao")
     assert keyword not in collector._match_industries(keyword + "产品更新")[1]
+
+
+@pytest.mark.parametrize("quote,expected", [
+    ("英特尔规定新处理器型号处于封闭测试组，首发计划尚未获官方确认。", "product_progress"),
+    ("陕西省发布储能通知，规定项目适用条件与配套实施要求。", "policy_explainer"),
+    ("公司规定会议次序，具体内容仍需等待核实。", "industry_update"),
+])
+def test_internal_product_rules_are_not_government_policy(quote, expected):
+    facts = evidence.build_facts(evidence.source_records([MaterialSource("公开报道", "https://a.test/report", quote, True)]))
+    assert evidence.classify_kind("policy_market", facts) == expected
+
+
+def test_product_requirements_keep_undisclosed_performance_unknown():
+    brief = evidence.requirements("product_progress")
+    for key in ["suggested_angle", "writing_brief", "instruction"]:
+        assert "配置、性能、基准测试或独立验证未披露时明确保持未知" in brief[key]
+        assert "保留报道归因" in brief[key]

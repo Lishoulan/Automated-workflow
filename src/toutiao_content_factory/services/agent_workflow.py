@@ -463,7 +463,9 @@ class AgentWorkflowService:
                         break
             trace = None
             if self.settings.wechat_auto_publish_mode:
-                from toutiao_content_factory.services.wechat_revision import begin_revision
+                from toutiao_content_factory.services.wechat_revision import begin_revision, bind_patch_locations
+                bind_patch_locations(report, revised_pack.get("revision_issue_locations", []),
+                                     audited_state[0], data_report.fact_evidence)
                 trace = begin_revision(report, audited_state[0], self._quality_review_article(content), revision_count)
                 content.revision_trace.append(trace)
             report = self.quality_review_council_agent.run(

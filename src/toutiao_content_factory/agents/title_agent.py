@@ -684,7 +684,10 @@ class TitleAgent(BaseAgent):
                 "标题必须与正文一致，只输出JSON对象，字段titles为字符串数组。\n"
                 + self.json_text({"rejection_reasons": reasons, "article": body_reference})
             )
-            repair_payload = self.request_json(system_prompt, repair_prompt)
+            repair_payload = self.request_json(
+                "你是微信公众号事实标题编辑，只输出合法JSON。标题的公司、机构或产品型号必须逐字取自正文；"
+                "搭配正文已有的具体变化或未披露边界，保留消息归因，不写抽象产业套话、利润判断或虚构事实。",
+                repair_prompt)
             repair_titles = self._dedupe_titles(
                 repair_payload.get("titles", []) if isinstance(repair_payload, dict) else [], cache_context
             )[:6]

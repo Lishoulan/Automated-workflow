@@ -2894,8 +2894,13 @@ class WriterAgent(BaseAgent):
             data_summary_parts.append("Source attribution: " + " / ".join(data_report.source_references))
         if self.settings.wechat_auto_publish_mode:
             from toutiao_content_factory.services.wechat_evidence import requirements
-            data_summary_parts.append(requirements(data_report.article_kind)["instruction"])
+            # Legacy inferred analysis is not source evidence for this channel.
+            data_summary_parts = [requirements(data_report.article_kind)["instruction"]]
             data_summary_parts.append("逐项匹配统计对象、单位和统计期；引用出处不得丢失。事实记录：" + self.json_text(data_report.fact_evidence))
+            data_summary_parts.append("已核实出处：" + self.json_text([{key: row.get(key, "") for key in
+                ("source_id", "title", "url", "publisher", "published_at")} for row in data_report.source_records]))
+            if not data_report.source_records and data_report.source_references:
+                data_summary_parts.append("旧出处字符串（未核实，不作为事实）：" + self.json_text(data_report.source_references))
         data_summary = "\n".join(data_summary_parts) if data_summary_parts else "No extra evidence."
 
         system_prompt = (
@@ -2921,8 +2926,8 @@ class WriterAgent(BaseAgent):
                 "Use distinct mechanisms supported by the evidence, with source and statistical period attribution. "
                 "Do not impose corporate revenue, margin, cash collection or contract acceptance analysis on policy or sector data. "
                 "Do not repeat existing facts or assume multiple materials are the same disclosure."
-                " Only explain the measures, region, project types and boundaries actually stated in the evidence;"
-                " do not infer global trends, cost composition or financial returns."
+                " Explain only the current article kind and the capabilities, conditions or measures actually stated in the evidence;"
+                " do not infer global trends, cost composition, financial returns or competitive leadership."
             )
 
         try:

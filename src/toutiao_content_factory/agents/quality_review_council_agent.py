@@ -135,6 +135,12 @@ class QualityReviewCouncilAgent(BaseAgent):
         local_snapshot = self._local_snapshot(title, article, data_report)
         editorial_brief = self._editorial_brief(editorial_council)
 
+        fact_payload = self._fact_payload(data_report)
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import requirements
+            fact_payload = {name: getattr(data_report, name) for name in
+                            ("topic_title", "article_kind", "source_records", "fact_evidence")}
+            editorial_brief = requirements(data_report.article_kind)["instruction"]
         prompt = self.render_prompt(
             "quality_review_council_prompt.md",
             platform=self.settings.platform,
@@ -143,7 +149,7 @@ class QualityReviewCouncilAgent(BaseAgent):
             style_digest=self.style_digest(style),
             article=article,
             title=title,
-            data_json=self.json_text(self._fact_payload(data_report)),
+            data_json=self.json_text(fact_payload),
             editorial_brief=editorial_brief,
             local_snapshot=self.json_text(local_snapshot),
             cache_note=self.cache_note(cache_context),
@@ -176,6 +182,7 @@ class QualityReviewCouncilAgent(BaseAgent):
                 from toutiao_content_factory.services.wechat_evidence import requirements
                 prompt += "\n" + requirements(data_report.article_kind)["instruction"]
                 prompt += "\n逐条使用fact_evidence核对数字、单位、统计对象和统计期；发布日期不是统计期。issues的requirement须对应意见数组，paragraph须为正文原段落。"
+                prompt += "\n只把正文实际出现的表述列为稿件问题，不把出处元数据或写作要求当成正文。原文可核对的产品型号和技术缩写需按技术语境核验，不能仅因是缩写就当作自动化流程标签；真实流程标签仍须阻断。"
                 prompt += "\n对待核实问题逐项复核并返回issue_evaluations。遗漏问题或只有措辞变化不能判定已解决；resolved需给出现稿原句、证据编号和核实理由。不确定则unverifiable。\n"
                 if content.revision_trace:
                     prompt += self.json_text(content.revision_trace[-1])

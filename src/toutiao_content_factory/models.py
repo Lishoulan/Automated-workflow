@@ -149,6 +149,10 @@ class DataReport:
     source_records: list[dict[str, Any]] = field(default_factory=list)
     fact_evidence: list[dict[str, Any]] = field(default_factory=list)
     article_kind: str = ""
+    writing_outline: list[dict[str, Any]] = field(default_factory=list)
+    regeneration_requirements: list[str] = field(default_factory=list)
+    draft_fingerprint: str = ""
+    source_fingerprint: str = ""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DataReport":
@@ -186,6 +190,10 @@ class DataReport:
             source_records=list(payload.get("source_records") or []),
             fact_evidence=list(payload.get("fact_evidence") or []),
             article_kind=str(payload.get("article_kind") or ""),
+            writing_outline=list(payload.get("writing_outline") or []),
+            regeneration_requirements=list(payload.get("regeneration_requirements") or []),
+            draft_fingerprint=str(payload.get("draft_fingerprint") or ""),
+            source_fingerprint=str(payload.get("source_fingerprint") or ""),
         )
 
 
@@ -255,6 +263,7 @@ class GeneratedContent:
     selected_title_source: str = ""
     title_validation: dict[str, Any] = field(default_factory=dict)
     revision_trace: list[dict[str, Any]] = field(default_factory=list)
+    grounding_diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "GeneratedContent":
@@ -282,6 +291,7 @@ class GeneratedContent:
             selected_title_source=str(payload.get("selected_title_source", "") or ""),
             title_validation=dict(payload.get("title_validation") or {}),
             revision_trace=list(payload.get("revision_trace") or []),
+            grounding_diagnostics=list(payload.get("grounding_diagnostics") or []),
         )
 
 

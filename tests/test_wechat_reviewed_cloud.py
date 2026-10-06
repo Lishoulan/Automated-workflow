@@ -70,14 +70,20 @@ def test_wechat_writer_polish_and_publish_floor_agree(app_settings, mock_openai_
     assert data._auto_publish_mode() is True
     assert data._word_target_for_format("quick_commentary") >= 1800
     assert int(writer._min_word_target_for(report)) >= 1750
-    assert int(writer._article_word_target_for_prompt(report)) >= 1800
+    assert writer._article_word_target_for_prompt(report) == "2000～2200"
     assert "最低1750字" in polish._auto_publish_directive()
     app = ContentFactoryAppService(app_settings, logger)
     assert app._minimum_article_chars(None, score_snapshot={"is_hot_topic": 1}) == 1750
     workflow = AgentWorkflowService(app_settings, MagicMock(), mock_openai_service, logger)
     workflow._ensure_article_min_chars = MagicMock(side_effect=lambda article, *a, **kw: article)
-    workflow._apply_polish_pack(GeneratedContent(article="original"), {"polished_article": "new"}, report)
-    assert workflow._ensure_article_min_chars.call_args.kwargs["min_chars"] == 1750
+    content = GeneratedContent(article="original")
+    workflow._apply_polish_pack(content, {"polished_article": "new"}, report)
+    workflow._ensure_article_min_chars.assert_not_called()  # Repair follows source cleanup.
+    workflow.writer_agent.ensure_article_min_chars = MagicMock(return_value="正文" * 1100)
+    workflow.title_agent.run = MagicMock(return_value={"titles": [], "recommended_titles": []})
+    workflow._refresh_titles(content, None, report, None, None)
+    assert workflow.writer_agent.ensure_article_min_chars.call_args.kwargs["min_chars"] == 2100
+    assert content.grounding_diagnostics[-1]["final_body_chars"] >= 1750
 
 
 @pytest.mark.parametrize("changed", [True, False])

@@ -144,8 +144,12 @@ class AgentWorkflowService:
             self.logger.error("DataAgent failed, using fallback data report: %s", exc)
             data_report = self.data_agent._fallback(extraction, trend_report)
         if self.settings.wechat_auto_publish_mode:
-            from toutiao_content_factory.services.wechat_evidence import apply_requirements
+            from toutiao_content_factory.services.wechat_evidence import apply_requirements, build_outline
             apply_requirements(data_report, extraction, trend_report)
+            import json
+            context_path = self.settings.automation_dir / "wechat_retry_context.json"
+            retry_context = json.loads(context_path.read_text(encoding="utf-8")) if context_path.exists() else {}
+            build_outline(data_report, retry_context)
         try:
             self._abort_if_low_quality(extraction, data_report)
             insight_report: InsightReport | None = None
@@ -243,7 +247,7 @@ class AgentWorkflowService:
                 self.settings.platform != "wechat" or quality_review_council_report is None
                 or quality_review_council_report.revision_round < self.settings.quality_review.max_auto_revisions
             )
-            if not fast_mode and wechat_revision_budget_available and self._should_run_second_polish(content, content_score):
+            if not self.settings.wechat_auto_publish_mode and not fast_mode and wechat_revision_budget_available and self._should_run_second_polish(content, content_score):
                 previous_quality_report = quality_review_council_report
                 previous_quality_body = self._quality_review_article(content)
                 revision_focus = self._build_revision_focus(content, content_score)
@@ -381,6 +385,7 @@ class AgentWorkflowService:
                 revision_round=0,
             )
         report.article_version = article_version
+        audited_packages = {self._quality_review_state(content): report}
         if self.settings.wechat_auto_publish_mode:
             from toutiao_content_factory.services.wechat_revision import bind_issues
             bind_issues(report, self._quality_review_article(content), data_report.fact_evidence)
@@ -399,6 +404,8 @@ class AgentWorkflowService:
         revision_count = 0
         while can_auto_revise and revision_count < max_revisions:
             audited_state = self._quality_review_state(content)
+            audited_titles = {"titles": list(content.titles), "recommended_titles": list(content.recommended_titles),
+                              "title_validation": dict(content.title_validation), "selected_title_source": content.selected_title_source}
             revision_focus = self._build_quality_review_revision_focus(report)
             if self.settings.wechat_auto_publish_mode:
                 revision_focus = [f"{issue['issue_id']}：{issue['requirement']}；原段落：{issue['paragraph'] or '未能定位，勿猜测'}；证据：{','.join(issue['evidence_ids']) or '未知'}"
@@ -439,6 +446,21 @@ class AgentWorkflowService:
                     self.logger.info("Revision produced no effective body change; retaining the audit.")
                     break
                 self._refresh_titles(content, trend_report, data_report, style, cache_context)
+                if self.settings.wechat_auto_publish_mode:
+                    package = self._quality_review_state(content)
+                    if re.sub(r"\s+", "", package[0]) == re.sub(r"\s+", "", audited_state[0]):
+                        self.logger.info("Cleanup removed the proposed revision; retaining the existing audit.")
+                        content.article, content.polished_article = audited_state[0], audited_state[0]
+                        # Restore the already audited title as well.
+                        for field, value in audited_titles.items():
+                            setattr(content, field, value)
+                        from toutiao_content_factory.services.wechat_revision import begin_revision
+                        content.revision_trace.append(begin_revision(report, audited_state[0], audited_state[0], revision_count))
+                        break
+                    if package in audited_packages:
+                        report = audited_packages[package]
+                        self.logger.info("This full manuscript has already been audited; stopping revisions.")
+                        break
             trace = None
             if self.settings.wechat_auto_publish_mode:
                 from toutiao_content_factory.services.wechat_revision import begin_revision
@@ -453,6 +475,7 @@ class AgentWorkflowService:
                 revision_round=revision_count,
             )
             report.article_version = article_version
+            audited_packages[self._quality_review_state(content)] = report
             if trace is not None:
                 from toutiao_content_factory.services.wechat_revision import bind_issues, finish_revision
                 bind_issues(report, self._quality_review_article(content), data_report.fact_evidence)
@@ -1126,6 +1149,8 @@ class AgentWorkflowService:
         )
 
     def _apply_polish_pack(self, content, polish_pack, data_report, update_validation: bool = True) -> None:
+        if self.settings.wechat_auto_publish_mode:
+            content.grounding_diagnostics.extend(polish_pack.get("grounding_diagnostics", []))
         content.polished_article = str(polish_pack.get("polished_article", "")).strip()
         if content.polished_article:
             content.article = content.polished_article
@@ -1154,9 +1179,10 @@ class AgentWorkflowService:
             )
         else:
             effective_min_chars = 850 if is_hot_topic else self.ARTICLE_MIN_CHARS
-        content.article = self._ensure_article_min_chars(
-            content.article, data_report, min_chars=effective_min_chars
-        )
+        if not self.settings.wechat_auto_publish_mode:
+            content.article = self._ensure_article_min_chars(
+                content.article, data_report, min_chars=effective_min_chars
+            )
         if self.settings.platform == "wechat":
             content.article = self._remove_exact_repetition(content.article)
         content.polished_article = content.article
@@ -1200,8 +1226,17 @@ class AgentWorkflowService:
 
     def _refresh_titles(self, content, trend_report, data_report, style, cache_context) -> None:
         if self.settings.wechat_auto_publish_mode:
-            from toutiao_content_factory.services.wechat_evidence import prepare_article
-            article = prepare_article(self._quality_review_article(content), data_report)
+            from toutiao_content_factory.services.wechat_evidence import prepare_article, effective_body_chars
+            original = self._quality_review_article(content)
+            article = prepare_article(original, data_report)
+            cleaned_chars = effective_body_chars(article)
+            if cleaned_chars < self.AUTO_PUBLISH_ARTICLE_MIN_CHARS:
+                # Repair the effective body, after every destructive cleanup.
+                expanded = self.writer_agent.ensure_article_min_chars(
+                    article.split("参考来源：", 1)[0], data_report, min_chars=2100)
+                article = prepare_article(self._remove_exact_repetition(expanded), data_report)
+            content.grounding_diagnostics.append({"before_cleanup_chars": effective_body_chars(original),
+                "after_cleanup_chars": cleaned_chars, "final_body_chars": effective_body_chars(article)})
             content.article = article
             content.polished_article = article
         title_pack = self.title_agent.run(content, trend_report, data_report, style, cache_context)

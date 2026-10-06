@@ -23,6 +23,7 @@ from toutiao_content_factory.services import cross_channel_state as xstate
 from wechat_cloud_session import restore_session, save_session
 from wechat_run_report import cloud_exit_code, fresh_json
 from toutiao_content_factory.services import wechat_metrics as metrics
+from toutiao_content_factory.services import wechat_retry as retry
 from toutiao_content_factory.services.wechat_publication_verifier import verify_pending
 
 logger = logging.getLogger("wechat_cloud")
@@ -115,6 +116,9 @@ def write_state_file(state: dict, path: str, message: str) -> None:
 def complete_run(settings, report: dict, exit_code: int, *, metrics_state: dict | None,
                  run_key: str, mode: str, started_at: str, excluded: bool = False) -> int:
     """Metrics errors are separate from the real result and never retry a publish."""
+    for field, default in {"daily_run_count": None, "daily_processing_seconds": None,
+                           "processing_elapsed_seconds": None, "retry_parent_run_id": "", "retry_status": ""}.items():
+        report.setdefault(field, default)
     if run_key and metrics_state is not None:
         try:
             from wechat_run_report import safe_text
@@ -137,7 +141,8 @@ def complete_run(settings, report: dict, exit_code: int, *, metrics_state: dict 
                                                 for field in ("fact_issues", "logic_issues", "structure_issues", "compliance_issues", "hard_blockers")
                                                 for reason in row.get(field, [])],
                           "publication": report.get("publication", {}),
-                          "expected_publication": report.get("expected_publication", {})}
+                           "expected_publication": report.get("expected_publication", {})}
+            run_record["elapsed_seconds"] = report.get("processing_elapsed_seconds")
             run_record["runtime_status"] = "error" if exit_code or report.get("status") == "error" else "ok"
             run_record["native_exit_code"] = report.get("native_exit_code")
             if report.get("wechat_status"):
@@ -156,6 +161,64 @@ def complete_run(settings, report: dict, exit_code: int, *, metrics_state: dict 
     (settings.automation_dir / "wechat_cloud_result.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return exit_code
+
+
+def seed_retry_day(state: dict, metrics_state: dict, day: str) -> dict:
+    """Count existing runs on rollout; missing durations require GitHub proof."""
+    state = retry.validate(state)
+    entry = retry.today_entry(state, day)
+    for row in metrics_state.get("runs", []):
+        if row.get("excluded") or row.get("mode") != "publish" or retry.day_of(row["started_at"]) != day:
+            continue
+        key = row["run_key"]
+        if key in entry["runs"]:
+            continue
+        elapsed = row.get("elapsed_seconds")
+        if type(elapsed) not in {int, float}:
+            run_id, attempt = key.split(":", 1)
+            response = subprocess.run(["gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}/attempts/{attempt}/jobs"],
+                                      capture_output=True, text=True, timeout=30, check=True)
+            jobs = json.loads(response.stdout)["jobs"]
+            starts = [metrics.parse_time(job["started_at"]) for job in jobs]
+            ends = [metrics.parse_time(job["completed_at"]) for job in jobs]
+            if not starts or any(stamp is None for stamp in [*starts, *ends]):
+                raise RuntimeError("Cannot establish previous WeChat processing time")
+            elapsed = (max(ends) - min(starts)).total_seconds()
+        entry["runs"][key] = {"status": "completed", "started_at": row["started_at"], "parent": "",
+                               "elapsed_seconds": elapsed, "outcome": row.get("outcome", "")}
+    return retry.validate(state)
+
+
+def finish_retry(settings, state, day, key, started, report, code):
+    """Persist completion and dispatch intent before crossing the API boundary."""
+    report["processing_elapsed_seconds"] = round(time.monotonic() - started, 3)
+    report["retry_parent_run_id"] = os.environ.get("WECHAT_RETRY_PARENT", "")
+    diagnostics_path = settings.automation_dir / "wechat_review_diagnostics.json"
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8")) if diagnostics_path.exists() else {}
+    state = retry.complete(state, day, key, report["processing_elapsed_seconds"], report, diagnostics)
+    entry = retry.today_entry(state, day)
+    report["daily_run_count"] = len(entry["runs"])
+    report["daily_processing_seconds"] = round(retry.MAX_SECONDS - retry.remaining(entry), 3)
+    report["retry_status"] = "stopped"
+    write_state_file(state, retry.STATE_PATH, "chore(wechat): finish daily reservation [skip ci]")
+    if retry.day_of(datetime.now(timezone.utc).isoformat()) != day:
+        report["retry_status"] = "stale_relay"
+    elif retry.can_relay(entry, report, code):
+        state = retry.dispatch_intent(state, day, key)
+        write_state_file(state, retry.STATE_PATH, "chore(wechat): persist relay intent [skip ci]")
+        report["retry_status"] = "dispatch_uncertain"
+        # A transport failure may still have reached GitHub. Never send twice.
+        subprocess.run(["gh", "workflow", "run", "wechat-daily-run.yml", "--ref", "main", "-f", "mode=publish",
+                        "-f", f"retry_parent_run_id={key}", "-f", f"retry_day={day}"],
+                       capture_output=True, text=True, timeout=30, check=True)
+        state["days"][day]["dispatches"][key]["status"] = "dispatched"
+        write_state_file(state, retry.STATE_PATH, "chore(wechat): record dispatched relay [skip ci]")
+        report["retry_status"] = "dispatched"
+    elif (report.get("publication_attempted") is False and report.get("status") in {"review_required", "no_topics"}
+          and (len(entry["runs"]) >= retry.MAX_RUNS or retry.remaining(entry) < 120)):
+        report["retry_status"] = "daily_budget_exhausted"
+        report["retry_message"] = "当天未发表，自动补跑已结束"
+    return code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -178,12 +241,25 @@ def main(argv: list[str] | None = None) -> int:
     run_key = run_id + ":" + os.environ.get("GITHUB_RUN_ATTEMPT", "1") if run_id else ""
     started_at = datetime.now(timezone.utc).isoformat()
     confirmations = {}
+    retry_state = None
+    reserved_started = None
     def finish(report, code, *, excluded=False):
         if confirmations:
             report["confirmed_publications"] = list(confirmations.values())
             report["formal_publication_confirmed"] = True
-        return complete_run(settings, report, code, metrics_state=metrics_state, run_key=run_key,
+        if reserved_started is not None:
+            report["processing_elapsed_seconds"] = round(time.monotonic() - reserved_started, 3)
+        code = complete_run(settings, report, code, metrics_state=metrics_state, run_key=run_key,
                             mode=args.mode, started_at=started_at, excluded=excluded)
+        if retry_state is not None and reserved_started is not None:
+            try:
+                code = finish_retry(settings, retry_state, today, run_key, reserved_started, report, code)
+            except Exception as exc:
+                report["retry_state_error"] = type(exc).__name__
+                report["reason_codes"] = list(dict.fromkeys([*report.get("reason_codes", []), "retry_persistence_or_dispatch_failed"]))
+                code = code or 1
+            result_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return code
     try:
         restore_session(settings, encrypted, key, os.environ.get("WECHAT_SESSION_SEED", ""))
         # 先读持久化去重状态，网络异常时停止，不把未知当作“今天没发”。
@@ -213,6 +289,30 @@ def main(argv: list[str] | None = None) -> int:
             if recorded["status"] == "publish_uncertain":
                 return finish({"status": "publish_uncertain", "wechat_status": "publish_uncertain"}, 1, excluded=True)
             return finish({"status": "already_published", "wechat_status": recorded["status"]}, 0, excluded=True)
+        context_path = settings.automation_dir / "wechat_retry_context.json"
+        if context_path.exists():
+            context_path.unlink()  # An old local context cannot authorize a relay.
+        if run_key and args.mode == "publish":
+            retry_state = seed_retry_day(xstate.read_remote_state(ROOT, branch=xstate.WECHAT_STATE_BRANCH,
+                                                                  path=retry.STATE_PATH, strict=True), metrics_state, today)
+            retry_state, reservation = retry.reserve(retry_state, today, run_key, started_at,
+                parent=os.environ.get("WECHAT_RETRY_PARENT", ""), parent_day=os.environ.get("WECHAT_RETRY_DAY", ""))
+            if reservation != "reserved":
+                if reservation == "daily_budget_exhausted":
+                    write_state_file(retry_state, retry.STATE_PATH, "chore(wechat): retain imported daily usage [skip ci]")
+                return finish({"status": "daily_retry_stopped", "publication_attempted": False, "retry_status": reservation,
+                               "daily_run_count": len(retry.today_entry(retry_state, today)["runs"]),
+                               "daily_processing_seconds": retry.MAX_SECONDS - retry.remaining(retry.today_entry(retry_state, today)),
+                               "retry_message": "当天未发表，自动补跑已结束"}, 0, excluded=True)
+            write_state_file(retry_state, retry.STATE_PATH, "chore(wechat): reserve daily publish run [skip ci]")
+            reserved_started = time.monotonic()
+            entry = retry.today_entry(retry_state, today)
+            prior_inputs = [item for prior in retry_state["days"].values() for item in prior.get("failed_inputs", [])]
+            context_path.write_text(json.dumps(retry.retry_context({"failed_inputs": prior_inputs}), ensure_ascii=False), encoding="utf-8")
+            os.environ["WECHAT_REGENERATING"] = "1" if prior_inputs else "0"
+            remaining = min(2700, retry.remaining(entry) - 90)
+            os.environ["WECHAT_RUN_DEADLINE_EPOCH"] = str(time.time() + remaining)
+            os.environ["TOUTIAO_DAILY_RUN_BUDGET_SECONDS"] = str(min(1980, max(1, remaining - 300)))
         command = [sys.executable, str(ROOT / "scripts" / "scheduled_wechat_publish.py"), "--account", args.account]
         checked = subprocess.run(command + ["--check-login"], cwd=ROOT, timeout=120)
         if checked.returncode:
@@ -223,7 +323,8 @@ def main(argv: list[str] | None = None) -> int:
             return finish({"status": "ready", "publication_requested": False}, 0)
         started = time.time_ns()
         publication_started = True
-        result = subprocess.run(command + ["--enable-auto-publish"], cwd=ROOT, timeout=2700)
+        deadline = float(os.environ.get("WECHAT_RUN_DEADLINE_EPOCH", time.time() + 2700))
+        result = subprocess.run(command + ["--enable-auto-publish"], cwd=ROOT, timeout=max(1, min(2700, deadline - time.time())))
         save_session(settings, encrypted, key)
         record = latest_accepted_record(settings.output_dir / settings.wechat.history_filename, today)
         if record:

@@ -457,14 +457,27 @@
     "2026-10-07": {
       "runs": {
         "37493259299:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T16:08:52.430373+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 728.023,
+          "outcome": "review_required"
         }
       },
       "dispatches": {},
-      "failed_inputs": [],
+      "failed_inputs": [
+        {
+          "fingerprint": "bdd23dd0070daceb3a1824c82cb233baac1f0468de3c0903f939ec81774df73e",
+          "source_fingerprint": "1320c72001d78e99ba44fe54c8a3edbf02aab01e5f3b1a51fb1e82d565f40461",
+          "requirements": [
+            "正文存在重复的长段表述，请合并或重写后再发布。",
+            "将文章中重复的长段表述进行合并或重写，以提升阅读体验。",
+            "检查并修改标题，确保信息量充足，包含具体主体、数字和结果，避免使用纯抽象概念堆砌的标题。",
+            "检查并删除或修改绝对化表述，如“完全”，以增加客观性。",
+            "检查并修改文章结构，确保段落长度适中，避免超过180字，以适配手机阅读。"
+          ]
+        }
+      ],
       "formal_publication_validation": {
         "intent_id": "daily-2026-10-07-pr26",
         "created_at": "2026-10-06T16:07:27.832118+00:00",

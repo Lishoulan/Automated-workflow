@@ -721,6 +721,9 @@ class ContentFactoryAppService:
             (self.settings.automation_dir / "wechat_publish_phase.json").write_text(json.dumps({
                 "account_key": self.settings.account_key, "phase": "preparing", "publication_attempted": False}), encoding="utf-8")
             self._wechat_enrichment_deadline = time.monotonic() + 300
+            self._wechat_enrichment_remaining_seconds = 300.0
+            self._wechat_attempted_candidate_titles = set()
+            self._wechat_eligible_titles = set()
             self._wechat_enrichment_count = 0
             self._wechat_enriched_topics = {}
             self.topic_automation._wechat_enriched_topics = {}
@@ -925,7 +928,8 @@ class ContentFactoryAppService:
         # 而不是让整个 run 被外部杀掉。
         started_at = time.monotonic()
         budget_seconds = self._daily_run_budget_seconds()
-        for attempt_index, candidate in enumerate(candidate_specs, start=1):
+        attempt_limit = min(5, max(1, int(self.settings.automation.max_daily_topic_attempts))) if self.settings.wechat_auto_publish_mode and not topic_title and topic_rank is None else len(candidate_specs)
+        for attempt_index in range(1, attempt_limit + 1):
             elapsed = time.monotonic() - started_at
             if best_attempt is not None and elapsed >= budget_seconds:
                 self.logger.warning(
@@ -936,6 +940,16 @@ class ContentFactoryAppService:
                     len(candidate_specs) - attempt_index + 1,
                 )
                 break
+            if attempt_index > len(candidate_specs):
+                more = self._build_daily_candidate_specs(topic_rank=topic_rank, topic_title=topic_title,
+                    refresh_cache=False, dry_run=dry_run)
+                attempted_titles = getattr(self, "_wechat_attempted_candidate_titles", set())
+                candidate_specs.extend([item for item in more if item["title"] not in attempted_titles][:attempt_limit - len(candidate_specs)])
+                if attempt_index > len(candidate_specs):
+                    break
+            candidate = candidate_specs[attempt_index - 1]
+            if self.settings.wechat_auto_publish_mode:
+                self._wechat_attempted_candidate_titles.add(str(candidate["title"]))
             self.logger.info(
                 "Daily workflow attempt %s/%s: %s",
                 attempt_index,
@@ -2803,6 +2817,8 @@ class ContentFactoryAppService:
             return []
 
         if self.settings.wechat_auto_publish_mode:
+            attempted = getattr(self, "_wechat_attempted_candidate_titles", set())
+            available_topics = [topic for topic in available_topics if topic.title not in attempted]
             self._enrich_wechat_candidates(available_topics)
 
         # Scheduled long articles need enough source material to support a
@@ -2893,7 +2909,10 @@ class ContentFactoryAppService:
             *hot_topics,
         ]
         if self.settings.wechat_auto_publish_mode:
-            self._wechat_eligible_candidate_count = len(ordered)
+            eligible = getattr(self, "_wechat_eligible_titles", set())
+            eligible.update(topic.title for topic in ordered)
+            self._wechat_eligible_titles = eligible
+            self._wechat_eligible_candidate_count = len(eligible)
             max_attempts = min(5, max_attempts)
         return [
             {
@@ -2910,38 +2929,58 @@ class ContentFactoryAppService:
             self._wechat_enrichment_deadline = time.monotonic() + 300
             self._wechat_enrichment_count = 0
             self._wechat_enriched_topics = {}
-        collector = TopicCollectionService(self.settings, self.logger)
-        from collections import defaultdict
-        for topic in topics:
-            key = (topic.title, topic.url)
-            if key in self._wechat_enriched_topics:
-                previous = self._wechat_enriched_topics[key]
-                topic.__dict__.update(previous.__dict__)
-                continue
-            flags = set(topic.quality_flags)
-            thin = not topic.source_records or len(topic.snippet or "") < 600 or bool(flags & {"title_only", "weak_evidence"})
-            thin = thin or os.environ.get("WECHAT_REGENERATING") == "1"
-            if not thin:
-                continue
-            if not collector._has_concrete_industry_keyword(topic) or not collector._filter_by_freshness([topic], defaultdict(int)):
-                topic._wechat_original_gate_passed = False
+        remaining = getattr(self, "_wechat_enrichment_remaining_seconds",
+                            max(0, self._wechat_enrichment_deadline - time.monotonic()))
+        self._wechat_enrichment_deadline = time.monotonic() + remaining
+        run_deadline = os.environ.get("WECHAT_RUN_DEADLINE_EPOCH")
+        if run_deadline:
+            self._wechat_enrichment_deadline = min(self._wechat_enrichment_deadline,
+                time.monotonic() + max(0, float(run_deadline) - time.time()))
+        def ready(topic):
+            return (bool(topic.source_records) and getattr(topic, "_wechat_original_gate_passed", True) is not False
+                    and topic.evidence_strength >= 55 and topic.quality_score >= 55
+                    and not set(topic.quality_flags) & {"title_only", "weak_evidence", "weak_subject"})
+        try:
+            collector = TopicCollectionService(self.settings, self.logger)
+            from collections import defaultdict
+            for topic in topics:
+                key = (topic.title, topic.url)
+                if key in self._wechat_enriched_topics:
+                    previous = self._wechat_enriched_topics[key]
+                    topic.__dict__.update(previous.__dict__)
+                    if ready(topic):
+                        break
+                    continue
+                flags = set(topic.quality_flags)
+                thin = not topic.source_records or len(topic.snippet or "") < 600 or bool(flags & {"title_only", "weak_evidence"})
+                thin = thin or os.environ.get("WECHAT_REGENERATING") == "1"
+                if not thin:
+                    if ready(topic):
+                        break
+                    continue
+                if not collector._has_concrete_industry_keyword(topic) or not collector._filter_by_freshness([topic], defaultdict(int)):
+                    topic._wechat_original_gate_passed = False
+                    self._wechat_enriched_topics[key] = topic
+                    continue
+                if self._wechat_enrichment_count >= 10 or time.monotonic() >= self._wechat_enrichment_deadline:
+                    break
+                self._wechat_enrichment_count += 1
+                hydrated = self.topic_automation._hydrate_topic_material(
+                    topic, deadline=min(self._wechat_enrichment_deadline, time.monotonic() + 60),
+                )
+                if hydrated:
+                    # Original scoring derives flags from the newly fetched text.
+                    collector._enrich_topic(topic)
+                    topic._wechat_original_gate_passed = bool(
+                        collector._filter_by_freshness([topic], defaultdict(int))
+                        and collector._passes_topic_focus(topic, defaultdict(int)))
+                else:
+                    topic._wechat_original_gate_passed = False
                 self._wechat_enriched_topics[key] = topic
-                continue
-            if self._wechat_enrichment_count >= 10 or time.monotonic() >= self._wechat_enrichment_deadline:
-                break
-            self._wechat_enrichment_count += 1
-            hydrated = self.topic_automation._hydrate_topic_material(
-                topic, deadline=min(self._wechat_enrichment_deadline, time.monotonic() + 60),
-            )
-            if hydrated:
-                # Original scoring derives flags from the newly fetched text.
-                collector._enrich_topic(topic)
-                topic._wechat_original_gate_passed = bool(
-                    collector._filter_by_freshness([topic], defaultdict(int))
-                    and collector._passes_topic_focus(topic, defaultdict(int)))
-            else:
-                topic._wechat_original_gate_passed = False
-            self._wechat_enriched_topics[key] = topic
+                if ready(topic):
+                    break
+        finally:
+            self._wechat_enrichment_remaining_seconds = max(0, self._wechat_enrichment_deadline - time.monotonic())
         # prepare_auto_run reloads the pool: carry provenance and rescored values
         # through that boundary, without rewriting the shared daily topic file.
         self.topic_automation._wechat_enriched_topics = self._wechat_enriched_topics

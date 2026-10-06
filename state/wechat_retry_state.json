@@ -88,7 +88,18 @@
           "parent": "",
           "elapsed_seconds": 663.42,
           "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
-          "outcome": "review_required"
+          "outcome": "review_required",
+          "no_submission_verified": true,
+          "no_submission_evidence": {
+            "run_key": "37414784960:1",
+            "checked_at": "2026-10-06T05:02:02.060887+00:00",
+            "account": "小椰科技",
+            "stage": "review_hold_before_submission",
+            "candidate_attempt_count": 2,
+            "pending_count": 0,
+            "native_exit_code": 0,
+            "publication_attempted": false
+          }
         }
       },
       "dispatches": {},
@@ -146,16 +157,16 @@
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "consumed",
+          "status": "authorized",
           "purpose": "verify_formal_publication",
-          "head_sha": "17ac07017279a80d3228c8359f756ef72d5b3755",
+          "head_sha": "2e586136fe22ea90e676defcb9568a435ab10d38",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",
-          "expires_at": "2026-10-06T05:39:58.146317+00:00",
+          "expires_at": "2026-10-06T06:02:48.621613+00:00",
           "authorization": "User requested immediate formal publication verification on 2026-10-06",
           "dispatch_status": "intent",
           "run_key": "37414784960:1",
-          "reauthorized_at": "2026-10-06T04:39:58.146317+00:00",
-          "resume_after_not_published": "37412838488:1"
+          "reauthorized_at": "2026-10-06T05:02:48.621613+00:00",
+          "resume_after_not_published": "37414784960:1"
         }
       }
     }

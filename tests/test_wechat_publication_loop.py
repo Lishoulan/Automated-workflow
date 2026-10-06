@@ -730,3 +730,28 @@ def test_polish_applies_source_preserving_narrowing(app_settings, mock_openai_se
     result = agent.run(GeneratedContent(article=original), TrendReport(), data, app_settings.get_style(), CacheContext(), ["收窄结论"])
     assert original in result["polished_article"]
     assert "不据此推导其他地区的结论" in result["polished_article"]
+
+
+def test_authorized_budget_extension_keeps_history_and_next_day_default():
+    state, day = reserved()
+    state = retry.complete(state, day, "101:1", 5268.198, normal(), {})
+    entry = state["days"][day]
+    entry["budget_extension"] = {"day": day, "purpose": "verify_formal_publication", "additional_seconds": 1800,
+        "authorized_at": datetime.now(timezone.utc).isoformat(), "authorization": "User explicitly authorized thirty additional minutes today"}
+    checked = retry.validate(state)
+    assert retry.budget_seconds(checked["days"][day]) == 7200
+    assert retry.remaining(checked["days"][day]) == pytest.approx(1931.802)
+    assert checked["days"][day]["runs"]["101:1"]["elapsed_seconds"] == 5268.198
+    tomorrow = (datetime.now(retry.BEIJING) + timedelta(days=1)).strftime("%Y-%m-%d")
+    assert retry.budget_seconds(retry.today_entry(checked, tomorrow)) == 5400
+    assert retry.MAX_RUNS == 3
+
+
+@pytest.mark.parametrize("change", [{"additional_seconds": True}, {"additional_seconds": 1801},
+    {"authorization": ""}, {"purpose": "automatic_retry"}, {"day": "2000-01-01"}])
+def test_budget_extension_rejects_invalid_or_cross_day_authority(change):
+    state, day = reserved()
+    state["days"][day]["budget_extension"] = {"day": day, "purpose": "verify_formal_publication", "additional_seconds": 1800,
+        "authorized_at": datetime.now(timezone.utc).isoformat(), "authorization": "Explicit user authorization", **change}
+    with pytest.raises(ValueError):
+        retry.validate(state)

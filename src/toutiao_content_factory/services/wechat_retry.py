@@ -25,6 +25,7 @@ def validate(state: dict) -> dict:
         raise ValueError("Invalid WeChat retry state")
     for day, entry in state["days"].items():
         datetime.strptime(day, "%Y-%m-%d")
+        budget_seconds(entry, day=day)
         if not isinstance(entry.get("runs"), dict) or not isinstance(entry.get("dispatches"), dict):
             raise ValueError("Invalid WeChat retry day")
         for key, run in entry["runs"].items():
@@ -40,8 +41,23 @@ def today_entry(state: dict, day: str) -> dict:
     return state["days"].setdefault(day, {"runs": {}, "dispatches": {}, "failed_inputs": []})
 
 
+def budget_seconds(entry: dict, *, day: str = "") -> int:
+    extension = entry.get("budget_extension")
+    if extension is None:
+        return MAX_SECONDS
+    if (not isinstance(extension, dict)
+            or extension.get("purpose") != "verify_formal_publication"
+            or extension.get("additional_seconds") != 1800
+            or type(extension.get("additional_seconds")) is not int
+            or not extension.get("authorization")
+            or not extension.get("day") or (day and extension["day"] != day)
+            or day_of(extension.get("authorized_at", "")) != extension["day"]):
+        raise ValueError("Invalid day-scoped WeChat budget authorization")
+    return MAX_SECONDS + extension["additional_seconds"]
+
+
 def remaining(entry: dict) -> float:
-    return max(0.0, MAX_SECONDS - sum(row.get("elapsed_seconds", 0) for row in entry["runs"].values()))
+    return max(0.0, budget_seconds(entry) - sum(row.get("elapsed_seconds", 0) for row in entry["runs"].values()))
 
 
 def reserve(state: dict, day: str, key: str, started_at: str, *, parent: str = "", parent_day: str = "",

@@ -226,7 +226,16 @@
           "parent": "",
           "elapsed_seconds": 1086.54,
           "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
-          "outcome": "review_required"
+          "outcome": "review_required",
+          "no_submission_verified": true,
+          "no_submission_evidence": {
+            "checked_at": "2026-10-06T14:24:41.256448+00:00",
+            "account": "小椰科技",
+            "pending_count": 0,
+            "native_exit_code": 0,
+            "publication_attempted": false,
+            "candidate_attempt_count": 2
+          }
         }
       },
       "dispatches": {},
@@ -342,6 +351,14 @@
             "在标题中加入具体公司名或地名，以增加信息量和吸引力。",
             "将超过180字的段落拆分成更短的段落，以适配手机阅读。",
             "在标题中加入具体主体/数字和强动作或结果词，以提高信息密度。",
+            "补充具体公司/数字/对立观点/互动话术，以提高互动吸引力。",
+            "逐节使用六节大纲中的实际证据编号，完整生成六节，不复制原句或重复扩写。",
+            "标题依据最终完整正文中的真实事实锚点，不使用利润模板；保留预告和观点归因。"
+          ],
+          "original_requirements": [
+            "在标题中加入具体公司名或地名，以增加信息量和吸引力。",
+            "将超过180字的段落拆分成更短的段落，以适配手机阅读。",
+            "在标题中加入具体主体/数字和强动作或结果词，以提高信息密度。",
             "补充具体公司/数字/对立观点/互动话术，以提高互动吸引力。"
           ]
         },
@@ -350,22 +367,28 @@
           "source_fingerprint": "f4fd7c612417a4c209c6aed2e230871392c58129e3fca34e7383615810c6d6af",
           "requirements": [
             "标题需补充具体数字、公司名或地名，增加信息量和具象性。",
+            "正文需增加因果、转折或条件边界，避免论点并列，并补充反方或失效条件。",
+            "逐节使用六节大纲中的实际证据编号，完整生成六节，不复制原句或重复扩写。",
+            "标题依据最终完整正文中的真实事实锚点，不使用利润模板；保留预告和观点归因。"
+          ],
+          "original_requirements": [
+            "标题需补充具体数字、公司名或地名，增加信息量和具象性。",
             "正文需增加因果、转折或条件边界，避免论点并列，并补充反方或失效条件。"
           ]
         }
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "consumed",
+          "status": "authorized",
           "purpose": "verify_formal_publication",
-          "head_sha": "003a261cc50f4e2799bb1b096a62365e593d4e1c",
+          "head_sha": "cae0191a255e6ea2f929d7eefbdb3e50283bf684",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",
           "expires_at": "2026-10-06T15:59:59+00:00",
           "authorization": "User requested immediate formal publication verification on 2026-10-06",
           "dispatch_status": "intent",
           "run_key": "37474754902:1",
-          "reauthorized_at": "2026-10-06T13:55:53.773010+00:00",
-          "resume_after_not_published": "37428125664:1"
+          "reauthorized_at": "2026-10-06T14:25:42.539291+00:00",
+          "resume_after_not_published": "37474754902:1"
         }
       },
       "budget_extension": {

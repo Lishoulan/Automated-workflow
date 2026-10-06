@@ -303,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
             if reservation != "reserved":
                 if reservation == "daily_budget_exhausted":
                     write_state_file(retry_state, retry.STATE_PATH, "chore(wechat): retain imported daily usage [skip ci]")
-                return finish({"status": "daily_retry_stopped", "publication_attempted": False, "retry_status": reservation,
+                return finish({"status": "daily_retry_stopped", "publication_attempted": False, "native_exit_code": None, "retry_status": reservation,
                                "daily_run_count": len(retry.today_entry(retry_state, today)["runs"]),
                                "daily_processing_seconds": sum(row.get("elapsed_seconds", 0) for row in retry.today_entry(retry_state, today)["runs"].values()),
                                "daily_budget_seconds": retry.budget_seconds(retry.today_entry(retry_state, today)),

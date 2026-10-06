@@ -313,6 +313,12 @@ def test_rollout_with_three_existing_runs_skips_writer_and_persists_usage(app_se
     child.assert_not_called()
     payload = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text(encoding="utf-8"))
     assert payload["daily_run_count"] == 3 and payload["retry_status"] == "daily_budget_exhausted"
+    assert payload["native_exit_code"] is None
+    saved_metrics = [call.args[0] for call in writer.call_args_list if call.args[1] == metrics.METRICS_PATH][-1]
+    stopped = next(row for row in saved_metrics["runs"] if row["run_key"] == "99:1")
+    assert stopped["outcome"] == "not_started" and stopped["excluded"] is True
+    assert stopped["native_exit_code"] is None
+    assert metrics.summary(saved_metrics)["7"]["actual_publish_runs"] == 3
     assert any(call.args[1] == retry.STATE_PATH for call in writer.call_args_list)
 
 
@@ -810,6 +816,64 @@ def test_authorized_budget_extension_keeps_history_and_next_day_default():
     tomorrow = (datetime.now(retry.BEIJING) + timedelta(days=1)).strftime("%Y-%m-%d")
     assert retry.budget_seconds(retry.today_entry(checked, tomorrow)) == 5400
     assert retry.MAX_RUNS == 3
+
+
+def test_additional_budget_grant_is_idempotent_and_preserves_usage():
+    from copy import deepcopy
+    state, day = reserved()
+    state = retry.complete(state, day, "101:1", 6942.131, normal(), {})
+    entry = state["days"][day]
+    first = {"day": day, "purpose": "verify_formal_publication", "additional_seconds": 1800,
+        "authorized_at": datetime.now(timezone.utc).isoformat(), "authorization": "First explicit thirty-minute authorization"}
+    entry["budget_extension"] = first
+    original_runs = deepcopy(entry["runs"])
+    second = {**first, "authorization": "Second explicit thirty-minute authorization"}
+    for _ in range(2):
+        entry.setdefault("additional_budget_grants", {})["same-user-authorization"] = second
+        checked = retry.validate(state)
+        assert retry.budget_seconds(checked["days"][day]) == 9000
+        assert retry.remaining(checked["days"][day]) == pytest.approx(2057.869)
+    assert entry["budget_extension"] == first and entry["runs"] == original_runs
+    tomorrow = (datetime.now(retry.BEIJING) + timedelta(days=1)).strftime("%Y-%m-%d")
+    assert retry.budget_seconds(retry.today_entry(checked, tomorrow)) == 5400
+    assert retry.MAX_RUNS == 3 and retry.MAX_SECONDS == 5400
+
+
+@pytest.mark.parametrize("grants", [[], {"": {}}, {" ": {}}, {"authorization": False}])
+def test_additional_budget_grant_rejects_invalid_identity_or_shape(grants):
+    state, day = reserved()
+    state["days"][day]["additional_budget_grants"] = grants
+    with pytest.raises(ValueError):
+        retry.validate(state)
+
+
+@pytest.mark.parametrize("change", [{"day": "2000-01-01"}, {"authorization": ""},
+    {"additional_seconds": 3600}, {"additional_seconds": True}, {"purpose": "automatic_retry"},
+    {"authorized_at": None}, {"authorized_at": "2026-10-06T08:00:00"}])
+def test_additional_budget_grant_requires_dated_explicit_authority(change):
+    state, day = reserved()
+    state["days"][day]["additional_budget_grants"] = {"authorization": {
+        "day": day, "purpose": "verify_formal_publication", "additional_seconds": 1800,
+        "authorized_at": datetime.now(timezone.utc).isoformat(), "authorization": "Explicit user authorization", **change}}
+    with pytest.raises(ValueError):
+        retry.validate(state)
+
+
+@pytest.mark.parametrize("change", [{"status": "error"}, {"publication_attempted": True},
+    {"retry_status": "invalid_validation_grant"}, {"native_exit_code": 124},
+    {"metrics_error": "OSError"}, {"retry_state_error": "RuntimeError"}])
+def test_budget_stop_does_not_mask_real_faults(change):
+    stopped = {"status": "daily_retry_stopped", "retry_status": "daily_budget_exhausted",
+               "publication_attempted": False, "native_exit_code": None, **change}
+    assert metrics.outcome(stopped) == "runtime_error"
+
+
+def test_budget_stop_preserves_platform_submission_state():
+    stopped = {"status": "daily_retry_stopped", "retry_status": "daily_budget_exhausted",
+               "publication_attempted": False, "native_exit_code": None}
+    assert metrics.outcome(stopped) == "not_started"
+    assert metrics.outcome({**stopped, "wechat_status": "submitted_for_review"}) == "pending_review"
+    assert metrics.outcome({**stopped, "wechat_status": "publish_uncertain"}) == "submit_uncertain"
 
 
 @pytest.mark.parametrize("change", [{"additional_seconds": True}, {"additional_seconds": 1801},

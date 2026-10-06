@@ -505,7 +505,7 @@ class ContentGuardService:
         self.bad_words_trie = SensitiveWordTrie(self.bad_words)
         self.exclusion_rules = self._load_exclusion_rules()
         self.ai_cliche_phrases = self._load_ai_cliche_phrases()
-        self.quality_checker = ArticleQualityChecker()
+        self.quality_checker = ArticleQualityChecker(wechat_mode=settings.wechat_auto_publish_mode)
         # 查重索引缓存：signature -> (corpus, SimHashIndex)
         self._corpus_cache: dict[str, Any] = {}
         self._cache_lock = threading.RLock()

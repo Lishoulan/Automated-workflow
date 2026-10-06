@@ -623,7 +623,7 @@ class ImageGenerationService:
             content_domain = str(getattr(self.settings, "content_domain", "industry"))
         title_score_payload = pm.get("creative_score") if isinstance(pm.get("creative_score"), dict) else {}
         scorer = CreativeScoringService(
-            self.settings.output_dir / "creative_score_calibration.json"
+            self.settings.output_dir / "creative_score_calibration.json", wechat_mode=self.settings.wechat_auto_publish_mode
         )
         if not title_score_payload:
             title_score_payload = scorer.score_title(

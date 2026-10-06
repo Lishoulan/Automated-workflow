@@ -6,6 +6,8 @@ from typing import Iterable, Optional
 from toutiao_content_factory.services.company_entities import (
     COMPANY_SUFFIX_RE,
     extract_known_company_names,
+    extract_wechat_company_names,
+    is_wechat_company_name,
     is_valid_company_name,
     normalize_company_name,
 )
@@ -260,7 +262,8 @@ class ArticleQualityChecker:
         re.compile(r"(?:后面|接下来|下一步|后续).{0,30}(?:最先|首先|哪个|什么|如何|是否|会不会|值得).{0,40}[？?]"),
     ]
 
-    def __init__(self):
+    def __init__(self, *, wechat_mode: bool = False):
+        self.wechat_mode = wechat_mode
         self.min_word_count = 1500
         self.max_template_usage = 3
 
@@ -718,14 +721,16 @@ class ArticleQualityChecker:
     )
 
     @classmethod
-    def _extract_company_mentions(cls, text: str) -> list[str]:
+    def _extract_company_mentions(cls, text: str, *, wechat_mode: bool = False) -> list[str]:
         """Extract grounded-looking company names for title/body checks."""
 
         candidates: list[str] = []
         raw_text = str(text or "")
-        for candidate in extract_known_company_names(raw_text):
+        extractor = extract_wechat_company_names if wechat_mode else extract_known_company_names
+        validator = is_wechat_company_name if wechat_mode else is_valid_company_name
+        for candidate in extractor(raw_text):
             normalized = normalize_company_name(candidate)
-            if is_valid_company_name(normalized) and normalized not in candidates:
+            if validator(normalized) and normalized not in candidates:
                 candidates.append(normalized)
         for match in COMPANY_SUFFIX_RE.finditer(raw_text):
             normalized = normalize_company_name(match.group(0))
@@ -734,8 +739,8 @@ class ArticleQualityChecker:
         return candidates
 
     @classmethod
-    def _extract_subject_mentions(cls, text: str) -> list[str]:
-        subjects = cls._extract_company_mentions(text)
+    def _extract_subject_mentions(cls, text: str, *, wechat_mode: bool = False) -> list[str]:
+        subjects = cls._extract_company_mentions(text, wechat_mode=wechat_mode)
         for organization in extract_known_organization_names(text):
             if organization not in subjects:
                 subjects.append(organization)
@@ -757,6 +762,7 @@ class ArticleQualityChecker:
         title: str,
         content: str = "",
         expected_companies: Iterable[object] | None = None,
+        *, wechat_mode: bool = False,
     ) -> list[str]:
         title_text = str(title or "").strip()
         if not title_text:
@@ -768,14 +774,17 @@ class ArticleQualityChecker:
             for match in cls._GENERIC_TITLE_SUBJECT_PATTERN.finditer(title_text)
             if match.group(1)
         ]
-        title_companies = cls._extract_subject_mentions(title_text)
+        title_companies = cls._extract_subject_mentions(title_text, wechat_mode=wechat_mode)
         body_text = str(content or "")
-        body_companies = cls._extract_subject_mentions(body_text)
+        if wechat_mode:
+            body_text = body_text.split("参考来源：", 1)[0]
+            body_text = re.sub(r"https?://[^\s<>\"']+", "", body_text)
+        body_companies = cls._extract_subject_mentions(body_text, wechat_mode=wechat_mode)
         expected: list[str] = []
         for raw_company in expected_companies or ():
             normalized = normalize_company_name(raw_company)
             if (
-                is_valid_company_name(normalized)
+                (is_wechat_company_name(normalized) if wechat_mode else is_valid_company_name(normalized))
                 or is_known_organization_name(normalized)
             ) and normalized not in expected:
                 expected.append(normalized)
@@ -794,8 +803,8 @@ class ArticleQualityChecker:
                     "请改为真实公司、项目或明确事件主体。"
                 )
 
-        if body_text:
-            body_folded = body_text.casefold()
+        if body_text or (wechat_mode and str(content or "").strip()):
+            body_folded = (re.sub(r"\s+", "", body_text) if wechat_mode else body_text).casefold()
             for company in title_companies:
                 if company.casefold() not in body_folded:
                     issues.append(
@@ -871,9 +880,10 @@ class ArticleQualityChecker:
         title: str,
         content: str,
         expected_companies: Iterable[object] | None = None,
+        *, wechat_mode: bool = False,
     ) -> TitleBodyConsistencyResult:
         """只看**标题与正文之间**的一致性，不掺入正文自身的完整性问题。"""
-        issues = cls._check_title_integrity(title, str(content or ""), expected_companies)
+        issues = cls._check_title_integrity(title, str(content or ""), expected_companies, wechat_mode=wechat_mode)
         return TitleBodyConsistencyResult(passed=not issues, issues=issues)
 
     def check_editorial_integrity(
@@ -896,7 +906,7 @@ class ArticleQualityChecker:
         便于调用方各取所需（对外键名保持不变）。
         """
 
-        consistency = self.check_title_body_consistency(title, content, expected_companies)
+        consistency = self.check_title_body_consistency(title, content, expected_companies, wechat_mode=self.wechat_mode)
         body_integrity = self.check_body_integrity(content)
         title_issues = consistency.issues
         body_issues = body_integrity.issues
@@ -1004,6 +1014,7 @@ class ArticleQualityChecker:
         has_company = bool(
             self._TITLE_SUBJECT_PATTERN.search(title)
             or extract_known_organization_names(title)
+            or (self.wechat_mode and self._extract_company_mentions(title, wechat_mode=True))
         )
         has_place = bool(self._TITLE_PLACE_PATTERN.search(title))
         if not has_number and not has_company and not has_place:
@@ -1019,6 +1030,7 @@ class ArticleQualityChecker:
                 title,
                 content,
                 expected_companies=expected_companies,
+                wechat_mode=self.wechat_mode,
             )
         )
 
@@ -1060,7 +1072,7 @@ class ArticleQualityChecker:
         element_count = sum(
             [
                 bool(has_number or has_company or has_place),
-                bool(_ACTION_PATTERN.search(title)),
+                bool(_ACTION_PATTERN.search(title) or (self.wechat_mode and re.search(r"预告|预览|披露|测试|验证|部署", title))),
                 bool(_RESULT_PATTERN.search(title)),
             ]
         )

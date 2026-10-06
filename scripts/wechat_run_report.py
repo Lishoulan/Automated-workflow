@@ -91,7 +91,7 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
                 from toutiao_content_factory.services.wechat_evidence import public_url
                 summary["article_kind"] = safe_text(data.get("article_kind", ""))
                 summary["source_records"] = [{key: safe_text(source.get(key, ""))
-                                               for key in ("source_id", "title", "publisher", "published_at")} | {"url": public_url(str(source.get("url", "")))}
+                                               for key in ("source_id", "title", "publisher", "published_at", "source_role")} | {"url": public_url(str(source.get("url", "")))}
                                               for source in data.get("source_records", []) if isinstance(source, dict)]
                 summary["fact_evidence_count"] = len(data.get("fact_evidence", []))
                 summary["draft_fingerprint"] = safe_text(data.get("draft_fingerprint", ""))
@@ -113,6 +113,28 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
                     "reasons": {safe_text(key): value for key, value in validation.get("reason_summary", {}).items()
                                 if isinstance(value, int)},
                 }
+                # Every pool matters: emergency counts alone hide model/repair failures.
+                pools = validation.get("pools", {})
+                if isinstance(pools, dict):
+                    def title_items(value):
+                        return value[:100] if isinstance(value, list) else []
+
+                    summary["title_validation"]["pools"] = {
+                        safe_text(name): {"status": safe_text(pool.get("status", "unknown")),
+                            "raw_titles": [safe_text(title)[:160] for title in title_items(pool.get("raw_titles")) if isinstance(title, str)],
+                            "prefilter": [{"raw_title": safe_text(item.get("raw_title", ""))[:160],
+                                "title": safe_text(item.get("title", ""))[:160],
+                                "prefilter_passed": item.get("prefilter_passed") is True,
+                                "reason_codes": [safe_text(code) for code in title_items(item.get("reason_codes")) if isinstance(code, str)]}
+                                for item in title_items(pool.get("prefilter")) if isinstance(item, dict)],
+                            "candidates": [{"title": safe_text(item.get("title", ""))[:160],
+                                "passed": item.get("passed") is True,
+                                "reason_codes": [safe_text(code) for code in title_items(item.get("reason_codes")) if isinstance(code, str)],
+                                "concrete_hook_status": safe_text(item.get("concrete_hook_status", "")),
+                                "validation_context": safe_text(item.get("validation_context", "")),
+                                "rejected_by": safe_text(item.get("rejected_by", ""))}
+                                for item in title_items(pool.get("candidates")) if isinstance(item, dict)]}
+                        for name, pool in pools.items() if isinstance(pool, dict)}
                 if validation.get("status") == "all_rejected":
                     result["reason_codes"].append("title_all_rejected")
         result["attempts"].append(summary)

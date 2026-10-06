@@ -114,7 +114,7 @@ class QualityReviewCouncilAgent(BaseAgent):
         if not roles_path.is_absolute():
             roles_path = settings.project_root / roles_path
         self.role_loader = AgencyRoleLoader(str(roles_path), logger)
-        self.quality_checker = ArticleQualityChecker()
+        self.quality_checker = ArticleQualityChecker(wechat_mode=settings.wechat_auto_publish_mode)
 
     def run(
         self,

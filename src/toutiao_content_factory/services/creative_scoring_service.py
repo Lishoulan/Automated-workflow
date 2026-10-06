@@ -8,6 +8,7 @@ from typing import Any
 from PIL import Image, ImageFilter, ImageStat
 
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
+from toutiao_content_factory.services.company_entities import extract_wechat_company_names
 from toutiao_content_factory.services.growth_feedback_service import title_signals
 
 
@@ -32,7 +33,8 @@ class CreativeScoringService:
     )
     _WEAK_TOKENS = ("震惊", "惊呆", "速看", "必看", "重磅", "彻底炸了", "你绝对想不到")
 
-    def __init__(self, calibration_path: Path | None = None) -> None:
+    def __init__(self, calibration_path: Path | None = None, *, wechat_mode: bool = False) -> None:
+        self.wechat_mode = wechat_mode
         self.quality_checker = ArticleQualityChecker()
         self.calibration = self._load_calibration(calibration_path)
 
@@ -73,7 +75,8 @@ class CreativeScoringService:
         if click_preference > 0:
             reasons.append("标题结构具备点击偏好信号")
 
-        concrete = bool(re.search(r"\d", text) or any(token in text for token in self._CONCRETE_TOKENS))
+        concrete = bool(re.search(r"\d", text) or any(token in text for token in self._CONCRETE_TOKENS)
+                        or (self.wechat_mode and extract_wechat_company_names(text)))
         if concrete:
             score += 10
             reasons.append("包含具体人物、场景或数字")

@@ -68,6 +68,9 @@ class TitlePool:
     valid_titles: list[str] = field(default_factory=list)
     rejected: list[TitleValidation] = field(default_factory=list)
     unavailable: list[TitleValidation] = field(default_factory=list)
+    validations: list[TitleValidation] = field(default_factory=list)
+    raw_titles: list[str] = field(default_factory=list)
+    prefilter_trace: list[dict] = field(default_factory=list)
 
     @property
     def status(self) -> str:
@@ -101,8 +104,8 @@ class TitlePool:
             summary[code] = summary.get(code, 0) + 1
         return dict(sorted(summary.items(), key=lambda kv: -kv[1]))
 
-    def to_dict(self) -> dict[str, object]:
-        return {
+    def to_dict(self, *, include_candidates: bool = False) -> dict[str, object]:
+        result = {
             "source": self.source,
             "status": self.status,
             "generated_count": self.generated_count,
@@ -117,6 +120,15 @@ class TitlePool:
                 self.reason_summary().items(), key=lambda kv: -kv[1]
             )[:5],
         }
+        if include_candidates:
+            result["raw_titles"] = list(self.raw_titles)
+            result["prefilter"] = list(self.prefilter_trace)
+            result["candidates"] = [{"title": item.title, "passed": item.passed,
+                            "reason_codes": list(item.reason_codes),
+                            "concrete_hook_status": item.concrete_hook_status,
+                            "validation_context": item.validation_context,
+                            "rejected_by": item.rejected_by} for item in self.validations]
+        return result
 
 
 class TitleAgent(BaseAgent):
@@ -224,6 +236,7 @@ class TitleAgent(BaseAgent):
         iteration_overrides: Optional[IterationOverrides] = None,
     ) -> None:
         super().__init__(settings, prompt_repository, openai_service, logger)
+        self.quality_checker = ArticleQualityChecker(wechat_mode=settings.wechat_auto_publish_mode)
         # 2026-09-15：标题环节可选使用独立的强模型（.env 的 OPENAI_TITLE_MODEL）。
         # 实测依据：glm-4.6 生成的标题能通过 RULE_006/007/009 全部校验，而 glm-4-flash
         # 生成的标题会被全部过滤（4~6 次/轮）；但 4.6 写 1750+ 字长文会反复超时。
@@ -254,7 +267,7 @@ class TitleAgent(BaseAgent):
         max_length = self._title_max_length()
         if not (body_available and 10 <= len(title) <= max_length):
             return [], STATUS_UNAVAILABLE
-        hook_status, _anchor = self.concrete_hook_status(title, body)
+        hook_status, _anchor = self.concrete_hook_status(title, body, wechat_mode=self.settings.wechat_auto_publish_mode)
         if hook_status == STATUS_FAIL:
             return ["missing_concrete_hook"], hook_status
         if hook_status == STATUS_UNAVAILABLE:
@@ -286,7 +299,8 @@ class TitleAgent(BaseAgent):
 
         # ⚠️ 2026-09-17（Blocker 2）：标题层只问「标题与正文是否一致」，
         # 不碰 `check_editorial_integrity()`（它把正文自身的问题也合并进来了）。
-        consistency = ArticleQualityChecker().check_title_body_consistency(title, body)
+        consistency = self.quality_checker.check_title_body_consistency(
+            title, body, wechat_mode=self.settings.wechat_auto_publish_mode)
         if consistency.issues:
             reason_codes.append("title_body_inconsistency")
 
@@ -398,7 +412,7 @@ class TitleAgent(BaseAgent):
     def _rule_gate_issues(self, title: str, body_text: str) -> list[str]:
         """RULE_006/007/009 那条闸门的 reason codes（与标题闸门同一入口内执行）。"""
         try:
-            result = ArticleQualityChecker().check_title(
+            result = self.quality_checker.check_title(
                 title,
                 body_text,
                 content_domain=("narrative" if self._is_narrative_mode() else "industry"),
@@ -449,7 +463,7 @@ class TitleAgent(BaseAgent):
         if getattr(self, "_concrete_hook_unavailable_logged", False):
             return
         self._concrete_hook_unavailable_logged = True
-        anchors = self.extract_concrete_anchors(body_text)
+        anchors = self.extract_concrete_anchors(body_text, wechat_mode=self.settings.wechat_auto_publish_mode)
         credible = [a for a in anchors if a.is_high_confidence]
         self.logger.warning(
             "标题具象锚点闸门本次 UNAVAILABLE：正文只有 %d 个锚点（其中高置信度 %d 个，"
@@ -511,19 +525,19 @@ class TitleAgent(BaseAgent):
         return ""
 
     @classmethod
-    def extract_concrete_anchors(cls, text: str) -> list[ConcreteAnchor]:
+    def extract_concrete_anchors(cls, text: str, *, wechat_mode: bool = False) -> list[ConcreteAnchor]:
         """正文里的具象锚点（公司名 / 量化值 / 年份），带类型、置信度与出处区间。"""
-        return extract_concrete_anchors(text)
+        return extract_concrete_anchors(text, wechat_mode=wechat_mode)
 
     @staticmethod
-    def concrete_hook_status(title: str, body_text: str) -> tuple[str, ConcreteAnchor | None]:
+    def concrete_hook_status(title: str, body_text: str, *, wechat_mode: bool = False) -> tuple[str, ConcreteAnchor | None]:
         """标题与正文锚点的**三态**关系：PASS / FAIL / UNAVAILABLE。
 
         与 `_has_concrete_hook()` 的区别：后者只回答「标题有没有碰到任何一个具象元素」，
         前者是**闸门**语义 —— 正文锚点不足时返回 UNAVAILABLE（不判标题有罪，但如实留痕），
         且只认高置信度锚点。详见 `services/concrete_anchors.py` 的模块说明。
         """
-        return concrete_hook_status(title, body_text)
+        return concrete_hook_status(title, body_text, wechat_mode=wechat_mode)
 
     @classmethod
     def _extract_concrete_elements(cls, text: str) -> set[str]:
@@ -554,6 +568,7 @@ class TitleAgent(BaseAgent):
         body_text: str,
         data_report: DataReport,
         preferred_titles: list[str] | None = None,
+        *, raw_titles: list[str] | None = None, prefilter_trace: list[dict] | None = None,
     ) -> TitlePool:
         """把一个来源的候选变成**经过同一个校验入口**的池（D1/D3）。
 
@@ -562,11 +577,14 @@ class TitleAgent(BaseAgent):
         一旦同池竞争，兜底靠数量和权重就能抢掉模型候选。
         """
         pool = TitlePool(source=source, generated=list(titles))
+        pool.raw_titles = list(raw_titles if raw_titles is not None else titles)
+        pool.prefilter_trace = list(prefilter_trace or [])
         if not titles:
             return pool
         valid: list[str] = []
         for title in titles:
             outcome = self.validate_title_candidate(title, body_text)
+            pool.validations.append(outcome)
             substantive = tuple(
                 code
                 for code in outcome.reason_codes
@@ -616,7 +634,7 @@ class TitleAgent(BaseAgent):
         system_prompt = f"你是 TitleAgent，只输出 JSON。{self.best_practices_instruction()}"
         if self.settings.wechat_auto_publish_mode:
             body = self._title_body_reference(content)
-            anchors = [anchor.text for anchor in self.extract_concrete_anchors(body) if anchor.is_high_confidence]
+            anchors = [anchor.text for anchor in self.extract_concrete_anchors(body, wechat_mode=True) if anchor.is_high_confidence]
             system_prompt = (
                 "你是微信公众号事实标题编辑，只输出合法JSON。标题必须由给定完整正文的具体事实构成。"
                 "保留来源的观点、预测和预告限定；不新增公司、数字、日期、能力、财务因果或结论。"
@@ -633,8 +651,9 @@ class TitleAgent(BaseAgent):
         payload = self.request_json(system_prompt, prompt)
         raw_model_titles = payload.get("titles") if isinstance(payload, dict) else None
         model_raw_count = len(raw_model_titles) if isinstance(raw_model_titles, list) else 0
+        model_trace = [] if self.settings.wechat_auto_publish_mode else None
         if payload:
-            model_titles = self._dedupe_titles(payload.get("titles"), cache_context)
+            model_titles = self._dedupe_titles(payload.get("titles"), cache_context, trace=model_trace)
             preferred_from_model = self._dedupe_titles(payload.get("recommended_titles"), cache_context)
             model_title_a = str(payload.get("title_a", "") or "").strip()
             model_title_b = str(payload.get("title_b", "") or "").strip()
@@ -654,7 +673,9 @@ class TitleAgent(BaseAgent):
         # ── D1：三层池，按优先级递补，**池间不混合排名** ─────────────────────
         # PRIMARY：模型候选。只要有 ≥1 条合格，本次就只用模型池。
         model_pool = self._build_title_pool(
-            TITLE_SOURCE_MODEL, model_titles, body_reference, data_report, preferred_from_model
+            TITLE_SOURCE_MODEL, model_titles, body_reference, data_report, preferred_from_model,
+            raw_titles=[title for title in raw_model_titles if isinstance(title, str)] if isinstance(raw_model_titles, list) else [],
+            prefilter_trace=model_trace,
         )
         chosen = model_pool
         fallback_pool: TitlePool | None = None
@@ -704,10 +725,14 @@ class TitleAgent(BaseAgent):
                 "你是微信公众号事实标题编辑，只输出合法JSON。标题的公司、机构或产品型号必须逐字取自正文；"
                 "搭配正文已有的具体变化或未披露边界，保留消息归因，不写抽象产业套话、利润判断或虚构事实。",
                 repair_prompt)
+            repair_trace = []
             repair_titles = self._dedupe_titles(
-                repair_payload.get("titles", []) if isinstance(repair_payload, dict) else [], cache_context
-            )[:6]
-            repair_pool = self._build_title_pool("repair", repair_titles, body_reference, data_report, [])
+                repair_payload.get("titles", []) if isinstance(repair_payload, dict) else [], cache_context,
+                trace=repair_trace)[:6]
+            raw_repairs = repair_payload.get("titles", []) if isinstance(repair_payload, dict) else []
+            repair_pool = self._build_title_pool("repair", repair_titles, body_reference, data_report, [],
+                raw_titles=[title for title in raw_repairs if isinstance(title, str)] if isinstance(raw_repairs, list) else [],
+                prefilter_trace=repair_trace)
             if repair_pool.valid_titles:
                 chosen = repair_pool
 
@@ -725,14 +750,14 @@ class TitleAgent(BaseAgent):
             dual = {"title_a": "", "title_b": ""}
 
         final_titles = ranked_titles[: self.settings.title_count]
-        validation_payload = chosen.to_dict()
+        validation_payload = chosen.to_dict(include_candidates=self.settings.wechat_auto_publish_mode)
         validation_payload["pools"] = {
-            "model": model_pool.to_dict(),
-            "fallback": fallback_pool.to_dict() if fallback_pool else None,
-            "emergency": emergency_pool.to_dict() if emergency_pool else None,
+            "model": model_pool.to_dict(include_candidates=self.settings.wechat_auto_publish_mode),
+            "fallback": fallback_pool.to_dict(include_candidates=self.settings.wechat_auto_publish_mode) if fallback_pool else None,
+            "emergency": emergency_pool.to_dict(include_candidates=self.settings.wechat_auto_publish_mode) if emergency_pool else None,
         }
         if repair_pool is not None:
-            validation_payload["pools"]["repair"] = repair_pool.to_dict()
+            validation_payload["pools"]["repair"] = repair_pool.to_dict(include_candidates=True)
         validation_payload["validation_context"] = (
             "body" if str(body_reference or "").strip() else "unavailable"
         )
@@ -1652,7 +1677,7 @@ class TitleAgent(BaseAgent):
             return "contrast"
         return "general"
 
-    def _dedupe_titles(self, payload: object, cache_context: CacheContext) -> list[str]:
+    def _dedupe_titles(self, payload: object, cache_context: CacheContext, *, trace: list[dict] | None = None) -> list[str]:
         if isinstance(payload, list):
             raw_titles = [str(item).strip() for item in payload if str(item).strip()]
         else:
@@ -1665,14 +1690,24 @@ class TitleAgent(BaseAgent):
         for title in raw_titles:
             cleaned_title = self._sanitize_title(title)
             normalized = self.normalize_title(cleaned_title)
-            if not normalized or normalized in seen or normalized in normalized_avoid:
-                continue
-            if any(token in cleaned_title for token in self.LOW_QUALITY_TOKENS + self.PLACEHOLDER_TOKENS):
-                continue
-            if any(token in cleaned_title for token in self.TEMPLATEY_TOKENS):
-                continue
             skeleton = self._title_skeleton(cleaned_title)
-            if skeleton in seen_skeletons:
+            reason = ""
+            if not normalized:
+                reason = "normalization_empty"
+            elif normalized in seen:
+                reason = "duplicate_title"
+            elif normalized in normalized_avoid:
+                reason = "duplicate_history"
+            elif any(token in cleaned_title for token in self.LOW_QUALITY_TOKENS + self.PLACEHOLDER_TOKENS):
+                reason = "low_quality_or_placeholder"
+            elif any(token in cleaned_title for token in self.TEMPLATEY_TOKENS):
+                reason = "templatey_title"
+            elif skeleton in seen_skeletons:
+                reason = "duplicate_skeleton"
+            if trace is not None:
+                trace.append({"raw_title": title, "title": cleaned_title,
+                              "prefilter_passed": not reason, "reason_codes": [reason] if reason else []})
+            if reason:
                 continue
             seen.add(normalized)
             seen_skeletons.add(skeleton)

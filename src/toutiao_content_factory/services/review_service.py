@@ -48,7 +48,7 @@ class ReviewWorkflowService:
         self.growth_ops_service = GrowthOpsService(settings, logger)
         self.monetization_service = MonetizationService(settings, logger)
         self.creative_scoring_service = CreativeScoringService(
-            settings.output_dir / "creative_score_calibration.json"
+            settings.output_dir / "creative_score_calibration.json", wechat_mode=settings.wechat_auto_publish_mode
         )
         self._text_cleaner = BaseAgent.__new__(BaseAgent)
         self._text_cleaner.settings = settings
@@ -311,10 +311,10 @@ class ReviewWorkflowService:
         """
         bundle, selected_topic = self._load_bundle(run_dir)
         candidates = self._title_candidates(bundle)
-        checker = ArticleQualityChecker()
+        checker = ArticleQualityChecker(wechat_mode=self.settings.wechat_auto_publish_mode)
         selected_topic_payload = selected_topic.__dict__ if selected_topic is not None else {}
         expected_companies = (
-            checker._extract_subject_mentions(str(selected_topic.title or ""))
+            checker._extract_subject_mentions(str(selected_topic.title or ""), wechat_mode=self.settings.wechat_auto_publish_mode)
             if selected_topic is not None
             else []
         )

@@ -64,7 +64,7 @@ class ContentFactoryPipeline:
         if self.settings.wechat_auto_publish_mode:
             from toutiao_content_factory.services.wechat_evidence import build_facts, classify_kind, requirements
             extraction.source_records = list(source_records or [])
-            extraction.fact_evidence = build_facts(extraction.source_records)
+            extraction.fact_evidence = build_facts(extraction.source_records, include_background=False)
             extraction.article_kind = classify_kind(extraction.topic_type, extraction.fact_evidence)
             brief = requirements(extraction.article_kind)
             for field in ("suggested_angle", "follow_up_focus", "writing_brief"):

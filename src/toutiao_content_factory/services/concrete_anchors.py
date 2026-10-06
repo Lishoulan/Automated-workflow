@@ -48,6 +48,7 @@ import unicodedata
 
 from toutiao_content_factory.services.company_entities import (
     extract_known_company_names,
+    extract_wechat_company_names,
     is_valid_company_name,
 )
 from toutiao_content_factory.services.subject_entities import (
@@ -279,10 +280,11 @@ def _brand_candidates(text: str, suffix_start: int, suffix_text: str) -> list[tu
     return candidates
 
 
-def _company_anchors(text: str) -> list[ConcreteAnchor]:
+def _company_anchors(text: str, *, wechat_mode: bool = False) -> list[ConcreteAnchor]:
     names: list[str] = []
     # ① 词典通道：精度最高（`比亚迪` / `优必选` / `商汤` 这类无后缀简称）。
-    for name in extract_known_company_names(text):
+    extractor = extract_wechat_company_names if wechat_mode else extract_known_company_names
+    for name in extractor(text):
         if name and name not in names:
             names.append(name)
 
@@ -331,7 +333,7 @@ def _company_anchors(text: str) -> list[ConcreteAnchor]:
     for name in names:
         if len(name) > 14:      # 过长的「公司名」多半是把整句话收进来了
             continue
-        position = text.find(name)
+        position = text.casefold().find(name.casefold()) if wechat_mode else text.find(name)
         if position < 0:
             continue
         anchors.append(
@@ -357,18 +359,20 @@ def _organization_anchors(text: str) -> list[ConcreteAnchor]:
     return anchors
 
 
-def extract_concrete_anchors(text: object) -> list[ConcreteAnchor]:
+def extract_concrete_anchors(text: object, *, wechat_mode: bool = False) -> list[ConcreteAnchor]:
     """从正文里抽出具象锚点（公司名 / 量化值 / 年份），按出现顺序返回。
 
     只保留**高精度**通道：公司名（词典或固定后缀 + 有效性校验）、量化值（完整 token）、
     四位年份。地名通道已整体移除（见模块 docstring 第 3 条）。
     """
     raw = str(text or "")
+    if wechat_mode:
+        raw = raw.split("参考来源：", 1)[0]
     if not raw.strip():
         return []
 
     anchors = [
-        *_company_anchors(raw),
+        *_company_anchors(raw, wechat_mode=wechat_mode),
         *_organization_anchors(raw),
         *_quantity_anchors(raw),
         *_year_anchors(raw),
@@ -386,13 +390,13 @@ def extract_concrete_anchors(text: object) -> list[ConcreteAnchor]:
     return deduped
 
 
-def high_confidence_anchors(text: object) -> list[ConcreteAnchor]:
-    return [a for a in extract_concrete_anchors(text) if a.is_high_confidence]
+def high_confidence_anchors(text: object, *, wechat_mode: bool = False) -> list[ConcreteAnchor]:
+    return [a for a in extract_concrete_anchors(text, wechat_mode=wechat_mode) if a.is_high_confidence]
 
 
-def concrete_hook_status(title: object, body: object) -> tuple[str, ConcreteAnchor | None]:
+def concrete_hook_status(title: object, body: object, *, wechat_mode: bool = False) -> tuple[str, ConcreteAnchor | None]:
     """标题与正文具象锚点的三态关系（见模块 docstring）。"""
-    gate_anchors = high_confidence_anchors(body)
+    gate_anchors = high_confidence_anchors(body, wechat_mode=wechat_mode)
     if len(gate_anchors) < GATE_MIN_ANCHORS:
         return STATUS_UNAVAILABLE, None
     for anchor in gate_anchors:

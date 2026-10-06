@@ -338,7 +338,34 @@
       "elapsed_seconds": 594.458,
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "37426734397:1",
+      "started_at": "2026-10-06T06:58:37.856429+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "quality_review_required",
+        "title_all_rejected"
+      ],
+      "attempt_count": 1,
+      "enrichment_count": 5,
+      "eligible_candidate_count": 1,
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "部分关键事实缺乏独立验证，如 BFC 型号的性能数据、市场定位等。",
+        "文章中提及的内部代号和抽样政策可能涉及内部信息，需谨慎处理。",
+        "部分段落内容重复，如关于 BFC 型号设计目的和定位的描述。",
+        "文章标题信息密度不足，未能有效传达核心内容。"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 477.086,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-06T14:47:44.058594+08:00"
+  "updated_at": "2026-10-06T15:06:38.718676+08:00"
 }

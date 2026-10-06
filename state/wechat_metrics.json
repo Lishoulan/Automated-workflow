@@ -57,7 +57,30 @@
       "expected_publication": {},
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "37406655357:1",
+      "started_at": "2026-10-06T02:58:14.293432+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "quality_review_required"
+      ],
+      "attempt_count": 2,
+      "enrichment_count": 7,
+      "eligible_candidate_count": 2,
+      "audited_candidate_count": 2,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "存在从局部事件直接推导行业结论的问题，如‘新型储能产业正日益从规模扩张转向更充分地发挥系统调节功能’应补充具体案例或数据支持。",
+        "结尾问题‘哪些适用条件还需要进一步明确？’应结合文章前文内容给出更具体的指向性，避免泛泛而谈。"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-06T07:52:53.097217+08:00"
+  "updated_at": "2026-10-06T11:11:28.258639+08:00"
 }

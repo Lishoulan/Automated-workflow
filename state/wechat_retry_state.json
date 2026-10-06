@@ -209,7 +209,16 @@
           "parent": "",
           "elapsed_seconds": 598.927,
           "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
-          "outcome": "review_required"
+          "outcome": "review_required",
+          "no_submission_verified": true,
+          "no_submission_evidence": {
+            "checked_at": "2026-10-06T13:53:40.200067+00:00",
+            "account": "小椰科技",
+            "pending_count": 0,
+            "native_exit_code": 0,
+            "publication_attempted": false,
+            "candidate_attempt_count": 1
+          }
         }
       },
       "dispatches": {},
@@ -321,16 +330,16 @@
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "consumed",
+          "status": "authorized",
           "purpose": "verify_formal_publication",
-          "head_sha": "aba5cd2e2a67762e5de1ae753ff9cd5eb9567b03",
+          "head_sha": "003a261cc50f4e2799bb1b096a62365e593d4e1c",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",
-          "expires_at": "2026-10-06T07:41:17.141484+00:00",
+          "expires_at": "2026-10-06T15:59:59+00:00",
           "authorization": "User requested immediate formal publication verification on 2026-10-06",
           "dispatch_status": "intent",
           "run_key": "37428125664:1",
-          "reauthorized_at": "2026-10-06T07:11:17.141484+00:00",
-          "resume_after_not_published": "37426734397:1"
+          "reauthorized_at": "2026-10-06T13:55:53.773010+00:00",
+          "resume_after_not_published": "37428125664:1"
         }
       },
       "budget_extension": {
@@ -339,6 +348,15 @@
         "additional_seconds": 1800,
         "authorized_at": "2026-10-06T06:36:25.999271+00:00",
         "authorization": "User explicitly agreed to add thirty minutes only today and continue immediate formal-publication validation"
+      },
+      "additional_budget_grants": {
+        "2026-10-06-formal-validation-extra-2": {
+          "day": "2026-10-06",
+          "purpose": "verify_formal_publication",
+          "additional_seconds": 1800,
+          "authorized_at": "2026-10-06T13:55:53.773010+00:00",
+          "authorization": "User selected a second additional thirty minutes for today, then explicitly requested implementation of the 150-minute formal-publication plan"
+        }
       }
     }
   }

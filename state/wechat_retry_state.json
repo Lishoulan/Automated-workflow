@@ -170,11 +170,12 @@
           }
         },
         "37424688582:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-06T06:37:45.700742+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4"
+          "elapsed_seconds": 595.893,
+          "manual_validation_id": "manual-validation-ed5ec30776664f6f96b6292216df19d4",
+          "outcome": "review_required"
         }
       },
       "dispatches": {},
@@ -251,11 +252,22 @@
             "对于 '显示出英特尔在高端处理器市场对竞争对手的密切关注和快速模仿能力'，需要避免空泛拔高。",
             "对于 '若爆料属实，首批桌面产品还将优先采用大容量缓存设计'，需要避免绝对化表达。"
           ]
+        },
+        {
+          "fingerprint": "6db46d66b19b5898cdb04982fb5d7fb5e322a6250e663107fc8d81ab44d94ecf",
+          "source_fingerprint": "dcd5da1f1e40f77016574ce7ea2adad9c7834c73d9f236ce446e85dd7e489cd0",
+          "requirements": [
+            "补充 BFC 型号具体配置和性能数据的披露，或明确标注不确定性。",
+            "完整引用消息源 @jaykihn0 的推文内容。",
+            "拆分过长的段落，优化逻辑推进。",
+            "强化文章开头的反直觉判断。",
+            "减少重复句式，避免空泛拔高。"
+          ]
         }
       ],
       "manual_validation_grants": {
         "manual-validation-ed5ec30776664f6f96b6292216df19d4": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "592e976743f949c6ceea8ca813c770597e363ec6",
           "authorized_at": "2026-10-06T03:54:52.573518+00:00",

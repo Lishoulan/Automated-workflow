@@ -512,11 +512,95 @@
           }
         },
         "operator-prepared-2026-10-07:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-07T15:50:21.451636+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "publication-acceptance-063fce299eb7479fb2f83020de6fd23c"
+          "elapsed_seconds": 1799.261,
+          "manual_validation_id": "publication-acceptance-063fce299eb7479fb2f83020de6fd23c",
+          "outcome": "review_required",
+          "no_submission_verified": true,
+          "no_submission_evidence": {
+            "run_key": "operator-prepared-2026-10-07:1",
+            "checked_at": "2026-10-07T16:15:00.202937+00:00",
+            "formal_publication_confirmed": false,
+            "outcome": "running",
+            "expected_title": "",
+            "account": "小椰科技",
+            "backend_records": [
+              {
+                "account": "小椰科技",
+                "title": "灵巧手概念股，本周先看谁把手指装进工位",
+                "url": "https://mp.weixin.qq.com/s/K2Ao2Qm9rgc5JNNdmdsoAg",
+                "status": "published",
+                "published_at": "07月25日"
+              },
+              {
+                "account": "小椰科技",
+                "title": "人形机器人什么时候普及，我最近更想先问一个更扎心的问题",
+                "url": "https://mp.weixin.qq.com/s/SO8BC4GnPWDhgQHso_tAKg",
+                "status": "published",
+                "published_at": "07月23日"
+              },
+              {
+                "account": "小椰科技",
+                "title": "特斯拉 Optimus 和 Figure 哪个强，我先看 WAIC 这边的真东西",
+                "url": "https://mp.weixin.qq.com/s/6lC1mlX4BV5lnlWqNYCgBA",
+                "status": "published",
+                "published_at": "07月22日"
+              },
+              {
+                "account": "小椰科技",
+                "title": "人形机器人上市公司：我为什么盯上了 Edge AI Daily 7月18日这份早报",
+                "url": "https://mp.weixin.qq.com/s/rNmc3dRZrdCwbTgZe45RyQ",
+                "status": "published",
+                "published_at": "07月21日"
+              },
+              {
+                "account": "小椰科技",
+                "title": "人形机器人概念股，这周我建议先看这 6 篇\n原创",
+                "url": "https://mp.weixin.qq.com/s/NC9O5LyfX2WmSMLXF_ienA",
+                "status": "published",
+                "published_at": "07月20日"
+              },
+              {
+                "account": "小椰科技",
+                "title": "机器狗长出一只手后，家务演示离生意还有多远",
+                "url": "https://mp.weixin.qq.com/s/w7H39AZ8cxYDniFYfoyB6g",
+                "status": "published",
+                "published_at": "07月19日"
+              },
+              {
+                "account": "小椰科技",
+                "title": "人形机器人这一周，我先记下三个小信号",
+                "url": "https://mp.weixin.qq.com/s/rZ6G8w0rbjWitqu6dikQSQ",
+                "status": "published",
+                "published_at": "07月18日"
+              },
+              {
+                "account": "小椰科技",
+                "title": "AI硬件 (2026Q3 7月17日) 的热闹，先落在一组出口数据上",
+                "url": "https://mp.weixin.qq.com/s/FVvVosyvrk1Z72xpNgGGJQ",
+                "status": "published",
+                "published_at": "07月17日"
+              },
+              {
+                "account": "小椰科技",
+                "title": "理想L6换代开卖后，我更在意芯片下放能不能换来利润",
+                "url": "https://mp.weixin.qq.com/s/zSyfNrvOpnaC7AsfXIJ7qw",
+                "status": "published",
+                "published_at": "07月17日"
+              },
+              {
+                "account": "小椰科技",
+                "title": "0.78元/Wh的储能系统，谁在接单",
+                "url": "https://mp.weixin.qq.com/s/mgSK8czOS2mMcO6tBBdq7g",
+                "status": "published",
+                "published_at": "07月16日"
+              }
+            ],
+            "pending_rows": []
+          },
+          "preparation_failure_verified": true
         }
       },
       "dispatches": {
@@ -644,7 +728,7 @@
           "run_key": "37642466512:1"
         },
         "publication-acceptance-063fce299eb7479fb2f83020de6fd23c": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "6eef443c4a09b2693ee02dcce4043fe07700fc04",
           "authorized_at": "2026-10-07T15:48:38.911967+00:00",

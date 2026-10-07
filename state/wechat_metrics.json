@@ -643,7 +643,34 @@
       "elapsed_seconds": null,
       "runtime_status": "ok",
       "native_exit_code": null
+    },
+    {
+      "run_key": "37642466512:1",
+      "started_at": "2026-10-07T15:18:58.793450+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "quality_review_required"
+      ],
+      "attempt_count": 2,
+      "enrichment_count": 9,
+      "eligible_candidate_count": 2,
+      "audited_candidate_count": 2,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "存在绝对化表述：'完全'",
+        "文章中多次提到‘预计到2031年，基于韬（τ）定律的高端芯片晶体管密度将达到1.4纳米制程的同等水平’，但未提供具体数据或统计周期支持该预测。",
+        "文章在多个段落中重复强调华为对EUV技术的重视，但未深入分析该技术对整个行业的影响，逻辑推进略显单薄。",
+        "文章在多个段落中重复提及相同信息，如EUV技术的重要性、国内研发现状等，段落间缺乏足够的递进和转折，存在并列堆砌现象。",
+        "文章在结尾处提出‘哪个应用条件最值得继续观察？’，但未给出具体的答案或分析，可能误导读者对文章主旨的理解。"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 627.203,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-07T19:50:39.544946+08:00"
+  "updated_at": "2026-10-07T23:29:33.410409+08:00"
 }

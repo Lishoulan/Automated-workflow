@@ -687,7 +687,29 @@
       "expected_publication": {},
       "review_pass_count": 0,
       "audited_candidate_count": 0
+    },
+    {
+      "run_key": "operator-prepared-2026-10-08:1",
+      "started_at": "2026-10-07T16:18:13.180011+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "elapsed_seconds": 5179.717,
+      "reason_codes": [
+        "quality_review_requires_manual_confirmation"
+      ],
+      "runtime_status": "review_required",
+      "native_exit_code": null,
+      "publication": {},
+      "expected_publication": {},
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "在文章结尾处明确指出‘设备到场并开放的时点能否与需求高峰衔接’是当前最值得继续观察的应用条件，并给出一个简短的判断方向（如‘若能实现30分钟内响应，则有望成为常态’），以强化文章的跟踪价值。"
+      ],
+      "no_submission_verified": true,
+      "authoring_mode": "operator_assisted"
     }
   ],
-  "updated_at": "2026-10-08T00:17:11.321468+08:00"
+  "updated_at": "2026-10-08T01:44:41.934025+08:00"
 }

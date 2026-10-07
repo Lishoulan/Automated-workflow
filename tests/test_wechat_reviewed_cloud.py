@@ -39,6 +39,17 @@ def enable_wechat(settings):
     object.__setattr__(settings.publishing, "auto_publish", False)
 
 
+def test_wechat_reference_identifiers_do_not_become_unsupported_body_numbers(app_settings, mock_openai_service, logger):
+    enable_wechat(app_settings)
+    agent = PolishAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    report = DataReport(growth_numbers=["3000度"])
+    body = "设备储电约3000度。"
+    reference = "\n\n参考来源：\n《设备报道》；2026-10-07；https://example.test/0700008.html"
+    assert agent._unsupported_numeric_tokens(body + reference, report) == []
+    assert agent._unsupported_numeric_tokens("设备储电9999度。" + reference, report) == ["9999"]
+    assert agent._validate_article(body + reference, report, TrendReport()) == agent._validate_article(body, report, TrendReport())
+
+
 def test_tech_filter_is_platform_scoped_and_preserves_freshness(monkeypatch, logger):
     monkeypatch.setenv("TARGET_PLATFORM__DEFAULT", "wechat")
     monkeypatch.setenv("TARGET_PLATFORM__ROBOT_NOTES", "toutiao")

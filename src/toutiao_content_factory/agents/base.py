@@ -986,6 +986,8 @@ class BaseAgent:
         return allowed
 
     def _unsupported_numeric_tokens(self, article: str, data_report) -> list[str]:
+        if self.settings.wechat_auto_publish_mode:
+            article = article.split("参考来源：", 1)[0]
         article_tokens = self._extract_numeric_tokens(article)
         if not article_tokens:
             return []

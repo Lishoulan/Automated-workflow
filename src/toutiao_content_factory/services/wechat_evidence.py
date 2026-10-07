@@ -549,7 +549,7 @@ def prepare_article(article: str, report) -> str:
         date = source.get("published_at") or "发布日期未核实"
         publisher = source.get("publisher") or "发布机构未标注"
         references.append(f"《{source['title']}》；{publisher}；{date}；{source['url']}")
-    return "\n\n".join(paragraphs) + "\n\n参考来源：\n" + "\n".join(references)
+    return "\n\n".join(paragraphs) + "\n\n参考来源：\n\n" + "\n\n".join(references)
 
 
 def effective_body_chars(article: str) -> int:

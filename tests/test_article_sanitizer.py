@@ -1,6 +1,24 @@
 from toutiao_content_factory.services.article_sanitizer import clean_article_text
 
 
+def test_explicit_reference_footer_preserves_identity_without_rebalancing_into_body():
+    body = "储电量不能直接换算成等待时间。"
+    reference = "《设备报道》；媒体；2026-10-07；https://example.test/2026/0700008.html"
+    raw = body + "\n\n参考来源：\n" + reference
+    cleaned = clean_article_text(raw, min_word_count=0)
+    assert cleaned.split("参考来源：", 1)[0].strip() == body
+    assert cleaned.endswith(reference)
+    assert clean_article_text(cleaned, min_word_count=0) == cleaned
+
+
+def test_reference_footer_still_removes_internal_input_noise():
+    raw = "正文事实。\n\n参考来源：\nmanual_paste：内部素材；\n《设备报道》；https://example.test/report"
+    cleaned = clean_article_text(raw, min_word_count=0)
+    assert "manual_paste" not in cleaned
+    assert "内部素材" not in cleaned
+    assert "https://example.test/report" in cleaned
+
+
 def test_clean_article_text_never_pads_with_unreferenced_facts() -> None:
     article = "据公开材料显示，储能业务同比增长67%。"
 

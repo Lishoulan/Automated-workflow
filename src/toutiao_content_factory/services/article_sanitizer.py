@@ -251,6 +251,20 @@ def clean_article_text(
     if not text:
         return ""
 
+    # Keep the explicit citation footer outside body paragraph rebalancing.
+    # Otherwise its label loses its colon and URL identifiers become prose.
+    reference_footer = ""
+    reference_marker = re.search(r"(?:^|\n)参考来源：\s*\n", text)
+    if reference_marker:
+        reference_text = text[reference_marker.end():]
+        reference_text = _strip_inline_noise(reference_text)
+        reference_text = strip_external_source_metadata(reference_text)
+        reference_text = strip_internal_source_labels(reference_text)
+        reference_lines = [line.strip() for line in reference_text.splitlines() if line.strip()]
+        if reference_lines:
+            reference_footer = "参考来源：\n\n" + "\n\n".join(reference_lines)
+        text = text[:reference_marker.start()].strip()
+
     text = _strip_inline_noise(text)
     text = strip_external_source_metadata(text)
     text = strip_internal_source_labels(text)
@@ -283,7 +297,7 @@ def clean_article_text(
                 effective_min,
             )
             _warned_short_article = True
-    return final_text
+    return "\n\n".join(part for part in (final_text, reference_footer) if part)
 
 
 def _strip_inline_noise(text: str) -> str:

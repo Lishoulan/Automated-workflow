@@ -924,6 +924,8 @@ class PolishAgent(BaseAgent):
         data_report: DataReport,
         trend_report: TrendReport,
     ) -> tuple[list[str], int]:
+        if self.settings.wechat_auto_publish_mode:
+            article = article.split("参考来源：", 1)[0]
         notes: list[str] = []
         score = 38
         article_lower = article.lower()

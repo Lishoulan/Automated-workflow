@@ -483,7 +483,16 @@
           "parent": "",
           "elapsed_seconds": 401.737,
           "manual_validation_id": "publication-acceptance-5b429c470ad9429fb1f5723d7196403e",
-          "outcome": "review_required"
+          "outcome": "review_required",
+          "no_submission_verified": true,
+          "no_submission_evidence": {
+            "run_key": "37615816542:1",
+            "checked_at": "2026-10-07T15:16:05.117468+00:00",
+            "account": "小椰科技",
+            "publication_attempted": false,
+            "pending_count": 0,
+            "backend_latest_date": "07月25日"
+          }
         }
       },
       "dispatches": {
@@ -584,6 +593,19 @@
           "preflight_account": "小椰科技",
           "preflight_pending_count": 0,
           "run_key": "37615816542:1"
+        },
+        "publication-acceptance-a412b541865e4322b70938e8cf12c521": {
+          "status": "authorized",
+          "purpose": "verify_formal_publication",
+          "head_sha": "6eef443c4a09b2693ee02dcce4043fe07700fc04",
+          "authorized_at": "2026-10-07T15:16:33.065950+00:00",
+          "expires_at": "2026-10-07T17:16:33.065950+00:00",
+          "authorization": "User: 那就公众号先完成一篇真实发表验收；头条继续积累有效样本，重点改善阅读率",
+          "uses_existing_processing_budget": true,
+          "preflight_checked_at": "2026-10-07T15:16:05.117468+00:00",
+          "preflight_account": "小椰科技",
+          "preflight_pending_count": 0,
+          "resume_after_not_published": "37615816542:1"
         }
       }
     }

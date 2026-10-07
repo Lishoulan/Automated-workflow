@@ -746,11 +746,16 @@
     "2026-10-08": {
       "runs": {
         "operator-prepared-2026-10-08:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-07T16:18:13.180011+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "head_sha": "9a0f9ea4492a30b689eec0fa439d48a43cda3aee"
+          "elapsed_seconds": 5179.717,
+          "head_sha": "9a0f9ea4492a30b689eec0fa439d48a43cda3aee",
+          "outcome": "review_required",
+          "no_submission_verified": true,
+          "backend_verification": "2026-10-07T17:42:30.745066+00:00",
+          "manual_review_requested": true,
+          "reviewed_body_hash": "2d98c00e7c50b75436f696fcfe125a0e2adc5e63629fd40432efa8ddee8c6b9e"
         }
       },
       "dispatches": {},

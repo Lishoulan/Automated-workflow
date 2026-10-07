@@ -478,11 +478,12 @@
           "outcome": "review_required"
         },
         "37615816542:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-07T11:42:44.667105+00:00",
           "parent": "",
-          "elapsed_seconds": 0,
-          "manual_validation_id": "publication-acceptance-5b429c470ad9429fb1f5723d7196403e"
+          "elapsed_seconds": 401.737,
+          "manual_validation_id": "publication-acceptance-5b429c470ad9429fb1f5723d7196403e",
+          "outcome": "review_required"
         }
       },
       "dispatches": {
@@ -535,6 +536,14 @@
           "requirements": [
             "在介绍RTX Spark处理器时，应明确指出这是英伟达的最新产品线，并说明其推出时间。"
           ]
+        },
+        {
+          "fingerprint": "da5ca03d9092e9d0121b88bc37f762d4c91a7bcab47fb5592ed96f02a598768b",
+          "source_fingerprint": "7b3965e79d2906978bd57b6e16eaf4e6599db5a91f7f0f0ae60a22857ee31548",
+          "requirements": [
+            "修改标题，增加具体信息",
+            "修改重复句式"
+          ]
         }
       ],
       "formal_publication_validation": {
@@ -564,7 +573,7 @@
       },
       "manual_validation_grants": {
         "publication-acceptance-5b429c470ad9429fb1f5723d7196403e": {
-          "status": "claimed",
+          "status": "consumed",
           "purpose": "verify_formal_publication",
           "head_sha": "6020c2a30c782b9fe15f1b0f267ce90bac81fabf",
           "authorized_at": "2026-10-07T11:41:22.713130+00:00",

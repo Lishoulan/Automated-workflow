@@ -83,6 +83,30 @@ def test_same_percentage_is_not_interchangeable_between_growth_and_share():
     assert not evidence.supporting_facts("2025年光伏装机容量占比20%。", facts)
 
 
+def test_enumerated_capacities_keep_distinct_objects_units_and_forecast_scope():
+    source = material.MaterialSource("移动充电站", "https://a.test/charging",
+                                    "设备以单车储电约3000度、可同时为8辆车快充、预计服务80辆车的能力补位。", True)
+    sources = evidence.source_records([source])
+    facts = evidence.build_facts(sources)
+    assert [item['statistical_object'] for item in facts[0]['measurements']] == ["设备以单车储电", "可同时", "预计服务"]
+    assert [item['unit'] for item in facts[0]['measurements']] == ["度", "辆", "辆"]
+    assert evidence.supporting_facts("设备以单车储电约3000度进行补位。", facts)
+    assert evidence.supporting_facts("设备可同时为8辆车快充。", facts)
+    assert not evidence.unsupported_claims("预计服务80辆车。", facts)
+    assert evidence.unsupported_claims("设备可同时为80辆车快充。", facts)
+    assert evidence.unsupported_claims("预计服务80度。", facts)
+    assert evidence.unsupported_claims("服务80辆车。", facts)
+
+
+def test_enumerated_financial_metrics_cannot_exchange_numbers():
+    source = material.MaterialSource("财报", "https://a.test/earnings",
+                                    "2025年甲公司营业收入达到10亿元、净利润达到20亿元。", True)
+    facts = evidence.build_facts(evidence.source_records([source]))
+    assert evidence.supporting_facts("2025年甲公司营业收入达到10亿元。", facts)
+    assert evidence.supporting_facts("2025年甲公司净利润达到20亿元。", facts)
+    assert not evidence.supporting_facts("2025年甲公司营业收入达到20亿元。", facts)
+
+
 def test_citations_restored_after_polish_before_audit_without_invented_sources():
     sources = make_sources()
     report = DataReport(source_records=sources, fact_evidence=evidence.build_facts(sources))

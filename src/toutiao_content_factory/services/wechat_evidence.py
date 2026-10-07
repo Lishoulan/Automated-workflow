@@ -19,7 +19,7 @@ KINDS = {
     "company_earnings": ("企业业绩", "围绕明确企业及原文财务数据解释变化，不外推未披露订单", "原文披露的财务指标及其统计期", "哪项已披露指标最值得继续跟踪？"),
     "industry_update": ("行业动态", "解释已发生的变化、已有证据与尚未明确的边界", "技术进展、应用条件、后续公开披露", "哪个应用条件最值得继续观察？"),
 }
-NUMBER = re.compile(r"(?<![A-Za-z\d])\d+(?:\.\d+)?\s*(?:万亿|亿|万|千|百)?\s*(?:千瓦时|千瓦|兆瓦|吉瓦|美元|人民币|亿元|万元|元|%|％|倍|台|套|家|项|吨|公里|小时|分钟|秒|人|片|个|GB|GW|MW|kWh|kW)?", re.I)
+NUMBER = re.compile(r"(?<![A-Za-z\d])\d+(?:\.\d+)?\s*(?:万亿|亿|万|千|百)?\s*(?:千瓦时|千瓦|兆瓦|吉瓦|美元|人民币|亿元|万元|元|%|％|倍|台|套|家|项|吨|公里|小时|分钟|秒|人|片|个|辆|度|GB|GW|MW|kWh|kW)?", re.I)
 PERIOD = re.compile(r"(?:截至(?:\d{4}年)?\d{1,2}月(?:\d{1,2}日|底|末)?|\d{4}年(?:\d{1,2}月(?:至\d{1,2}月)?|[上下]半年|[一二三四1234]季度)?|(?:今年|去年)?(?:[上下]半年|[一二三四1234]季度))")
 FINANCIAL = re.compile(r"营业收入|净利润|毛利率|财报|扣非|营收|经营现金流")
 BUSINESS_CLAIM = re.compile(r"利润|盈利|毛利|回款|合同验收|订单|客户复购")
@@ -270,7 +270,7 @@ def _measurements(sentence: str) -> list[dict]:
     measurements = []
     previous_object = ""
     period = list(dict.fromkeys(PERIOD.findall(sentence)))
-    for clause in re.split(r"[，,；;。\n]", sentence):
+    for clause in re.split(r"[，,、；;。\n]", sentence):
         subject = _subject(clause) or previous_object
         if subject:
             previous_object = subject

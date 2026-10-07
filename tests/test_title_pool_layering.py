@@ -142,6 +142,10 @@ def test_wechat_targeted_retry_uses_body_and_keeps_title_gates(
     result = _run(agent)
     assert len(requests) == 2
     assert BODY in requests[1]
+    payload = __import__("json").loads(requests[1].split("\n", 1)[1])
+    assert "460万台" in payload["concrete_anchors"]
+    assert any(item["title"] == INVALID_TITLES[1] and "missing_concrete_hook" in item["reason_codes"]
+               for item in payload["rejected_titles"])
     assert bool(result["recommended_titles"]) is passed
     assert "repair" in result["title_validation"]["pools"]
 
@@ -161,7 +165,8 @@ def test_primary_title_uses_complete_body_only_in_wechat(
     requests = []
     monkeypatch.setattr(agent, "request_json", lambda system, prompt:
                         requests.append((system, prompt)) or {"titles": VALID_TITLES})
-    content = GeneratedContent(article="旧稿", polished_article=BODY, summary="摘要没有数字")
+    content = GeneratedContent(article="旧稿", polished_article=BODY + "\n\n参考来源：OpenAI来源标题99%",
+                               summary="摘要没有数字")
     result = agent.run(content, TrendReport(), _report(), app_settings.get_style(), CacheContext())
     assert result["selected_title_source"] == TITLE_SOURCE_MODEL
     assert len(requests) == 1

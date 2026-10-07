@@ -633,7 +633,7 @@ class TitleAgent(BaseAgent):
         model_title_b = ""
         system_prompt = f"你是 TitleAgent，只输出 JSON。{self.best_practices_instruction()}"
         if self.settings.wechat_auto_publish_mode:
-            body = self._title_body_reference(content)
+            body = self._title_body_reference(content).split("参考来源：", 1)[0].strip()
             anchors = [anchor.text for anchor in self.extract_concrete_anchors(body, wechat_mode=True) if anchor.is_high_confidence]
             system_prompt = (
                 "你是微信公众号事实标题编辑，只输出合法JSON。标题必须由给定完整正文的具体事实构成。"
@@ -643,7 +643,8 @@ class TitleAgent(BaseAgent):
             prompt = (
                 f"生成6条不同的自然中文标题，每条10到{self._title_max_length()}字。"
                 "包含正文中的具体主体或数字以及已经披露的动作、变化或边界。"
-                "若正文提供具象锚点，优先承接其中与主要事实相关的锚点，数字需保留对象、单位和时间。"
+                "若正文提供具象锚点，每条至少承接一个与主要事实相关的锚点，不能只写泛称主体。"
+                "数字需保留对象、单位和时间；计划、预测数字不得写成已完成结果。"
                 "不强行增加利润、订单或受益判断。只输出JSON，titles为字符串数组，recommended_titles从中选3条。\n"
                 + self.json_text({"article_kind": data_report.article_kind, "article": body,
                                   "concrete_anchors": anchors, "avoid_titles": cache_context.avoid_titles[:8]})
@@ -715,11 +716,19 @@ class TitleAgent(BaseAgent):
         ):
             # One targeted retry, using only facts in the actual public body.
             reasons = [pool.reason_summary() for pool in (model_pool, fallback_pool, emergency_pool) if pool]
+            public_body = body_reference.split("参考来源：", 1)[0].strip()
+            anchors = [anchor.text for anchor in self.extract_concrete_anchors(public_body, wechat_mode=True)
+                       if anchor.is_high_confidence]
+            rejected_titles = [{"title": item.title, "reason_codes": list(item.reason_codes)}
+                               for item in model_pool.rejected]
             repair_prompt = (
                 "以下标题均未通过校验。请只根据正文已有的具体主体、动作和数字重写最多6条标题。"
-                "每条10到30字，不能新增主体、数字或事实，不得使用抽象套话、内部指令或夸大结论。"
+                f"每条10到{self._title_max_length()}字，不能新增主体、数字或事实，不得使用抽象套话、内部指令或夸大结论。"
+                "若提供具象锚点，每条至少承接一个与主要事实相关的锚点，并写明正文已经披露的动作或变化。"
+                "逐条修正拒绝原因，不要重复被拒标题；数字保留对象、单位、时间及计划或预测限定。"
                 "标题必须与正文一致，只输出JSON对象，字段titles为字符串数组。\n"
-                + self.json_text({"rejection_reasons": reasons, "article": body_reference})
+                + self.json_text({"rejection_reasons": reasons, "rejected_titles": rejected_titles,
+                                  "concrete_anchors": anchors, "article": public_body})
             )
             repair_payload = self.request_json(
                 "你是微信公众号事实标题编辑，只输出合法JSON。标题的公司、机构或产品型号必须逐字取自正文；"

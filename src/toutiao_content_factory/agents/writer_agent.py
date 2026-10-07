@@ -2790,7 +2790,7 @@ class WriterAgent(BaseAgent):
     def _max_expansion_calls_for_run(self) -> int:
         """本次 run 允许的扩展次数上限（叙事体裁多一次）。"""
         if self.settings.wechat_auto_publish_mode:
-            # One initial length repair and one for each permitted revision.
+            # Shared, bounded budget for initial and post-revision length repair.
             return 1 + min(2, max(0, self.settings.quality_review.max_auto_revisions))
         return (
             self.NARRATIVE_MAX_LLM_EXPANSION_CALLS
@@ -2997,9 +2997,23 @@ class WriterAgent(BaseAgent):
             article = prepare_article("\n\n".join(paragraphs), data_report)
             body = article.split("参考来源：", 1)[0]
             paragraphs = [item.strip() for item in body.split("\n\n") if item.strip()]
-            if allow_llm_expansion and effective_body_chars(article) < (min_chars or 2100):
-                paragraphs = self._expand_article_via_llm(paragraphs, data_report, min_chars=min_chars or 2100)
-            grounded = prepare_article("\n\n".join(paragraphs), data_report)
+            target = min_chars or 2100
+            grounded = article
+            # Judge progress after grounding: references and rejected claims
+            # cannot fill the deficit. Every attempt consumes the existing run
+            # budget, including unusable model responses.
+            while (
+                allow_llm_expansion
+                and effective_body_chars(grounded) < target
+                and self._llm_expansion_call_count < self._max_expansion_calls_for_run()
+            ):
+                before_chars = effective_body_chars(grounded)
+                expanded = self._expand_article_via_llm(paragraphs, data_report, min_chars=target)
+                candidate = prepare_article("\n\n".join(expanded), data_report)
+                if effective_body_chars(candidate) <= before_chars:
+                    break
+                grounded = candidate
+                paragraphs = [item.strip() for item in grounded.split("参考来源：", 1)[0].split("\n\n") if item.strip()]
             return [item.strip() for item in grounded.split("\n\n") if item.strip()]
         content_mode = self._content_mode(data_report)
         if min_chars <= 0:

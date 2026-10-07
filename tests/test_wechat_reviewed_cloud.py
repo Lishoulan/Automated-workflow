@@ -414,6 +414,41 @@ def test_length_repair_budget_reserves_revisions_but_remains_bounded(
         assert "不得按审核建议虚构" in polish._auto_publish_directive()
 
 
+@pytest.mark.parametrize("target, expected_calls", [(90, 2), (1800, 3)])
+def test_wechat_length_repair_continues_after_partial_progress_with_shared_cap(
+    app_settings, mock_openai_service, logger, target, expected_calls
+):
+    enable_wechat(app_settings)
+    object.__setattr__(app_settings.quality_review, "max_auto_revisions", 2)
+    writer = WriterAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    additions = [
+        "落实绿色能源消费机制时，政策方向需要与具体执行环节衔接。公开说明能够确认措施的范围，但不能直接证明实施效果。",
+        "需求端变化需要连续观察，不能把短期统计当作长期趋势。阅读材料时还要区分统计对象，避免混用不同口径。",
+        "电力供应与实际使用之间存在匹配条件，供给安排不能代替用户需求。后续应关注公开披露如何说明适用边界。",
+    ]
+    mock_openai_service.create_json_completion.side_effect = [{"paragraphs": [item]} for item in additions]
+    report = DataReport(source_facts=["完善绿色能源消费机制。"], growth_numbers=["2024年"])
+    article = writer.ensure_article_min_chars("完善绿色能源消费机制。\n\n参考来源：" + "出处说明" * 500,
+                                              report, min_chars=target)
+    from toutiao_content_factory.services.wechat_evidence import effective_body_chars
+    assert mock_openai_service.create_json_completion.call_count == expected_calls
+    assert writer._llm_expansion_call_count == expected_calls
+    assert (effective_body_chars(article) >= target) is (target == 90)
+    assert "出处说明" not in mock_openai_service.create_json_completion.call_args.kwargs["user_prompt"]
+
+
+def test_wechat_length_repair_stops_when_grounded_body_makes_no_progress(
+    app_settings, mock_openai_service, logger
+):
+    enable_wechat(app_settings)
+    writer = WriterAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    mock_openai_service.create_json_completion.return_value = {"paragraphs": ["利润将增长99%。"]}
+    report = DataReport(source_facts=["完善绿色能源消费机制。"], growth_numbers=["2024年"])
+    original = "完善绿色能源消费机制。"
+    assert writer.ensure_article_min_chars(original, report, min_chars=1750) == original
+    assert mock_openai_service.create_json_completion.call_count == 1
+
+
 def test_length_diagnostics_survive_early_quality_rejection(app_settings, logger):
     enable_wechat(app_settings)
     run_dir = app_settings.runs_dir / "short-reviewed-run"

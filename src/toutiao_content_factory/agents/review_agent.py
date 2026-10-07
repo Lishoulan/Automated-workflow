@@ -62,6 +62,13 @@ class ReviewAgent(BaseAgent):
             hot_topic_note=self._hot_topic_review_note(data_report),
         )
 
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import requirements
+            prompt += "\n【本次稿件审核契约】\n" + requirements(data_report.article_kind)["instruction"]
+            prompt += ("\n按本次稿件类型评估，已有证据支持的解释与明确的未知边界不应被要求补造财务、订单或竞争优势。"
+                       "事实偷换、无依据因果、标题误导及合规问题仍须严格指出。\n结构化事实证据：\n")
+            prompt += self.json_text(data_report.fact_evidence)
+
         local_opening_lines = self._optimize_opening(content, data_report)
         matched_patterns = self._matched_self_benchmark_patterns(content, data_report, self_benchmark_context)
         local_review_notes = self._build_review_notes(

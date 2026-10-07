@@ -16,6 +16,8 @@ from wechat_run_report import cloud_exit_code, fresh_json, review_diagnostics, s
 from toutiao_content_factory.config import load_settings
 from toutiao_content_factory.agents.writer_agent import WriterAgent
 from toutiao_content_factory.agents.polish_agent import PolishAgent
+from toutiao_content_factory.agents.review_agent import ReviewAgent
+from toutiao_content_factory.agents.publish_review_agent import PublishReviewAgent
 from toutiao_content_factory.agents.data_agent import DataAgent
 from toutiao_content_factory.agents.quality_review_council_agent import QualityReviewCouncilAgent
 from toutiao_content_factory.models import ExtractionResult
@@ -37,6 +39,33 @@ def enable_wechat(settings):
     object.__setattr__(settings.wechat, "auto_publish", True)
     object.__setattr__(settings.publishing, "enabled", False)
     object.__setattr__(settings.publishing, "auto_publish", False)
+
+
+@pytest.mark.parametrize("agent_class", [ReviewAgent, PublishReviewAgent])
+@pytest.mark.parametrize("wechat", [False, True])
+def test_review_genre_and_facts_are_wechat_scoped_without_overriding_rejection(app_settings, mock_openai_service, logger, agent_class, wechat):
+    if wechat:
+        enable_wechat(app_settings)
+    agent = agent_class(app_settings, MagicMock(), mock_openai_service, logger)
+    agent.render_prompt = MagicMock(return_value="original review prompt")
+    agent.request_json = MagicMock(return_value={"publish_readiness_score": 12, "publish_recommendation": "manual_review",
+        "title_attraction": 20, "information_density": 20, "save_potential": 20,
+        "completion_rate_potential": 20, "ai_generated_risk": 80, "pass_status": "needs_revision"})
+    report = DataReport(article_kind="industry_update", fact_evidence=[{"fact_id": "fact_genre_scope", "quote": "设备已经部署，测试结果未披露。"}])
+    content = GeneratedContent(article="设备已经部署，测试结果未披露。" * 150)
+    style = app_settings.get_style("tech_media")
+    if agent_class is PublishReviewAgent:
+        result = agent.run(content, report, style, ContentScore())
+        assert result["publish_recommendation"] in {"manual_review", "revise_before_publish"}
+        assert result["publish_readiness_score"] <= 12
+    else:
+        result = agent.run(content, report, style, CacheContext())
+        assert result["content_score"].pass_status == "needs_revision"
+    prompt = agent.request_json.call_args.args[1]
+    assert ("本次稿件审核契约" in prompt) is wechat
+    assert ("fact_genre_scope" in prompt) is wechat
+    if wechat:
+        assert "事实偷换、无依据因果、标题误导及合规问题仍须严格指出" in prompt
 
 
 def test_wechat_reference_identifiers_do_not_become_unsupported_body_numbers(app_settings, mock_openai_service, logger):

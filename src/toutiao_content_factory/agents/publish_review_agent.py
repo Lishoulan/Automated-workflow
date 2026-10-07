@@ -61,6 +61,12 @@ class PublishReviewAgent(BaseAgent):
             preflight_json=self.json_text(preflight_summary or {}),
             hot_topic_note=self._hot_topic_publish_note(data_report),
         )
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_evidence import requirements
+            prompt += "\n【本次稿件审核契约】\n" + requirements(data_report.article_kind)["instruction"]
+            prompt += ("\n按本次稿件类型评估，已有证据支持的解释与明确的未知边界不应被要求补造财务、订单或竞争优势。"
+                       "事实偷换、无依据因果、标题误导及合规问题仍须严格指出。\n结构化事实证据：\n")
+            prompt += self.json_text(data_report.fact_evidence)
         payload = self.request_json("你是 PublishReviewAgent，只输出 JSON。", prompt)
         if payload and self._validate_score_fields(payload, ("publish_readiness_score",)):
             result = {

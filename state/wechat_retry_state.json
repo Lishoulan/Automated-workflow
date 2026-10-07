@@ -510,6 +510,13 @@
             "pending_count": 0,
             "backend_latest_date": "07月25日"
           }
+        },
+        "operator-prepared-2026-10-07:1": {
+          "status": "running",
+          "started_at": "2026-10-07T15:50:21.451636+00:00",
+          "parent": "",
+          "elapsed_seconds": 0,
+          "manual_validation_id": "publication-acceptance-063fce299eb7479fb2f83020de6fd23c"
         }
       },
       "dispatches": {
@@ -637,7 +644,7 @@
           "run_key": "37642466512:1"
         },
         "publication-acceptance-063fce299eb7479fb2f83020de6fd23c": {
-          "status": "authorized",
+          "status": "claimed",
           "purpose": "verify_formal_publication",
           "head_sha": "6eef443c4a09b2693ee02dcce4043fe07700fc04",
           "authorized_at": "2026-10-07T15:48:38.911967+00:00",
@@ -647,7 +654,8 @@
           "preflight_checked_at": "2026-10-07T15:48:28.631829+00:00",
           "preflight_account": "小椰科技",
           "preflight_pending_count": 0,
-          "resume_after_not_published": "37642466512:1"
+          "resume_after_not_published": "37642466512:1",
+          "run_key": "operator-prepared-2026-10-07:1"
         }
       }
     }

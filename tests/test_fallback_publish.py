@@ -133,6 +133,7 @@ def _service(auto_publish: bool = True) -> ContentFactoryAppService:
     publishing.auto_publish = auto_publish
     publishing.draft_only = False
     settings = MagicMock()
+    settings.wechat_auto_publish_mode = False
     settings.publishing = publishing
     review = MagicMock()
     review.max_auto_publish_ai_risk = 40

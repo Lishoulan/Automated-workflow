@@ -135,7 +135,7 @@ def test_wechat_revision_refreshes_titles_before_audit_without_reauditing_noop(
     service.openai_service.available = True
     object.__setattr__(app_settings.quality_review, "max_auto_revisions", 2)
     content = GeneratedContent(article="old body", polished_article="old body", recommended_titles=["old title"])
-    held = QualityReviewReport(verdict="needs_revision", required_revisions=["revise"])
+    held = QualityReviewReport(verdict="needs_revision", audit_integrity={"status": "complete"}, required_revisions=["revise"])
     seen = []
     def audit(content, *a, **kw):
         seen.append((content.article, content.recommended_titles[0]))

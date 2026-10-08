@@ -70,6 +70,9 @@ class ExportService:
 
     def _build_publish_article(self, result: WorkflowResult) -> str:
         article = result.content.polished_article.strip() or result.content.article.strip()
+        if self.settings.wechat_auto_publish_mode:
+            # Cleanup and the hard gates run before the council; export that exact manuscript.
+            return article
         # Re-sanitize at the file boundary because review/polish/model output
         # can reintroduce inline metadata after the agent-level cleanup.
         article = clean_article_text(article, min_word_count=0)

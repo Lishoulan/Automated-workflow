@@ -263,6 +263,7 @@ class GeneratedContent:
     selected_title_source: str = ""
     title_validation: dict[str, Any] = field(default_factory=dict)
     revision_trace: list[dict[str, Any]] = field(default_factory=list)
+    audit_supplement_count: int = 0
     grounding_diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
@@ -291,6 +292,7 @@ class GeneratedContent:
             selected_title_source=str(payload.get("selected_title_source", "") or ""),
             title_validation=dict(payload.get("title_validation") or {}),
             revision_trace=list(payload.get("revision_trace") or []),
+            audit_supplement_count=max(0, int(payload.get("audit_supplement_count") or 0)),
             grounding_diagnostics=list(payload.get("grounding_diagnostics") or []),
         )
 
@@ -787,6 +789,7 @@ class QualityReviewReport:
     used_fallback: bool = False
     issues: list[dict[str, Any]] = field(default_factory=list)
     issue_evaluations: list[dict[str, Any]] = field(default_factory=list)
+    audit_integrity: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for name in (
@@ -892,6 +895,7 @@ class QualityReviewReport:
             used_fallback=bool(payload.get("used_fallback", False)),
             issues=dict_list("issues"),
             issue_evaluations=dict_list("issue_evaluations"),
+            audit_integrity=dict(payload.get("audit_integrity") or {}),
         )
 
     def has_valid_scores(self) -> bool:

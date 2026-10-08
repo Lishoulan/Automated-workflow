@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import os
 import re
@@ -18,9 +19,10 @@ except Exception:
     RateLimitError = None
 
 try:
-    from openai import OpenAI
+    from openai import OpenAI, AsyncOpenAI
 except ModuleNotFoundError:  # pragma: no cover - optional dependency fallback
     OpenAI = None
+    AsyncOpenAI = None
 
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import AIRequestError, AIResponseFormatError
@@ -175,11 +177,16 @@ class OpenAIContentService:
             )
         return content
 
-    def create_json_completion(self, system_prompt: str, user_prompt: str) -> dict:
+    def create_json_completion(self, system_prompt: str, user_prompt: str, *,
+                               single_attempt: bool = False, timeout_seconds: float | None = None) -> dict:
         if not self.available:
             raise AIRequestError("Model client is not available.")
 
-        response = self._request_structured_json(system_prompt=system_prompt, user_prompt=user_prompt)
+        if single_attempt or timeout_seconds is not None:
+            response = self._bounded_json_request(system_prompt, user_prompt,
+                single_attempt=single_attempt, timeout_seconds=timeout_seconds)
+        else:
+            response = self._request_structured_json(system_prompt=system_prompt, user_prompt=user_prompt)
         self._accumulate_usage(response)
         content = self._extract_message_content(response)
         if looks_like_html_document(content):
@@ -199,6 +206,38 @@ class OpenAIContentService:
 
         self.logger.info("Model response parsed as JSON successfully.")
         return payload
+
+    def _bounded_json_request(self, system_prompt: str, user_prompt: str, *,
+                              single_attempt: bool, timeout_seconds: float | None):
+        """Cancel transport on a total wall deadline; never fall back to another format."""
+        timeout = self.REQUEST_TIMEOUT if timeout_seconds is None else float(timeout_seconds)
+        if timeout <= 0 or AsyncOpenAI is None:
+            raise AIRequestError("No bounded model call is available.")
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise AIRequestError("Bounded synchronous model calls must run outside the event loop.")
+
+        async def request():
+            async with AsyncOpenAI(api_key=self.client.api_key, base_url=self.client.base_url,
+                                   max_retries=0 if single_attempt else 2, timeout=timeout) as client:
+                options = {} if self.disable_response_format else {"response_format": {"type": "json_object"}}
+                return await client.chat.completions.create(model=self.model,
+                    temperature=self.settings.temperature, max_tokens=self.DEFAULT_MAX_TOKENS,
+                    messages=[{"role": "system", "content": system_prompt + "\nReturn exactly one valid JSON object."},
+                              {"role": "user", "content": user_prompt}], **options)
+
+        async def bounded():
+            return await asyncio.wait_for(request(), timeout=timeout)
+
+        try:
+            return asyncio.run(bounded())
+        except Exception as exc:
+            if self._is_insufficient_balance_error(exc):
+                self._mark_unavailable(exc)
+            raise AIRequestError("Bounded model call failed or timed out.") from exc
 
     @property
     def estimated_cost(self) -> float:

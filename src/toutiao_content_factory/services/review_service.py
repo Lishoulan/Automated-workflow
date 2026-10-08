@@ -183,9 +183,16 @@ class ReviewWorkflowService:
         # 头条公域发布包不含私域引流CTA；微信渠道在wechat_layout_engine._strip_trailing_cta中也会剥离CTA
         # 此处剥离确保文件层面不泄漏CTA，即使止血模式下不经过_publish_to_toutiao
         clean_article = self.publish_service._strip_cta_for_toutiao(clean_article).strip()
+        if automated and self.settings.wechat_auto_publish_mode:
+            # Never transform an approved manuscript at the publication boundary.
+            clean_article = bundle.article.strip()
         clean_title = self.publish_service._clip_title(self._text_cleaner.strip_prompt_leakage(chosen_title).strip())
         clean_summary = self._text_cleaner.strip_prompt_leakage(bundle.summary).strip()
         clean_comment = self._text_cleaner.strip_prompt_leakage(bundle.comment_prompt).strip()
+
+        if automated and self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_revision import assert_run_automatic_approval
+            assert_run_automatic_approval(run_dir, clean_article, clean_title)
 
         article_path.write_text(clean_article + "\n", encoding="utf-8")
         title_path.write_text(clean_title + "\n", encoding="utf-8")
@@ -675,7 +682,8 @@ class ReviewWorkflowService:
             titles=list(workflow.content.titles),
             recommended_titles=list(workflow.content.recommended_titles),
             summary=workflow.content.summary,
-            article=clean_article_text(
+            article=(workflow.content.polished_article or workflow.content.article).strip()
+            if self.settings.wechat_auto_publish_mode else clean_article_text(
                 workflow.content.polished_article or workflow.content.article,
                 title_candidates=list(workflow.content.recommended_titles) + list(workflow.content.titles),
             ),
@@ -717,7 +725,8 @@ class ReviewWorkflowService:
             titles=title_payload["all_titles"],
             recommended_titles=title_payload["recommended_titles"],
             summary=article_sections.get("摘要", "").strip(),
-            article=clean_article_text(self._read_text(run_dir / "article.md").strip()),
+            article=self._read_text(run_dir / "article.md").strip() if self.settings.wechat_auto_publish_mode
+            else clean_article_text(self._read_text(run_dir / "article.md").strip()),
             comment_prompt=article_sections.get("评论区互动", "").strip(),
             tags=tags,
             recommended_topics=recommended_topics,

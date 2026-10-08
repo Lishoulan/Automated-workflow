@@ -3,6 +3,9 @@ from __future__ import annotations
 import re
 from difflib import SequenceMatcher
 import logging
+import os
+import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +136,10 @@ class QualityReviewCouncilAgent(BaseAgent):
         )
         role_context = self.role_loader.get_role_context(role_names) or self._fallback_role_context(role_names)
         local_snapshot = self._local_snapshot(title, article, data_report)
+        pending = []
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_revision import pending_verifications
+            pending = pending_verifications(content, data_report.fact_evidence)
         editorial_brief = self._editorial_brief(editorial_council)
 
         fact_payload = self._fact_payload(data_report)
@@ -180,7 +187,9 @@ class QualityReviewCouncilAgent(BaseAgent):
             properties["chief_editor_conclusion"] = {"type": "string"}
             properties["role_reviews"] = {"type": "array", "items": {"type": "object"}}
             properties["issues"] = {"type": "array", "items": {"type": "object", "properties": {
-                "requirement": {"type": "string"}, "paragraph": {"type": "string"}, "category": {"type": "string"}}}}
+                "requirement": {"type": "string"}, "paragraph": {"type": "string"}, "category": {"type": "string"},
+                "target": {"enum": ["body", "title"]}, "verification": {"type": "string"},
+                "evidence_ids": {"type": "array", "items": {"type": "string"}}}}}
             properties["issue_evaluations"] = {"type": "array", "items": {"type": "object", "properties": {
                 "issue_id": {"type": "string"}, "status": {"enum": ["resolved", "still_present", "unverifiable"]},
                 "after_quote": {"type": "string"}, "evidence_ids": {"type": "array", "items": {"type": "string"}},
@@ -191,10 +200,9 @@ class QualityReviewCouncilAgent(BaseAgent):
                 prompt += "\n逐条使用fact_evidence核对数字、单位、统计对象和统计期；发布日期不是统计期。issues的requirement须对应意见数组，paragraph须为正文原段落。"
                 prompt += "\n只把正文实际出现的表述列为稿件问题，不把出处元数据或写作要求当成正文。原文可核对的产品型号和技术缩写需按技术语境核验，不能仅因是缩写就当作自动化流程标签；真实流程标签仍须阻断。"
                 prompt += "\n原文没有披露比较对象、测试方法或独立验证结果时，检查正文是否明确写出未披露且保留发言人、报道及预告归因。准确说明未知边界本身不是缺失事实，不要求补造具体对象、测试结果或市场竞争优势；正文声称已验证或偷换对象仍须阻断。"
-                prompt += "\n每条必须修改的要求应能通过现有事实的补充、删除无依据断言或收窄表述完成。只针对成稿现存问题，不要求写出资料中不存在的信息。issues必须给出正文原段落；标题问题明确标为标题，不定位到正文。"
-                prompt += "\n对待核实问题逐项复核并返回issue_evaluations。遗漏问题或只有措辞变化不能判定已解决；resolved需给出现稿原句、证据编号和核实理由。不确定则unverifiable。\n"
-                if content.revision_trace:
-                    prompt += self.json_text(content.revision_trace[-1])
+                prompt += "\n每条必须修改的要求应能通过现有事实的补充、删除无依据断言或收窄表述完成。只针对成稿现存问题，不要求写出资料中不存在的信息。issues必须给出正文原段落和verification核验理由，事实问题及硬阻断提供匹配evidence_ids；标题问题target明确标为title，并引用标题原句。"
+                prompt += "\n先独立检查现稿，再对待核实问题逐项返回issue_evaluations。历史要求中的示例数字不是事实，不得要求补造。事实及硬阻断需匹配fact_evidence编号；结构、表达和逻辑可留空编号，但须现稿原句、真实前后差异及核验理由。未修改正文或仅换措辞不能证明逻辑或结构问题解决。不确定则unverifiable。\n"
+                prompt += self.json_text({"pending_verifications": pending})
             prompt += "\n输出审核结果，不要输出Schema本身。没有发现的问题返回空数组，不要编造问题。\n" + self.json_text({
                 "type": "object", "properties": properties, "required": list(properties),
             })
@@ -213,6 +221,8 @@ class QualityReviewCouncilAgent(BaseAgent):
             report.used_fallback = False
             if report.is_usable():
                 self._apply_local_hard_gate(report, local_snapshot, article=article, title=title)
+                if self.settings.wechat_auto_publish_mode:
+                    self._complete_audit(report, payload, content, data_report, article, title, pending, local_snapshot)
                 self.logger.info(
                     "Quality review council completed: verdict=%s score=%d blockers=%d",
                     report.verdict,
@@ -222,12 +232,69 @@ class QualityReviewCouncilAgent(BaseAgent):
                 return report
             self.logger.warning("Quality review council returned an unusable report; using local audit.")
 
-        return self._fallback(
+        report = self._fallback(
             content,
             data_report,
             revision_round=revision_round,
             role_names=role_names,
         )
+        if self.settings.wechat_auto_publish_mode:
+            report.audit_integrity = {"status": "model_unavailable", "reasons": ["model_unavailable"],
+                                      "decision_category": "model_unavailable",
+                                      "supplement_count": content.audit_supplement_count, "primary_report": payload}
+        return report
+
+    def _complete_audit(self, report, primary, content, data_report, article, title, pending, local_snapshot):
+        from toutiao_content_factory.services.wechat_revision import (
+            audit_fact_material, bind_issues, manuscript_fingerprint, integrity_reasons, apply_supplement)
+        facts = data_report.fact_evidence
+        bind_issues(report, article, facts)
+        reasons = integrity_reasons(report, article, title, facts, pending, primary)
+        diagnostic = {"status": "incomplete" if reasons else "complete", "reasons": reasons,
+                      "primary_report": primary, "primary_checked_report": asdict(report),
+                      "fingerprint": manuscript_fingerprint(article, title, audit_fact_material(data_report)),
+                      "pending_verifications": pending, "supplement_count": content.audit_supplement_count}
+        deadline = os.getenv("WECHAT_RUN_DEADLINE_EPOCH", "")
+        remaining = float(deadline) - time.time() if deadline else float("inf")
+        if reasons and content.audit_supplement_count < 1 and remaining >= 60 and self.openai_service.available:
+            content.audit_supplement_count += 1
+            diagnostic["supplement_count"] = content.audit_supplement_count
+            repair_input = {"article": article, "title": title, "fact_evidence": facts,
+                "incomplete_reasons": reasons, "pending_verifications": pending,
+                "findings": [{key: issue.get(key) for key in ("issue_id", "category", "requirement", "paragraph", "target")}
+                             for issue in report.issues]}
+            prompt = ("仅补齐审核定位、核验及结论矛盾，不能重评打分、提取新事实或改写正文。历史示例数字不可变成必须写入的事实。"
+                "每项findings返回finding_evaluations：issue_id,status(confirmed/not_applicable/unverifiable),target(body/title),"
+                "current_quote(现稿或标题原句),evidence_ids,verification(具体理由)。每项pending_verifications返回"
+                "issue_evaluations：issue_id,status(resolved/still_present/unverifiable),after_quote,evidence_ids,verification。"
+                "事实问题及硬阻断必须匹配事实编号；结构表达逻辑编号可空，但要解释真实前后差异。未修改或仅换措辞不能解决逻辑结构问题。"
+                "unverifiable不得放行。返回verdict(approved/needs_revision/blocked)及chief_editor_conclusion。只输出JSON。\n"
+                + self.json_text(repair_input))
+            try:
+                supplement = self.openai_service.create_json_completion("你负责审核报告完整性补核。只输出JSON。", prompt,
+                                                                       single_attempt=True, timeout_seconds=60)
+                diagnostic["supplement_report"] = supplement
+                # Apply to a copy so a failed repair cannot erase the primary blockers.
+                import copy
+                repaired = copy.deepcopy(report)
+                apply_supplement(repaired, supplement, article, title, facts)
+                self._apply_local_hard_gate(repaired, local_snapshot, article=article, title=title)
+                reasons = integrity_reasons(repaired, article, title, facts, pending, supplement)
+                if not reasons:
+                    report.__dict__.update(repaired.__dict__)
+                diagnostic.update(status="incomplete" if reasons else "complete", reasons=reasons)
+            except Exception as exc:
+                diagnostic.update(status="model_unavailable", reasons=["supplement_failed"],
+                                  supplement_error=type(exc).__name__)
+                if isinstance(exc, ValueError):
+                    diagnostic.update(status="incomplete", reasons=["invalid_supplement_evidence"])
+        elif reasons:
+            diagnostic["supplement_skipped"] = "exhausted" if content.audit_supplement_count else "insufficient_budget_or_model"
+        diagnostic["decision_category"] = (
+            "model_unavailable" if diagnostic["status"] == "model_unavailable" else
+            "audit_incomplete" if diagnostic["status"] != "complete" else
+            "manuscript_issue" if report.needs_revision else "approved")
+        report.audit_integrity = diagnostic
 
     @classmethod
     def _fact_payload(cls, data_report: DataReport) -> dict[str, Any]:

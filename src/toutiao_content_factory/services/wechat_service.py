@@ -188,10 +188,6 @@ class WechatPublishService:
         if force_editor_135:
             raise RuntimeError(WECHAT_EDITOR_135_DISABLED_MESSAGE)
         self._ensure_enabled()
-        if self.settings.wechat_auto_publish_mode:
-            self.settings.automation_dir.mkdir(parents=True, exist_ok=True)
-            (self.settings.automation_dir / "wechat_publish_phase.json").write_text(json.dumps({
-                "account_key": self.settings.account_key, "phase": "submitting", "publication_attempted": True}), encoding="utf-8")
         publish_dir = run_dir / self.settings.review.publish_dirname
         if not publish_dir.exists():
             raise FileNotFoundError(f"Publish package not found: {publish_dir}")
@@ -206,6 +202,9 @@ class WechatPublishService:
         title = self._clip_title(str(publish_meta.get("selected_title", "")).strip())
         summary = str(publish_meta.get("summary", "")).strip()
         article = self._read_text(publish_dir / "article.md")
+        if self.settings.wechat_auto_publish_mode and publish_meta.get("approval_mode") != "manual":
+            from toutiao_content_factory.services.wechat_revision import assert_run_automatic_approval
+            assert_run_automatic_approval(run_dir, article, title)
 
         try:
             pipeline = AntiAIFlavorPipeline()
@@ -238,6 +237,11 @@ class WechatPublishService:
         thumb_media_id = ""
         inline_image_urls: list[str] = []
         draft_media_id = ""
+
+        if self.settings.wechat_auto_publish_mode:
+            self.settings.automation_dir.mkdir(parents=True, exist_ok=True)
+            (self.settings.automation_dir / "wechat_publish_phase.json").write_text(json.dumps({
+                "account_key": self.settings.account_key, "phase": "submitting", "publication_attempted": True}), encoding="utf-8")
 
         try:
             access_token = self._get_access_token()

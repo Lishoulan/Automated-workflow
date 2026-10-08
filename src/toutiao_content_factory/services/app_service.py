@@ -3090,6 +3090,15 @@ class ContentFactoryAppService:
                 snapshot["article_char_count"] = len(article_text)
             if self.settings.wechat_auto_publish_mode:
                 snapshot["length_minimum"] = self._minimum_article_chars(None, score_snapshot=snapshot)
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_revision import assert_run_automatic_approval
+            title_path = run_dir / "publish" / "title.txt"
+            title = title_path.read_text(encoding="utf-8").strip() if title_path.exists() else self._fallback_title_for(run_dir)
+            try:
+                assert_run_automatic_approval(run_dir, article_path.read_text(encoding="utf-8"), title)
+                snapshot["quality_council_integrity_valid"] = True
+            except (ValueError, OSError, TypeError, KeyError):
+                snapshot["quality_council_integrity_valid"] = False
         return snapshot
 
     #: 单次 daily_run 的候选轮换时间预算（秒）。
@@ -3118,6 +3127,9 @@ class ContentFactoryAppService:
         content_guard_report: dict[str, Any] | None = None,
     ) -> bool:
         if not score_snapshot:
+            return False
+        if self.settings.wechat_auto_publish_mode and score_snapshot.get("quality_council_integrity_valid") is not True:
+            self.logger.warning("Incomplete, stale or unapproved WeChat council report requires human review.")
             return False
         if str(score_snapshot.get("model_used", "") or "").strip().lower() == "local-draft":
             self.logger.warning("Local fallback drafts require human review and cannot be auto-approved.")
@@ -3405,6 +3417,8 @@ class ContentFactoryAppService:
         # 硬性上限（非热点 40 / 热点 50），不属于「模型软指控」，兜底也必须
         # 遵守。快照缺失时该值默认为 100（从严），避免无评分数据时放行。
         snapshot = self._load_run_score_snapshot(run_dir)
+        if self.settings.wechat_auto_publish_mode and snapshot.get("quality_council_integrity_valid") is not True:
+            reasons.append("公众号审核不完整、未批准或稿件已变化，必须重新审核")
         if str(snapshot.get("model_used", "") or "").strip().lower() == "local-draft":
             reasons.append("本地兜底稿必须人工复核，禁止自动发布")
         if snapshot.get("quality_council_used_fallback") is True:

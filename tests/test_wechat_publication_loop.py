@@ -176,7 +176,7 @@ def test_cleanup_undo_restores_audited_titles_without_another_audit(app_settings
     service = AgentWorkflowService(app_settings, MagicMock(), mock_openai_service, logger)
     service.openai_service.available = True
     content = GeneratedContent(article="原稿。", polished_article="原稿。", titles=["原标题"], recommended_titles=["原标题"])
-    service.quality_review_council_agent.run = MagicMock(return_value=QualityReviewReport(verdict="needs_revision", required_revisions=["改范围"]))
+    service.quality_review_council_agent.run = MagicMock(return_value=QualityReviewReport(verdict="needs_revision", audit_integrity={"status": "complete"}, required_revisions=["改范围"]))
     service.polish_agent.run = MagicMock(return_value={"polished_article": "原稿。\n\n全球趋势。"})
     def cleanup(content, *a):
         content.article = content.polished_article = "原稿。"

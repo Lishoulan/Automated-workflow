@@ -89,6 +89,7 @@ def test_recovered_location_cannot_replace_existing_location_or_use_footer():
 
 def test_recovered_patch_refreshes_title_before_full_reaudit(app_settings, mock_openai_service, logger):
     before, after, first, pack = patch_case(app_settings, logger)
+    first.audit_integrity = {"status": "complete"}
     object.__setattr__(app_settings.quality_review, "max_auto_revisions", 2)
     service = AgentWorkflowService(app_settings, MagicMock(), mock_openai_service, logger)
     service.openai_service.available = True

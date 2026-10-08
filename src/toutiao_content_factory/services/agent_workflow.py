@@ -215,7 +215,7 @@ class AgentWorkflowService:
             # Generate the title before the first audit so it never evaluates an
             # otherwise valid article with an empty title.
             self._refresh_titles(content, trend_report, data_report, style, cache_context)
-            quality_reviewed_state = self._quality_review_state(content)
+            quality_reviewed_state = self._quality_review_state(content, data_report)
             quality_review_council_report = self._run_quality_review_council(
                 content=content,
                 trend_report=trend_report,
@@ -226,7 +226,7 @@ class AgentWorkflowService:
                 fast_mode=fast_mode,
             )
             if self.settings.platform == "wechat":
-                quality_reviewed_state = self._quality_review_state(content)
+                quality_reviewed_state = self._quality_review_state(content, data_report)
             elif self._quality_review_article(content) != quality_reviewed_state[0]:
                 self.logger.info(
                     "Quality review revision changed the article; regenerating the title before final audit."
@@ -280,7 +280,7 @@ class AgentWorkflowService:
             # final pass is audit-only so it cannot start another revision loop.
             if (
                 quality_review_council_report is not None
-                and self._quality_review_state(content) != quality_reviewed_state
+                and self._quality_review_state(content, data_report) != quality_reviewed_state
             ):
                 self.logger.info(
                     "Article or title changed after the initial quality audit; running final quality audit before publish review."
@@ -385,7 +385,7 @@ class AgentWorkflowService:
                 revision_round=0,
             )
         report.article_version = article_version
-        audited_packages = {self._quality_review_state(content): report}
+        audited_packages = {self._quality_review_state(content, data_report): report}
         if self.settings.wechat_auto_publish_mode:
             from toutiao_content_factory.services.wechat_revision import bind_issues
             bind_issues(report, self._quality_review_article(content), data_report.fact_evidence)
@@ -395,6 +395,7 @@ class AgentWorkflowService:
             max_revisions = min(2, max_revisions)
         can_auto_revise = bool(
             report.needs_revision
+            and (not self.settings.wechat_auto_publish_mode or report.audit_integrity.get("status") == "complete")
             and getattr(quality_settings, "auto_revise", True)
             and allow_auto_revise
             and max_revisions > 0
@@ -403,7 +404,7 @@ class AgentWorkflowService:
         )
         revision_count = 0
         while can_auto_revise and revision_count < max_revisions:
-            audited_state = self._quality_review_state(content)
+            audited_state = self._quality_review_state(content, data_report)
             audited_titles = {"titles": list(content.titles), "recommended_titles": list(content.recommended_titles),
                               "title_validation": dict(content.title_validation), "selected_title_source": content.selected_title_source}
             revision_focus = self._build_quality_review_revision_focus(report)
@@ -447,7 +448,7 @@ class AgentWorkflowService:
                     break
                 self._refresh_titles(content, trend_report, data_report, style, cache_context)
                 if self.settings.wechat_auto_publish_mode:
-                    package = self._quality_review_state(content)
+                    package = self._quality_review_state(content, data_report)
                     if re.sub(r"\s+", "", package[0]) == re.sub(r"\s+", "", audited_state[0]):
                         self.logger.info("Cleanup removed the proposed revision; retaining the existing audit.")
                         content.article, content.polished_article = audited_state[0], audited_state[0]
@@ -477,7 +478,7 @@ class AgentWorkflowService:
                 revision_round=revision_count,
             )
             report.article_version = article_version
-            audited_packages[self._quality_review_state(content)] = report
+            audited_packages[self._quality_review_state(content, data_report)] = report
             if trace is not None:
                 from toutiao_content_factory.services.wechat_revision import bind_issues, finish_revision
                 bind_issues(report, self._quality_review_article(content), data_report.fact_evidence)
@@ -485,6 +486,8 @@ class AgentWorkflowService:
             if self.settings.platform == "wechat":
                 report.revision_round = revision_count
             if not report.needs_revision:
+                break
+            if self.settings.wechat_auto_publish_mode and report.audit_integrity.get("status") != "complete":
                 break
 
         if report.needs_revision:
@@ -502,10 +505,14 @@ class AgentWorkflowService:
         return str(getattr(content, "polished_article", "") or getattr(content, "article", "") or "").strip()
 
     @classmethod
-    def _quality_review_state(cls, content) -> tuple[str, str]:
+    def _quality_review_state(cls, content, data_report=None) -> tuple[str, ...]:
         titles = list(getattr(content, "recommended_titles", []) or [])
         title = str(titles[0]).strip() if titles else ""
-        return cls._quality_review_article(content), title
+        state = (cls._quality_review_article(content), title)
+        if data_report is not None:
+            from toutiao_content_factory.services.wechat_revision import audit_fact_material, manuscript_fingerprint
+            return (*state, manuscript_fingerprint(*state, audit_fact_material(data_report)))
+        return state
 
     def _build_quality_review_revision_focus(self, report: QualityReviewReport) -> list[str]:
         focus = [
@@ -532,6 +539,13 @@ class AgentWorkflowService:
         content_score,
         report: QualityReviewReport | None,
     ) -> None:
+        if self.settings.wechat_auto_publish_mode and (report is None or report.audit_integrity.get("status") != "complete"):
+            content_score.publish_recommendation = "manual_review"
+            status = report.audit_integrity.get("status", "incomplete") if report else "incomplete"
+            content_score.publish_risk_flags = self._unique(
+                ["模型不可用，需人工审核" if status == "model_unavailable" else "审核报告不完整，需人工审核"]
+                + list(content_score.publish_risk_flags))[:8]
+            return
         if report is None or not report.needs_revision:
             return
 

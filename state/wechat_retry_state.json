@@ -756,6 +756,13 @@
           "backend_verification": "2026-10-07T17:42:30.745066+00:00",
           "manual_review_requested": true,
           "reviewed_body_hash": "2d98c00e7c50b75436f696fcfe125a0e2adc5e63629fd40432efa8ddee8c6b9e"
+        },
+        "operator-integrity-audit-2026-10-08:1": {
+          "status": "running",
+          "started_at": "2026-10-08T02:10:26.257830+00:00",
+          "parent": "",
+          "elapsed_seconds": 0,
+          "head_sha": "ede09a914c8b0dfd7461f1ac7a764cdd9cb85e53"
         }
       },
       "dispatches": {},

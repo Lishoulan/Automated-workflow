@@ -253,6 +253,7 @@ class QualityReviewCouncilAgent(BaseAgent):
         bind_issues(report, article, facts)
         reasons = integrity_reasons(report, article, title, facts, pending, primary)
         diagnostic = {"status": "incomplete" if reasons else "complete", "reasons": reasons,
+                      "initial_reasons": list(reasons),
                       "primary_report": primary, "primary_checked_report": asdict(report),
                       "fingerprint": manuscript_fingerprint(article, title, audit_fact_material(data_report)),
                       "pending_verifications": pending, "supplement_count": content.audit_supplement_count}
@@ -285,10 +286,11 @@ class QualityReviewCouncilAgent(BaseAgent):
                     report.__dict__.update(repaired.__dict__)
                 diagnostic.update(status="incomplete" if reasons else "complete", reasons=reasons)
             except Exception as exc:
-                diagnostic.update(status="model_unavailable", reasons=["supplement_failed"],
+                diagnostic.update(status="model_unavailable", reasons=list(reasons) + ["supplement_failed"],
                                   supplement_error=type(exc).__name__)
                 if isinstance(exc, ValueError):
-                    diagnostic.update(status="incomplete", reasons=["invalid_supplement_evidence"])
+                    diagnostic.update(status="incomplete", reasons=list(reasons) + ["invalid_supplement_evidence"],
+                                      supplement_validation_reason=str(exc))
         elif reasons:
             diagnostic["supplement_skipped"] = "exhausted" if content.audit_supplement_count else "insufficient_budget_or_model"
         diagnostic["decision_category"] = (

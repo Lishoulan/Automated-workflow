@@ -186,6 +186,9 @@ def test_one_supplement_per_candidate_and_manual_on_failure(app_settings, logger
     assert result.audit_integrity["status"] != "complete"
     assert result.required_revisions and result.overall_score == 88
     assert result.audit_integrity["primary_report"] == actual["primary_report"]
+    if mode in {"failed", "invalid"}:
+        assert result.audit_integrity["initial_reasons"]
+        assert set(result.audit_integrity["initial_reasons"]).issubset(result.audit_integrity["reasons"])
     assert model.create_json_completion.call_count == (1 if mode in {"budget", "exhausted"} else 2)
     if mode in {"failed", "invalid"}:
         agent.run(content, data, app_settings.get_style(), CacheContext(), revision_round=2)

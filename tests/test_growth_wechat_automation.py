@@ -272,3 +272,45 @@ def test_cloud_check_inspects_backend_without_starting_generation(app_settings, 
     inspector.assert_called_once_with(app_settings)
     result = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text())
     assert result["backend_snapshot"]["read_only"] and result["publication_requested"] is False
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_session_refresh_replaces_only_credentials_and_retains_history(app_settings, refresh):
+    from cryptography.fernet import Fernet
+    from wechat_cloud_session import encrypt_state, restore_session
+    key = Fernet.generate_key().decode()
+    def state(value):
+        return {"cookies": [{"name": "session", "domain": "mp.weixin.qq.com", "value": value}], "origins": []}
+    cache = app_settings.automation_dir / "wechat_cloud_session.enc"
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(encrypt_state(state("old"), key, "default"))
+    history = app_settings.output_dir / "wechat_publish_history.json"
+    history.parent.mkdir(parents=True, exist_ok=True)
+    history.write_text('[{"title":"retained"}]')
+    path = restore_session(app_settings, cache, key, encrypt_state(state("new"), key, "default").decode(), prefer_seed=refresh)
+    assert json.loads(path.read_text())["cookies"][0]["value"] == ("new" if refresh else "old")
+    assert history.read_text() == '[{"title":"retained"}]'
+
+
+def test_session_refresh_rejects_another_account_before_writing_state(app_settings):
+    from cryptography.fernet import Fernet
+    from wechat_cloud_session import encrypt_state, restore_session
+    key = Fernet.generate_key().decode()
+    state = {"cookies": [{"name": "session", "domain": "mp.weixin.qq.com", "value": "private"}], "origins": []}
+    with pytest.raises(ValueError, match="different account"):
+        restore_session(app_settings, app_settings.automation_dir / "cache.enc", key,
+                        encrypt_state(state, key, "other").decode(), prefer_seed=True)
+    assert not (app_settings.account_runtime_dir / "automation/browser_state/WeChat_storage_state.json").exists()
+
+
+def test_session_refresh_cannot_trigger_publication(app_settings, monkeypatch):
+    monkeypatch.setenv("WECHAT_SESSION_REFRESH", "1")
+    monkeypatch.setattr(cloud, "load_settings", lambda *a, **kw: app_settings)
+    monkeypatch.setattr(cloud, "configure_environment", lambda *a: None)
+    restore = MagicMock()
+    monkeypatch.setattr(cloud, "restore_session", restore)
+    generation = MagicMock()
+    monkeypatch.setattr(execution, "run_process_tree", generation)
+    assert cloud.main(["--mode", "publish"]) == 1
+    restore.assert_not_called()
+    generation.assert_not_called()

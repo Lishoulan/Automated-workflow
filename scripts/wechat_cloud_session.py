@@ -42,10 +42,10 @@ def decrypt_state(encrypted: bytes, key: str, account: str) -> dict[str, Any]:
     return validate_state(payload.get("storage_state"))
 
 
-def restore_session(settings: Any, encrypted_path: Path, key: str, seed: str) -> Path:
+def restore_session(settings: Any, encrypted_path: Path, key: str, seed: str, *, prefer_seed: bool = False) -> Path:
     # 缓存失效时才用初始种子，避免每次把新登录状态覆盖成旧状态。
     # Prefer refreshed encrypted state over the initial seed.
-    encrypted = encrypted_path.read_bytes() if encrypted_path.exists() else seed.encode()
+    encrypted = encrypted_path.read_bytes() if encrypted_path.exists() and not prefer_seed else seed.encode()
     if not encrypted:
         raise ValueError("WeChat cloud session is not configured.")
     state = decrypt_state(encrypted, key, settings.account_key)

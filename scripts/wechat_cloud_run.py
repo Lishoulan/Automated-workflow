@@ -271,7 +271,11 @@ def main(argv: list[str] | None = None) -> int:
             os.environ["WECHAT_EXECUTION_ID"] = previous_execution_id
         return code
     try:
-        restore_session(settings, encrypted, key, os.environ.get("WECHAT_SESSION_SEED", ""))
+        refresh_session = os.environ.get("WECHAT_SESSION_REFRESH") == "1"
+        if refresh_session and args.mode != "check":
+            raise ValueError("Session refresh requires a read-only login check")
+        restore_options = {"prefer_seed": True} if refresh_session else {}
+        restore_session(settings, encrypted, key, os.environ.get("WECHAT_SESSION_SEED", ""), **restore_options)
         # 先读持久化去重状态，网络异常时停止，不把未知当作“今天没发”。
         # Fail closed if the durable publication guard cannot be read.
         state = xstate.read_remote_state(ROOT, branch=xstate.WECHAT_STATE_BRANCH, strict=True)

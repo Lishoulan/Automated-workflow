@@ -33,12 +33,16 @@ ACCEPTED_STATUSES = {"submitted", "submitted_for_review", "published", "success"
 def configure_environment(account: str) -> None:
     from toutiao_content_factory.config import account_env_name
 
+    host = os.environ.get("WECHAT_EXECUTION_HOST", "cloud")
+    if host not in {"cloud", "fixed"}:
+        raise ValueError("Unknown WeChat execution host")
+
     overrides = {
         "TARGET_PLATFORM": "wechat", "WECHAT_ENABLED": "1", "WECHAT_AUTO_PUBLISH": "1",
         "WECHAT_EDITOR_135_ENABLED": "0", "TOUTIAO_PUBLISH_ENABLED": "0",
         "TOUTIAO_AUTO_PUBLISH": "0", "TOUTIAO_WEITOUTIAO_ENABLED": "0",
         "DOUYIN_ENABLED": "0", "DOUYIN_AUTO_PUBLISH": "0",
-        "TOUTIAO_PUBLISH_HEADLESS": "1", "TOUTIAO_PUBLISH_CHANNEL": "",
+        "TOUTIAO_PUBLISH_HEADLESS": "1", "TOUTIAO_PUBLISH_CHANNEL": "msedge" if host == "fixed" and os.name == "nt" else "",
         "TOUTIAO_BROWSER_EXECUTABLE": "", "TOUTIAO_LOCAL_FALLBACK_AFTER_HOUR": "-1",
         "LETTA_ENABLED": "0", "DEERFLOW_ENABLED": "0", "PROMPT_OPTIMIZER_ENABLED": "0",
         "WECHAT_TECH_TOPICS_ONLY": "1", "TOUTIAO_QUALITY_REVIEW_MAX_AUTO_REVISIONS": "2",
@@ -237,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     encrypted = settings.account_runtime_dir / "automation" / "wechat_cloud_session.enc"
     result_path = settings.automation_dir / "wechat_cloud_result.json"
     key = os.environ.get("WECHAT_SESSION_KEY", "")
+    fixed_device = os.environ.get("WECHAT_EXECUTION_HOST") == "fixed"
     publication_started = False
     workflow_started = None
     workflow_completed = False
@@ -250,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     retry_state = None
     reserved_started = None
     def finish(report, code, *, excluded=False):
+        report["execution_host"] = "fixed" if fixed_device else "cloud"
         if confirmations:
             report["confirmed_publications"] = list(confirmations.values())
             report["formal_publication_confirmed"] = True
@@ -271,11 +277,16 @@ def main(argv: list[str] | None = None) -> int:
             os.environ["WECHAT_EXECUTION_ID"] = previous_execution_id
         return code
     try:
+        if fixed_device and args.mode == "publish" and (not run_key or os.environ.get("GITHUB_ACTIONS") != "true"):
+            raise ValueError("Fixed-device publication requires the GitHub workflow and its shared reservation")
         refresh_session = os.environ.get("WECHAT_SESSION_REFRESH") == "1"
         if refresh_session and args.mode != "check":
             raise ValueError("Session refresh requires a read-only login check")
         restore_options = {"prefer_seed": True} if refresh_session else {}
-        restore_session(settings, encrypted, key, os.environ.get("WECHAT_SESSION_SEED", ""), **restore_options)
+        if fixed_device and refresh_session:
+            raise ValueError("Fixed device login cannot be overwritten by a cloud seed")
+        if not fixed_device:
+            restore_session(settings, encrypted, key, os.environ.get("WECHAT_SESSION_SEED", ""), **restore_options)
         # 先读持久化去重状态，网络异常时停止，不把未知当作“今天没发”。
         # Fail closed if the durable publication guard cannot be read.
         state = xstate.read_remote_state(ROOT, branch=xstate.WECHAT_STATE_BRANCH, strict=True)
@@ -336,7 +347,8 @@ def main(argv: list[str] | None = None) -> int:
         if checked.returncode:
             return finish({"status": "publish_login_required", "exit_code": checked.returncode,
                            "native_exit_code": checked.returncode}, checked.returncode)
-        save_session(settings, encrypted, key)
+        if not fixed_device:
+            save_session(settings, encrypted, key)
         if args.mode == "check":
             report = {"status": "ready", "publication_requested": False}
             storage = settings.account_runtime_dir / "automation" / "browser_state" / "WeChat_storage_state.json"
@@ -354,7 +366,8 @@ def main(argv: list[str] | None = None) -> int:
         deadline = float(os.environ.get("WECHAT_RUN_DEADLINE_EPOCH", time.time() + 2700))
         result = run_process_tree(command + ["--enable-auto-publish"], cwd=ROOT, timeout=max(1, min(2700, deadline - time.time())))
         workflow_completed = True
-        save_session(settings, encrypted, key)
+        if not fixed_device:
+            save_session(settings, encrypted, key)
         record = latest_accepted_record(settings.output_dir / settings.wechat.history_filename, today)
         if record:
             record_publication(settings, record, today)

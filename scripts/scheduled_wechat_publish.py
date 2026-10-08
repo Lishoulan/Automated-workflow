@@ -638,6 +638,11 @@ def check_login(settings) -> dict:
                 goto_timeout_ms=30000,
             )
             ready = bool(session.get("session_ready")) and not session.get("login_detected")
+            if ready and settings.wechat.account_name:
+                from toutiao_content_factory.services.wechat_publication_verifier import BACKEND_RECORDS_JS
+                identity = page.evaluate(BACKEND_RECORDS_JS).get("account", "")
+                if identity != settings.wechat.account_name:
+                    raise RuntimeError("WeChat login belongs to a different or unverifiable account")
             return {
                 "status": "ready" if ready else "publish_login_required",
                 "message": "WeChat login is ready." if ready else "WeChat session expired; refresh administrator QR login.",

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import time
+import os
+import logging
 from datetime import datetime, timezone
 
 from toutiao_content_factory.services.wechat_metrics import match_publication
@@ -27,6 +29,23 @@ PUBLIC_ARTICLE_JS = """() => ({
 })"""
 
 
+def _open_backend_context(playwright, settings, remaining):
+    if os.environ.get("WECHAT_EXECUTION_HOST") == "fixed":
+        from toutiao_content_factory.services.wechat_service import WechatPublishService
+        service = WechatPublishService(settings, logging.getLogger(__name__))
+        context = service._launch_persistent_browser(
+            playwright, profile_dir=service._resolve_browser_profile_dir(), headless=True)
+        return context, context
+    storage = settings.account_runtime_dir / "automation" / "browser_state" / "WeChat_storage_state.json"
+    browser = playwright.chromium.launch(headless=True, timeout=remaining())
+    try:
+        context = browser.new_context(storage_state=str(storage), locale="zh-CN", timezone_id="Asia/Shanghai")
+        return browser, context
+    except BaseException:
+        browser.close()
+        raise
+
+
 def inspect_backend(settings, *, timeout_seconds=60):
     """Account-bound, read-only evidence for legacy submissions lacking an expectation."""
     from playwright.sync_api import sync_playwright
@@ -36,11 +55,9 @@ def inspect_backend(settings, *, timeout_seconds=60):
         if milliseconds <= 0:
             raise TimeoutError("WeChat backend inspection timed out")
         return min(25000, milliseconds)
-    storage = settings.account_runtime_dir / "automation" / "browser_state" / "WeChat_storage_state.json"
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True, timeout=remaining())
+        browser, context = _open_backend_context(playwright, settings, remaining)
         try:
-            context = browser.new_context(storage_state=str(storage), locale="zh-CN", timezone_id="Asia/Shanghai")
             page = context.new_page()
             page.goto("https://mp.weixin.qq.com/", wait_until="domcontentloaded", timeout=remaining())
             page.locator('.account_box-panel-head__nickname, .acount_box-nickname').first.wait_for(timeout=remaining())
@@ -69,11 +86,9 @@ def verify_pending(settings, expected_records: list[dict], *, timeout_seconds: i
             raise TimeoutError("WeChat read-only verification timed out")
         return min(30000, milliseconds)
 
-    storage = settings.account_runtime_dir / "automation" / "browser_state" / "WeChat_storage_state.json"
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True, timeout=remaining())
+        browser, context = _open_backend_context(playwright, settings, remaining)
         try:
-            context = browser.new_context(storage_state=str(storage), locale="zh-CN", timezone_id="Asia/Shanghai")
             page = context.new_page()
             page.set_default_timeout(remaining())
             page.goto("https://mp.weixin.qq.com/", wait_until="domcontentloaded", timeout=remaining())

@@ -935,6 +935,11 @@ class AppSettings:
 
     @property
     def account_runtime_dir(self) -> Path:
+        if self.platform == "wechat" and os.environ.get("WECHAT_EXECUTION_HOST") == "fixed":
+            fixed_root = Path(os.environ.get("WECHAT_FIXED_DEVICE_DIR", ""))
+            if not fixed_root.is_absolute():
+                raise ValueError("Fixed WeChat execution requires an absolute WECHAT_FIXED_DEVICE_DIR")
+            return fixed_root / self.account_slug
         if self.is_default_account:
             return self.project_root / ".runtime"
         return self.project_root / ".runtime" / "accounts" / self.account_slug

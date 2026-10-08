@@ -726,7 +726,27 @@
       "expected_publication": {},
       "authoring_mode": "operator_assisted",
       "publication_attempted": false
+    },
+    {
+      "run_key": "37719117765:1",
+      "started_at": "2026-10-08T02:42:40.042835+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "runtime_error",
+      "reason_codes": [],
+      "attempt_count": 0,
+      "enrichment_count": 0,
+      "eligible_candidate_count": 0,
+      "audited_candidate_count": 0,
+      "review_pass_count": 0,
+      "rejection_reasons": [],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 97.003,
+      "runtime_status": "error",
+      "native_exit_code": null,
+      "submission_outcome": "submit_uncertain"
     }
   ],
-  "updated_at": "2026-10-08T10:11:09.833641+08:00"
+  "updated_at": "2026-10-08T10:44:20.485534+08:00"
 }

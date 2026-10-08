@@ -709,7 +709,24 @@
       ],
       "no_submission_verified": true,
       "authoring_mode": "operator_assisted"
+    },
+    {
+      "run_key": "operator-integrity-audit-2026-10-08:1",
+      "started_at": "2026-10-08T02:10:26.257830+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "elapsed_seconds": 35.431875,
+      "reason_codes": [
+        "quality_audit_incomplete"
+      ],
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "publication": {},
+      "expected_publication": {},
+      "authoring_mode": "operator_assisted",
+      "publication_attempted": false
     }
   ],
-  "updated_at": "2026-10-08T01:44:41.934025+08:00"
+  "updated_at": "2026-10-08T10:11:09.833641+08:00"
 }

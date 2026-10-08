@@ -240,8 +240,10 @@ class QualityReviewCouncilAgent(BaseAgent):
             role_names=role_names,
         )
         if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_revision import audit_fact_material, manuscript_fingerprint
             report.audit_integrity = {"status": "model_unavailable", "reasons": ["model_unavailable"],
                                       "decision_category": "model_unavailable",
+                                      "fingerprint": manuscript_fingerprint(article, title, audit_fact_material(data_report)),
                                       "supplement_count": content.audit_supplement_count, "primary_report": payload}
             content.audit_history.append(copy.deepcopy(report.audit_integrity))
         return report

@@ -271,6 +271,8 @@ def test_true_new_unsupported_fact_still_hits_native_hard_gate(app_settings, log
         recommended_titles=[actual["title"]]), DataReport.from_dict(actual["data_report"]), app_settings.get_style(), CacheContext())
     assert report.used_fallback and report.verdict == "blocked"
     assert report.audit_integrity["status"] == "model_unavailable"
+    assert report.audit_integrity["fingerprint"] == manuscript_fingerprint(
+        article, actual["title"], audit_fact_material(actual["data_report"]))
     assert any("30" in item for item in report.hard_blockers)
 
 

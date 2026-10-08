@@ -130,7 +130,8 @@ def complete_run(settings, report: dict, exit_code: int, *, metrics_state: dict 
             attempts = diagnostics.get("attempts", [])
             audited = [row for row in attempts if row.get("quality_review")]
             approved = [row for row in audited if row["quality_review"].get("verdict") == "approved"
-                        and row["quality_review"].get("used_fallback") is False]
+                        and row["quality_review"].get("used_fallback") is False
+                        and row["quality_review"].get("audit_integrity_status") == "complete"]
             run_record = {"run_key": run_key, "started_at": started_at, "mode": mode,
                           "excluded": excluded or mode == "check", "outcome": metrics.outcome(report),
                           "reason_codes": list(report.get("reason_codes", [])),

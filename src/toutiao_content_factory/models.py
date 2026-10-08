@@ -264,6 +264,7 @@ class GeneratedContent:
     title_validation: dict[str, Any] = field(default_factory=dict)
     revision_trace: list[dict[str, Any]] = field(default_factory=list)
     audit_supplement_count: int = 0
+    audit_history: list[dict[str, Any]] = field(default_factory=list)
     grounding_diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
@@ -293,6 +294,7 @@ class GeneratedContent:
             title_validation=dict(payload.get("title_validation") or {}),
             revision_trace=list(payload.get("revision_trace") or []),
             audit_supplement_count=max(0, int(payload.get("audit_supplement_count") or 0)),
+            audit_history=list(payload.get("audit_history") or []),
             grounding_diagnostics=list(payload.get("grounding_diagnostics") or []),
         )
 

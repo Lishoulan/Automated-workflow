@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import time
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,8 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 from openai import AsyncOpenAI
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from wechat_run_report import review_diagnostics
 
 from toutiao_content_factory.agents.quality_review_council_agent import QualityReviewCouncilAgent
 from toutiao_content_factory.exceptions import AIRequestError
@@ -70,6 +73,9 @@ def test_real_manuscript_stale_requirement_repaired_without_fabricating_response
     assert valid_automatic_approval(result, content.article, actual["title"], data)
     assert "30分钟" not in content.article
     assert content.audit_supplement_count == 1
+    assert content.audit_history[0]["primary_report"] == actual["primary_report"]
+    restored = GeneratedContent.from_dict(asdict(content))
+    assert restored.audit_history == content.audit_history and restored.audit_supplement_count == 1
     assert model.create_json_completion.call_args.kwargs == {"single_attempt": True, "timeout_seconds": 60}
     repair_prompt = model.create_json_completion.call_args.args[1]
     assert "overall_score" not in repair_prompt and "role_reviews" not in repair_prompt
@@ -263,6 +269,26 @@ def test_true_new_unsupported_fact_still_hits_native_hard_gate(app_settings, log
     assert report.used_fallback and report.verdict == "blocked"
     assert report.audit_integrity["status"] == "model_unavailable"
     assert any("30" in item for item in report.hard_blockers)
+
+
+@pytest.mark.parametrize("status,verdict,reason", [
+    ("complete", "approved", None), ("complete", "needs_revision", "quality_manuscript_issue"),
+    ("incomplete", "approved", "quality_audit_incomplete"),
+    ("model_unavailable", "approved", "quality_model_unavailable"),
+])
+def test_runtime_diagnoses_article_report_and_provider_separately(app_settings, status, verdict, reason):
+    run_dir = app_settings.runs_dir / "audit"
+    run_dir.mkdir(parents=True)
+    (run_dir / "quality_review_council.json").write_text(json.dumps({"verdict": verdict, "audit_integrity": {
+        "status": status, "reasons": ["token=private"], "supplement_count": 1}}), encoding="utf-8")
+    app_settings.automation_dir.mkdir(parents=True, exist_ok=True)
+    (app_settings.automation_dir / "last_daily_workflow_report.json").write_text(json.dumps({
+        "account_key": app_settings.account_key, "status": "review_required", "attempts": [{"run_dir": str(run_dir)}]}), encoding="utf-8")
+    result = review_diagnostics(app_settings, {"status": "review_required"}, time.time_ns() - 1_000_000_000)
+    assert result["attempts"][0]["quality_review"]["audit_integrity_status"] == status
+    if reason:
+        assert reason in result["reason_codes"]
+    assert "private" not in json.dumps(result)
 
 
 @pytest.mark.parametrize("mode", ["success", "429", "timeout"])

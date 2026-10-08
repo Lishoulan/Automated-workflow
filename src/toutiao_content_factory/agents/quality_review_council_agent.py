@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import copy
 from difflib import SequenceMatcher
 import logging
 import os
@@ -242,6 +243,7 @@ class QualityReviewCouncilAgent(BaseAgent):
             report.audit_integrity = {"status": "model_unavailable", "reasons": ["model_unavailable"],
                                       "decision_category": "model_unavailable",
                                       "supplement_count": content.audit_supplement_count, "primary_report": payload}
+            content.audit_history.append(copy.deepcopy(report.audit_integrity))
         return report
 
     def _complete_audit(self, report, primary, content, data_report, article, title, pending, local_snapshot):
@@ -275,7 +277,6 @@ class QualityReviewCouncilAgent(BaseAgent):
                                                                        single_attempt=True, timeout_seconds=60)
                 diagnostic["supplement_report"] = supplement
                 # Apply to a copy so a failed repair cannot erase the primary blockers.
-                import copy
                 repaired = copy.deepcopy(report)
                 apply_supplement(repaired, supplement, article, title, facts)
                 self._apply_local_hard_gate(repaired, local_snapshot, article=article, title=title)
@@ -295,6 +296,7 @@ class QualityReviewCouncilAgent(BaseAgent):
             "audit_incomplete" if diagnostic["status"] != "complete" else
             "manuscript_issue" if report.needs_revision else "approved")
         report.audit_integrity = diagnostic
+        content.audit_history.append(copy.deepcopy(diagnostic))
 
     @classmethod
     def _fact_payload(cls, data_report: DataReport) -> dict[str, Any]:

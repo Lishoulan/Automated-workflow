@@ -79,6 +79,21 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
                     for key in ("verdict", "overall_score", "revision_round", "used_fallback")
                     if key in council and isinstance(council[key], (str, int, float, bool))
                 }
+                integrity = council.get("audit_integrity")
+                integrity = integrity if isinstance(integrity, dict) else {}
+                status = integrity.get("status", "incomplete")
+                summary["quality_review"]["audit_integrity_status"] = safe_text(status)
+                summary["audit_integrity"] = {key: safe_text(integrity[key]) if isinstance(integrity[key], str) else integrity[key]
+                    for key in ("status", "supplement_count", "fingerprint", "decision_category")
+                    if key in integrity and isinstance(integrity[key], (str, int))}
+                summary["audit_integrity"]["reasons"] = [safe_text(item) for item in integrity.get("reasons", [])
+                                                          if isinstance(item, str)]
+                if status == "model_unavailable":
+                    result["reason_codes"].append("quality_model_unavailable")
+                elif status != "complete":
+                    result["reason_codes"].append("quality_audit_incomplete")
+                elif council.get("verdict") != "approved":
+                    result["reason_codes"].append("quality_manuscript_issue")
                 summary["required_revisions"] = [safe_text(item) for item in council.get("required_revisions", [])]
                 for field in ("hard_blockers", "fact_issues", "logic_issues", "structure_issues", "originality_issues", "compliance_issues"):
                     summary[field] = [safe_text(item) for item in council.get(field, [])]

@@ -198,7 +198,7 @@ def test_diagnostics_use_current_account_and_strip_private_data(app_settings, mo
     report = review_diagnostics(app_settings, {"status": "review_required"}, started)
     assert report["publication_attempted"] is False
     assert report["attempt_count"] == 1
-    assert set(report["reason_codes"]) == {"article_too_short", "quality_review_required", "title_all_rejected"}
+    assert set(report["reason_codes"]) == {"article_too_short", "quality_review_required", "quality_audit_incomplete", "title_all_rejected"}
     serialized = json.dumps(report)
     assert "private-token" not in serialized and "private-api-key" not in serialized and "private article" not in serialized
     payload["attempts"][0]["platform_results"] = {"wechat": {"status": "publish_uncertain"}}

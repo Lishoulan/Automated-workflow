@@ -717,9 +717,11 @@ class ContentFactoryAppService:
         skip_wait: bool = False,
     ) -> dict[str, str]:
         if self.settings.wechat_auto_publish_mode:
-            self.settings.automation_dir.mkdir(parents=True, exist_ok=True)
-            (self.settings.automation_dir / "wechat_publish_phase.json").write_text(json.dumps({
-                "account_key": self.settings.account_key, "phase": "preparing", "publication_attempted": False}), encoding="utf-8")
+            from toutiao_content_factory.services.wechat_execution import write_phase, PREPARATION_MIN_SECONDS, FINISH_RESERVE_SECONDS
+            write_phase(self.settings, "preparing")
+            deadline = os.environ.get("WECHAT_RUN_DEADLINE_EPOCH")
+            if deadline and float(deadline) - time.time() + FINISH_RESERVE_SECONDS < PREPARATION_MIN_SECONDS:
+                raise RuntimeError("Insufficient WeChat preparation budget; no manuscript generated.")
             self._wechat_enrichment_deadline = time.monotonic() + 300
             self._wechat_enrichment_remaining_seconds = 300.0
             self._wechat_attempted_candidate_titles = set()
@@ -3188,11 +3190,11 @@ class ContentFactoryAppService:
         # 30.7% 抄录的图文就是这么发的，和 9-15 被扣 5 分的是同一个风险。
         # 现在严格门与兜底门共用同一条线（`_originality_block_reason`），
         # 两条路径不可能再各说各话。
-        if content_guard_report is not None:
+        if content_guard_report is not None or self.settings.wechat_auto_publish_mode:
             originality_reason = self._originality_block_reason(
-                content_guard_report.get("source_copy_ratio"),
-                is_hot_topic=bool(score_snapshot.get("is_hot_topic", 0)),
-                is_evergreen=self._snapshot_is_evergreen(score_snapshot),
+                (content_guard_report or {}).get("source_copy_ratio"),
+                is_hot_topic=bool(score_snapshot.get("is_hot_topic", 0)) and not self.settings.wechat_auto_publish_mode,
+                is_evergreen=self._snapshot_is_evergreen(score_snapshot) and not self.settings.wechat_auto_publish_mode,
             )
             if originality_reason:
                 self.logger.warning(
@@ -3453,8 +3455,8 @@ class ContentFactoryAppService:
             )["ratio"]
         originality_reason = self._originality_block_reason(
             ratio,
-            is_hot_topic=is_hot_topic,
-            is_evergreen=self._run_dir_is_evergreen(run_dir),
+            is_hot_topic=is_hot_topic and not self.settings.wechat_auto_publish_mode,
+            is_evergreen=self._run_dir_is_evergreen(run_dir) and not self.settings.wechat_auto_publish_mode,
         )
         if originality_reason:
             reasons.append(originality_reason)

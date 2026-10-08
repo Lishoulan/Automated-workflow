@@ -137,5 +137,6 @@ jobs:
             output/automation/wechat_login_check.json
             output/automation/wechat_review_diagnostics.json
             output/automation/wechat_metrics_report.json
+            output/automation/wechat_publish_phase.json
           if-no-files-found: ignore
           retention-days: 14

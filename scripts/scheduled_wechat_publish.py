@@ -700,9 +700,16 @@ def main(argv: list[str] | None = None) -> int:
         command.append("--dry-run")
     workflow_started = time.time_ns()
     try:
-        completed = subprocess.run(command, cwd=str(project_root), env=environment, timeout=2400)
+        from toutiao_content_factory.services.wechat_execution import run_process_tree
+        deadline = float(environment.get("WECHAT_RUN_DEADLINE_EPOCH", time.time() + 2400))
+        completed = run_process_tree(command, cwd=str(project_root), env=environment,
+                                     timeout=max(1, min(2400, deadline - time.time())))
     except subprocess.TimeoutExpired:
-        result_path.write_text(json.dumps({"status": "error", "message": "Daily workflow timed out."}), encoding="utf-8")
+        from toutiao_content_factory.services.wechat_execution import phase_attempted
+        attempted = phase_attempted(settings, workflow_started)
+        result_path.write_text(json.dumps({"status": "error", "message": "Daily workflow timed out.",
+            "publication_attempted": attempted is not False,
+            **({"wechat_status": "publish_uncertain"} if attempted is not False else {})}), encoding="utf-8")
         return 1
     result = {"status": "success" if completed.returncode == 0 else "error",
               "exit_code": completed.returncode, "native_exit_code": completed.returncode}

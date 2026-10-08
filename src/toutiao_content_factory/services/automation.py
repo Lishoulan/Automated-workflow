@@ -1259,6 +1259,16 @@ class TopicAutomationService:
         只抓被选中的这一条，且全程兜底：抓不到就退回摘要，绝不阻断主流程。
         """
         target = self.settings.output_dir / "source_material_full.txt"
+        if self.settings.wechat_auto_publish_mode:
+            sources = getattr(topic, "source_records", [])
+            originals = [str(source.get("original_text", "")).strip() for source in sources
+                         if isinstance(source, dict) and source.get("original_text")]
+            if originals:
+                header = "素材来源：本次选题原始报道\n原文标题：" + str(topic.title) + "\n原文链接：" + str(topic.url) + "\n\n"
+                target.write_text(header + "\n\n".join(dict.fromkeys(originals)), encoding="utf-8")
+                return target
+            target.unlink(missing_ok=True)
+            return None
         if getattr(topic, "_verified_source_material", False):
             target.write_text(topic.snippet, encoding="utf-8")
             return target

@@ -748,6 +748,8 @@ class ContentGuardService:
             for item in report.get("blocking_flags", [])
             if str(item).strip()
         )
+        if self.settings.wechat_auto_publish_mode and report.get("source_copy_ratio") is None:
+            blockers.append("公众号素材原文缺失或不足，原创性查重无法核验，不能自动发表。")
         quality_result = None
         first_release_assessment = None
         if title and article:

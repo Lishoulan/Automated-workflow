@@ -211,6 +211,9 @@ class OpenAIContentService:
                               single_attempt: bool, timeout_seconds: float | None):
         """Cancel transport on a total wall deadline; never fall back to another format."""
         timeout = self.REQUEST_TIMEOUT if timeout_seconds is None else float(timeout_seconds)
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_execution import generation_remaining
+            timeout = min(timeout, generation_remaining())
         if timeout <= 0 or AsyncOpenAI is None:
             raise AIRequestError("No bounded model call is available.")
         try:
@@ -279,7 +282,8 @@ class OpenAIContentService:
             request_options["max_tokens"] = self.DEFAULT_MAX_TOKENS
             deadline = os.environ.get("WECHAT_RUN_DEADLINE_EPOCH")
             if deadline:
-                remaining = float(deadline) - time.time()
+                from toutiao_content_factory.services.wechat_execution import generation_remaining
+                remaining = generation_remaining()
                 if remaining <= 0:
                     raise AIRequestError("WeChat processing deadline exhausted")
                 request_options["timeout"] = min(self.REQUEST_TIMEOUT, remaining)
@@ -331,7 +335,8 @@ class OpenAIContentService:
         for attempt in range(1, self.MAX_RETRIES + 1):
             deadline = os.environ.get("WECHAT_RUN_DEADLINE_EPOCH") if self.settings.wechat_auto_publish_mode else None
             if deadline:
-                remaining = float(deadline) - time.time()
+                from toutiao_content_factory.services.wechat_execution import generation_remaining
+                remaining = generation_remaining()
                 if remaining <= 0:
                     raise AIRequestError("WeChat processing deadline exhausted")
                 kwargs["timeout"] = min(self.REQUEST_TIMEOUT, remaining)

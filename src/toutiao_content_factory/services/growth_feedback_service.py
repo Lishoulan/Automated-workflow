@@ -181,12 +181,12 @@ def build_growth_feedback(
         signal_evidence[signal] = {"samples": len(scores), "average_performance_index": round(average, 3)}
 
     winners = sorted(
-        (item for item in evaluated if item["status"] == "winner"),
+        (item for item in evaluated if item["status"] == "winner" and item["capture_quality"] == "on_schedule"),
         key=lambda item: item["performance_index"],
         reverse=True,
     )
     stopped = sorted(
-        (item for item in evaluated if item["status"] == "stop"),
+        (item for item in evaluated if item["status"] == "stop" and item["capture_quality"] == "on_schedule"),
         key=lambda item: item["performance_index"],
     )
     stop_titles = list(
@@ -258,6 +258,7 @@ def build_growth_feedback(
             "mature_article_samples": sum(item["type"] == "article" for item in evaluated),
         },
         "winners": winners[:10],
+        "late_observations": [item for item in evaluated if item["capture_quality"] == "late"],
         "stop_loss": stopped_for_report[:20],
         "current_summary": snapshot.get("summary", {}) if isinstance(snapshot, dict) else {},
         "opening_experiment": opening_experiment_summary(checkpoints),
@@ -282,9 +283,27 @@ def opening_experiment_summary(checkpoints: dict[str, Any]) -> dict[str, Any]:
             impressions = sum(int(s.get("impressions", 0)) for s in samples)
             reads = sum(int(s.get("reads", 0)) for s in samples)
             groups.append({"checkpoint": label, "variant": variant, "samples": len(samples), "impressions": impressions, "reads": reads,
-                           "read_rate_pct": round(reads * 100 / impressions, 3) if impressions else None})
+                           "read_rate_pct": round(reads * 100 / impressions, 3) if impressions else None,
+                           "median_reads": median([int(s.get("reads", 0)) for s in samples]) if samples else None,
+                           "median_impressions": median([int(s.get("impressions", 0)) for s in samples]) if samples else None})
     ready = any(all(g["samples"] >= 15 and g["impressions"] >= 1000 for g in groups if g["checkpoint"] == label) for label in ("24h", "72h"))
+    comparisons = []
+    for label in ("24h", "72h"):
+        pair = [g for g in groups if g["checkpoint"] == label]
+        if not all(g["samples"] >= 15 and g["impressions"] >= 1000 for g in pair):
+            continue
+        ordered = sorted(pair, key=lambda g: g["read_rate_pct"], reverse=True)
+        higher, lower = ordered
+        preferred = (higher["read_rate_pct"] > lower["read_rate_pct"]
+                     and higher["median_reads"] > lower["median_reads"]
+                     and higher["median_impressions"] >= lower["median_impressions"])
+        comparisons.append({"checkpoint": label, "preferred_variant": higher["variant"] if preferred else None,
+            "status": "directional_preference" if preferred else "no_consistent_improvement",
+            "read_rate_target_pct": 2.0,
+            "target_met": preferred and higher["read_rate_pct"] >= 2.0,
+            "automatic_switch": False})
     return {"id": "story_opening_v1", "variable": "opening_order", "status": "comparison_ready" if ready else "collecting", "groups": groups,
+            "comparisons": comparisons, "read_rate_target_pct": 2.0,
             "note": "不同真实作品的描述性比较；24h和72h分开统计，迟到采样排除，不据此自动推断因果或收益。"}
 
 
@@ -354,11 +373,18 @@ def render_daily_growth_report(feedback: dict[str, Any]) -> str:
     topic_feedback = feedback.get("topic_feedback", {})
     lines.append(f"- 题材调权：{topic_feedback.get('status', 'collecting')}，合格样本 {topic_feedback.get('qualified_samples', 0)}/{TOPIC_WEIGHT_MIN_SAMPLES}；单题材至少5条才调权。")
     experiment = feedback.get("opening_experiment", {})
-    lines.extend(["", "## 开头顺序实验", "", f"状态：{experiment.get('status', 'collecting')}（同一窗口每组至少15条、1000展现后可比较）", "", "| 窗口 | 开头 | 合格样本 | 展现 | 阅读 | 阅读率 |", "|---|---|---:|---:|---:|---:|"])
+    lines.extend(["", "## 开头顺序实验", "", f"状态：{experiment.get('status', 'collecting')}（同一窗口每组至少15条、1000展现后可比较）", "", "| 窗口 | 开头 | 合格样本 | 展现 | 阅读 | 阅读率 | 单篇阅读中位数 | 单篇展现中位数 |", "|---|---|---:|---:|---:|---:|---:|---:|"])
     for group in experiment.get("groups", []):
         rate = group["read_rate_pct"]
-        lines.append(f"| {group['checkpoint']} | {group['variant']} | {group['samples']} | {group['impressions']} | {group['reads']} | {str(rate) + '%' if rate is not None else '未知'} |")
+        lines.append(f"| {group['checkpoint']} | {group['variant']} | {group['samples']} | {group['impressions']} | {group['reads']} | {str(rate) + '%' if rate is not None else '未知'} | {group.get('median_reads', '未知')} | {group.get('median_impressions', '未知')} |")
     lines.append(str(experiment.get("note", "")))
+    for comparison in experiment.get("comparisons", []):
+        lines.append(f"- {comparison['checkpoint']}：{comparison['status']}；观察方向 {comparison['preferred_variant'] or '暂无'}，阅读率目标2%，达标 {comparison['target_met']}。不自动切换实验。")
+    late = feedback.get("late_observations", [])
+    if late:
+        lines.extend(["", "## 迟到样本（仅展示，不用于推荐）", ""])
+        for item in late:
+            lines.append(f"- {item['gid']}：{item['checkpoint']}，{item['impressions']}展现，{item['reads']}阅读，迟到{item['capture_delay_hours']}小时。")
     return "\n".join(lines).rstrip() + "\n"
 
 

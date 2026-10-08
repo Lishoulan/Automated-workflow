@@ -235,6 +235,8 @@ def test_cloud_keeps_real_failures_and_records_uncertainty(app_settings, monkeyp
         })
         return MagicMock(returncode=3)
     monkeypatch.setattr(cloud.subprocess, "run", child)
+    from toutiao_content_factory.services import wechat_execution
+    monkeypatch.setattr(wechat_execution, "run_process_tree", child)
     assert cloud.main(["--mode", "publish"]) == expected
     assert guard.call_count == int(status == "publish_uncertain")
 

@@ -9,6 +9,7 @@ STATE_PATH = "state/wechat_retry_state.json"
 MAX_RUNS = 3
 MAX_SECONDS = 5400
 BEIJING = timezone(timedelta(hours=8))
+from toutiao_content_factory.services.wechat_execution import PREPARATION_MIN_SECONDS
 
 
 def day_of(value: str) -> str:
@@ -101,7 +102,7 @@ def reserve(state: dict, day: str, key: str, started_at: str, *, parent: str = "
                            and last_run.get("outcome") in {"review_required", "no_topics"})
             if not preparation and not unpublished:
                 return state, "validation_already_used"
-    if (len(entry["runs"]) >= MAX_RUNS and grant is None) or remaining(entry) < 120:
+    if (len(entry["runs"]) >= MAX_RUNS and grant is None) or remaining(entry) < PREPARATION_MIN_SECONDS:
         return state, "daily_budget_exhausted"
     entry["runs"][key] = {"status": "running", "started_at": started_at, "parent": parent, "elapsed_seconds": 0}
     if grant is not None:
@@ -139,7 +140,7 @@ def can_relay(entry: dict, report: dict, exit_code: int) -> bool:
             and report.get("publication_attempted") is False and not report.get("wechat_status")
             and report.get("native_exit_code") == 0
             and not report.get("metrics_error") and not report.get("retry_state_error")
-            and len(entry["runs"]) < MAX_RUNS and remaining(entry) >= 120)
+            and len(entry["runs"]) < MAX_RUNS and remaining(entry) >= PREPARATION_MIN_SECONDS)
 
 
 def dispatch_intent(state: dict, day: str, parent: str) -> dict:

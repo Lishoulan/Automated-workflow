@@ -214,6 +214,8 @@ def integrity_reasons(report, article: str, title: str, facts: list[dict], pendi
 
 def apply_supplement(report, payload: dict, article: str, title: str, facts: list[dict]) -> None:
     """Repair metadata only. Every removed finding needs independent, literal proof."""
+    if any(key not in payload for key in ("finding_evaluations", "issue_evaluations", "verdict", "chief_editor_conclusion")):
+        raise ValueError("Missing top-level supplemental review fields")
     evaluations = payload.get("finding_evaluations", [])
     if not isinstance(evaluations, list):
         raise ValueError("Missing finding evaluations")

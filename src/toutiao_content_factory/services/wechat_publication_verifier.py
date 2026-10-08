@@ -27,6 +27,36 @@ PUBLIC_ARTICLE_JS = """() => ({
 })"""
 
 
+def inspect_backend(settings, *, timeout_seconds=60):
+    """Account-bound, read-only evidence for legacy submissions lacking an expectation."""
+    from playwright.sync_api import sync_playwright
+    deadline = time.monotonic() + timeout_seconds
+    def remaining():
+        milliseconds = int((deadline - time.monotonic()) * 1000)
+        if milliseconds <= 0:
+            raise TimeoutError("WeChat backend inspection timed out")
+        return min(25000, milliseconds)
+    storage = settings.account_runtime_dir / "automation" / "browser_state" / "WeChat_storage_state.json"
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True, timeout=remaining())
+        try:
+            context = browser.new_context(storage_state=str(storage), locale="zh-CN", timezone_id="Asia/Shanghai")
+            page = context.new_page()
+            page.goto("https://mp.weixin.qq.com/", wait_until="domcontentloaded", timeout=remaining())
+            page.locator('.account_box-panel-head__nickname, .acount_box-nickname').first.wait_for(timeout=remaining())
+            page.wait_for_timeout(min(2000, remaining()))
+            snapshot = page.evaluate(BACKEND_RECORDS_JS)
+            if not snapshot.get("account") or (settings.wechat.account_name and settings.wechat.account_name != snapshot["account"]):
+                raise RuntimeError("WeChat inspection account mismatch")
+            pending_count = page.evaluate("""() => [...document.querySelectorAll('.weui-desktop-mass__content,.publish_hover_content')]
+                .filter(x=>/审核中|待审核|发表中|提交中/.test(x.innerText)).length""")
+            return {"account": snapshot["account"], "records": snapshot["records"],
+                    "pending_count": pending_count, "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "read_only": True}
+        finally:
+            browser.close()
+
+
 def verify_pending(settings, expected_records: list[dict], *, timeout_seconds: int = 75) -> dict[str, dict]:
     if not expected_records:
         return {}

@@ -207,6 +207,12 @@ class QualityReviewCouncilAgent(BaseAgent):
             prompt += "\n输出审核结果，不要输出Schema本身。没有发现的问题返回空数组，不要编造问题。\n" + self.json_text({
                 "type": "object", "properties": properties, "required": list(properties),
             })
+            if self.settings.wechat_auto_publish_mode:
+                prompt += ("\n所有结果字段必须在同一顶层对象：issues与issue_evaluations直接是对象数组，禁止重复嵌套。"
+                           "issues每项必须含requirement、paragraph、category、target、verification、evidence_ids；"
+                           "issue_evaluations每项必须含issue_id、status、after_quote、verification、evidence_ids。"
+                           "无问题或无待复核项则返回相应空数组。现稿已表达的判断方向不得再引用历史旧段落要求补写。"
+                           "verdict与chief_editor_conclusion必须和各项核验及必改意见一致。")
         system_prompt = (
             "你是成稿质量审核总编，负责协调五名独立审校专家。"
             "审核对象是已经润色后的文章，不负责替作者补写事实。"
@@ -260,7 +266,8 @@ class QualityReviewCouncilAgent(BaseAgent):
                       "fingerprint": manuscript_fingerprint(article, title, audit_fact_material(data_report)),
                       "pending_verifications": pending, "supplement_count": content.audit_supplement_count}
         deadline = os.getenv("WECHAT_RUN_DEADLINE_EPOCH", "")
-        remaining = float(deadline) - time.time() if deadline else float("inf")
+        from toutiao_content_factory.services.wechat_execution import generation_remaining
+        remaining = generation_remaining()
         if reasons and content.audit_supplement_count < 1 and remaining >= 60 and self.openai_service.available:
             content.audit_supplement_count += 1
             diagnostic["supplement_count"] = content.audit_supplement_count
@@ -274,6 +281,14 @@ class QualityReviewCouncilAgent(BaseAgent):
                 "issue_evaluations：issue_id,status(resolved/still_present/unverifiable),after_quote,evidence_ids,verification。"
                 "事实问题及硬阻断必须匹配事实编号；结构表达逻辑编号可空，但要解释真实前后差异。未修改或仅换措辞不能解决逻辑结构问题。"
                 "unverifiable不得放行。返回verdict(approved/needs_revision/blocked)及chief_editor_conclusion。只输出JSON。\n"
+                "输出的四个顶层字段必须是finding_evaluations、issue_evaluations、verdict、chief_editor_conclusion。"
+                "禁止输出findings或pending_verifications作为容器；禁止数组项内再套finding_evaluations或issue_evaluations。"
+                "没有待核项时相应数组为空。各status与verdict、conclusion必须一致。输出形状（尖括号内容须替换为真实核验结果）：\n"
+                '{"finding_evaluations":[{"issue_id":"<输入编号>","status":"<confirmed/not_applicable/unverifiable>",'
+                '"target":"<body/title>","current_quote":"<现稿原句>","evidence_ids":[],"verification":"<核验理由>"}],'
+                '"issue_evaluations":[{"issue_id":"<输入编号>","status":"<resolved/still_present/unverifiable>",'
+                '"after_quote":"<现稿原句>","evidence_ids":[],"verification":"<前后差异核验理由>"}],'
+                '"verdict":"<approved/needs_revision/blocked>","chief_editor_conclusion":"<与逐项证据一致的结论>"}\n输入：\n'
                 + self.json_text(repair_input))
             try:
                 supplement = self.openai_service.create_json_completion("你负责审核报告完整性补核。只输出JSON。", prompt,

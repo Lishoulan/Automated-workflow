@@ -137,6 +137,8 @@ def test_scheduler_propagates_failed_workflow(app_settings, monkeypatch):
     monkeypatch.setattr(scheduler, "check_login", lambda settings: {"status": "ready"})
     child = MagicMock(return_value=MagicMock(returncode=1))
     monkeypatch.setattr(scheduler.subprocess, "run", child)
+    from toutiao_content_factory.services import wechat_execution
+    monkeypatch.setattr(wechat_execution, "run_process_tree", child)
     assert scheduler.main(["--enable-auto-publish"]) == 1
     env = child.call_args.kwargs["env"]
     assert env["WECHAT_AUTO_PUBLISH__DEFAULT"] == "1"
@@ -168,6 +170,8 @@ def test_scheduler_uses_current_publish_outcome_not_process_success(app_settings
         )
         return MagicMock(returncode=0)
     monkeypatch.setattr(scheduler.subprocess, "run", run)
+    from toutiao_content_factory.services import wechat_execution
+    monkeypatch.setattr(wechat_execution, "run_process_tree", run)
     assert scheduler.main(["--enable-auto-publish"]) == expected_code
 
 

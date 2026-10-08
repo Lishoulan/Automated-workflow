@@ -109,10 +109,9 @@ def test_feedback_marks_late_samples_and_groups_duplicate_stop_titles() -> None:
     feedback = build_growth_feedback({}, {"works": {"1": first, "2": second}})
 
     assert "迟到回收 2 条" in feedback["checkpoint_used"]
-    assert len(feedback["stop_loss"]) == 1
-    assert feedback["stop_loss"][0]["repeat_count"] == 2
-    assert feedback["stop_loss"][0]["impressions"] == 180
-    assert len(feedback["topic_feedback"]["stop_titles"]) == 1
+    assert feedback["stop_loss"] == []
+    assert len(feedback["late_observations"]) == 2
+    assert feedback["topic_feedback"]["stop_titles"] == []
     assert feedback["topic_feedback"]["weights"] == {}
     assert feedback["creative_calibration"]["status"] == "collecting"
 

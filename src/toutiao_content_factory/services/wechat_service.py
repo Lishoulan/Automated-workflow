@@ -205,6 +205,9 @@ class WechatPublishService:
         if self.settings.wechat_auto_publish_mode and publish_meta.get("approval_mode") != "manual":
             from toutiao_content_factory.services.wechat_revision import assert_run_automatic_approval
             assert_run_automatic_approval(run_dir, article, title)
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_execution import require_submission_budget
+            require_submission_budget()
 
         try:
             pipeline = AntiAIFlavorPipeline()
@@ -237,11 +240,6 @@ class WechatPublishService:
         thumb_media_id = ""
         inline_image_urls: list[str] = []
         draft_media_id = ""
-
-        if self.settings.wechat_auto_publish_mode:
-            self.settings.automation_dir.mkdir(parents=True, exist_ok=True)
-            (self.settings.automation_dir / "wechat_publish_phase.json").write_text(json.dumps({
-                "account_key": self.settings.account_key, "phase": "submitting", "publication_attempted": True}), encoding="utf-8")
 
         try:
             access_token = self._get_access_token()
@@ -313,6 +311,13 @@ class WechatPublishService:
         publish_response: dict[str, Any] = {}
         should_submit = submit or self.settings.wechat.auto_publish
         if should_submit:
+            if self.settings.wechat_auto_publish_mode:
+                from toutiao_content_factory.services.wechat_execution import write_phase, require_submission_budget
+                if publish_meta.get("approval_mode") != "manual":
+                    assert_run_automatic_approval(run_dir, article, title)
+                require_submission_budget()
+                integrity = self._load_json(run_dir / "quality_review_council.json").get("audit_integrity", {})
+                write_phase(self.settings, "submitting", fingerprint=integrity.get("fingerprint", ""))
             if api_available and draft_media_id:
                 publish_response = self._submit_draft_via_browser(
                     draft_media_id=draft_media_id,

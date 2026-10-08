@@ -238,6 +238,9 @@ def main(argv: list[str] | None = None) -> int:
     result_path = settings.automation_dir / "wechat_cloud_result.json"
     key = os.environ.get("WECHAT_SESSION_KEY", "")
     publication_started = False
+    workflow_started = None
+    workflow_completed = False
+    previous_execution_id = os.environ.get("WECHAT_EXECUTION_ID")
     record = None
     metrics_state = None
     run_id = os.environ.get("GITHUB_RUN_ID", "")
@@ -262,6 +265,10 @@ def main(argv: list[str] | None = None) -> int:
                 report["reason_codes"] = list(dict.fromkeys([*report.get("reason_codes", []), "retry_persistence_or_dispatch_failed"]))
                 code = code or 1
             result_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        if previous_execution_id is None:
+            os.environ.pop("WECHAT_EXECUTION_ID", None)
+        else:
+            os.environ["WECHAT_EXECUTION_ID"] = previous_execution_id
         return code
     try:
         restore_session(settings, encrypted, key, os.environ.get("WECHAT_SESSION_SEED", ""))
@@ -315,9 +322,11 @@ def main(argv: list[str] | None = None) -> int:
             prior_inputs = [item for prior in retry_state["days"].values() for item in prior.get("failed_inputs", [])]
             context_path.write_text(json.dumps(retry.retry_context({"failed_inputs": prior_inputs}), ensure_ascii=False), encoding="utf-8")
             os.environ["WECHAT_REGENERATING"] = "1" if prior_inputs else "0"
-            remaining = min(2700, retry.remaining(entry) - 90)
+            from toutiao_content_factory.services.wechat_execution import FINISH_RESERVE_SECONDS, SUBMISSION_MIN_SECONDS
+            remaining = min(2700, retry.remaining(entry) - FINISH_RESERVE_SECONDS)
             os.environ["WECHAT_RUN_DEADLINE_EPOCH"] = str(time.time() + remaining)
-            os.environ["TOUTIAO_DAILY_RUN_BUDGET_SECONDS"] = str(min(1980, max(1, remaining - 300)))
+            os.environ["WECHAT_GENERATION_DEADLINE_EPOCH"] = str(time.time() + remaining - SUBMISSION_MIN_SECONDS)
+            os.environ["TOUTIAO_DAILY_RUN_BUDGET_SECONDS"] = str(min(1980, max(1, remaining - SUBMISSION_MIN_SECONDS)))
         command = [sys.executable, str(ROOT / "scripts" / "scheduled_wechat_publish.py"), "--account", args.account]
         checked = subprocess.run(command + ["--check-login"], cwd=ROOT, timeout=120)
         if checked.returncode:
@@ -325,11 +334,22 @@ def main(argv: list[str] | None = None) -> int:
                            "native_exit_code": checked.returncode}, checked.returncode)
         save_session(settings, encrypted, key)
         if args.mode == "check":
-            return finish({"status": "ready", "publication_requested": False}, 0)
+            report = {"status": "ready", "publication_requested": False}
+            storage = settings.account_runtime_dir / "automation" / "browser_state" / "WeChat_storage_state.json"
+            if storage.exists():
+                from toutiao_content_factory.services.wechat_publication_verifier import inspect_backend
+                report["backend_snapshot"] = inspect_backend(settings)
+            return finish(report, 0)
         started = time.time_ns()
+        workflow_started = started
+        import uuid
+        from toutiao_content_factory.services.wechat_execution import run_process_tree, write_phase
+        os.environ["WECHAT_EXECUTION_ID"] = run_key or uuid.uuid4().hex
+        write_phase(settings, "preparing")
         publication_started = True
         deadline = float(os.environ.get("WECHAT_RUN_DEADLINE_EPOCH", time.time() + 2700))
-        result = subprocess.run(command + ["--enable-auto-publish"], cwd=ROOT, timeout=max(1, min(2700, deadline - time.time())))
+        result = run_process_tree(command + ["--enable-auto-publish"], cwd=ROOT, timeout=max(1, min(2700, deadline - time.time())))
+        workflow_completed = True
         save_session(settings, encrypted, key)
         record = latest_accepted_record(settings.output_dir / settings.wechat.history_filename, today)
         if record:
@@ -350,7 +370,11 @@ def main(argv: list[str] | None = None) -> int:
         return finish(report, cloud_exit_code(report, result.returncode))
     except Exception as exc:
         logger.error("WeChat cloud run stopped: %s", type(exc).__name__)
-        if publication_started and not record:
+        from toutiao_content_factory.services.wechat_execution import phase_attempted
+        not_submitted = (publication_started and workflow_started is not None
+                         and (workflow_completed or isinstance(exc, subprocess.TimeoutExpired))
+                         and phase_attempted(settings, workflow_started) is False)
+        if publication_started and not record and not not_submitted:
             try:
                 record_publication(settings, {"status": "publish_uncertain"}, today)
             except Exception as guard_exc:
@@ -360,6 +384,8 @@ def main(argv: list[str] | None = None) -> int:
             error_report.update(wechat_status=record["status"], publication_attempted=True,
                                 expected_publication=record.get("expected_publication", {}),
                                 verification_error=type(exc).__name__)
+        elif not_submitted:
+            error_report.update(publication_attempted=False, reason_codes=["generation_failed_before_submission"])
         elif publication_started:
             error_report.update(wechat_status="publish_uncertain", publication_attempted=True)
         return finish(error_report, 1)

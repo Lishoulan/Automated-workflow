@@ -373,6 +373,10 @@ class WeiToutiaoStandaloneGenerator:
             ),
             case_summary=str(topic.summary or "未提供")[:400],
         )
+        if verified_story:
+            user_prompt += ("\n标题明确真实人物或机构、事件及后果；前两句给出核心事件与已核验的信息，"
+                            "按本次开头实验的顺序组织。数字、冲突、结果和引语必须能回指素材，"
+                            "不得扩大矛盾、补造细节或把报道时间写成事发时间。")
         if verified_story and persona == "story_comment" and not self._is_public_policy_topic(topic, persona):
             topic._content_experiment = self._opening_experiment()
             opening = (

@@ -823,7 +823,35 @@
       "elapsed_seconds": null,
       "runtime_status": "error",
       "native_exit_code": 2
+    },
+    {
+      "run_key": "37873030668:1",
+      "started_at": "2026-10-09T02:07:23.186197+00:00",
+      "mode": "draft",
+      "excluded": false,
+      "outcome": "draft",
+      "reason_codes": [
+        "article_too_short"
+      ],
+      "attempt_count": 1,
+      "enrichment_count": 3,
+      "eligible_candidate_count": 1,
+      "audited_candidate_count": 1,
+      "review_pass_count": 1,
+      "rejection_reasons": [],
+      "publication": {},
+      "expected_publication": {},
+      "draft_delivery": {
+        "status": "saved",
+        "title": "奇瑞汽车海外市场成绩亮眼，国内市场销量下滑39.2%",
+        "draft_media_id": "",
+        "app_msg_id": "100001388"
+      },
+      "elapsed_seconds": 255.203,
+      "runtime_status": "ok",
+      "native_exit_code": 0,
+      "submission_outcome": "draft"
     }
   ],
-  "updated_at": "2026-10-09T09:51:57.379642+08:00"
+  "updated_at": "2026-10-09T10:11:47.878568+08:00"
 }

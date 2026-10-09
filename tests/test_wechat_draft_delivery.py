@@ -21,6 +21,33 @@ from toutiao_content_factory.services.wechat_execution import draft_delivery_sta
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import wechat_cloud_run as cloud
+import check_wechat_cover as cover_check
+
+
+@pytest.mark.parametrize("api_succeeded", [True, False])
+def test_cover_check_never_writes_delivery_history(app_settings, monkeypatch, api_succeeded):
+    monkeypatch.setattr(cover_check, "load_settings", lambda *a, **k: app_settings)
+    monkeypatch.setenv("WECHAT_RUN_DEADLINE_EPOCH", "0")
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    history = app_settings.output_dir / "wechat_publish_history.json"
+    history.parent.mkdir(parents=True)
+    history.write_text('[{"app_msg_id":"existing-draft"}]')
+    before = history.read_bytes()
+    class FakeImages:
+        def __init__(self, settings, logger):
+            assert settings.platform == "wechat"
+        def generate_for_run(self, run, include_infographics):
+            assert include_infographics is False
+            report = run / "publish/image_generation_result.json"
+            report.write_text(json.dumps({"api_succeeded": api_succeeded,
+                "model": "gpt-image-2", "cover_style": "warm_editorial"}))
+            return {"image_generation_result": report, "cover_image": run / "images/cover.png"}
+    monkeypatch.setattr(cover_check, "ImageGenerationService", FakeImages)
+    assert cover_check.main() == (0 if api_succeeded else 1)
+    result = json.loads((app_settings.automation_dir / "wechat_cover_check/result.json").read_text(encoding="utf-8"))
+    assert result["status"] == ("success" if api_succeeded else "failed")
+    assert result["publication_attempted"] is False and result["draft_saving_attempted"] is False
+    assert history.read_bytes() == before
 
 
 def enable(settings):
@@ -289,7 +316,8 @@ def test_retry_reservation_preserves_saved_draft_when_metrics_write_fails(app_se
     blocked.assert_not_called()
 
 
-def test_daily_workflow_delivers_pending_draft_without_approving_or_publishing(app_settings, logger, monkeypatch):
+@pytest.mark.parametrize("cover_fails", [False, True])
+def test_daily_workflow_delivers_pending_draft_without_approving_or_publishing(app_settings, logger, monkeypatch, cover_fails):
     enable(app_settings)
     for key in ("WECHAT_RUN_DEADLINE_EPOCH", "WECHAT_GENERATION_DEADLINE_EPOCH"):
         monkeypatch.delenv(key, raising=False)
@@ -312,11 +340,29 @@ def test_daily_workflow_delivers_pending_draft_without_approving_or_publishing(a
     app._load_content_guard_report = MagicMock(return_value={"blocked": False})
     app._qualifies_for_auto_approval = MagicMock(return_value=False)
     app.review_service.prepare_wechat_draft = MagicMock(return_value={})
+    steps = []
+    def generate_cover(*args, **kwargs):
+        steps.append("cover")
+        assert args == (run,) and kwargs == {"include_infographics": False}
+        if cover_fails:
+            raise RuntimeError("image API unavailable")
+        return {"cover_image": run / "images/cover.png"}
+    app.image_generation_service.generate_for_run = MagicMock(side_effect=generate_cover)
     app.wechat_service.publish_run = MagicMock(return_value={})
+    app.wechat_service.publish_run.side_effect = lambda *a, **k: steps.append("draft") or {}
     app._load_wechat_publish_snapshot = MagicMock(return_value={"status": "draft_saved", "app_msg_id": "actual-id"})
     app.approve_run = MagicMock(side_effect=AssertionError("Must not approve the pending draft"))
     app._run_daily_platform_automation = MagicMock(side_effect=AssertionError("Must not publish"))
+    if cover_fails:
+        with pytest.raises(RuntimeError, match="image API unavailable"):
+            app._daily_run_impl()
+        assert steps == ["cover"]
+        app.wechat_service.publish_run.assert_not_called()
+        app.approve_run.assert_not_called()
+        return
     exported = app._daily_run_impl()
+    assert steps == ["cover", "draft"]
+    assert exported["cover_image"] == str(run / "images/cover.png")
     report = json.loads(Path(exported["workflow_report"]).read_text(encoding="utf-8"))
     assert report["status"] == "success"
     assert report["final_attempt"]["qualified_for_auto_approval"] is False

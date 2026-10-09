@@ -1108,6 +1108,12 @@ class ContentFactoryAppService:
                 # Delivery is a human-review draft, independently of automatic publication approval.
                 draft_exports = self.review_service.prepare_wechat_draft(run_dir)
                 exported_files.update({name: str(path) for name, path in draft_exports.items()})
+                # Generate the cover before opening the editor; failed generation
+                # leaves the manuscript local and cannot create a partial draft.
+                image_exports = self.image_generation_service.generate_for_run(
+                    run_dir, include_infographics=False,
+                )
+                exported_files.update({name: str(path) for name, path in image_exports.items()})
                 draft_exports = self.wechat_service.publish_run(run_dir, submit=False)
                 exported_files.update({name: str(path) for name, path in draft_exports.items()})
                 snapshot = self._load_wechat_publish_snapshot(run_dir)

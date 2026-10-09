@@ -415,6 +415,21 @@ def test_cloud_cover_refuses_invalid_configuration_or_insufficient_budget(tmp_pa
         wechat_cloud_cover.generate_cloud_cover("真实标题", tmp_path / "cover.png")
 
 
+@pytest.mark.parametrize("title", [
+    "奇瑞8月出口增52.1%，星途前7月销量降39.2%：看懂两种口径",
+    "销量达1,000辆，同比增长39.2%：出口走势",
+])
+def test_cloud_cover_title_keeps_numeric_facts_together(title):
+    from toutiao_content_factory.services.wechat_cloud_cover import _title_lines
+    from toutiao_content_factory.services.image_generation_service import load_font
+    import re
+    lines = _title_lines(title, load_font(56), 610)
+    assert "".join(lines) == title
+    for number in re.findall(r"\d+(?:[.,]\d+)*%?", title):
+        assert any(number in line for line in lines)
+    assert not any(line[0] in "，,：:；;。！？!?" for line in lines)
+
+
 def test_strict_image_failure_preserves_diagnostics_without_local_fallback(app_settings, tmp_path, monkeypatch):
     run = _prepare_run(tmp_path)
     app_settings.platform = "wechat"

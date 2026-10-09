@@ -15,6 +15,23 @@ from PIL import Image, ImageDraw, ImageOps, ImageStat
 MODEL = "@cf/black-forest-labs/flux-1-schnell"
 
 
+def _title_lines(title, font, width):
+    lines = []
+    # Prefer sentence boundaries; keep decimal percentages/thousands together.
+    for clause in re.split(r"(?<=[，：；。！？:;!?])|(?<=,)(?=\s*\D)", title):
+        if not clause:
+            continue
+        line = ""
+        for token in re.findall(r"\d+(?:[.,]\d+)*[%％]?|[A-Za-z]+|\s+|.", clause):
+            if line and font.getlength(line + token) > width and token not in "，,：:；;。！？!?":
+                lines.append(line)
+                line = ""
+            line += token
+        if line:
+            lines.append(line)
+    return lines
+
+
 def generate_cloud_cover(title: str, output: Path) -> str:
     account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
     token = os.environ.get("CLOUDFLARE_AI_TOKEN", "").strip()
@@ -41,7 +58,12 @@ def generate_cloud_cover(title: str, output: Path) -> str:
         "watermarks, signs, charts, neon effects or unrelated decorative icons."
     )
     if any(word in title for word in ("汽车", "奇瑞", "星途", "车企")):
-        prompt += " Show an unbranded dark car with a restrained export-port setting."
+        prompt += (
+            " A minimalist premium 3D clay-rendered nameless dark car, "
+            "viewed from behind in soft backlight at a simplified export port. "
+            "Smooth blank bodywork, simplified silhouette, no badges, grille emblems, "
+            "license plates, readable container markings or recognizable real vehicle design."
+        )
     if len(prompt) > 2048:
         raise RuntimeError("Cover prompt exceeds the cloud model input limit")
     output.with_name("cover_free_prompt.txt").write_text(prompt, encoding="utf-8")
@@ -80,15 +102,10 @@ def generate_cloud_cover(title: str, output: Path) -> str:
         font = load_font(size)
         if bytes(font.getmask("奇")) == bytes(font.getmask("瑞")):
             raise RuntimeError("A Chinese font is required for cloud cover typesetting")
-        lines = [""]
-        for char in title:
-            if lines[-1] and font.getlength(lines[-1] + char) > 610:
-                lines.append(char)
-            else:
-                lines[-1] += char
-        if len(lines) <= 4:
+        lines = _title_lines(title, font, 610)
+        if len(lines) <= 4 and all(font.getlength(line) <= 610 for line in lines):
             break
-    if len(lines) > 4:
+    if len(lines) > 4 or any(font.getlength(line) > 610 for line in lines):
         raise RuntimeError("Cover title is too long to typeset without truncation")
     draw.line((58, 64, 152, 64), fill=(158, 27, 23), width=4)
     y = max(100, (511 - (size + 18) * len(lines)) // 2)

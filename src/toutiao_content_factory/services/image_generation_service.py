@@ -18,6 +18,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.services.creative_scoring_service import CreativeScoringService
+from toutiao_content_factory.services.generation_cost_service import GenerationCostAttempt
 
 
 GRADIENT_PRESETS = [
@@ -364,7 +365,10 @@ class ImageGenerationService:
 
         client = self._get_image_api_client()
         try:
-            response = client.images.generate(**payload)
+            with GenerationCostAttempt(self.settings, self.logger, kind="image", model=model,
+                                       asset=output_path, sdk_retries=getattr(client, "max_retries", None)) as cost:
+                response = client.images.generate(**payload)
+                cost.complete(response)
         except Exception as exc:
             raise ImageGenerationAPIUnavailable(
                 f"image API request failed: {exc.__class__.__name__}"
@@ -491,7 +495,7 @@ class ImageGenerationService:
             from toutiao_content_factory.services.wechat_cloud_cover import generate_cloud_cover
             free_api_attempted = True
             try:
-                generate_cloud_cover(title, cr)
+                generate_cloud_cover(title, cr, settings=self.settings, logger=self.logger)
             except Exception as exc:
                 (publish_dir / "image_generation_result.json").write_text(json.dumps({
                     "generated_at": self._now(), "status": "failed", "api_attempted": False,
@@ -533,7 +537,7 @@ class ImageGenerationService:
                     from toutiao_content_factory.services.wechat_cloud_cover import generate_cloud_cover
                     free_api_attempted = True
                     try:
-                        generate_cloud_cover(title, cr)
+                        generate_cloud_cover(title, cr, settings=self.settings, logger=self.logger)
                         cover_backend = "cloudflare_flux"
                     except Exception as cloud_exc:
                         free_api_error_detail = _format_api_error(cloud_exc)

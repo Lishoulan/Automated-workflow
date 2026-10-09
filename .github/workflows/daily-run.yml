@@ -682,6 +682,8 @@ jobs:
             output/growth_ops/revenue_attribution/
             output/accounts/*/growth_ops/source_material/
             output/growth_ops/source_material/
+            output/accounts/*/growth_ops/generation_costs/
+            output/growth_ops/generation_costs/
           key: daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             daily-publish-history-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-
@@ -1173,6 +1175,8 @@ jobs:
             output/growth_ops/revenue_attribution/
             output/accounts/*/growth_ops/source_material/
             output/growth_ops/source_material/
+            output/accounts/*/growth_ops/generation_costs/
+            output/growth_ops/generation_costs/
           key: ${{ steps.restore-history-cache.outputs.cache-primary-key }}
 
       - name: Enforce publish result

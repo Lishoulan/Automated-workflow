@@ -102,6 +102,7 @@ jobs:
           path: |
             .runtime/automation/wechat_cloud_session.enc
             output/wechat_publish_history.json
+            output/growth_ops/generation_costs/
           key: wechat-default-v2-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             wechat-default-v2-
@@ -110,7 +111,9 @@ jobs:
         if: vars.WECHAT_EXECUTION_HOST == 'fixed'
         uses: actions/cache/restore@v4
         with:
-          path: output/wechat_publish_history.json
+          path: |
+            output/wechat_publish_history.json
+            output/growth_ops/generation_costs/
           key: wechat-fixed-default-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             wechat-fixed-default-v1-
@@ -130,12 +133,15 @@ jobs:
           path: |
             .runtime/automation/wechat_cloud_session.enc
             output/wechat_publish_history.json
+            output/growth_ops/generation_costs/
           key: wechat-default-v2-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Save accepted history on the fixed device
         if: always() && vars.WECHAT_EXECUTION_HOST == 'fixed'
         uses: actions/cache/save@v4
         with:
-          path: output/wechat_publish_history.json
+          path: |
+            output/wechat_publish_history.json
+            output/growth_ops/generation_costs/
           key: wechat-fixed-default-v1-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Summarize actual outcome
         if: always() && inputs.cover_check != true
@@ -177,6 +183,20 @@ jobs:
                   handle.write(f"合格候选 {metrics['eligible_candidate_count']}；审核通过 {metrics['review_pass_count']}/{metrics['audited_candidate_count']}，通过率 " + (f'{review_rate:.1%}' if review_rate is not None else '暂无样本') + '\n')
                   handle.write('常见拒绝原因：' + json.dumps(metrics['common_rejection_reasons'], ensure_ascii=False) + '\n')
           PY
+      - name: Summarize recorded generation costs
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from toutiao_content_factory.services.generation_cost_service import build_cost_summary
+          report = build_cost_summary(Path('output'))
+          destination = Path('output/automation/generation_cost_report.json')
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:
+              handle.write('\n生成调用记录：' + str(report['recorded_calls']) + ' 次；估算费用（非实际扣费）：' + json.dumps(report['estimated_by_currency'], ensure_ascii=False) + '。实际成本与净收益尚未核验。\n')
+          PY
       - name: Save outcome reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -188,6 +208,8 @@ jobs:
             output/automation/wechat_login_check.json
             output/automation/wechat_review_diagnostics.json
             output/automation/wechat_metrics_report.json
+            output/automation/generation_cost_report.json
+            output/growth_ops/generation_costs/
             output/automation/wechat_publish_phase.json
             output/automation/wechat_cover_check/
           if-no-files-found: ignore

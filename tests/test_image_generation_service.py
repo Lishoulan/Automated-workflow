@@ -300,7 +300,7 @@ def test_wechat_api_failure_uses_one_real_model_fallback(app_settings, tmp_path,
     def paid(*a):
         calls.append("paid")
         raise ImageGenerationAPIUnavailable("Relay quota exhausted")
-    def free(title, output):
+    def free(title, output, **kwargs):
         calls.append("free")
         Image.new("RGB", (1200, 511), (230, 220, 210)).save(output)
     monkeypatch.setattr(service, "_generate_api_image", paid)
@@ -322,7 +322,7 @@ def test_wechat_free_only_never_calls_paid_provider(app_settings, tmp_path, monk
     monkeypatch.setenv("WECHAT_FREE_COVER_ONLY", "1")
     monkeypatch.setattr(service, "_generate_api_image", lambda *a: pytest.fail("Must not spend relay credits"))
     monkeypatch.setattr(wechat_cloud_cover, "generate_cloud_cover",
-        lambda title, path: Image.new("RGB", (1200, 511), (240, 230, 220)).save(path))
+        lambda title, path, **kwargs: Image.new("RGB", (1200, 511), (240, 230, 220)).save(path))
     exported = service.generate_for_run(run, include_infographics=False)
     result = json.loads(exported["image_generation_result"].read_text(encoding="utf-8"))
     assert result["ai_generated"] is True and result["api_attempted"] is False
@@ -341,7 +341,7 @@ def test_failed_cloud_fallback_retains_each_provider_diagnostic(app_settings, tm
     def paid(*args):
         calls.append("paid")
         raise ImageGenerationAPIUnavailable("Relay unavailable sk-REDACTME")
-    def free(*args):
+    def free(*args, **kwargs):
         calls.append("free")
         raise RuntimeError("Cloud quota exhausted cfut_REDACTMETOO")
     monkeypatch.setattr(service, "_generate_api_image", paid)
@@ -363,6 +363,8 @@ def test_cloud_cover_validates_response_and_preserves_full_title(tmp_path, monke
     from io import BytesIO
     from PIL import ImageDraw
     from toutiao_content_factory.services import wechat_cloud_cover
+    from toutiao_content_factory.services.generation_cost_service import build_cost_summary
+    cost_settings = SimpleNamespace(output_dir=tmp_path, platform="wechat", account_key="default")
     monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "a" * 32)
     monkeypatch.setenv("CLOUDFLARE_AI_TOKEN", "private-fixture-token")
     monkeypatch.setenv("WECHAT_RUN_DEADLINE_EPOCH", str(time.time() + 170))
@@ -391,10 +393,10 @@ def test_cloud_cover_validates_response_and_preserves_full_title(tmp_path, monke
     monkeypatch.setattr(wechat_cloud_cover.httpx, "Client", FakeClient)
     if response_kind != "success":
         with pytest.raises((RuntimeError, OSError)):
-            wechat_cloud_cover.generate_cloud_cover(title, output)
+            wechat_cloud_cover.generate_cloud_cover(title, output, settings=cost_settings)
         assert not output.exists()
     else:
-        assert wechat_cloud_cover.generate_cloud_cover(title, output) == str(output)
+        assert wechat_cloud_cover.generate_cloud_cover(title, output, settings=cost_settings) == str(output)
         with Image.open(output) as image:
             assert image.size == (1200, 511)
         prompt = (output.parent / "cover_free_prompt.txt").read_text(encoding="utf-8")
@@ -402,6 +404,10 @@ def test_cloud_cover_validates_response_and_preserves_full_title(tmp_path, monke
         assert "private-fixture-token" not in prompt
         assert (output.parent / "cover_free_ai.png").is_file()
     assert len(calls) == 1
+    costs = build_cost_summary(tmp_path)
+    assert costs["recorded_calls"] == 1 and costs["by_kind"] == {"free_image": 1}
+    assert costs["actual_total"] is None and costs["estimated_by_currency"] == {}
+    assert costs["by_status"] == {"failed" if response_kind in {"quota", "unconfirmed"} else "succeeded": 1}
 
 
 @pytest.mark.parametrize("blocked", ["missing_token", "invalid_account", "budget"])

@@ -105,7 +105,8 @@ def test_fixed_workflow_keeps_shared_concurrency_and_disables_cloud_cache():
     for step in job["steps"]:
         if "actions/cache" in step.get("uses", ""):
             if "WECHAT_EXECUTION_HOST == 'fixed'" in step["if"]:
-                assert step["with"]["path"] == "output/wechat_publish_history.json"
+                assert set(step["with"]["path"].splitlines()) == {
+                    "output/wechat_publish_history.json", "output/growth_ops/generation_costs/"}
             else:
                 assert "WECHAT_EXECUTION_HOST != 'fixed'" in step["if"]
 

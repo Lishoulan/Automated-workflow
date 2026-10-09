@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from toutiao_content_factory.services.content_income_service import platform_item_id
+from toutiao_content_factory.services.generation_cost_service import build_cost_summary
 
 
 class RevenueExperimentService:
@@ -189,6 +190,7 @@ class RevenueExperimentService:
             "account_key": str(account_snapshot.get("account_key", readiness.get("account_key", ""))),
             "readiness": readiness,
             "account": account_snapshot.get("account") or {},
+            "generation_costs": build_cost_summary(self.output_dir, now=reference_time),
             "income": {
                 "currency": str(revenue.get("currency", "CNY")),
                 "total": revenue.get("total"),
@@ -222,6 +224,7 @@ class RevenueExperimentService:
         attribution = dashboard.get("per_content_attribution") or {}
         experiment = dashboard.get("experiment") or {}
         collection = dashboard.get("content_income_collection") or {}
+        costs = dashboard.get("generation_costs") or {}
         lines = [
             "# 30天写作收益实验看板",
             "",
@@ -230,6 +233,7 @@ class RevenueExperimentService:
             f"- 30天已结算收益：{self._money(income.get('settled_total'))}",
             f"- 最近7天收益：{self._money(income.get('latest_7d'))}",
             f"- 前7天收益：{self._money(income.get('previous_7d'))}",
+            f"- 生成成本：{costs.get('status', 'untracked')}；记录 {costs.get('recorded_calls', 0)} 次调用，估算 {json.dumps(costs.get('estimated_by_currency', {}), ensure_ascii=False)}；实际扣费及净利润未知。",
             f"- 单篇精确收益覆盖：{attribution.get('exact_count', 0)}/{attribution.get('total_count', 0)}（{attribution.get('coverage_pct', 0)}%）",
             f"- 收益页采集：{collection.get('status', 'unknown')}，匹配作品 {collection.get('matched_works', 0)}，金额冲突 {collection.get('conflicting_works', 0)}；采集时间 {collection.get('observed_at', '未知')}",
             "",

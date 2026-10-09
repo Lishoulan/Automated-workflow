@@ -27,6 +27,7 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency fallback
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import AIRequestError, AIResponseFormatError
 from toutiao_content_factory.services.article_sanitizer import looks_like_html_document
+from toutiao_content_factory.services.generation_cost_service import GenerationCostAttempt
 
 
 @dataclass
@@ -227,10 +228,14 @@ class OpenAIContentService:
             async with AsyncOpenAI(api_key=self.client.api_key, base_url=self.client.base_url,
                                    max_retries=0 if single_attempt else 2, timeout=timeout) as client:
                 options = {} if self.disable_response_format else {"response_format": {"type": "json_object"}}
-                return await client.chat.completions.create(model=self.model,
-                    temperature=self.settings.temperature, max_tokens=self.DEFAULT_MAX_TOKENS,
-                    messages=[{"role": "system", "content": system_prompt + "\nReturn exactly one valid JSON object."},
-                              {"role": "user", "content": user_prompt}], **options)
+                with GenerationCostAttempt(self.settings, self.logger, kind="text", model=self.model,
+                                           sdk_retries=0 if single_attempt else 2) as cost:
+                    response = await client.chat.completions.create(model=self.model,
+                        temperature=self.settings.temperature, max_tokens=self.DEFAULT_MAX_TOKENS,
+                        messages=[{"role": "system", "content": system_prompt + "\nReturn exactly one valid JSON object."},
+                                  {"role": "user", "content": user_prompt}], **options)
+                    cost.complete(response, prompt_rate=self.prompt_token_rate, completion_rate=self.completion_token_rate)
+                    return response
 
         async def bounded():
             return await asyncio.wait_for(request(), timeout=timeout)
@@ -288,7 +293,7 @@ class OpenAIContentService:
                     raise AIRequestError("WeChat processing deadline exhausted")
                 request_options["timeout"] = min(self.REQUEST_TIMEOUT, remaining)
         try:
-            return self.client.chat.completions.create(
+            return self._tracked_completion(
                 model=self.model,
                 temperature=self.settings.temperature,
                 response_format={"type": "json_object"},
@@ -341,7 +346,7 @@ class OpenAIContentService:
                     raise AIRequestError("WeChat processing deadline exhausted")
                 kwargs["timeout"] = min(self.REQUEST_TIMEOUT, remaining)
             try:
-                return self.client.chat.completions.create(**kwargs)
+                return self._tracked_completion(**kwargs)
             except Exception as exc:
                 last_exc = exc
                 if self._is_insufficient_balance_error(exc):
@@ -374,6 +379,13 @@ class OpenAIContentService:
         raise AIRequestError(
             f"Model request failed after {self.MAX_RETRIES} attempts: {last_exc}"
         ) from last_exc
+
+    def _tracked_completion(self, **kwargs):
+        with GenerationCostAttempt(self.settings, self.logger, kind="text", model=self.model,
+                                   sdk_retries=getattr(self.client, "max_retries", None)) as cost:
+            response = self.client.chat.completions.create(**kwargs)
+            cost.complete(response, prompt_rate=self.prompt_token_rate, completion_rate=self.completion_token_rate)
+            return response
 
     def _mark_unavailable(self, exc: Exception) -> None:
         reason = str(exc).strip() or "provider account balance is insufficient"

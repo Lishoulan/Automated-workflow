@@ -1,0 +1,41 @@
+name: WeChat Content Metrics
+
+on:
+  schedule:
+    - cron: '37 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: wechat-default
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  observe:
+    if: vars.WECHAT_CLOUD_ENABLED == 'true' && vars.WECHAT_EXECUTION_HOST == 'fixed'
+    runs-on: [self-hosted, Windows, wechat-fixed]
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      WECHAT_EXECUTION_HOST: fixed
+      WECHAT_FIXED_DEVICE_DIR: ${{ vars.WECHAT_FIXED_DEVICE_DIR }}
+      TZ: Asia/Shanghai
+      PYTHONUTF8: '1'
+      PYTHONPATH: ${{ github.workspace }}/src
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read published article metrics
+        run: python scripts/collect_wechat_growth.py
+      - name: Save observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wechat-content-metrics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: output/automation/wechat_growth_report.*
+          if-no-files-found: ignore
+          retention-days: 30

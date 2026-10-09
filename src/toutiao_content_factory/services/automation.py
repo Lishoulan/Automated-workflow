@@ -15,6 +15,7 @@ from toutiao_content_factory.config import AppSettings, sanitize_account_slug
 from toutiao_content_factory.models import DailyTopicsReport, TopicCandidate
 from toutiao_content_factory.services.schema_guard_service import SchemaGuardService
 from toutiao_content_factory.services.topic_pool_service import TopicPoolService
+from toutiao_content_factory.services.topic_selection_evidence import selection_evidence
 
 
 # 选题去重窗口（天）。必须与 `PublishService._was_topic_published` 的 7 天窗口一致：
@@ -510,6 +511,7 @@ class TopicAutomationService:
                 if existing_assessment.passed:
                     topic._verified_source_material = True
                     topic._material_evidence_assessment = asdict(existing_assessment)
+                    topic._retrieved_source_urls = [str(topic.url or "")]
                     if wechat:
                         from toutiao_content_factory.services.wechat_evidence import source_records
                         topic.source_records = source_records(existing_bundle.usable)
@@ -541,6 +543,8 @@ class TopicAutomationService:
             bundle = self._scope_wechat_material(topic, bundle)
         assessment = assess_material_evidence(bundle)
         topic._material_evidence_assessment = asdict(assessment)
+        topic._retrieved_source_urls = [str(source.url or "") for source in bundle.usable
+                                        if source.evidence_type == "article"]
         if not assessment.passed:
             self.logger.warning(
                 "[素材] 证据不足，改试下一题：%s | %s | 独立来源 %d 个 | 事实锚点 %d 个 | 共 %d 字",
@@ -757,27 +761,12 @@ class TopicAutomationService:
             f"Only {len(available_topics)} unpublished topics remain, cannot select rank {target_rank}."
         )
 
-    # 仅含标题/摘要、缺少正文素材的热榜源。其余源默认视为带完整文章的行业媒体源。
-    HOT_LIST_ONLY_SOURCES = ("toutiao_hot", "baidu_hot")
-
     def _prioritize_evidence_rich_topics(
         self,
         topics: list[TopicCandidate],
     ) -> list[TopicCandidate]:
-        """把带完整正文素材的行业媒体话题排到热榜话题之前。
-
-        只做稳定分组（rich + hot_list），组内保持原热度顺序、不改动话题评分，
-        避免影响热榜话题在需要时作为兜底被选中。
-        """
-        rich: list[TopicCandidate] = []
-        hot_list: list[TopicCandidate] = []
-        for topic in topics:
-            source = str(getattr(topic, "source", "") or "").strip().lower()
-            if source in self.HOT_LIST_ONLY_SOURCES:
-                hot_list.append(topic)
-            else:
-                rich.append(topic)
-        return rich + hot_list
+        """稳定优先完整素材，其次待检索报道；组内保留现有排名。"""
+        return sorted(topics, key=lambda topic: selection_evidence(topic)["priority"])
 
     def _build_input_text(self, topic: TopicCandidate) -> str:
         humanized_industries = self._humanize_industries(topic.matched_industries)
@@ -1172,6 +1161,7 @@ class TopicAutomationService:
             "generated_topics_at": report.generated_at,
             "selected_topic": asdict(enriched_topic),
             "material_evidence": material_evidence,
+            "selection_evidence": selection_evidence(topic),
             "auto_input_text": input_text,
         }
         json_path.write_text(json.dumps(json_payload, ensure_ascii=False, indent=2), encoding="utf-8")

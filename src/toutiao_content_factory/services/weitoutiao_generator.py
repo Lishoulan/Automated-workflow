@@ -28,6 +28,7 @@ from toutiao_content_factory.services.compliance_service import count_today_publ
 from toutiao_content_factory.services.growth_feedback_service import topic_feedback_score
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.services.publish_service import PublishService
+from toutiao_content_factory.services.topic_selection_evidence import selection_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +328,7 @@ class WeiToutiaoStandaloneGenerator:
             [topic for topic in topics if topic],
             key=lambda topic: (
                 -topic_feedback_score(topic.title, feedback)[0],
+                selection_evidence(topic)["priority"],
                 topic.rank if topic.rank and topic.rank > 0 else 10_000,
                 -int(topic.total_score or 0),
             ),
@@ -692,6 +694,7 @@ class WeiToutiaoStandaloneGenerator:
             "content_char_count": self._content_char_count(content),
             "content_experiment": getattr(topic, "_content_experiment", {}) if generation_mode == "model" else {},
             "source_copy_share": self._source_copy_share(topic, content),
+            "selection_evidence": selection_evidence(topic),
         }
         (publish_dir / "publish_meta.json").write_text(
             json.dumps(publish_meta, ensure_ascii=False, indent=2), encoding="utf-8"

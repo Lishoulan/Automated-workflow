@@ -8,6 +8,22 @@ import pytest
 
 from toutiao_content_factory.exceptions import AIRequestError, AIResponseFormatError
 from toutiao_content_factory.services.openai_service import OpenAIContentService
+from toutiao_content_factory.services.generation_cost_service import build_cost_summary
+
+
+def test_json_fallback_records_failed_and_successful_invocations_without_double_counting_usage(app_settings, logger):
+    service = OpenAIContentService(app_settings, logger, force_mock=True)
+    service.disable_response_format = False
+    client = MagicMock()
+    client.chat.completions.create.side_effect = [ValueError("response_format unsupported"), {
+        "choices": [{"message": {"content": '{"ok": true}'}}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}}]
+    service.client = client
+    assert service.create_json_completion("system", "private content") == {"ok": True}
+    report = build_cost_summary(app_settings.output_dir)
+    assert report["recorded_calls"] == 2 and report["by_status"] == {"failed": 1, "succeeded": 1}
+    assert service.get_usage_snapshot().total_tokens == 110
+    assert report["actual_total"] is None and report["net_profit"] is None
 
 
 @pytest.mark.parametrize(

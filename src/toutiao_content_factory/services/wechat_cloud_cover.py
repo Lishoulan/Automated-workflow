@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import nullcontext
 from io import BytesIO
 import json
 import os
@@ -32,7 +33,7 @@ def _title_lines(title, font, width):
     return lines
 
 
-def generate_cloud_cover(title: str, output: Path) -> str:
+def generate_cloud_cover(title: str, output: Path, *, settings=None, logger=None) -> str:
     account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
     token = os.environ.get("CLOUDFLARE_AI_TOKEN", "").strip()
     if not re.fullmatch(r"[a-fA-F0-9]{32}", account) or not token:
@@ -72,15 +73,21 @@ def generate_cloud_cover(title: str, output: Path) -> str:
     url = f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/{MODEL}"
     # No SDK retry, redirect, billing upgrade, or automatic top-up. Free-plan
     # quota exhaustion is an error and keeps the manuscript for a later window.
-    with httpx.Client(timeout=httpx.Timeout(timeout, connect=min(10, timeout)),
-                      follow_redirects=False) as client:
-        response = client.post(url, headers={"Authorization": "Bearer " + token},
-                               json={"prompt": prompt, "steps": 8})
-    if response.status_code != 200:
-        raise RuntimeError(f"Cloudflare image request failed (HTTP {response.status_code})")
-    payload = response.json()
-    if payload.get("success") is not True:
-        raise RuntimeError("Cloudflare did not confirm image generation success")
+    from toutiao_content_factory.services.generation_cost_service import GenerationCostAttempt
+    receipt = GenerationCostAttempt(settings, logger, kind="free_image", model=MODEL,
+                                    asset=output, sdk_retries=0) if settings is not None else nullcontext()
+    with receipt as cost:
+        with httpx.Client(timeout=httpx.Timeout(timeout, connect=min(10, timeout)),
+                          follow_redirects=False) as client:
+            response = client.post(url, headers={"Authorization": "Bearer " + token},
+                                   json={"prompt": prompt, "steps": 8})
+        if response.status_code != 200:
+            raise RuntimeError(f"Cloudflare image request failed (HTTP {response.status_code})")
+        payload = response.json()
+        if payload.get("success") is not True:
+            raise RuntimeError("Cloudflare did not confirm image generation success")
+        if cost is not None:
+            cost.complete()
     encoded = (payload.get("result") or {}).get("image")
     if not isinstance(encoded, str) or len(encoded) > 28_000_000:
         raise RuntimeError("Cloudflare returned an invalid image payload")

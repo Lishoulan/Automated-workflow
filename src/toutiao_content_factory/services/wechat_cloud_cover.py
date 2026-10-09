@@ -59,10 +59,12 @@ def generate_cloud_cover(title: str, output: Path) -> str:
     )
     if any(word in title for word in ("汽车", "奇瑞", "星途", "车企")):
         prompt += (
-            " A minimalist premium 3D clay-rendered nameless dark car, "
-            "viewed from behind in soft backlight at a simplified export port. "
-            "Smooth blank bodywork, simplified silhouette, no badges, grille emblems, "
-            "license plates, readable container markings or recognizable real vehicle design."
+            " The scene MUST be a high overhead aerial view of a miniature cargo port: "
+            "rows of tiny generic car roofs beside plain red shipping containers and cranes. "
+            "Cars are small anonymous silhouettes seen only from directly above. "
+            "Show the port layout, not an individual vehicle. No close-up car, "
+            "front or rear car view, grille, badge, license plate, readable markings "
+            "or recognizable real vehicle design. Premium architectural model aesthetic."
         )
     if len(prompt) > 2048:
         raise RuntimeError("Cover prompt exceeds the cloud model input limit")

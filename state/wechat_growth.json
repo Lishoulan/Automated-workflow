@@ -1,0 +1,154 @@
+{
+  "schema": 1,
+  "account": "小椰科技",
+  "articles": {
+    "https://mp.weixin.qq.com/s/j7s1L87mjKPKzYUB0d1jhw": {
+      "url": "https://mp.weixin.qq.com/s/j7s1L87mjKPKzYUB0d1jhw",
+      "title": "奇瑞8月出口增52.1%，星途前7月销量降39.2%：看懂两种口径",
+      "published_at": "2026-10-09T10:42:55+08:00",
+      "snapshots": [
+        {
+          "observed_at": "2026-10-09T18:28:41.125079+08:00",
+          "readers": 100,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
+        }
+      ]
+    },
+    "https://mp.weixin.qq.com/s/K2Ao2Qm9rgc5JNNdmdsoAg": {
+      "url": "https://mp.weixin.qq.com/s/K2Ao2Qm9rgc5JNNdmdsoAg",
+      "title": "灵巧手概念股，本周先看谁把手指装进工位",
+      "published_at": "2026-07-25T22:00:40+08:00",
+      "snapshots": [
+        {
+          "observed_at": "2026-10-09T18:28:41.125079+08:00",
+          "readers": 2,
+          "likes": 0,
+          "shares": 1,
+          "recommends": 0
+        }
+      ]
+    },
+    "https://mp.weixin.qq.com/s/SO8BC4GnPWDhgQHso_tAKg": {
+      "url": "https://mp.weixin.qq.com/s/SO8BC4GnPWDhgQHso_tAKg",
+      "title": "人形机器人什么时候普及，我最近更想先问一个更扎心的问题",
+      "published_at": "2026-07-23T13:37:57+08:00",
+      "snapshots": [
+        {
+          "observed_at": "2026-10-09T18:28:41.125079+08:00",
+          "readers": 76,
+          "likes": 1,
+          "shares": 0,
+          "recommends": 0
+        }
+      ]
+    },
+    "https://mp.weixin.qq.com/s/6lC1mlX4BV5lnlWqNYCgBA": {
+      "url": "https://mp.weixin.qq.com/s/6lC1mlX4BV5lnlWqNYCgBA",
+      "title": "特斯拉 Optimus 和 Figure 哪个强，我先看 WAIC 这边的真东西",
+      "published_at": null,
+      "snapshots": [
+        {
+          "observed_at": "2026-10-09T18:28:41.125079+08:00",
+          "readers": 148,
+          "likes": 0,
+          "shares": 2,
+          "recommends": 0
+        }
+      ]
+    },
+    "https://mp.weixin.qq.com/s/rNmc3dRZrdCwbTgZe45RyQ": {
+      "url": "https://mp.weixin.qq.com/s/rNmc3dRZrdCwbTgZe45RyQ",
+      "title": "人形机器人上市公司：我为什么盯上了 Edge AI Daily 7月18日这份早报",
+      "published_at": null,
+      "snapshots": [
+        {
+          "observed_at": "2026-10-09T18:28:41.125079+08:00",
+          "readers": 1,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
+        }
+      ]
+    },
+    "https://mp.weixin.qq.com/s/NC9O5LyfX2WmSMLXF_ienA": {
+      "url": "https://mp.weixin.qq.com/s/NC9O5LyfX2WmSMLXF_ienA",
+      "title": "人形机器人概念股，这周我建议先看这 6 篇\n原创",
+      "published_at": null,
+      "snapshots": [
+        {
+          "observed_at": "2026-10-09T18:28:41.125079+08:00",
+          "readers": 4,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
+        }
+      ]
+    },
+    "https://mp.weixin.qq.com/s/w7H39AZ8cxYDniFYfoyB6g": {
+      "url": "https://mp.weixin.qq.com/s/w7H39AZ8cxYDniFYfoyB6g",
+      "title": "机器狗长出一只手后，家务演示离生意还有多远",
+      "published_at": "2026-07-19T00:00:00+08:00",
+      "snapshots": [
+        {
+          "observed_at": "2026-10-09T18:28:41.125079+08:00",
+          "readers": 51,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
+        }
+      ]
+    },
+    "https://mp.weixin.qq.com/s/rZ6G8w0rbjWitqu6dikQSQ": {
+      "url": "https://mp.weixin.qq.com/s/rZ6G8w0rbjWitqu6dikQSQ",
+      "title": "人形机器人这一周，我先记下三个小信号",
+      "published_at": "2026-07-18T00:00:00+08:00",
+      "snapshots": [
+        {
+          "observed_at": "2026-10-09T18:28:41.125079+08:00",
+          "readers": 5,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
+        }
+      ]
+    },
+    "https://mp.weixin.qq.com/s/FVvVosyvrk1Z72xpNgGGJQ": {
+      "url": "https://mp.weixin.qq.com/s/FVvVosyvrk1Z72xpNgGGJQ",
+      "title": "AI硬件 (2026Q3 7月17日) 的热闹，先落在一组出口数据上",
+      "published_at": null,
+      "snapshots": [
+        {
+          "observed_at": "2026-10-09T18:28:41.125079+08:00",
+          "readers": 1,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
+        }
+      ]
+    },
+    "https://mp.weixin.qq.com/s/zSyfNrvOpnaC7AsfXIJ7qw": {
+      "url": "https://mp.weixin.qq.com/s/zSyfNrvOpnaC7AsfXIJ7qw",
+      "title": "理想L6换代开卖后，我更在意芯片下放能不能换来利润",
+      "published_at": "2026-07-17T13:15:33+08:00",
+      "snapshots": [
+        {
+          "observed_at": "2026-10-09T18:28:41.125079+08:00",
+          "readers": 1,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
+        }
+      ]
+    }
+  },
+  "account_snapshots": [
+    {
+      "observed_at": "2026-10-09T18:28:41.125079+08:00",
+      "followers": 69
+    }
+  ],
+  "updated_at": "2026-10-09T18:28:41.125079+08:00",
+  "coverage": "Latest published articles visible on the account homepage; not complete history"
+}

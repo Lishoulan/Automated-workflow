@@ -20,6 +20,10 @@ on:
         description: 'Check-only: validate a refreshed administrator login seed instead of expired cached credentials'
         type: boolean
         default: false
+      cover_check:
+        description: 'Generate one cover from the saved regression article; no WeChat login, draft, or publication'
+        type: boolean
+        default: false
       retry_day:
         description: 'Internal relay Beijing date'
         type: string
@@ -56,8 +60,14 @@ jobs:
       OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4' }}
       OPENAI_MODEL: ${{ secrets.OPENAI_MODEL || 'glm-4-flash-250414' }}
       OPENAI_TITLE_MODEL: ${{ secrets.OPENAI_TITLE_MODEL || 'glm-4-flash' }}
-      IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY || secrets.OPENAI_API_KEY }}
-      IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL || secrets.OPENAI_BASE_URL }}
+      IMAGE_API_KEY: ${{ secrets.IMAGE_API_KEY }}
+      IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL || vars.WECHAT_IMAGE_BASE_URL || 'https://api.openai.com/v1' }}
+      IMAGE_MODEL: ${{ vars.WECHAT_IMAGE_MODEL || 'gpt-image-2' }}
+      IMAGE_BACKEND: image2
+      IMAGE_COVER_SIZE: 1536x656
+      IMAGE_REQUEST_TIMEOUT_SECONDS: '180'
+      IMAGE_FALLBACK_TO_RENDERER: '0'
+      COVER_CHECK: ${{ inputs.cover_check == true && '1' || '0' }}
       WECHAT_SESSION_KEY: ${{ secrets.WECHAT_SESSION_KEY }}
       WECHAT_SESSION_SEED: ${{ secrets.WECHAT_SESSION_SEED_DEFAULT }}
       WECHAT_SESSION_REFRESH: ${{ inputs.refresh_session == true && '1' || '0' }}
@@ -100,7 +110,12 @@ jobs:
             wechat-default-v2-
       - name: Validate login or run reviewed publication
         id: publish
-        run: python scripts/wechat_cloud_run.py --account default --mode "$RUN_MODE"
+        run: |
+          if [ "$COVER_CHECK" = "1" ]; then
+            python scripts/check_wechat_cover.py
+          else
+            python scripts/wechat_cloud_run.py --account default --mode "$RUN_MODE"
+          fi
       - name: Save refreshed encrypted session and accepted history
         if: always() && vars.WECHAT_EXECUTION_HOST != 'fixed'
         uses: actions/cache/save@v4
@@ -116,7 +131,7 @@ jobs:
           path: output/wechat_publish_history.json
           key: wechat-fixed-default-v1-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Summarize actual outcome
-        if: always()
+        if: always() && inputs.cover_check != true
         run: |
           python - <<'PY'
           import json, os
@@ -167,5 +182,6 @@ jobs:
             output/automation/wechat_review_diagnostics.json
             output/automation/wechat_metrics_report.json
             output/automation/wechat_publish_phase.json
+            output/automation/wechat_cover_check/
           if-no-files-found: ignore
           retention-days: 14

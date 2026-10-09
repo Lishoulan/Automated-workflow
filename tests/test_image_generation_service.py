@@ -5,8 +5,11 @@ from dataclasses import replace
 from io import BytesIO
 import json
 import logging
+import time
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from PIL import Image
 
@@ -232,6 +235,12 @@ def test_api_error_detail_redacts_credentials() -> None:
     assert "api_key=<redacted>" in detail
 
 
+def test_api_error_detail_redacts_provider_key_echo() -> None:
+    detail = _format_api_error(RuntimeError("Incorrect API key provided: sk-private****suffix."))
+    assert "sk-private" not in detail and "suffix" not in detail
+    assert "<redacted-key>" in detail
+
+
 def test_image_api_key_resolution_accepts_openai_key_fallback(app_settings, monkeypatch) -> None:
     service = ImageGenerationService(app_settings, logging.getLogger("image-key-test"))
     app_settings.image_generation = replace(app_settings.image_generation, model_api_key="")
@@ -239,3 +248,81 @@ def test_image_api_key_resolution_accepts_openai_key_fallback(app_settings, monk
     monkeypatch.setenv("OPENAI_API_KEY", "fallback-key")
 
     assert service._resolve_image_api_key() == "fallback-key"
+
+
+def test_wechat_cover_uses_magazine_prompt_and_preserves_generated_layout(app_settings, tmp_path, monkeypatch):
+    run = _prepare_run(tmp_path)
+    app_settings.platform = "wechat"
+    title = "奇瑞8月出口增52.1%，星途前7月销量降39.2%：看懂两种口径"
+    (run / "publish/publish_meta.json").write_text(json.dumps({"selected_title": title}, ensure_ascii=False), encoding="utf-8")
+    service = ImageGenerationService(app_settings, logging.getLogger("wechat-cover-test"))
+    app_settings.image_generation = replace(app_settings.image_generation, backend="image2", cover_size="1536x656")
+    calls = []
+    def generate(prompt, path, size):
+        calls.append((prompt, size))
+        Image.new("RGB", (1536, 656), (240, 230, 215)).save(path)
+    monkeypatch.setattr(service, "_generate_api_image", generate)
+    monkeypatch.setattr(service, "_compose_api_cover", lambda *a: pytest.fail("Must preserve magazine typography"))
+    exported = service.generate_for_run(run, include_infographics=False)
+    with Image.open(exported["cover_image"]) as image:
+        assert image.size == (1200, 511)
+        assert image.getpixel((80, 150)) == (240, 230, 215)
+    assert len(calls) == 1 and calls[0][1] == "1536x656"
+    prompt = calls[0][0]
+    assert json.dumps(title, ensure_ascii=False) in prompt
+    assert "暖象牙白" in prompt and "不得所有主题都画成汽车港口" in prompt
+    assert "30分钟" not in prompt and "196,984" not in prompt
+    assert not list((run / "publish/images").glob("infographic_*.png"))
+    result = json.loads(exported["image_generation_result"].read_text(encoding="utf-8"))
+    assert result["cover_style"] == "warm_editorial" and result["api_succeeded"] is True
+
+
+def test_wechat_image_credentials_do_not_reuse_text_model_key(app_settings, monkeypatch):
+    app_settings.platform = "wechat"
+    app_settings.image_generation = replace(app_settings.image_generation, model_api_key="")
+    monkeypatch.delenv("IMAGE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "text-model-only")
+    service = ImageGenerationService(app_settings, logging.getLogger("wechat-cover-key"))
+    assert service._resolve_image_api_key() == ""
+    with pytest.raises(ImageGenerationAPIUnavailable, match="not configured"):
+        service._get_image_api_client()
+
+
+def test_strict_image_failure_preserves_diagnostics_without_local_fallback(app_settings, tmp_path, monkeypatch):
+    run = _prepare_run(tmp_path)
+    app_settings.platform = "wechat"
+    app_settings.image_generation = replace(app_settings.image_generation, backend="image2", fallback_to_renderer=False)
+    service = ImageGenerationService(app_settings, logging.getLogger("wechat-cover-failed"))
+    def fail(*a):
+        raise ImageGenerationAPIUnavailable("provider unavailable")
+    monkeypatch.setattr(service, "_generate_api_image", fail)
+    monkeypatch.setattr(service, "_get_frontend_renderer", lambda: pytest.fail("No silent fallback"))
+    with pytest.raises(ImageGenerationAPIUnavailable):
+        service.generate_for_run(run, include_infographics=False)
+    report = json.loads((run / "publish/image_generation_result.json").read_text(encoding="utf-8"))
+    assert report["status"] == "failed" and report["api_succeeded"] is False
+    assert report["cover_style"] == "warm_editorial"
+    assert not (run / "publish/images/cover.png").exists()
+    assert (run / "publish/article.md").exists()
+
+
+@pytest.mark.parametrize("remaining,expected", [(185, 65), (125, None)])
+def test_wechat_image_call_respects_shared_deadline(app_settings, monkeypatch, remaining, expected):
+    import openai
+    app_settings.platform = "wechat"
+    app_settings.image_generation = replace(app_settings.image_generation, model_api_key="image-only")
+    monkeypatch.setattr(time, "time", lambda: 1000)
+    monkeypatch.setenv("WECHAT_RUN_DEADLINE_EPOCH", str(1000 + remaining))
+    calls = []
+    monkeypatch.setattr(openai, "OpenAI", lambda **kw: calls.append(kw) or SimpleNamespace())
+    service = ImageGenerationService(app_settings, logging.getLogger("wechat-cover-budget"))
+    app_settings.image_generation = replace(app_settings.image_generation, request_timeout_seconds=180)
+    if expected is None:
+        with pytest.raises(ImageGenerationAPIUnavailable, match="budget"):
+            service._get_image_api_client()
+        assert calls == []
+    else:
+        service._get_image_api_client()
+        assert calls[0]["timeout"] == expected
+        assert calls[0]["max_retries"] == 0
+        assert calls[0]["base_url"] == "https://api.openai.com/v1"

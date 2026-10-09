@@ -768,7 +768,7 @@ class ContentFactoryAppService:
                         and str(record.get("published_at", "")).startswith(today)
                         and self._wechat_publish_succeeded(record)
                     )
-                cloud_record = self._cloud_published_today("wechat") if wechat_only else self._cloud_published_today()
+                cloud_record = (None if self.settings.wechat.draft_only else self._cloud_published_today("wechat")) if wechat_only else self._cloud_published_today()
                 if local_today_count >= 1 or cloud_record is not None:
                     if cloud_record is not None:
                         self.logger.info(
@@ -1103,6 +1103,21 @@ class ContentFactoryAppService:
                 attempt_record["content_guard_error"] = content_guard_error
             if title_selection:
                 attempt_record["title_quality_gate"] = title_selection
+
+            if self.settings.platform == "wechat" and self.settings.wechat.draft_only and run_dir is not None and not dry_run:
+                # Delivery is a human-review draft, independently of automatic publication approval.
+                draft_exports = self.review_service.prepare_wechat_draft(run_dir)
+                exported_files.update({name: str(path) for name, path in draft_exports.items()})
+                draft_exports = self.wechat_service.publish_run(run_dir, submit=False)
+                exported_files.update({name: str(path) for name, path in draft_exports.items()})
+                snapshot = self._load_wechat_publish_snapshot(run_dir)
+                if snapshot.get("status") != "draft_saved" or not (snapshot.get("draft_media_id") or snapshot.get("app_msg_id")):
+                    raise RuntimeError("WeChat draft delivery lacks a saved draft identifier.")
+                final_attempt = {**attempt_record, "status": "draft_saved",
+                                 "platform_results": {"wechat": snapshot}, "platform_errors": []}
+                exported_files.update(self._write_daily_workflow_report(status="success",
+                    final_attempt=final_attempt, attempts=[*losing_attempts, final_attempt]))
+                return exported_files
 
             if best_attempt is None or self._is_better_attempt(attempt_record, best_attempt):
                 best_attempt = {
@@ -4110,6 +4125,8 @@ class ContentFactoryAppService:
             "submit_status": submit_status,
             "external_url": external_url,
             "draft_media_id": draft_media_id,
+            **({"app_msg_id": str(payload.get("app_msg_id", "")), "title": str(payload.get("title", "")),
+                "manual_publication_required": True} if payload.get("draft_only") else {}),
         }
 
     def _write_latest_wechat_automation_snapshot(self, run_dir: Path) -> Path:

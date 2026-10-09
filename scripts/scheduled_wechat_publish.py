@@ -153,6 +153,8 @@ def generate_cover_images(output_dir, timestamp):
 
 
 def publish_wechat_article(title: str, content: str, settings) -> dict:
+    if settings.wechat.draft_only:
+        raise RuntimeError("WeChat draft-only mode prohibits publication")
     from playwright.sync_api import sync_playwright
 
     profile_dir = settings.account_runtime_dir / "wechat_profile"
@@ -656,6 +658,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--account", default="default")
     parser.add_argument("--check-login", action="store_true")
     parser.add_argument("--enable-auto-publish", action="store_true")
+    parser.add_argument("--save-draft", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     project_root = Path(__file__).resolve().parent.parent
@@ -666,7 +669,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        if not args.check_login and not (args.enable_auto_publish or settings.wechat.enabled):
+        if not args.check_login and not (args.save_draft or args.enable_auto_publish or settings.wechat.enabled):
             result = {"status": "disabled", "message": "WeChat channel is disabled."}
         else:
             result = check_login(settings)
@@ -686,7 +689,8 @@ def main(argv: list[str] | None = None) -> int:
     overrides = {
         "TARGET_PLATFORM": "wechat",
         "WECHAT_ENABLED": "1",
-        "WECHAT_AUTO_PUBLISH": "1" if args.enable_auto_publish or settings.wechat.auto_publish else "0",
+        "WECHAT_AUTO_PUBLISH": "1" if args.save_draft or args.enable_auto_publish or settings.wechat.auto_publish else "0",
+        "WECHAT_DRAFT_ONLY": "1" if args.save_draft or settings.wechat.draft_only else "0",
         "WECHAT_EDITOR_135_ENABLED": "0",
         "TOUTIAO_PUBLISH_ENABLED": "0",
         "TOUTIAO_AUTO_PUBLISH": "0",
@@ -710,6 +714,12 @@ def main(argv: list[str] | None = None) -> int:
         completed = run_process_tree(command, cwd=str(project_root), env=environment,
                                      timeout=max(1, min(2400, deadline - time.time())))
     except subprocess.TimeoutExpired:
+        if overrides["WECHAT_DRAFT_ONLY"] == "1":
+            from toutiao_content_factory.services.wechat_execution import draft_delivery_state
+            result_path.write_text(json.dumps({"status": "error", "message": "Daily workflow timed out.",
+                "publication_attempted": False, "manual_publication_required": True,
+                "draft_delivery": {"status": draft_delivery_state(settings, workflow_started)}}), encoding="utf-8")
+            return 1
         from toutiao_content_factory.services.wechat_execution import phase_attempted
         attempted = phase_attempted(settings, workflow_started)
         result_path.write_text(json.dumps({"status": "error", "message": "Daily workflow timed out.",
@@ -728,6 +738,15 @@ def main(argv: list[str] | None = None) -> int:
             logger.warning("Cannot read daily workflow status: %s", exc)
     from wechat_run_report import review_diagnostics
     diagnostics = review_diagnostics(settings, report, workflow_started)
+    if overrides["WECHAT_DRAFT_ONLY"] == "1":
+        diagnostics["publication_attempted"] = False
+        result["manual_publication_required"] = True
+        workflow = settings.automation_dir / "last_daily_workflow_report.json"
+        from wechat_run_report import fresh_json
+        snapshot = fresh_json(workflow, workflow_started).get("final_attempt", {}).get("platform_results", {}).get("wechat", {})
+        if snapshot.get("status") == "draft_saved" and (snapshot.get("draft_media_id") or snapshot.get("app_msg_id")):
+            result["draft_delivery"] = {"status": "saved", "title": snapshot.get("title", ""),
+                "draft_media_id": snapshot.get("draft_media_id", ""), "app_msg_id": snapshot.get("app_msg_id", "")}
     result.update({key: diagnostics[key] for key in ("reason_codes", "attempt_count", "publication_attempted", "enrichment_count", "eligible_candidate_count")})
     (settings.automation_dir / "wechat_review_diagnostics.json").write_text(
         json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -736,6 +755,7 @@ def main(argv: list[str] | None = None) -> int:
         completed.returncode == 0
         and not args.dry_run
         and overrides["WECHAT_AUTO_PUBLISH"] == "1"
+        and overrides["WECHAT_DRAFT_ONLY"] != "1"
         and report.get("wechat_status") not in {"submitted", "submitted_for_review", "success", "published"}
         and report.get("run_outcome") != "already_published"
     ):

@@ -121,6 +121,8 @@ def complete(state: dict, day: str, key: str, elapsed: float, report: dict, diag
     entry = today_entry(state, day)
     row = entry["runs"][key]
     row.update(status="completed", elapsed_seconds=max(0, elapsed), outcome=report.get("status", "error"))
+    if report.get("delivery_mode") == "draft":
+        row["draft_delivery"] = deepcopy(report.get("draft_delivery", {}))
     if row.get("manual_validation_id"):
         entry["manual_validation_grants"][row["manual_validation_id"]]["status"] = "consumed"
     for attempt in diagnostics.get("attempts", []):

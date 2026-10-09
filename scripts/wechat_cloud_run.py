@@ -30,7 +30,7 @@ logger = logging.getLogger("wechat_cloud")
 ACCEPTED_STATUSES = {"submitted", "submitted_for_review", "published", "success"}
 
 
-def configure_environment(account: str) -> None:
+def configure_environment(account: str, *, draft_only: bool = False) -> None:
     from toutiao_content_factory.config import account_env_name
 
     host = os.environ.get("WECHAT_EXECUTION_HOST", "cloud")
@@ -48,6 +48,7 @@ def configure_environment(account: str) -> None:
         "WECHAT_TECH_TOPICS_ONLY": "1", "TOUTIAO_QUALITY_REVIEW_MAX_AUTO_REVISIONS": "2",
         "TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS": "5",
         "WECHAT_ACCOUNT_NAME": "小椰科技",
+        "WECHAT_DRAFT_ONLY": "1" if draft_only else "0",
     }
     for name, value in overrides.items():
         os.environ[name] = value
@@ -148,6 +149,8 @@ def complete_run(settings, report: dict, exit_code: int, *, metrics_state: dict 
                                                 for reason in row.get(field, [])],
                           "publication": report.get("publication", {}),
                            "expected_publication": report.get("expected_publication", {})}
+            if mode == "draft":
+                run_record["draft_delivery"] = report.get("draft_delivery", {})
             run_record["elapsed_seconds"] = report.get("processing_elapsed_seconds")
             run_record["runtime_status"] = "error" if exit_code or report.get("status") == "error" else "ok"
             run_record["native_exit_code"] = report.get("native_exit_code")
@@ -174,7 +177,7 @@ def seed_retry_day(state: dict, metrics_state: dict, day: str) -> dict:
     state = retry.validate(state)
     entry = retry.today_entry(state, day)
     for row in metrics_state.get("runs", []):
-        if row.get("excluded") or row.get("mode") != "publish" or retry.day_of(row["started_at"]) != day:
+        if row.get("excluded") or row.get("mode") not in {"publish", "draft"} or retry.day_of(row["started_at"]) != day:
             continue
         key = row["run_key"]
         if key in entry["runs"]:
@@ -215,7 +218,7 @@ def finish_retry(settings, state, day, key, started, report, code):
         write_state_file(state, retry.STATE_PATH, "chore(wechat): persist relay intent [skip ci]")
         report["retry_status"] = "dispatch_uncertain"
         # A transport failure may still have reached GitHub. Never send twice.
-        subprocess.run(["gh", "workflow", "run", "wechat-daily-run.yml", "--ref", "main", "-f", "mode=publish",
+        subprocess.run(["gh", "workflow", "run", "wechat-daily-run.yml", "--ref", "main", "-f", "mode=" + ("draft" if report.get("delivery_mode") == "draft" else "publish"),
                         "-f", f"retry_parent_run_id={key}", "-f", f"retry_day={day}"],
                        capture_output=True, text=True, timeout=30, check=True)
         state["days"][day]["dispatches"][key]["status"] = "dispatched"
@@ -231,10 +234,15 @@ def finish_retry(settings, state, day, key, started, report, code):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--account", choices=["default"], default="default")
-    parser.add_argument("--mode", choices=["check", "publish"], default="check")
+    parser.add_argument("--mode", choices=["check", "publish", "draft"], default="check")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    configure_environment(args.account)
+    if args.mode == "publish" and os.environ.get("WECHAT_DELIVERY_MODE") == "draft":
+        args.mode = "draft"
+    if args.mode == "draft":
+        configure_environment(args.account, draft_only=True)
+    else:
+        configure_environment(args.account)
     settings = load_settings(ROOT, account_key=args.account)
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     settings.automation_dir.mkdir(parents=True, exist_ok=True)
@@ -256,6 +264,11 @@ def main(argv: list[str] | None = None) -> int:
     reserved_started = None
     def finish(report, code, *, excluded=False):
         report["execution_host"] = "fixed" if fixed_device else "cloud"
+        report["delivery_mode"] = args.mode
+        if args.mode == "draft":
+            report["publication_attempted"] = False
+            report["formal_publication_confirmed"] = False
+            report["manual_publication_required"] = True
         if confirmations:
             report["confirmed_publications"] = list(confirmations.values())
             report["formal_publication_confirmed"] = True
@@ -277,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
             os.environ["WECHAT_EXECUTION_ID"] = previous_execution_id
         return code
     try:
-        if fixed_device and args.mode == "publish" and (not run_key or os.environ.get("GITHUB_ACTIONS") != "true"):
+        if fixed_device and args.mode != "check" and (not run_key or os.environ.get("GITHUB_ACTIONS") != "true"):
             raise ValueError("Fixed-device publication requires the GitHub workflow and its shared reservation")
         refresh_session = os.environ.get("WECHAT_SESSION_REFRESH") == "1"
         if refresh_session and args.mode != "check":
@@ -297,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
                        for row in metrics_state["runs"] if (row.get("outcome") in metrics.PENDING or row.get("submission_outcome") in metrics.PENDING)
                        and row.get("outcome") != "published_confirmed"
                        and row.get("expected_publication")]
-            confirmations = verify_pending(settings, pending)
+            confirmations = verify_pending(settings, pending) if args.mode != "draft" else {}
             for row in metrics_state["runs"]:
                 if row.get("run_key") in confirmations:
                     row.update(outcome="published_confirmed", publication=confirmations[row["run_key"]])
@@ -309,6 +322,19 @@ def main(argv: list[str] | None = None) -> int:
                 return finish({"status": "pending_reconciliation", "wechat_status": "publish_uncertain" if uncertain else "submitted_for_review",
                                "publication_attempted": False, "pending_count": len(unresolved)}, 1 if uncertain else 0, excluded=True)
         today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+        if args.mode == "draft" and metrics_state is not None:
+            deliveries = [row for row in metrics_state["runs"] if row.get("mode") == "draft" and not row.get("excluded")]
+            retry_state = retry.validate(xstate.read_remote_state(ROOT, branch=xstate.WECHAT_STATE_BRANCH,
+                                                                  path=retry.STATE_PATH, strict=True))
+            # Reservations survive a metrics-write failure and remain a delivery guard.
+            deliveries.extend(row for entry in retry_state["days"].values() for row in entry["runs"].values()
+                              if row.get("draft_delivery"))
+            if any(row.get("draft_delivery", {}).get("status") == "uncertain" for row in deliveries):
+                return finish({"status": "draft_reconciliation_required", "draft_delivery": {"status": "uncertain"}}, 1, excluded=True)
+            saved = [row for row in deliveries if retry.day_of(row["started_at"]) == today and row.get("draft_delivery", {}).get("status") == "saved"]
+            if saved:
+                return finish({"status": "already_drafted", "wechat_status": "draft_saved",
+                               "draft_delivery": saved[-1]["draft_delivery"]}, 0, excluded=True)
         recorded = xstate.published_on(state, today, platform="wechat", account=settings.account_slug)
         if args.mode == "publish" and recorded:
             if recorded["status"] == "publish_uncertain":
@@ -317,9 +343,9 @@ def main(argv: list[str] | None = None) -> int:
         context_path = settings.automation_dir / "wechat_retry_context.json"
         if context_path.exists():
             context_path.unlink()  # An old local context cannot authorize a relay.
-        if run_key and args.mode == "publish":
-            retry_state = seed_retry_day(xstate.read_remote_state(ROOT, branch=xstate.WECHAT_STATE_BRANCH,
-                                                                  path=retry.STATE_PATH, strict=True), metrics_state, today)
+        if run_key and args.mode != "check":
+            retry_state = seed_retry_day(retry_state if retry_state is not None else xstate.read_remote_state(
+                ROOT, branch=xstate.WECHAT_STATE_BRANCH, path=retry.STATE_PATH, strict=True), metrics_state, today)
             retry_state, reservation = retry.reserve(retry_state, today, run_key, started_at,
                 parent=os.environ.get("WECHAT_RETRY_PARENT", ""), parent_day=os.environ.get("WECHAT_RETRY_DAY", ""),
                 validation_id=os.environ.get("WECHAT_VALIDATION_ID", ""), head_sha=os.environ.get("GITHUB_SHA", ""))
@@ -364,16 +390,30 @@ def main(argv: list[str] | None = None) -> int:
         write_phase(settings, "preparing")
         publication_started = True
         deadline = float(os.environ.get("WECHAT_RUN_DEADLINE_EPOCH", time.time() + 2700))
-        result = run_process_tree(command + ["--enable-auto-publish"], cwd=ROOT, timeout=max(1, min(2700, deadline - time.time())))
+        result = run_process_tree(command + (["--save-draft"] if args.mode == "draft" else ["--enable-auto-publish"]), cwd=ROOT, timeout=max(1, min(2700, deadline - time.time())))
         workflow_completed = True
         if not fixed_device:
             save_session(settings, encrypted, key)
-        record = latest_accepted_record(settings.output_dir / settings.wechat.history_filename, today)
+        record = latest_accepted_record(settings.output_dir / settings.wechat.history_filename, today) if args.mode != "draft" else None
         if record:
             record_publication(settings, record, today)
         report = fresh_json(settings.automation_dir / "wechat_scheduled_result.json", started)
         if not report:
             raise RuntimeError("Missing current WeChat run report.")
+        if args.mode == "draft":
+            delivery = report.get("draft_delivery", {})
+            saved = (report.get("wechat_status") == "draft_saved" and delivery.get("status") == "saved"
+                     and bool(delivery.get("draft_media_id") or delivery.get("app_msg_id")))
+            if not saved:
+                from toutiao_content_factory.services.wechat_execution import draft_delivery_state
+                report["draft_delivery"] = {"status": draft_delivery_state(settings, started)}
+                if report.get("wechat_status") == "draft_saved":
+                    report.update(status="error", error_type="MissingDraftEvidence")
+                    report.pop("wechat_status", None)
+                if report["draft_delivery"]["status"] == "uncertain":
+                    report["status"] = "error"
+            return finish(report, 1 if report.get("draft_delivery", {}).get("status") == "uncertain"
+                          else cloud_exit_code(report, result.returncode))
         if record:
             report["publication_attempted"] = True
             expected = record.get("expected_publication", {})
@@ -387,6 +427,10 @@ def main(argv: list[str] | None = None) -> int:
         return finish(report, cloud_exit_code(report, result.returncode))
     except Exception as exc:
         logger.error("WeChat cloud run stopped: %s", type(exc).__name__)
+        if args.mode == "draft":
+            from toutiao_content_factory.services.wechat_execution import draft_delivery_state
+            return finish({"status": "error", "error_type": type(exc).__name__,
+                "draft_delivery": {"status": draft_delivery_state(settings, workflow_started)}}, 1)
         from toutiao_content_factory.services.wechat_execution import phase_attempted
         not_submitted = (publication_started and workflow_started is not None
                          and (workflow_completed or isinstance(exc, subprocess.TimeoutExpired))

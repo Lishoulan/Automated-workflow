@@ -504,6 +504,7 @@ class WechatSettings:
     editor_135_base_url: str
     editor_135_profile_dir: str
     builtin_theme: str
+    draft_only: bool = False
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "WechatSettings":
@@ -544,6 +545,7 @@ class WechatSettings:
             editor_135_base_url=str(payload.get("editor_135_base_url", "https://www.135editor.com")).strip(),
             editor_135_profile_dir=str(payload.get("editor_135_profile_dir", "editor_135_profile")).strip(),
             builtin_theme=str(payload.get("builtin_theme", "tech_blue")).strip() or "tech_blue",
+            draft_only=bool(payload.get("draft_only", False)),
         )
 
 
@@ -1576,6 +1578,7 @@ def _load_wechat_config_final(
     return WechatSettings(
         enabled=_env_flag_scoped("WECHAT_ENABLED", account_profile.key, wechat_config.enabled),
         auto_publish=_env_flag_scoped("WECHAT_AUTO_PUBLISH", account_profile.key, wechat_config.auto_publish),
+        draft_only=_env_flag_scoped("WECHAT_DRAFT_ONLY", account_profile.key, wechat_config.draft_only),
         toutiao_sync_delay_seconds=int(
             _env_value_scoped(
                 "WECHAT_TOUTIAO_SYNC_DELAY",

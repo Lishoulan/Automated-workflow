@@ -40,13 +40,31 @@ def phase_attempted(settings, started):
         if (not isinstance(value, dict) or value.get("account_key") != settings.account_key
                 or (identity and value.get("run_id") != identity)):
             return None
-        if value.get("phase") == "preparing" and value.get("publication_attempted") is False:
+        if value.get("phase") in {"preparing", "saving_draft"} and value.get("publication_attempted") is False:
             return False
         if value.get("phase") == "submitting" and value.get("publication_attempted") is True:
             return True
     except (OSError, ValueError):
         pass
     return None
+
+
+def draft_delivery_state(settings, started):
+    """Only a current preparing phase proves draft saving has not started."""
+    if not started:
+        return "not_saved"
+    path = settings.automation_dir / "wechat_publish_phase.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if (path.stat().st_mtime_ns >= started and isinstance(value, dict)
+                and value.get("account_key") == settings.account_key
+                and value.get("run_id") == os.environ.get("WECHAT_EXECUTION_ID", "")
+                and value.get("phase") == "preparing"
+                and value.get("publication_attempted") is False):
+            return "not_saved"
+    except (OSError, ValueError):
+        pass
+    return "uncertain"
 
 
 def require_submission_budget():

@@ -2351,7 +2351,7 @@ class WebViewService:
             "latest_title": latest_wechat.title,
             "latest_run_name": latest_wechat.run_name,
             "latest_updated_at": latest_wechat.submitted_at,
-            "auto_publish_enabled": bool(self.settings.wechat.auto_publish or latest_wechat.submit_requested),
+            "auto_publish_enabled": not self.settings.wechat.draft_only and bool(self.settings.wechat.auto_publish or latest_wechat.submit_requested),
             "latest_detail_url": f"/runs/{latest_wechat.run_name}?account={self.account_key}" if latest_wechat.run_name else "",
             "history_url": "",
             "external_url": latest_wechat.external_url,

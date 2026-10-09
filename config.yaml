@@ -299,6 +299,7 @@ publishing:
     - text=审核中
     - text=已发布
 wechat:
+  draft_only: true
   enabled: true
   auto_publish: false
   toutiao_sync_delay_seconds: 1800

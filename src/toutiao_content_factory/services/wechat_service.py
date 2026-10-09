@@ -7,6 +7,7 @@ import os
 import re
 import time
 import uuid
+from datetime import datetime, timezone
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -196,16 +197,17 @@ class WechatPublishService:
         review_status = self._load_json(run_dir / "review_status.json")
         if not publish_meta:
             raise FileNotFoundError("publish_meta.json is missing.")
-        if str(review_status.get("status", "")) != "approved":
+        draft_only = self.settings.wechat.draft_only
+        if not draft_only and str(review_status.get("status", "")) != "approved":
             raise RuntimeError("Run is not approved yet. Approve review before publishing.")
 
         title = self._clip_title(str(publish_meta.get("selected_title", "")).strip())
         summary = str(publish_meta.get("summary", "")).strip()
         article = self._read_text(publish_dir / "article.md")
-        if self.settings.wechat_auto_publish_mode and publish_meta.get("approval_mode") != "manual":
+        if self.settings.wechat_auto_publish_mode and not draft_only and publish_meta.get("approval_mode") != "manual":
             from toutiao_content_factory.services.wechat_revision import assert_run_automatic_approval
             assert_run_automatic_approval(run_dir, article, title)
-        if self.settings.wechat_auto_publish_mode:
+        if self.settings.wechat_auto_publish_mode and not draft_only:
             from toutiao_content_factory.services.wechat_execution import require_submission_budget
             require_submission_budget()
 
@@ -213,7 +215,7 @@ class WechatPublishService:
             pipeline = AntiAIFlavorPipeline()
             result = pipeline.process(article)
             density = result["density"]
-            if not self.settings.wechat_auto_publish_mode:
+            if not self.settings.wechat_auto_publish_mode and not draft_only:
                 article = result["processed_text"]
             self.logger.info(
                 "WeChat compliance: density_score=%d, noun_ratio=%.3f, verb_ratio=%.3f, avg_sent_len=%.1f",
@@ -273,13 +275,16 @@ class WechatPublishService:
             )
         article_html_path.write_text(article_html, encoding="utf-8")
         expected_publication = {}
-        if self.settings.wechat_auto_publish_mode:
+        if self.settings.wechat_auto_publish_mode and not draft_only:
             from toutiao_content_factory.services.wechat_metrics import html_body_hash, assert_reviewed_body_preserved
             assert_reviewed_body_preserved(article, article_html)
             expected_publication = {"account": self.settings.wechat.account_name,
                                     "title": title, "body_hash": html_body_hash(article_html),
                                     "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
 
+        if draft_only:
+            from toutiao_content_factory.services.wechat_execution import write_phase
+            write_phase(self.settings, "saving_draft")
         if api_available:
             payload = self._build_article_payload(
                 title=title,
@@ -309,7 +314,7 @@ class WechatPublishService:
                     raise RuntimeError(f"Draft creation did not return media_id: {draft_response}")
 
         publish_response: dict[str, Any] = {}
-        should_submit = submit or self.settings.wechat.auto_publish
+        should_submit = not draft_only and (submit or self.settings.wechat.auto_publish)
         if should_submit:
             if self.settings.wechat_auto_publish_mode:
                 from toutiao_content_factory.services.wechat_execution import write_phase, require_submission_budget
@@ -335,7 +340,7 @@ class WechatPublishService:
             "published_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "platform": "wechat",
             "run_dir": str(run_dir),
-            "status": str(publish_response.get("status", "")).strip() if publish_response else "draft_created",
+            "status": str(publish_response.get("status", "")).strip() if publish_response else ("draft_saved" if draft_only else "draft_created"),
             "draft_status": "created" if api_available else "browser_only",
             "submit_status": str(publish_response.get("status", "")).strip() if publish_response else "",
             "draft_media_id": draft_media_id,
@@ -349,6 +354,10 @@ class WechatPublishService:
             "original_declared": bool(publish_response.get("original_declared", False)) if publish_response else False,
             "title": title,
             "api_available": api_available,
+            **({"draft_only": True, "manual_publication_required": True, "publication_attempted": False,
+                "review_status": str(review_status.get("status", "pending")),
+                "app_msg_id": str(publish_response.get("app_msg_id", "")),
+                "saved_at": datetime.now(timezone.utc).isoformat()} if draft_only else {}),
             **({"expected_publication": expected_publication} if expected_publication else {}),
         }
         result_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1271,6 +1280,7 @@ class WechatPublishService:
         cover_path: Path,
         submit: bool = True,
     ) -> dict[str, Any]:
+        submit = submit and not self.settings.wechat.draft_only
         if sync_playwright is None:
             raise RuntimeError("Playwright is not installed.")
 
@@ -1970,6 +1980,8 @@ class WechatPublishService:
         return self._submit_draft_via_browser_original(draft_media_id=draft_media_id, title=title)
 
     def _submit_draft_via_browser_original(self, *, draft_media_id: str, title: str) -> dict[str, Any]:
+        if self.settings.wechat.draft_only:
+            raise RuntimeError("WeChat draft-only mode prohibits publication")
         if sync_playwright is None:
             raise RuntimeError(
                 "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`."
@@ -2143,6 +2155,8 @@ class WechatPublishService:
         return None
 
     def _click_publish_button_on_wechat_page(self, page) -> None:
+        if self.settings.wechat.draft_only:
+            raise RuntimeError("WeChat draft-only mode prohibits publication")
         js_result = page.evaluate(
             """(selectors) => {
                 for (const sel of selectors) {
@@ -2188,6 +2202,8 @@ class WechatPublishService:
         raise RuntimeError("Could not find a publish button on the WeChat draft page.")
 
     def _confirm_wechat_publish_dialog(self, page) -> bool:
+        if self.settings.wechat.draft_only:
+            raise RuntimeError("WeChat draft-only mode prohibits publication")
         confirm_texts = WECHAT_PUBLISH_CONFIRM_TEXTS
         page.wait_for_timeout(1500)
         original_declared = self._ensure_original_declaration(page)

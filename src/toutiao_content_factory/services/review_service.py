@@ -147,6 +147,33 @@ class ReviewWorkflowService:
             "review_status": status_path,
         }
 
+    def prepare_wechat_draft(self, run_dir: Path) -> dict[str, Path]:
+        """Export an unapproved package for human review; never grant publication approval."""
+        if self.settings.platform != "wechat" or not self.settings.wechat.draft_only:
+            raise RuntimeError("Unapproved draft export requires WeChat draft-only mode")
+        bundle, topic = self._load_bundle(run_dir)
+        candidates = self._title_candidates(bundle)
+        title, index = self._resolve_title(candidates, None, None)
+        article = clean_article_text(self._text_cleaner.strip_prompt_leakage(bundle.article).strip(),
+                                     title_candidates=[title, *candidates])
+        if not title.strip() or not article.strip():
+            raise ValueError("A WeChat draft requires a title and article")
+        directory = run_dir / self.settings.review.publish_dirname
+        # Do not replace an existing approved package or its approval evidence.
+        if (directory / "publish_meta.json").exists():
+            raise RuntimeError("Draft package already exists; retain its original review evidence")
+        directory.mkdir(parents=True, exist_ok=True)
+        article_path = directory / "article.md"
+        meta_path = directory / "publish_meta.json"
+        article_path.write_text(article + "\n", encoding="utf-8")
+        meta_path.write_text(json.dumps({"selected_title": title, "selected_title_index": index,
+            "summary": bundle.summary, "selected_topic": topic.__dict__ if topic else None,
+            "source_run_dir": str(run_dir), "approval_mode": "pending_manual_review",
+            "score_snapshot": bundle.score_snapshot, "validation_notes": bundle.validation_notes,
+            "review_notes": bundle.review_notes, "revision_suggestions": bundle.revision_suggestions,
+            "draft_only": True}, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"publish_article": article_path, "publish_meta": meta_path}
+
     def approve_review(
         self,
         run_dir: Path,

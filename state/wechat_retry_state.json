@@ -783,10 +783,17 @@
     "2026-10-09": {
       "runs": {
         "37873030668:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-09T02:07:23.186197+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 259.062,
+          "outcome": "draft_only",
+          "draft_delivery": {
+            "status": "saved",
+            "title": "奇瑞汽车海外市场成绩亮眼，国内市场销量下滑39.2%",
+            "draft_media_id": "",
+            "app_msg_id": "100001388"
+          }
         }
       },
       "dispatches": {},

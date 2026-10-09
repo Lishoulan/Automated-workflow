@@ -49,6 +49,7 @@ def configure_environment(account: str, *, draft_only: bool = False) -> None:
         "TOUTIAO_MAX_DAILY_TOPIC_ATTEMPTS": "5",
         "WECHAT_ACCOUNT_NAME": "小椰科技",
         "WECHAT_DRAFT_ONLY": "1" if draft_only else "0",
+        "TOUTIAO_SKIP_IMAGE_GENERATION": "0",
     }
     for name, value in overrides.items():
         os.environ[name] = value

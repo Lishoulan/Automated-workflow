@@ -9,6 +9,7 @@ import os
 import platform
 import random
 import re
+import time
 from urllib.request import urlopen
 from datetime import datetime
 from pathlib import Path
@@ -232,6 +233,8 @@ def _format_api_error(exc: BaseException) -> str:
             detail,
         )
         detail = re.sub(r"(?i)Bearer\s+[^\s,;]+", "Bearer <redacted>", detail)
+        detail = re.sub(r"sk-[A-Za-z0-9_*.-]+", "<redacted-key>", detail)
+        detail = re.sub(r"cfut_[A-Za-z0-9_-]+", "<redacted-key>", detail)
         detail = re.sub(
             r"(?i)([?&](?:api[_-]?key|token)=)[^&\s]+",
             r"\1<redacted>",
@@ -279,7 +282,7 @@ class ImageGenerationService:
         candidates = (
             getattr(image_settings, "model_api_key", ""),
             os.getenv("IMAGE_API_KEY", ""),
-            os.getenv("OPENAI_API_KEY", ""),
+            "" if getattr(self.settings, "platform", "") == "wechat" else os.getenv("OPENAI_API_KEY", ""),
         )
         for candidate in candidates:
             value = str(candidate or "").strip()
@@ -303,6 +306,14 @@ class ImageGenerationService:
             10.0,
             float(getattr(image_settings, "request_timeout_seconds", 180.0) or 180.0),
         )
+        if getattr(self.settings, "platform", "") == "wechat":
+            deadline = os.environ.get("WECHAT_RUN_DEADLINE_EPOCH")
+            if deadline:
+                # Keep two minutes for draft saving inside the shared run budget.
+                remaining = float(deadline) - time.time() - 120
+                if remaining < 10:
+                    raise ImageGenerationAPIUnavailable("Insufficient cover-generation budget; manuscript retained")
+                timeout = min(timeout, remaining)
         base_url = str(getattr(image_settings, "model_base_url", "") or "").strip()
         # Image credentials are independent from the content-model relay. An
         # empty IMAGE_BASE_URL therefore intentionally means the OpenAI API.
@@ -462,17 +473,35 @@ class ImageGenerationService:
         cr = ri / "cover.png"
         cp = pi / "cover.png"
 
-        cover_prompt = self._build_api_cover_prompt(title)
+        wechat_cover = getattr(self.settings, "platform", "") == "wechat"
+        cover_prompt = (self._build_wechat_cover_prompt(title)
+                        if wechat_cover else self._build_api_cover_prompt(title))
         cover_backend = ""
         api_attempted = False
         api_error_type = ""
         api_error_detail = ""
+        free_api_attempted = False
+        free_api_error_detail = ""
         api_cover_source = ri / "cover_ai.png"
         api_cover_source.unlink(missing_ok=True)
         renderer = None
         infographic_backends: set[str] = set()
 
-        if self._api_backend_requested():
+        if wechat_cover and os.environ.get("WECHAT_FREE_COVER_ONLY") == "1":
+            from toutiao_content_factory.services.wechat_cloud_cover import generate_cloud_cover
+            free_api_attempted = True
+            try:
+                generate_cloud_cover(title, cr)
+            except Exception as exc:
+                (publish_dir / "image_generation_result.json").write_text(json.dumps({
+                    "generated_at": self._now(), "status": "failed", "api_attempted": False,
+                    "api_succeeded": False, "free_api_attempted": True, "free_api_succeeded": False,
+                    "free_api_error_detail": _format_api_error(exc), "cover_style": "warm_editorial",
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                raise
+            cover_backend = "cloudflare_flux"
+
+        if self._api_backend_requested() and not cover_backend:
             api_attempted = True
             try:
                 self._generate_api_image(
@@ -480,7 +509,14 @@ class ImageGenerationService:
                     api_cover_source,
                     str(getattr(self.settings.image_generation, "cover_size", "auto") or "auto"),
                 )
-                self._compose_api_cover(api_cover_source, title, cr)
+                if wechat_cover:
+                    # The model owns the editorial layout; retain its typography
+                    # instead of replacing it with the Toutiao dark title overlay.
+                    with Image.open(api_cover_source) as source:
+                        ImageOps.fit(source.convert("RGB"), (1200, 511),
+                            method=Image.Resampling.LANCZOS).save(cr, format="PNG", optimize=True)
+                else:
+                    self._compose_api_cover(api_cover_source, title, cr)
                 cover_backend = "image2"
                 self.logger.info("Cover generated via image API (%s)", getattr(self.settings.image_generation, "model_name", "gpt-image-2"))
             except Exception as exc:
@@ -488,11 +524,28 @@ class ImageGenerationService:
                 api_error_detail = _format_api_error(exc)
                 api_cover_source.unlink(missing_ok=True)
                 self.logger.warning(
-                    "GPT image cover failed (%s): %s; using local image fallback",
+                    "GPT image cover failed (%s): %s; local fallback enabled=%s",
                     api_error_type,
                     api_error_detail,
+                    bool(getattr(self.settings.image_generation, "fallback_to_renderer", True)),
                 )
-                if not bool(getattr(self.settings.image_generation, "fallback_to_renderer", True)):
+                if wechat_cover and os.environ.get("CLOUDFLARE_AI_TOKEN"):
+                    from toutiao_content_factory.services.wechat_cloud_cover import generate_cloud_cover
+                    free_api_attempted = True
+                    try:
+                        generate_cloud_cover(title, cr)
+                        cover_backend = "cloudflare_flux"
+                    except Exception as cloud_exc:
+                        free_api_error_detail = _format_api_error(cloud_exc)
+                if not cover_backend and not bool(getattr(self.settings.image_generation, "fallback_to_renderer", True)):
+                    (publish_dir / "image_generation_result.json").write_text(json.dumps({
+                        "generated_at": self._now(), "api_attempted": True, "api_succeeded": False,
+                        "status": "failed", "api_error_type": api_error_type,
+                        "api_error_detail": api_error_detail, "cover_prompt": cover_prompt,
+                        "free_api_attempted": free_api_attempted, "free_api_succeeded": False,
+                        "free_api_error_detail": free_api_error_detail,
+                        "cover_style": "warm_editorial" if wechat_cover else "dark_tech",
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
                     raise
 
         if not cover_backend:
@@ -590,13 +643,19 @@ class ImageGenerationService:
             "backend": cover_backend,
             "cover_backend": cover_backend,
             "infographic_backend": infographic_backend,
-            "model": str(getattr(self.settings.image_generation, "model_name", "gpt-image-2")) if cover_backend == "image2" else "local",
-            "used_fallback": (api_attempted and cover_backend != "image2") or cover_backend == "pillow",
+            "model": (str(getattr(self.settings.image_generation, "model_name", "gpt-image-2"))
+                      if cover_backend == "image2" else "@cf/black-forest-labs/flux-1-schnell" if cover_backend == "cloudflare_flux" else "local"),
+            "used_fallback": (api_attempted and cover_backend != "image2") or cover_backend in {"pillow", "cloudflare_flux"},
             "api_attempted": api_attempted,
             "api_succeeded": cover_backend == "image2",
+            "ai_generated": cover_backend in {"image2", "cloudflare_flux"},
             "api_error_type": api_error_type,
             "api_error_detail": api_error_detail,
+            "free_api_attempted": free_api_attempted,
+            "free_api_succeeded": cover_backend == "cloudflare_flux",
+            "free_api_error_detail": free_api_error_detail,
             "cover_prompt": cover_prompt,
+            "cover_style": "warm_editorial" if wechat_cover else "dark_tech",
             "infographic_prompts": [
                 str(spec.get("prompt", ""))
                 for spec in successful_infographic_specs
@@ -605,6 +664,7 @@ class ImageGenerationService:
             "artifacts": {
                 "cover": str(cr),
                 "cover_ai_source": str(api_cover_source) if api_cover_source.exists() else "",
+                "cover_free_ai_source": str(ri / "cover_free_ai.png") if (ri / "cover_free_ai.png").exists() else "",
                 "infographics": [str(p) for p in ips],
             },
             "publish_artifacts": {
@@ -1134,6 +1194,28 @@ class ImageGenerationService:
             "Composition: 移动端可读的强标题层级，主体视觉简洁，保留足够留白，标题区域清楚。\n"
             f"Text (verbatim): “{title}”\n"
             "Constraints: 只使用给定标题，不添加数字、公司、排名、口号或未经证实的事实；中文清晰；无水印、无额外文字。"
+        )
+
+    @staticmethod
+    def _build_wechat_cover_prompt(title: str) -> str:
+        return (
+            "Use case: photorealistic-natural\n"
+            "Asset type: 微信公众号横版封面，宽高比2.35:1，适合手机缩略图。\n"
+            "Primary request: 设计高品质中文商业杂志封面，主题由下方标题决定。\n"
+            "Style/medium: 暖象牙白纸质背景，炭灰文字和克制朱红点缀，细腻纹理、自然光、"
+            "真实材料、柔和阴影、有层次的摄影或精致编辑插画。\n"
+            "Scene/backdrop: 根据文章主题选择可信的实体场景；汽车题用无品牌汽车、展厅，"
+            "只有出口题才出现港口货轮；机器人题用合理机械结构与工厂；"
+            "能源题用电池或储能设备。不得所有主题都画成汽车港口。\n"
+            "Composition/framing: 左侧醒目大标题，右侧主题主体，有留白；标题可分两至四行，"
+            "朱红强调关键词，主标题和主体离边缘至少8%，兼顾微信宽图和方形缩略图。\n"
+            f"Text (verbatim): {json.dumps(str(title), ensure_ascii=False)}\n"
+            "Constraints: 唯一允许的文字是上述标题，必须逐字准确，不换标题、不添加副标题、"
+            "数字、数据图表、日期、口号或未经核验的事实。保留数字对应的公司、品牌和统计周期，"
+            "不暗示不同口径之间的因果关系。文字必须清晰、端正、可读。"
+            "无品牌标识、无水印、无虚假车型或真实人物肖像。\n"
+            "Avoid: 蓝底文字卡片、模板式数据卡、廉价渐变、密集小字、霓虹科技光效、"
+            "花哨仪表盘、虚构公司logo、变形机械。"
         )
 
     @staticmethod

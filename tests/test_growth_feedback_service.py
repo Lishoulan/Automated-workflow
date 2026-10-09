@@ -5,6 +5,7 @@ from pathlib import Path
 
 from toutiao_content_factory.services.growth_feedback_service import (
     build_growth_feedback,
+    render_daily_growth_report,
     topic_feedback_score,
     write_growth_outputs,
 )
@@ -124,6 +125,35 @@ def test_topic_weights_require_thirty_qualified_samples_and_five_per_tag():
     feedback = build_growth_feedback({}, {"works": works})
     assert feedback["topic_feedback"]["qualified_samples"] == 29
     assert feedback["topic_feedback"]["weights"]["房产继承"] == 0
+
+
+def test_exposure_alone_cannot_recommend_the_real_low_read_work():
+    weak = _entry("taishan", "weitoutiao", "泰山景区否认躲雨收费传闻", 370, 1)
+    weak["checkpoints"]["24h"] = weak["checkpoints"].pop("72h")
+    other = _entry("other", "weitoutiao", "其他同期作品", 30, 0)
+    other["checkpoints"]["24h"] = other["checkpoints"].pop("72h")
+    good = _entry("property", "weitoutiao", "业主告物业要停车费账本，法院这么判", 1600, 75)
+    comparable = _entry("same-window", "weitoutiao", "同窗口另一作品", 800, 10)
+
+    feedback = build_growth_feedback({}, {"works": {item["gid"]: item for item in (weak, other, good, comparable)}})
+
+    assert [item["gid"] for item in feedback["winners"]] == ["property"]
+    assert feedback["topic_feedback"]["status"] == "collecting"
+    report = render_daily_growth_report(feedback)
+    assert "72h，展现 1600，阅读 75" in report
+    assert "不代表题材或写法已证明有效" in report
+    assert "继续放大" not in report
+
+
+def test_high_rate_with_low_read_count_or_exposure_is_not_a_recommendation():
+    works = [
+        _entry("tiny", "weitoutiao", "很少展现的高阅读率", 10, 3),
+        _entry("large", "weitoutiao", "更大展现但阅读不足", 1000, 20),
+        _entry("middle", "weitoutiao", "同窗口中位作品", 500, 30),
+        _entry("strong", "weitoutiao", "阅读量和阅读率都较高", 1000, 80),
+    ]
+    feedback = build_growth_feedback({}, {"works": {item["gid"]: item for item in works}})
+    assert [item["gid"] for item in feedback["winners"]] == ["strong"]
 
 
 def test_opening_experiment_keeps_windows_separate_and_excludes_late_captures():

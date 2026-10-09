@@ -70,6 +70,25 @@ def test_publication_metadata_is_not_a_statistical_period():
     assert not evidence.source_metadata('<meta name="publishdate" content="2026-02-31">')["date_verified"]
 
 
+def test_court_original_case_keeps_the_explicit_historical_header_date():
+    page = ('<ul class="clearfix fl message"><li class="fl">来源：最高人民法院新闻局 人民法院新闻传媒总社</li>'
+            '<li class="fl">发布时间：2022-07-11 09:33:43</li></ul>'
+            '<p>相关链接：发布时间：2026-10-09 10:00:00</p>')
+    result = evidence.source_metadata(page, source_url="https://www.court.gov.cn/zixun/xiangqing/365111.html")
+    assert result["published_at"] == "2022-07-11T09:33:43"
+    assert result["date_verified"] is True
+    assert result["publisher"] == "最高人民法院新闻局 人民法院新闻传媒总社"
+
+
+@pytest.mark.parametrize("url,header", [
+    ("https://www.court.gov.cn.attacker.test/story", 'class="message"'),
+    ("https://www.court.gov.cn/story", 'class="body"'),
+])
+def test_court_date_parser_cannot_promote_lookalike_hosts_or_prose(url, header):
+    page = f'<ul {header}><li>发布时间：2022-07-11 09:33:43</li></ul>'
+    assert evidence.source_metadata(page, source_url=url)["date_verified"] is False
+
+
 def test_two_numbers_in_same_source_cannot_be_swapped_between_financial_metrics():
     source = material.MaterialSource("财报", "https://a.test", "2025年甲公司营业收入达到10亿元，净利润达到20亿元。", True)
     facts = evidence.build_facts(evidence.source_records([source]))

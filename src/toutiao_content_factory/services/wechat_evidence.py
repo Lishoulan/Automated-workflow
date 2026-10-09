@@ -132,6 +132,15 @@ def source_metadata(page_html: str, *, source_url: str = "") -> dict:
             if value:
                 values.setdefault(field, value)
     host = urlsplit(source_url).hostname or ""
+    if host in {"court.gov.cn", "www.court.gov.cn"}:
+        header = re.search(r'<ul\b[^>]*\bclass=[\"\'][^\"\']*\bmessage\b[^\"\']*[\"\'][^>]*>(.*?)</ul>',
+                           page_html, re.S | re.I)
+        if header:
+            for label, field in (("发布时间", "datepublished"), ("来源", "article:publisher")):
+                match = re.search(r'<li\b[^>]*>\s*' + label + r'[：:]\s*([^<>]+)</li>',
+                                  header[1], re.S | re.I)
+                if match:
+                    values.setdefault(field, html.unescape(match[1]).strip())
     if host == "m.thepaper.cn":
         header = re.search(r'<div[^>]+class=[\"\'][^\"\']*\bheader\b[^\"\']*[\"\'][^>]*>', page_html, re.I)
         if header:

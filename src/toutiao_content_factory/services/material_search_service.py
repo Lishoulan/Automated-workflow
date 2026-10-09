@@ -929,6 +929,9 @@ def collect_material(
             return cached
     bundle = MaterialBundle(query=title)
     hits: list[dict] = []
+    seen_urls: set[str] = set()
+    fetch_deadline: float | None = deadline
+    budget_exhausted = False
 
     def sufficient():
         if not preserve_sources:
@@ -940,6 +943,7 @@ def collect_material(
         return assess_material_evidence(current).passed
 
     def candidates():
+        nonlocal budget_exhausted
         # Source-backed evergreen cases can fetch their original report even
         # when search is unavailable. Search/result pages are not article seeds.
         try:
@@ -948,19 +952,34 @@ def collect_material(
         except ValueError:
             direct = False
         if direct and _fetch_priority(source_url) > 0:
+            seen_urls.add(source_url)
             yield {"title": title, "url": source_url, "snippet": ""}
         if sufficient():
             return
         for phrase in _search_phrases(title):
-            found = search_web(phrase, limit=limit, **({"deadline": deadline} if deadline is not None else {}))
+            source_count = (len(bundle.sources) if preserve_sources else
+                            sum(item.evidence_type == "article" for item in bundle.usable))
+            if sufficient() or source_count >= max_sources:
+                return
+            try:
+                _remaining_ms(fetch_deadline, 45000)
+                found = search_web(phrase, limit=limit,
+                                   **({"deadline": fetch_deadline} if fetch_deadline is not None else {}))
+            except MaterialBudgetExceeded:
+                budget_exhausted = True
+                return
             if found:
                 hits.extend(found)
-                yield from found
-                return
+                for hit in found:
+                    url = str(hit.get("url") or "").strip()
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        yield hit
+                # Search hits alone are not usable evidence. If the fetched
+                # reports are still too thin, try the next existing phrase
+                # within the same source and time limits.
 
-    fetch_deadline: float | None = deadline
     system_failures = 0
-    budget_exhausted = False
     for hit in candidates():
         if fetch_deadline is None:
             fetch_deadline = time.monotonic() + MATERIAL_FETCH_BUDGET_SECONDS
@@ -981,7 +1000,7 @@ def collect_material(
         try:
             # `fetch_text_smart`：HTTP 拿到反爬页时自动改用真实浏览器。
             page, final_url, how = fetch_text_smart(url, timeout=timeout,
-                                                  **({"deadline": fetch_deadline} if deadline is not None else {}))
+                                                  deadline=fetch_deadline)
             source.url = final_url or url
             if preserve_sources:
                 from toutiao_content_factory.services.wechat_evidence import source_metadata, is_event_article

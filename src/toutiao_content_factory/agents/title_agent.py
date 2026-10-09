@@ -645,6 +645,9 @@ class TitleAgent(BaseAgent):
                 "包含正文中的具体主体或数字以及已经披露的动作、变化或边界。"
                 "若正文提供具象锚点，每条至少承接一个与主要事实相关的锚点，不能只写泛称主体。"
                 "数字需保留对象、单位和时间；计划、预测数字不得写成已完成结果。"
+                "让读者仅看标题就知道发生了什么、正文会解释哪个具体疑惑；优先突出与主线相关的一项变化。"
+                "对比必须是正文已解释的关系，不同主体、统计期或口径不能制造涨跌冲突。"
+                "不用‘这事最该说的是什么’‘背后藏着什么’等通用悬念，也不堆砌多个无关数字。"
                 "不强行增加利润、订单或受益判断。只输出JSON，titles为字符串数组，recommended_titles从中选3条。\n"
                 + self.json_text({"article_kind": data_report.article_kind, "article": body,
                                   "concrete_anchors": anchors, "avoid_titles": cache_context.avoid_titles[:8]})

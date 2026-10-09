@@ -98,6 +98,7 @@ def _format_benchmarks(rows: list[dict[str, Any]]) -> dict[str, dict[str, float 
         result[content_type] = {
             "samples": len(group),
             "median_impressions": round(float(median(row["impressions"] for row in group)), 2),
+            "median_reads": round(float(median(row["reads"] for row in group)), 2),
             "median_read_rate_pct": round(float(median(row["read_rate_pct"] for row in group)), 3),
         }
     return result
@@ -147,6 +148,8 @@ def build_growth_feedback(
             row["reads"] > 0
             and index >= 1.25
             and row["impressions"] >= float(benchmark.get("median_impressions") or 0)
+            and row["reads"] >= float(benchmark.get("median_reads") or 0)
+            and row["read_rate_pct"] >= max(2.0, float(benchmark.get("median_read_rate_pct") or 0))
         ):
             status = "winner"
         elif row["checkpoint"] == "72h" and (row["reads"] == 0 or index <= 0.45):
@@ -340,16 +343,18 @@ def render_daily_growth_report(feedback: dict[str, Any]) -> str:
             f"- {content_type}：{metrics.get('works', 0)} 条，{metrics.get('impressions', 0)} 展现，"
             f"{metrics.get('reads', 0)} 阅读，零阅读 {metrics.get('zero_read_works', 0)} 条。"
         )
-    lines.extend(["", "## 继续放大", ""])
+    lines.extend(["", "## 值得借鉴的作品（观察线索）", "",
+                  "阅读率至少2%，且阅读量和展现量不低于同类型、同窗口中位数；不代表题材或写法已证明有效。借鉴前需重新核对原文，不直接复用标题或正文。", ""])
     winners = feedback.get("winners") or []
     if winners:
         for item in winners[:5]:
             lines.append(
-                f"- {item.get('title', '')}（{item.get('type', '')}，展现 {item.get('impressions', 0)}，"
+                f"- {item.get('title', '')}（{item.get('type', '')}，{item.get('checkpoint', '')}，"
+                f"展现 {item.get('impressions', 0)}，阅读 {item.get('reads', 0)}，"
                 f"阅读率 {item.get('read_rate_pct', 0)}%）"
             )
     else:
-        lines.append("- 暂无达到放大阈值的成熟样本。")
+        lines.append("- 暂无同时达到阅读量、阅读率和展现量要求的成熟样本；选题和写作质量优化照常进行。")
     lines.extend(["", "## 自动止损", ""])
     stopped = feedback.get("stop_loss") or []
     if stopped:

@@ -83,6 +83,36 @@ def test_snippets_do_not_exhaust_budget_before_full_report(monkeypatch):
     assert bundle.usable[-1].evidence_type == "article"
 
 
+def test_thin_search_hits_continue_to_next_phrase_without_refetching(monkeypatch):
+    title = "社区志愿者为老人提供服务，哪些安排已经落实"
+    weak = {"title": "社区服务报道", "url": "https://publisher.example/thin", "snippet": ""}
+    full = {"title": "社区现场安排", "url": "https://publisher.example/full", "snippet": ""}
+    search = MagicMock(side_effect=[[weak], [weak, full]])
+    monkeypatch.setattr(material, "search_web", search)
+    fetch = MagicMock(side_effect=[("<p>只有标题，没有事实正文。</p>", weak["url"], "http"),
+                                  (f"<p>{_full_body()}</p>", full["url"], "http")])
+    monkeypatch.setattr(material, "fetch_text_smart", fetch)
+
+    bundle = material.collect_material(title)
+
+    assert material.assess_material_evidence(bundle).passed
+    assert search.call_count == 2
+    assert [call.args[0] for call in fetch.call_args_list] == [weak["url"], full["url"]]
+    assert search.call_args_list[1].kwargs["deadline"] == fetch.call_args_list[0].kwargs["deadline"]
+
+
+def test_insufficient_sources_do_not_start_another_search_after_deadline(monkeypatch):
+    search = MagicMock(return_value=[{"title": "社区报道", "url": "https://publisher.example/thin"}])
+    monkeypatch.setattr(material, "search_web", search)
+    monkeypatch.setattr(material, "fetch_text_smart", lambda url, **_: ("<p>短页</p>", url, "http"))
+    monkeypatch.setattr(material.time, "monotonic", MagicMock(side_effect=[0, 0, 121]))
+
+    bundle = material.collect_material("社区志愿者为老人提供服务，哪些安排已经落实")
+
+    assert not material.assess_material_evidence(bundle).passed
+    search.assert_called_once()
+
+
 def test_baijiahao_reports_are_fetchable_but_baidu_search_and_lookalikes_are_not(monkeypatch):
     urls = [
         "https://www.baidu.com/s?wd=baijiahao.baidu.com",

@@ -237,7 +237,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=["check", "publish", "draft"], default="check")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if args.mode == "publish" and os.environ.get("WECHAT_DELIVERY_MODE") == "draft":
+    if args.mode == "publish" and (os.environ.get("WECHAT_DELIVERY_MODE") == "draft"
+                                  or load_settings(ROOT, account_key=args.account).wechat.draft_only):
         args.mode = "draft"
     if args.mode == "draft":
         configure_environment(args.account, draft_only=True)

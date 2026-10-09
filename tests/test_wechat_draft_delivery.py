@@ -159,6 +159,15 @@ def test_draft_budget_exhaustion_does_not_start(app_settings, monkeypatch):
     assert report["retry_status"] == "daily_budget_exhausted"
 
 
+def test_legacy_publish_command_honors_draft_configuration_without_workflow_override(app_settings, monkeypatch):
+    _, child, _ = setup_cloud(app_settings, monkeypatch, used_seconds=5300)
+    monkeypatch.delenv("WECHAT_DELIVERY_MODE")
+    assert cloud.main(["--mode", "publish"]) == 0
+    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text())
+    assert report["delivery_mode"] == "draft" and report["publication_attempted"] is False
+    child.assert_not_called()
+
+
 @pytest.mark.parametrize("phase,uncertain", [("preparing", False), ("saving_draft", True)])
 def test_draft_timeout_never_claims_publication(app_settings, monkeypatch, phase, uncertain):
     setup_cloud(app_settings, monkeypatch)

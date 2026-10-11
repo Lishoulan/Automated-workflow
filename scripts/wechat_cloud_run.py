@@ -225,8 +225,12 @@ def finish_retry(settings, state, day, key, started, report, code):
         state["days"][day]["dispatches"][key]["status"] = "dispatched"
         write_state_file(state, retry.STATE_PATH, "chore(wechat): record dispatched relay [skip ci]")
         report["retry_status"] = "dispatched"
+    elif (report.get("status") == "no_topics" and len(entry["runs"]) < retry.MAX_RUNS
+          and retry.remaining(entry) >= retry.PREPARATION_MIN_SECONDS):
+        report["retry_status"] = "waiting_for_material"
+        report["retry_message"] = "素材不足，保留实际次数与耗时，等待下一定时窗口；未保存新草稿。"
     elif (report.get("publication_attempted") is False and report.get("status") in {"review_required", "no_topics"}
-          and (len(entry["runs"]) >= retry.MAX_RUNS or retry.remaining(entry) < 120)):
+          and (len(entry["runs"]) >= retry.MAX_RUNS or retry.remaining(entry) < retry.PREPARATION_MIN_SECONDS)):
         report["retry_status"] = "daily_budget_exhausted"
         report["retry_message"] = "当天未发表，自动补跑已结束"
     return code

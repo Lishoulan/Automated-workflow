@@ -244,7 +244,7 @@ def test_true_faults_or_possible_submission_never_relay(changes, code):
 def test_explicit_normal_no_publication_can_relay(status):
     state, day = reserved()
     payload = normal() | {"status": status, "run_outcome": status}
-    assert retry.can_relay(state["days"][day], payload, 0)
+    assert retry.can_relay(state["days"][day], payload, 0) is (status == "review_required")
     assert cloud_exit_code(payload, 3) == 0
     assert cloud_exit_code(payload | {"publication_attempted": True}, 3) == 3
 
@@ -261,6 +261,22 @@ def test_dispatch_intent_persisted_before_api_and_single_dispatch(app_settings, 
     assert cloud.finish_retry(app_settings, state, day, "101:1", cloud.time.monotonic(), payload, 0) == 0
     assert events == ["complete", "intent", "api", "dispatched"]
     assert payload["retry_status"] == "dispatched"
+
+
+@pytest.mark.parametrize("count,expected", [(1, "waiting_for_material"), (3, "daily_budget_exhausted")])
+def test_empty_material_preserves_actual_count_and_does_not_dispatch(app_settings, monkeypatch, count, expected):
+    state, day = reserved()
+    for index in range(count - 1):
+        state["days"][day]["runs"]["old" + str(index)] = {"status": "completed", "started_at": datetime.now(timezone.utc).isoformat(), "elapsed_seconds": 100}
+    saved = []
+    monkeypatch.setattr(cloud, "write_state_file", lambda value, *a: saved.append(value))
+    sender = MagicMock()
+    monkeypatch.setattr(cloud.subprocess, "run", sender)
+    payload = normal() | {"status": "no_topics"}
+    cloud.finish_retry(app_settings, state, day, "101:1", cloud.time.monotonic(), payload, 0)
+    assert payload["retry_status"] == expected and payload["daily_run_count"] == count
+    assert len(saved[-1]["days"][day]["runs"]) == count
+    assert not sender.called
 
 
 @pytest.mark.parametrize("failure", ["persist", "dispatch"])
@@ -460,7 +476,7 @@ def test_lazy_enrichment_stops_before_unused_source_failure(app_settings, logger
     monkeypatch.setattr(TopicCollectionService, "_enrich_topic", score)
     monkeypatch.setattr(TopicCollectionService, "_passes_topic_focus", lambda *args: True)
     app._enrich_wechat_candidates(topics)
-    assert hydrator.call_count == 1
+    assert hydrator.call_count == 2
     # If the writer rejects the ready article, the next source really is needed.
     # Its system failure must still propagate, not turn into insufficient evidence.
     with pytest.raises(MaterialSearchError): app._enrich_wechat_candidates(topics[1:])

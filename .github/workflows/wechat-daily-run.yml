@@ -111,6 +111,13 @@ jobs:
           key: wechat-cloud-default-${{ vars.WECHAT_SESSION_CACHE_VERSION || 'v1' }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             wechat-cloud-default-${{ vars.WECHAT_SESSION_CACHE_VERSION || 'v1' }}-
+      - name: Restore verified source material reserve
+        uses: actions/cache/restore@v4
+        with:
+          path: output/automation/topic_pool/
+          key: wechat-material-default-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            wechat-material-default-
       - name: Validate login or run reviewed publication
         id: publish
         run: |
@@ -128,6 +135,12 @@ jobs:
             output/wechat_publish_history.json
             output/growth_ops/generation_costs/
           key: wechat-cloud-default-${{ vars.WECHAT_SESSION_CACHE_VERSION || 'v1' }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save source material reserve
+        if: always() && inputs.cover_check != true && inputs.mode != 'check'
+        uses: actions/cache/save@v4
+        with:
+          path: output/automation/topic_pool/
+          key: wechat-material-default-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Summarize actual outcome
         if: always() && inputs.cover_check != true
         run: |
@@ -192,6 +205,7 @@ jobs:
             output/automation/wechat_scheduled_result.json
             output/automation/wechat_login_check.json
             output/automation/wechat_review_diagnostics.json
+            output/automation/wechat_supply_report.json
             output/automation/wechat_metrics_report.json
             output/automation/generation_cost_report.json
             output/growth_ops/generation_costs/

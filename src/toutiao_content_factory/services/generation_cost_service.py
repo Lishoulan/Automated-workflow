@@ -75,6 +75,13 @@ class GenerationCostAttempt:
         request_id = _field(response, "_request_id") or _field(response, "id")
         if isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id) and not request_id.startswith(("sk-", "cfut_")):
             self.row["provider_request_id"] = request_id
+            billing = _field(response, "billing")
+            amount, currency = _number(_field(billing, "amount")), _field(billing, "currency")
+            if (amount is not None and currency in {"CNY", "USD"}
+                    and _field(billing, "status") == "charged"
+                    and _field(billing, "request_id") == request_id):
+                self.row.update(actual_amount=amount, actual_currency=currency,
+                                billing_status="provider_confirmed", billing_evidence="matched_response_receipt")
         self.row["status"] = "succeeded"
 
     def __exit__(self, exc_type, exc, traceback):
@@ -106,17 +113,31 @@ def build_cost_summary(output_dir, *, now=None, days=30):
         except (OSError, ValueError, KeyError, TypeError):
             invalid += 1
     estimates = Counter()
+    actuals = Counter()
+    verified = 0
     for row in rows:
         if _number(row.get("estimated_amount")) is not None and row.get("estimated_currency"):
             estimates[row["estimated_currency"]] += row["estimated_amount"]
+        if (row.get("billing_status") == "provider_confirmed"
+                and row.get("billing_evidence") == "matched_response_receipt"
+                and row.get("provider_request_id") and row.get("sdk_retries") == 0
+                and _number(row.get("actual_amount")) is not None and row.get("actual_currency") in {"CNY", "USD"}):
+            verified += 1
+            actuals[row["actual_currency"]] += row["actual_amount"]
+    complete = bool(rows) and verified == len(rows) and invalid == 0
     return {
         "schema": 1, "window_days": days, "recorded_calls": len(rows), "invalid_receipts": invalid,
-        "status": "actual_cost_unverified" if rows else "untracked",
+        "status": ("tracked_cost_verified" if complete else "actual_cost_partially_verified" if verified
+                   else "actual_cost_unverified" if rows else "untracked"),
         "by_kind": dict(Counter(row.get("kind", "unknown") for row in rows)),
         "by_status": dict(Counter(row.get("status", "unknown") for row in rows)),
         "missing_usage_calls": sum(row.get("usage") is None for row in rows),
         "estimated_by_currency": {key: round(value, 6) for key, value in estimates.items()},
-        "actual_total": None, "net_profit": None,
+        "verified_cost_calls": verified, "unverified_cost_calls": len(rows) - verified,
+        "actual_verified_by_currency": {key: round(value, 6) for key, value in actuals.items()},
+        "actual_total": round(sum(actuals.values()), 6) if complete and len(actuals) == 1 else None,
+        "actual_currency": next(iter(actuals)) if complete and len(actuals) == 1 else None,
+        "net_profit": None,
         "tracking_started_at": min((row["started_at"] for row in rows), default=None),
         "note": "Token prices are estimates, not provider invoices. Failed, interrupted and SDK-retried calls may be charged. Historical calls and equipment/labor costs are not fully covered; do not calculate net profit.",
     }

@@ -138,7 +138,9 @@ def complete(state: dict, day: str, key: str, elapsed: float, report: dict, diag
 
 
 def can_relay(entry: dict, report: dict, exit_code: int) -> bool:
-    return (exit_code == 0 and report.get("status") in {"review_required", "no_topics"}
+    # Empty material cannot improve in an immediate relay. Preserve the next
+    # scheduled window for fresh sources without resetting any reservations.
+    return (exit_code == 0 and report.get("status") == "review_required"
             and report.get("publication_attempted") is False and not report.get("wechat_status")
             and report.get("native_exit_code") == 0
             and not report.get("metrics_error") and not report.get("retry_state_error")

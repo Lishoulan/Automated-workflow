@@ -14,7 +14,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlencode
+from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlencode, urlsplit
 
 from toutiao_content_factory.config import AppSettings, RPAResilienceSettings
 from toutiao_content_factory.constants.selectors import TOUTIAO_EDITOR_PAGE, TOUTIAO_WEITOUTIAO_PAGE
@@ -33,7 +33,7 @@ from toutiao_content_factory.services.compliance_service import get_proxy_server
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.creative_scoring_service import CreativeScoringService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
-from toutiao_content_factory.services.image_generation_service import article_image_fingerprint, generate_text_cover
+from toutiao_content_factory.services.image_generation_service import ImageGenerationService, article_image_fingerprint, generate_text_cover
 from toutiao_content_factory.services.notification_service import NotificationService
 from toutiao_content_factory.services.publish_precheck_service import PublishPrecheckService
 # 健壮性增强模块：动态重试退避 / 弹窗守卫 / 定位器降级 / 发布状态双重校验
@@ -1649,6 +1649,12 @@ class PublishService:
         publish_button_selectors = wtt_selectors.get("publish_button") or TOUTIAO_WEITOUTIAO_PAGE.get("publish_button")
         success_selectors = wtt_selectors.get("success_indicator") or TOUTIAO_WEITOUTIAO_PAGE.get("success_indicator")
         notes: list[str] = []
+        image_path = None
+        if self.settings.publishing.inline_images_enabled:
+            try:
+                image_path = ImageGenerationService(self.settings, self.logger).generate_weitoutiao_image(run_dir, wtt_content)
+            except Exception as exc:
+                notes.append(f"WeiToutiao image rendering unavailable ({type(exc).__name__}); retaining text-only post.")
 
         prepare_browser_profile(
             profile_dir=profile_dir,
@@ -1692,6 +1698,15 @@ class PublishService:
                     )
                     page.wait_for_timeout(600)
 
+                    image_summary = self._try_apply_weitoutiao_image(page, image_path, notes)
+                    image_report = self._load_json(publish_dir / "weitoutiao_image_result.json") or {}
+                    image_summary["generation"] = {key: image_report.get(key) for key in
+                        ("backend", "ai_generated", "content_fingerprint", "api_attempted", "provider_errors")}
+                    if image_summary.get("inserted_count") and image_report.get("ai_generated"):
+                        declaration = self._set_named_checkbox_state(page, ["label:has-text('引用AI')", "label:has-text('内容由AI生成')"], True)
+                        image_summary["platform_ai_declaration"] = bool(declaration)
+                    self._assert_editor_text_complete(page.locator(editor_selector).first, wtt_content)
+
                     if draft_only:
                         notes.append("Draft-only mode: WeiToutiao content filled, publish click skipped.")
                         return {
@@ -1700,6 +1715,7 @@ class PublishService:
                             "external_url": page.url,
                             "notes": self._finalize_notes(notes),
                             "platform": "toutiao_weitoutiao",
+                            "images": image_summary,
                         }
 
                     try:
@@ -1731,13 +1747,17 @@ class PublishService:
                     )
                     response_json = (publish_event or {}).get("response_json")
                     response_is_html = bool((publish_event or {}).get("response_is_html"))
+                    image_summary["request_verified"] = self._weitoutiao_image_request_matches(publish_event, image_summary)
                     backend_confirmed = bool(
                         publish_event
                         and not response_is_html
                         and self._publish_response_is_success(response_json)
+                        and image_summary["request_verified"]
                     )
                     if backend_confirmed:
                         notes.append("WeiToutiao backend returned an explicit success response.")
+                    elif not image_summary["request_verified"]:
+                        notes.append("WeiToutiao submit image payload did not match the uploaded image; result marked publish_uncertain.")
                     elif response_is_html:
                         notes.append(
                             "WeiToutiao publish response was an HTML page, not an API response; "
@@ -1760,7 +1780,7 @@ class PublishService:
 
                     if backend_confirmed:
                         result_status = "submitted_for_review"
-                    elif publish_event and response_json is not None and not response_is_html:
+                    elif publish_event and response_json is not None and not response_is_html and image_summary["request_verified"]:
                         result_status = "failed"
                     else:
                         result_status = "publish_uncertain"
@@ -1771,6 +1791,7 @@ class PublishService:
                         "external_url": page.url,
                         "notes": self._finalize_notes(notes),
                         "platform": "toutiao_weitoutiao",
+                        "images": image_summary,
                         "backend_response_summary": self._compact_backend_response(response_json),
                         "publish_request_summary": {
                             "url": (publish_event or {}).get("url", ""),
@@ -1831,9 +1852,165 @@ class PublishService:
     ) -> dict[str, Any] | None:
         """Return the latest API mutation observed after the micro-post click."""
         for event in reversed(publish_events[start_index:]):
-            if str(event.get("method", "")).upper() in {"POST", "PUT", "PATCH"}:
+            path = urlsplit(str(event.get("url", ""))).path.lower()
+            if (str(event.get("method", "")).upper() in {"POST", "PUT", "PATCH"}
+                    and re.search(r"(?:publish|post|create)(?:/|$)", path)
+                    and not re.search(r"upload|image|picture|photo|draft", path)):
                 return event
         return None
+
+    @staticmethod
+    def _weitoutiao_image_references(value: Any) -> list[str]:
+        """Read durable image references within an upload/image-list payload."""
+        found: list[str] = []
+        def visit(node, depth=0):
+            if depth > 12:
+                return
+            if isinstance(node, dict):
+                for key, item in node.items():
+                    if key in {"uri", "web_uri", "image_uri", "image_url", "url", "origin_uri", "origin_image_uri", "origin_image_url"} and isinstance(item, str):
+                        reference = _persistent_image_reference(item, is_web_uri=key in {"uri", "web_uri", "image_uri", "origin_uri", "origin_image_uri"})
+                        if reference and reference not in found:
+                            found.append(reference)
+                    elif isinstance(item, (dict, list)):
+                        visit(item, depth + 1)
+            elif isinstance(node, list):
+                for item in node:
+                    if isinstance(item, str):
+                        reference = _persistent_image_reference(item, is_web_uri=item.startswith(("tos-", "pgc-image/")))
+                        if reference and reference not in found:
+                            found.append(reference)
+                    else:
+                        visit(item, depth + 1)
+        visit(value)
+        return found
+
+    @classmethod
+    def _weitoutiao_request_image_references(cls, post_data: str) -> list[str]:
+        try:
+            fields = json.loads(post_data)
+        except (ValueError, TypeError):
+            fields = {key: values[-1] for key, values in parse_qs(post_data or "").items()}
+        if not isinstance(fields, dict):
+            return []
+        references: list[str] = []
+        for key in ("image_list", "images", "pic_list", "image_info", "image_infos", "image_urls", "pic_urls"):
+            images = fields.get(key)
+            if isinstance(images, str):
+                try:
+                    images = json.loads(images)
+                except ValueError:
+                    continue
+            references.extend(cls._weitoutiao_image_references(images))
+        return list(dict.fromkeys(references))
+
+    @staticmethod
+    def _weitoutiao_reference_key(value: str) -> str:
+        # A CDN preview URL and its stored URI differ only by host/query.
+        path = urlsplit(value).path.strip("/") if "://" in value or value.startswith("//") else value.strip("/")
+        return path.split("~", 1)[0]
+
+    @classmethod
+    def _weitoutiao_image_request_matches(cls, event: dict[str, Any] | None, images: dict[str, Any]) -> bool:
+        actual = {cls._weitoutiao_reference_key(ref) for ref in cls._weitoutiao_request_image_references((event or {}).get("post_data", ""))}
+        if not images.get("inserted_count"):
+            return not actual
+        expected = {cls._weitoutiao_reference_key(ref) for ref in images.get("references", [])}
+        return bool(len(actual) == 1 and expected and actual.intersection(expected))
+
+    @staticmethod
+    def _weitoutiao_image_state(page) -> dict[str, Any]:
+        return page.evaluate(r"""() => {
+          const root = document.querySelector('.upload-box');
+          if (!root) return {count: 0, loading: false, error: false};
+          const counter = (root.innerText || '').match(/共\s*(\d+)\s*张/);
+          return {count: counter ? Number(counter[1]) : root.querySelectorAll('img, .upload-list [style*="background-image"]').length,
+            loading: !!root.querySelector('[class*=loading], [class*=progress]'),
+            error: !!root.querySelector('[class*=error], [class*=fail]')};
+        }""")
+
+    def _try_apply_weitoutiao_image(self, page, image_path: Path | None, notes: list[str]) -> dict[str, Any]:
+        """Upload once via the normal UI; never publish with unresolved attachments."""
+        initial = self._weitoutiao_image_state(page)
+        if initial.get("count") or initial.get("loading") or initial.get("error"):
+            raise RuntimeError("WeiToutiao editor has existing or unresolved image attachments; manual review required.")
+        summary = {"enabled": bool(self.settings.publishing.inline_images_enabled),
+                   "inserted_count": 0, "references": [], "status": "text_only", "request_verified": False}
+        if image_path is None:
+            return summary
+        uploads: list[dict[str, Any]] = []
+        def capture_upload(response):
+            if response.request.method != "POST" or not re.search(r"upload|image|picture|photo", urlsplit(response.url).path, re.I):
+                return
+            try:
+                payload = response.json()
+                references = self._weitoutiao_image_references(payload.get("data", payload) if isinstance(payload, dict) else payload)
+                if 200 <= response.status < 300 and self._publish_response_is_success(payload) and references:
+                    uploads.append({"references": references})
+            except Exception:
+                return
+        page.on("response", capture_upload)
+        file_sent = False
+        confirmed_selection = False
+        def first_existing(selectors):
+            for selector in selectors:
+                locator = page.locator(selector)
+                if locator.count() == 1:
+                    return locator.first
+            return None
+        try:
+            selectors = self.settings.publishing.weitoutiao_selectors or {}
+            input_selector = selectors.get("image_file_input") or [".upload-image-panel .btn-upload-handle input[type='file'][accept*='image']", "#upload-drag-input", "input[type='file'][accept*='image']"]
+            target = first_existing(input_selector)
+            if target is not None:
+                file_sent = True
+                target.set_input_files(str(image_path), timeout=10000)
+            else:
+                button_selector = selectors.get("image_button") or [".weitoutiao-image-plugin"]
+                button = first_existing(button_selector)
+                if button is None:
+                    notes.append("WeiToutiao image upload control unavailable; retaining text-only post.")
+                    return summary
+                try:
+                    with page.expect_file_chooser(timeout=5000) as chooser:
+                        button.click(timeout=5000)
+                    file_sent = True
+                    chooser.value.set_files(str(image_path), timeout=10000)
+                except PlaywrightTimeoutError:
+                    target = first_existing(input_selector)
+                    if target is None:
+                        raise RuntimeError("WeiToutiao image picker did not expose a file input.")
+                    file_sent = True
+                    target.set_input_files(str(image_path), timeout=10000)
+            for _ in range(40):
+                page.wait_for_timeout(750)
+                state = self._weitoutiao_image_state(page)
+                if state.get("error"):
+                    break
+                if state.get("count") == 1 and not state.get("loading") and uploads:
+                    summary.update(inserted_count=1, references=uploads[-1]["references"], status="uploaded")
+                    notes.append("WeiToutiao original information card uploaded; server receipt and preview confirmed.")
+                    return summary
+                if uploads and not state.get("count") and not confirmed_selection:
+                    confirm = first_existing(["[data-e2e='imageUploadConfirm-btn']",
+                        ".upload-image-panel .footer .byte-btn-primary", ".upload-image-panel button:has-text('确定')"])
+                    if confirm is not None and confirm.is_visible():
+                        if not confirm.is_enabled():
+                            thumbnail = first_existing([".upload-image-wrapper img"])
+                            if thumbnail is not None:
+                                thumbnail.click(timeout=1500)
+                        if confirm.is_enabled():
+                            confirm.click(timeout=5000)
+                            confirmed_selection = True
+            raise RuntimeError("WeiToutiao image upload has no complete server/preview evidence; publishing stopped.")
+        except Exception:
+            state = self._weitoutiao_image_state(page)
+            if file_sent or state.get("count") or state.get("loading") or state.get("error"):
+                raise
+            notes.append("WeiToutiao image picker unavailable before file transfer; retaining text-only post.")
+            return summary
+        finally:
+            page.remove_listener("response", capture_upload)
 
     def _load_topic_title(self, publish_dir: Path) -> str:
         """从 publish_meta.json 读取选题标题（微头条记录用）。"""
@@ -1877,6 +2054,10 @@ class PublishService:
                 return []
             allowed_names = {Path(str(path)).name for path in image_report.get("publish_artifacts", {}).get("infographics", [])}
         assets: list[Path] = []
+        if allowed_names is not None and image_report.get("publish_artifacts", {}).get("illustration"):
+            candidate = publish_images_dir / "illustration_1.png"
+            if candidate.exists() and candidate.stat().st_size > 0:
+                assets.append(candidate)
         for filename in ("infographic_1.png", "infographic_2.png"):
             if allowed_names is not None and filename not in allowed_names:
                 continue
@@ -1886,6 +2067,7 @@ class PublishService:
                     assets.append(candidate)
                     break
 
+        assets = assets[:2]
         if assets:
             notes.append(
                 f"Resolved {len(assets)} Toutiao inline article image asset(s): "
@@ -5368,7 +5550,12 @@ class PublishService:
             if not any(pattern in response.url for pattern in event_patterns):
                 return
 
-            post_data = request.post_data or ""
+            try:
+                post_data = request.post_data or ""
+            except Exception:
+                # Image transfers can carry binary multipart data; only JSON/form
+                # publication bodies belong in the submission evidence.
+                post_data = ""
             save_mode = self._extract_save_mode(post_data)
             override_ts = getattr(self, "_save_override_applied_at", [None])[0]
             if save_mode == 0 and override_ts is not None and response.status == 200:

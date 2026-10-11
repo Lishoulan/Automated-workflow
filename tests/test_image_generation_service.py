@@ -96,7 +96,7 @@ def test_generate_for_run_writes_independent_evidence_backed_infographics(
         "infographic_1.png",
         "infographic_2.png",
     ]
-    assert payload["infographic_specs"][0]["items"][0] == "Revenue grew 12.5% year on year"
+    assert payload["infographic_specs"][0]["items"][0] == "Revenue grew 12.5% year on year while installed capacity reached 50 GWh."
     assert any(metric["value"] == "12.5" for metric in payload["infographic_specs"][0]["metrics"])
     assert payload["infographic_prompts"]
     assert "Verified metrics" in payload["infographic_prompts"][0]
@@ -533,3 +533,48 @@ def test_micro_card_uses_actual_short_content_without_api(app_settings, tmp_path
     assert report["items"] == content.split("\n\n")
     assert report["api_attempted"] is False
     assert service.generate_weitoutiao_image(tmp_path, "只有一句，缺少足够的可视化要点。") is None
+
+
+@pytest.mark.parametrize("primary_ok,free_ok", [(True, True), (False, True), (False, False)])
+def test_micro_image_prefers_model_then_cloud_free_then_card(app_settings, tmp_path, monkeypatch, primary_ok, free_ok):
+    from toutiao_content_factory.services import wechat_cloud_cover
+    app_settings.image_generation = replace(app_settings.image_generation, backend="image2")
+    monkeypatch.setenv("CLOUDFLARE_AI_TOKEN", "fixture")
+    service = ImageGenerationService(app_settings, logging.getLogger("micro-ai"))
+    monkeypatch.setattr(service, "_get_frontend_renderer", lambda: None)
+    calls = []
+    def primary(prompt, output, size):
+        calls.append("primary")
+        assert "Do not recreate an actual incident" in prompt
+        assert "Do not render any text" in prompt
+        if not primary_ok: raise ImageGenerationAPIUnavailable("unavailable")
+        Image.new("RGB", (1024, 1024), (50, 90, 70)).save(output)
+    def free(title, output, **kwargs):
+        calls.append("free")
+        assert kwargs["illustration_only"] is True
+        assert "正文" in kwargs["prompt_override"]
+        if not free_ok: raise RuntimeError("quota")
+        Image.new("RGB", (1024, 1024), (90, 100, 60)).save(output)
+    monkeypatch.setattr(service, "_generate_api_image", primary)
+    monkeypatch.setattr(wechat_cloud_cover, "generate_cloud_cover", free)
+    asset = service.generate_weitoutiao_image(tmp_path, "正文说明单车储电约3000度。\n\n预计能累计服务80辆，不能理解为同时服务。")
+    assert asset and asset.exists()
+    report = json.loads((tmp_path / "publish/weitoutiao_image_result.json").read_text(encoding="utf-8"))
+    assert calls == (["primary"] if primary_ok else ["primary", "free"])
+    assert report["backend"] == ("image2" if primary_ok else "cloudflare_flux" if free_ok else "local_information_card")
+    assert report["ai_generated"] is (primary_ok or free_ok)
+    if report["ai_generated"]:
+        assert Image.open(asset).size == (1200, 800)
+
+
+def test_report_fragments_cannot_remove_body_qualifiers_or_use_reference_only_numbers(app_settings, tmp_path):
+    run = _prepare_run(tmp_path)
+    (run / "publish/article.md").write_text("据报道，预计每天服务80辆车，实际尚未确认。\n\n相关数字不能当成实测结果。\n\n参考来源：\n旧文涉及3000亿元的市场。", encoding="utf-8")
+    (run / "workflow_result.json").write_text(json.dumps({"data_report": {
+        "core_data": ["每天服务80辆车", "旧文涉及3000亿元的市场。"],
+        "risk_flags": ["实际尚未确认"]}}), encoding="utf-8")
+    service = ImageGenerationService(app_settings, logging.getLogger("whole-facts"))
+    specs = service._build_infographic_specs(run_dir=run, publish_dir=run / "publish", publish_meta={}, title="Title")
+    assert "每天服务80辆车" not in specs[0]["items"]
+    assert "旧文涉及3000亿元的市场。" not in specs[0]["items"]
+    assert specs[0]["items"][0].startswith("据报道，预计")

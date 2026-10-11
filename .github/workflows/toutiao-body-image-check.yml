@@ -6,7 +6,10 @@ on:
       mode:
         type: choice
         default: render
-        options: [render, inspect-upload]
+        options: [render, inspect-upload, upload-preview, ai-upload-preview]
+      free_only:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,10 +24,17 @@ jobs:
       TZ: Asia/Shanghai
       TOUTIAO_PUBLISH_HEADLESS: '1'
       TOUTIAO_PUBLISH_CHANNEL: chromium
+      FREE_IMAGE_CHECK: ${{ inputs.free_only == true && '1' || '0' }}
+      IMAGE_API_KEY: ${{ inputs.mode == 'ai-upload-preview' && inputs.free_only != true && (secrets.IMAGE_API_KEY || secrets.OPENAI_API_KEY) || '' }}
+      IMAGE_BASE_URL: ${{ inputs.mode == 'ai-upload-preview' && inputs.free_only != true && (secrets.IMAGE_BASE_URL || secrets.OPENAI_BASE_URL) || '' }}
+      IMAGE_MODEL: ${{ secrets.IMAGE_MODEL || 'gpt-image-2' }}
+      IMAGE_REQUEST_TIMEOUT_SECONDS: '180'
+      CLOUDFLARE_ACCOUNT_ID: ${{ inputs.mode == 'ai-upload-preview' && vars.CLOUDFLARE_ACCOUNT_ID || '' }}
+      CLOUDFLARE_AI_TOKEN: ${{ inputs.mode == 'ai-upload-preview' && secrets.CLOUDFLARE_AI_TOKEN || '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Restore cloud browser session for read-only inspection
-        if: inputs.mode == 'inspect-upload'
+        if: inputs.mode != 'render'
         uses: actions/cache/restore@v4
         with:
           path: .runtime/

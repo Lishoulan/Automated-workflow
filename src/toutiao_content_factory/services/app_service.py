@@ -933,7 +933,9 @@ class ContentFactoryAppService:
         attempt_limit = min(5, max(1, int(self.settings.automation.max_daily_topic_attempts))) if self.settings.wechat_auto_publish_mode and not topic_title and topic_rank is None else len(candidate_specs)
         for attempt_index in range(1, attempt_limit + 1):
             elapsed = time.monotonic() - started_at
-            if best_attempt is not None and elapsed >= budget_seconds:
+            if (best_attempt is not None or (
+                    self.settings.platform == "wechat" and self.settings.wechat.draft_only and losing_attempts
+            )) and elapsed >= budget_seconds:
                 self.logger.warning(
                     "Daily workflow 已用 %.1f 分钟（预算 %.1f 分钟），停止换题，"
                     "用当前最优候选走发布流程。剩余候选 %d 条未尝试。",
@@ -1106,7 +1108,15 @@ class ContentFactoryAppService:
 
             if self.settings.platform == "wechat" and self.settings.wechat.draft_only and run_dir is not None and not dry_run:
                 # Delivery is a human-review draft, independently of automatic publication approval.
-                draft_exports = self.review_service.prepare_wechat_draft(run_dir)
+                try:
+                    draft_exports = self.review_service.prepare_wechat_draft(run_dir)
+                except ValueError as exc:
+                    # Rejected draft packages have not opened a browser or sent
+                    # anything to WeChat. Continue within the existing topic limit.
+                    attempt_record.update(status="draft_validation_rejected", skip_reason=str(exc))
+                    losing_attempts.append(attempt_record)
+                    self.logger.warning("WeChat draft package rejected; trying next topic: %s", exc)
+                    continue
                 exported_files.update({name: str(path) for name, path in draft_exports.items()})
                 # Generate the cover before opening the editor; failed generation
                 # leaves the manuscript local and cannot create a partial draft.
@@ -1279,6 +1289,10 @@ class ContentFactoryAppService:
                 "Daily workflow found no candidate with publishable evidence; "
                 "ending this slot without an article."
             )
+            if self.settings.wechat_auto_publish_mode:
+                exported_files.update(self._write_daily_workflow_report(
+                    status="no_topics", final_attempt={}, attempts=losing_attempts,
+                ))
             return {
                 **exported_files,
                 "status": "no_topics",

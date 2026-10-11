@@ -201,8 +201,8 @@ class RevenueExperimentService:
                 "reason": "只有完整扣费、相同期间与币种及全部成本均已核实，才能计算净利润。"},
             "income": {
                 "currency": str(revenue.get("currency", "CNY")),
-                "total": revenue.get("total"),
-                "window_income": income.get("window_income"),
+                "total": self._optional_number(revenue.get("total")),
+                "window_income": self._optional_number(income.get("window_income")),
                 **income_summary,
             },
             "formats": format_metrics,
@@ -293,7 +293,17 @@ class RevenueExperimentService:
         cutoff_14 = end - timedelta(days=13)
         unique, conflicts = {}, set()
         def amount(value):
-            return type(value) in {int, float} and math.isfinite(value) and value >= 0
+            try:
+                return type(value) in {int, float} and math.isfinite(value) and value >= 0
+            except OverflowError:
+                return False
+        aggregation_errors = []
+        def finite_sum(values, name):
+            value = sum(values)
+            if not math.isfinite(value):
+                aggregation_errors.append(name)
+                return None
+            return round(value, 4)
         for row in rows:
             day = self._parse_datetime(row.get("day"))
             if not day or not cutoff_30 <= day.date() <= end or row.get("pending"):
@@ -305,30 +315,22 @@ class RevenueExperimentService:
                 conflicts.add(key)
             unique.setdefault(key, row)
         settled = [(day, row) for day, row in sorted(unique.items()) if day not in conflicts]
-        total = round(sum(float(row.get("total", 0) or 0) for _, row in settled), 4)
-        latest_7d = round(
-            sum(float(row.get("total", 0) or 0) for day, row in settled if day >= cutoff_7), 4
-        )
-        previous_7d = round(
-            sum(
-                float(row.get("total", 0) or 0)
-                for day, row in settled
-                if cutoff_14 <= day < cutoff_7
-            ),
-            4,
-        )
-        by_format = {key: round(sum(float(row[key]) for _, row in settled), 4)
+        total = finite_sum((float(row["total"]) for _, row in settled), "settled_total")
+        latest_7d = finite_sum((float(row["total"]) for day, row in settled if day >= cutoff_7), "latest_7d")
+        previous_7d = finite_sum((float(row["total"]) for day, row in settled if cutoff_14 <= day < cutoff_7), "previous_7d")
+        by_format = {key: finite_sum((float(row[key]) for _, row in settled), "by_format." + key)
                      if settled and all(amount(row.get(key)) for _, row in settled) else None
                      for key in ("article", "weitoutiao", "video")}
         return {
             "window_start": cutoff_30.isoformat(), "window_end": end.isoformat(),
             "conflicting_days": [day.isoformat() for day in sorted(conflicts)],
-            "coverage_complete": len(settled) == self.WINDOW_DAYS,
+            "coverage_complete": len(settled) == self.WINDOW_DAYS and not aggregation_errors,
+            "aggregation_errors": aggregation_errors,
             "settled_days": len(settled),
             "settled_total": total if settled else None,
             "latest_7d": latest_7d if settled else None,
             "previous_7d": previous_7d if settled else None,
-            "change_7d": round(latest_7d - previous_7d, 4) if settled else None,
+            "change_7d": round(latest_7d - previous_7d, 4) if settled and latest_7d is not None and previous_7d is not None else None,
             "by_format": by_format if settled else {},
         }
 
@@ -524,7 +526,11 @@ class RevenueExperimentService:
     def _optional_number(value: object) -> float | None:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
-        return float(value)
+        try:
+            parsed = float(value)
+            return parsed if math.isfinite(parsed) else None
+        except OverflowError:
+            return None
 
     @staticmethod
     def _parse_datetime(value: object) -> datetime | None:

@@ -1,0 +1,41 @@
+name: Publication Stress Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: 'Isolated load multiplier (1-5); no model or platform requests'
+        type: choice
+        default: '1'
+        options: ['1', '2', '3', '4', '5']
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      TZ: Asia/Shanghai
+      STRESS_SCALE: ${{ inputs.scale || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install test dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Run isolated load and failure tests
+        run: python scripts/run_publication_stress.py --scale "$STRESS_SCALE"
+      - name: Preserve stress evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publication-stress-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .runtime/publication-stress/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

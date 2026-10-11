@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 import hashlib
+import uuid
 from typing import Any
 
 from toutiao_content_factory.config import AppSettings
@@ -756,7 +757,12 @@ class TopicPoolService:
             reverse=False,
         )
         serialized = "\n".join(json.dumps(item, ensure_ascii=False) for item in ordered)
-        self.pool_path.write_text(serialized + ("\n" if serialized else ""), encoding="utf-8")
+        temporary = self.pool_path.with_name(self.pool_path.name + "." + uuid.uuid4().hex + ".tmp")
+        try:
+            temporary.write_text(serialized + ("\n" if serialized else ""), encoding="utf-8")
+            temporary.replace(self.pool_path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _build_row(self, topic: TopicCandidate, *, source_label: str, origin: str) -> dict[str, Any]:
         payload = asdict(topic)

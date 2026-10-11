@@ -48,14 +48,27 @@ class GenerationCostAttempt:
         }
 
     def _save(self):
+        temporary = self.path.with_suffix(".tmp")
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.path.with_suffix(".tmp")
             temporary.write_text(json.dumps(self.row, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(self.path)
+            for attempt in range(8):
+                try:
+                    temporary.replace(self.path)
+                    break
+                except PermissionError:
+                    if os.name != "nt" or attempt == 7:
+                        raise
+                    import time
+                    time.sleep(.005 * (attempt + 1))
         except (OSError, TypeError, ValueError, OverflowError):
             # Recording trouble must not turn a completed request into a retry.
             self.logger.warning("Generation cost receipt could not be persisted")
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def __enter__(self):
         self._save()
@@ -124,9 +137,15 @@ def build_cost_summary(output_dir, *, now=None, days=30):
                 and _number(row.get("actual_amount")) is not None and row.get("actual_currency") in {"CNY", "USD"}):
             verified += 1
             actuals[row["actual_currency"]] += row["actual_amount"]
-    complete = bool(rows) and verified == len(rows) and invalid == 0
+    aggregation_errors = ["estimated." + key for key, value in estimates.items() if not math.isfinite(value)]
+    actual_errors = ["actual." + key for key, value in actuals.items() if not math.isfinite(value)]
+    aggregation_errors.extend(actual_errors)
+    estimates = {key: value for key, value in estimates.items() if math.isfinite(value)}
+    actuals = {key: value for key, value in actuals.items() if math.isfinite(value)}
+    complete = bool(rows) and verified == len(rows) and invalid == 0 and not actual_errors
     return {
         "schema": 1, "window_days": days, "recorded_calls": len(rows), "invalid_receipts": invalid,
+        "aggregation_errors": aggregation_errors,
         "status": ("tracked_cost_verified" if complete else "actual_cost_partially_verified" if verified
                    else "actual_cost_unverified" if rows else "untracked"),
         "by_kind": dict(Counter(row.get("kind", "unknown") for row in rows)),

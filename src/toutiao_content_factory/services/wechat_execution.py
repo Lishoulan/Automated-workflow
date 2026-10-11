@@ -26,7 +26,22 @@ def write_phase(settings, phase, *, fingerprint=""):
                "fingerprint": fingerprint}
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     temporary.write_text(json.dumps(payload), encoding="utf-8")
-    temporary.replace(path)
+    try:
+        for attempt in range(8):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError:
+                # Windows readers may temporarily deny replacement. Never
+                # turn a failed phase write into permission to submit.
+                if os.name != "nt" or attempt == 7:
+                    raise
+                time.sleep(.005 * (attempt + 1))
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def phase_attempted(settings, started):

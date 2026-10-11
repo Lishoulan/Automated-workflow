@@ -17,6 +17,7 @@ from toutiao_content_factory.services.image_generation_service import (
     ImageGenerationAPIUnavailable,
     ImageGenerationService,
     _format_api_error,
+    article_image_fingerprint,
 )
 
 
@@ -126,6 +127,39 @@ def test_statistical_chart_does_not_compare_different_units(app_settings) -> Non
     values = ["收入12.5%，装机容量50 GWh。", "另一个指标为3.2亿元。"]
 
     assert service._build_statistical_chart(values) == {}
+
+
+def test_body_images_exclude_discarded_model_facts_and_internal_scores(app_settings, tmp_path):
+    run = _prepare_run(tmp_path)
+    (run / "workflow_result.json").write_text(json.dumps({"data_report": {
+        "core_data": ["Unsupported response time is 30分钟", "Revenue grew 12.5% year on year"],
+        "growth_numbers": ["99亿元"], "risk_flags": ["A discarded risk claim"], "evidence_strength": 92,
+    }}), encoding="utf-8")
+    service = ImageGenerationService(app_settings, logging.getLogger("body-image-facts"))
+    specs = service._build_infographic_specs(run_dir=run, publish_dir=run / "publish",
+        publish_meta={}, title="Article")
+    serialized = json.dumps(specs, ensure_ascii=False)
+    assert "30分钟" not in serialized and "99亿元" not in serialized
+    assert "discarded risk" not in serialized and "证据强度" not in serialized
+    assert any(metric["value"] == "12.5" for metric in specs[0]["metrics"])
+
+
+def test_body_image_items_do_not_cut_off_long_qualifications(app_settings):
+    service = ImageGenerationService(app_settings, logging.getLogger("body-image-qualification"))
+    qualified = "Demand may change, " * 15 + "but the result is not yet confirmed."
+    assert service._unique_visual_items([qualified, "Confirmed delivery figures remain unchanged."], 3) == [
+        "Confirmed delivery figures remain unchanged."]
+
+
+def test_body_image_manifest_binds_the_reviewed_title_and_article(app_settings, tmp_path, monkeypatch):
+    run = _prepare_run(tmp_path)
+    service = ImageGenerationService(app_settings, logging.getLogger("body-image-binding"))
+    monkeypatch.setattr(service, "_get_frontend_renderer", lambda: None)
+    result = service.generate_for_run(run)
+    report = json.loads(result["image_generation_result"].read_text(encoding="utf-8"))
+    article = (run / "publish/article.md").read_text(encoding="utf-8")
+    assert report["body_image_fingerprint"] == article_image_fingerprint(
+        "Energy storage orders reveal a changing market", article)
 
 
 def test_generate_for_run_removes_stale_infographics_when_disabled(
@@ -474,3 +508,28 @@ def test_wechat_image_call_respects_shared_deadline(app_settings, monkeypatch, r
         assert calls[0]["timeout"] == expected
         assert calls[0]["max_retries"] == 0
         assert calls[0]["base_url"] == "https://api.openai.com/v1"
+
+
+def test_body_visuals_preserve_estimates_ranges_and_exclude_references():
+    service = ImageGenerationService
+    metrics = service._extract_visual_metrics(["单车储电约3000度，可同时服务8辆，预计累计服务80辆。另案上限80%至85%。"])
+    assert [(m["value"], m["unit"], m["qualifier"]) for m in metrics] == [
+        ("3000", "度", "约"), ("8", "辆", ""), ("80", "辆", "预计")]
+    assert service._extract_visual_metrics(["占比80%至85%。"]) == []
+    assert service._build_statistical_chart(["占比80%至85%。"]) == {}
+    assert service._article_paragraphs("正文事实。\n\n参考来源：\n来源标题3000亿元；https://example.test") == ["正文事实。"]
+
+
+def test_micro_card_uses_actual_short_content_without_api(app_settings, tmp_path, monkeypatch):
+    from toutiao_content_factory.services.image_generation_service import article_image_fingerprint
+    service = ImageGenerationService(app_settings, logging.getLogger("micro-card"))
+    monkeypatch.setattr(service, "_get_frontend_renderer", lambda: None)
+    monkeypatch.setattr(service, "_generate_api_image", lambda *a: pytest.fail("No paid image API for micro cards"))
+    content = "单车储电约3000度，可同时服务8辆。\n\n预计累计服务80辆，不代表实际已经服务80辆。"
+    path = service.generate_weitoutiao_image(tmp_path, content)
+    assert path and path.exists()
+    report = json.loads((tmp_path / "publish/weitoutiao_image_result.json").read_text(encoding="utf-8"))
+    assert report["content_fingerprint"] == article_image_fingerprint("", content)
+    assert report["items"] == content.split("\n\n")
+    assert report["api_attempted"] is False
+    assert service.generate_weitoutiao_image(tmp_path, "只有一句，缺少足够的可视化要点。") is None

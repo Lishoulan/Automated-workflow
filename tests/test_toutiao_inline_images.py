@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import importlib
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -13,6 +14,7 @@ from PIL import Image
 from toutiao_content_factory.config import PublishSettings
 from toutiao_content_factory.services.app_service import ContentFactoryAppService
 from toutiao_content_factory.services.publish_service import PublishService
+from toutiao_content_factory.services.image_generation_service import article_image_fingerprint
 
 
 publish_service_module = importlib.import_module(
@@ -101,6 +103,43 @@ def test_inline_asset_resolution_honors_configuration(app_settings, tmp_path: Pa
 
     assert assets == []
     assert any("disabled" in note.lower() for note in notes)
+
+
+@pytest.mark.parametrize("changed", ["title", "article"])
+def test_inline_images_for_an_older_revision_are_skipped(app_settings, tmp_path, changed):
+    service = PublishService(app_settings, logging.getLogger("stale-body-image"))
+    run = tmp_path / "run"
+    publish = run / "publish"
+    _write_png(publish / "images/infographic_1.png", (10, 20, 30))
+    title, article = "Reviewed title", "Reviewed complete paragraph."
+    (publish / "publish_meta.json").write_text(json.dumps({"selected_title": title}), encoding="utf-8")
+    (publish / "article.md").write_text(article, encoding="utf-8")
+    (publish / "image_generation_result.json").write_text(json.dumps({
+        "body_image_fingerprint": article_image_fingerprint(title, article),
+        "publish_artifacts": {"infographics": [str(publish / "images/infographic_1.png")]},
+    }), encoding="utf-8")
+    assert service._resolve_toutiao_inline_image_assets(run, [])
+    if changed == "title":
+        (publish / "publish_meta.json").write_text(json.dumps({"selected_title": "New title"}), encoding="utf-8")
+    else:
+        (publish / "article.md").write_text("A revised paragraph.", encoding="utf-8")
+    notes = []
+    assert service._resolve_toutiao_inline_image_assets(run, notes) == []
+    assert "stale" in notes[-1]
+
+
+def test_body_image_manifest_does_not_reuse_unlisted_old_assets(app_settings, tmp_path):
+    service = PublishService(app_settings, logging.getLogger("unlisted-body-image"))
+    run = tmp_path / "run"
+    publish = run / "publish"
+    _write_png(publish / "images/infographic_1.png", (10, 20, 30))
+    (publish / "publish_meta.json").write_text(json.dumps({"selected_title": "Title"}), encoding="utf-8")
+    (publish / "article.md").write_text("Body", encoding="utf-8")
+    (publish / "image_generation_result.json").write_text(json.dumps({
+        "body_image_fingerprint": article_image_fingerprint("Title", "Body"),
+        "publish_artifacts": {"infographics": []},
+    }), encoding="utf-8")
+    assert service._resolve_toutiao_inline_image_assets(run, []) == []
 
 
 def test_publish_settings_inline_images_default_to_enabled() -> None:

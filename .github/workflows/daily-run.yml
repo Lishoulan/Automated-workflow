@@ -641,6 +641,7 @@ jobs:
         run: |
           playwright install chromium
           playwright install-deps chromium
+          sudo apt-get install -y fonts-noto-cjk
 
       - name: Note on removed Docker AI services
         # 2026-09-18：原来这里有三步（docker compose up + 健康检查 + 建 Letta agent），
@@ -1502,6 +1503,7 @@ jobs:
         run: |
           playwright install chromium
           playwright install-deps chromium
+          sudo apt-get install -y fonts-noto-cjk
 
       - name: Run daily pipeline (draft-only fallback)
         run: |

@@ -1,0 +1,53 @@
+name: Toutiao Body Image Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        default: render
+        options: [render, inspect-upload]
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      PYTHONPATH: ${{ github.workspace }}/src
+      TZ: Asia/Shanghai
+      TOUTIAO_PUBLISH_HEADLESS: '1'
+      TOUTIAO_PUBLISH_CHANNEL: chromium
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore cloud browser session for read-only inspection
+        if: inputs.mode == 'inspect-upload'
+        uses: actions/cache/restore@v4
+        with:
+          path: .runtime/
+          key: image-inspect-${{ github.run_id }}
+          restore-keys: browser-profile-main-robot-notes-
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install image renderer and Chinese fonts
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+          sudo apt-get install -y fonts-noto-cjk
+      - name: Render archived article body images without publishing
+        run: python scripts/check_toutiao_body_images.py --mode "$CHECK_MODE"
+        env:
+          CHECK_MODE: ${{ inputs.mode || 'render' }}
+      - name: Save image preview and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: toutiao-body-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: output/automation/toutiao_body_image_check/
+          if-no-files-found: error
+          retention-days: 14

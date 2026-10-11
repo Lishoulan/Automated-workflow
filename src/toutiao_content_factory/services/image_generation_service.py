@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from io import BytesIO
 import json
 import logging
@@ -30,6 +31,10 @@ GRADIENT_PRESETS = [
 ]
 
 BRAND = "小椰科技"
+
+
+def article_image_fingerprint(title: str, article: str) -> str:
+    return hashlib.sha256(json.dumps([title.strip(), article.strip()], ensure_ascii=False).encode()).hexdigest()
 
 def hex_to_rgb(h):
     r = h.lstrip("#").strip()
@@ -181,12 +186,55 @@ def generate_text_cover(title, output_path):
     return str(output.resolve())
 
 
-def gen_infographic(text, output_path):
+def gen_infographic(text, output_path, *, spec=None):
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     W, H = 800, 1000
     img = Image.new("RGBA", (W, H), (245, 247, 250, 255))
     draw = ImageDraw.Draw(img)
+    if spec is not None:
+        draw.rounded_rectangle((30, 30, 770, 970), radius=16, fill=(255, 255, 255, 255))
+        draw.rectangle((60, 66, 100, 71), fill=(0, 143, 122, 255))
+        draw.text((116, 58), str(spec.get("eyebrow", "文章要点")), font=load_font(20), fill=(0, 143, 122, 255))
+        y = 104
+        for line in wrap_text(str(spec.get("title", text)), load_font(32), 680, 3):
+            draw.text((60, y), line, font=load_font(32), fill=(23, 37, 47, 255))
+            y += 46
+        y += 14
+        metrics = list(spec.get("metrics", []))[:3]
+        for index, metric in enumerate(metrics):
+            left = 60 + index * 228
+            draw.rounded_rectangle((left, y, left + 216, y + 104), radius=8, fill=(223, 241, 236, 255))
+            label = wrap_text(str(metric.get("label", "")), load_font(15), 190, 2)
+            for row, line in enumerate(label):
+                draw.text((left + 12, y + 10 + row * 19), line, font=load_font(15), fill=(99, 112, 120, 255))
+            value = str(metric.get("qualifier", "")) + str(metric.get("value", "")) + str(metric.get("unit", ""))
+            size = 28
+            while size > 12 and load_font(size).getlength(value) > 190:
+                size -= 1
+            draw.text((left + 12, y + 60), value, font=load_font(size), fill=(0, 143, 122, 255))
+        if metrics:
+            y += 130
+        draw.text((60, y), str(spec.get("section_title", "文章要点")), font=load_font(23), fill=(23, 37, 47, 255))
+        y += 44
+        for item in list(spec.get("items", []))[:4]:
+            lines = wrap_text(str(item), load_font(23), 640, 20)
+            # Omit a whole point when it cannot fit. Truncating a sentence can
+            # remove a qualification such as "not yet confirmed".
+            if y + len(lines) * 34 + 18 > 825:
+                continue
+            draw.ellipse((60, y + 10, 67, y + 17), fill=(0, 143, 122, 255))
+            for line in lines:
+                draw.text((82, y), line, font=load_font(23), fill=(23, 37, 47, 255))
+                y += 34
+            y += 18
+        draw.line((60, 846, 740, 846), fill=(220, 228, 224, 255), width=1)
+        source = str(spec.get("source_note", "根据本文整理"))
+        for index, line in enumerate(wrap_text(source, load_font(16), 680, 3)):
+            draw.text((60, 862 + index * 23), line, font=load_font(16), fill=(99, 112, 120, 255))
+        draw.text((60, 942), "原创信息图 · " + str(spec.get("brand", "")), font=load_font(14), fill=(99, 112, 120, 255))
+        img.save(output, format="PNG")
+        return str(output.resolve())
     cm = 30
     card = Image.new("RGBA", (W - cm*2, H - cm*2), (255, 255, 255, 255))
     cd = ImageDraw.Draw(card)
@@ -277,6 +325,41 @@ class ImageGenerationService:
         backend = str(getattr(self.settings.image_generation, "backend", "") or "")
         backend = backend.strip().lower().split(",", 1)[0].strip()
         return backend in self.API_BACKENDS or backend.startswith("gpt-image-")
+
+    def generate_weitoutiao_image(self, run_dir: Path, content: str) -> Path | None:
+        """Render one original card from the actual short post, without API calls."""
+        paragraphs = self._article_paragraphs(content)
+        # Whole short paragraphs preserve qualifiers and avoid image-sized essays.
+        items = self._unique_visual_items(
+            [p for p in paragraphs if not p.startswith("#") and not re.search(r"https?://", p)],
+            limit=2,
+        )
+        if len(items) < 2:
+            return None
+        destination = run_dir / self.settings.review.publish_dirname / "images" / "weitoutiao.png"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.unlink(missing_ok=True)
+        title = "本文要点"
+        spec = {"title": title, "eyebrow": "原创信息图 · 非现场照片", "metrics": [],
+                "section_title": "两点看清这件事", "items": items, "chart": {}, "notes": [],
+                "source_note": "根据本条微头条正文整理；具体来源见正文。", "period_label": "",
+                "brand": self.settings.brand_name, "compact": True}
+        try:
+            renderer = self._get_frontend_renderer()
+            if renderer:
+                renderer.render_infographic(title, str(destination), **{k: v for k, v in spec.items() if k != "title"})
+            if not destination.exists():
+                gen_infographic(title, str(destination), spec=spec)
+            report = {"status": "generated", "content_fingerprint": article_image_fingerprint("", content),
+                      "filename": destination.name, "items": items, "api_attempted": False}
+            (destination.parent.parent / "weitoutiao_image_result.json").write_text(
+                json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            return destination
+        finally:
+            # This short-lived helper owns its renderer/browser, including failures.
+            if self._frontend_renderer is not None:
+                self._frontend_renderer.close()
+                self._frontend_renderer = None
 
     def _resolve_image_api_key(self) -> str:
         image_settings = self.settings.image_generation
@@ -590,6 +673,7 @@ class ImageGenerationService:
                 pt = str(spec.get("prompt", "")).strip() or title
                 rp = ri / ("infographic_" + str(idx) + ".png")
                 pp = pi / ("infographic_" + str(idx) + ".png")
+                rp.unlink(missing_ok=True)
                 # Statistical inserts stay deterministic so exact values and
                 # source notes cannot be altered by an image model.
                 infographic_frontend = False
@@ -608,6 +692,7 @@ class ImageGenerationService:
                             source_note=str(spec.get("source_note", "")),
                             period_label=str(spec.get("period_label", "")),
                             notes=list(spec.get("notes", [])),
+                            brand=self.settings.brand_name,
                         )
                         if result_path and rp.exists():
                             infographic_frontend = True
@@ -622,7 +707,7 @@ class ImageGenerationService:
                                 *[str(item) for item in spec.get("items", [])[:6]],
                             ]
                         )
-                        gen_infographic(fallback_text or pt, str(rp))
+                        gen_infographic(fallback_text or pt, str(rp), spec={**spec, "brand": self.settings.brand_name})
                         infographic_backends.add("pillow")
                     except Exception as e:
                         self.logger.warning("Infographic %d skipped: %s", idx, e)
@@ -676,6 +761,7 @@ class ImageGenerationService:
                 "infographics": [str(p) for p in publish_infographic_paths],
             },
             "inline_ready": bool(publish_infographic_paths),
+            "body_image_fingerprint": article_image_fingerprint(title, self._read_text(publish_dir / "article.md")),
             "infographic_specs": successful_infographic_specs,
         }
         selected_topic = pm.get("selected_topic") if isinstance(pm.get("selected_topic"), dict) else {}
@@ -766,48 +852,45 @@ class ImageGenerationService:
         article = self._read_text(publish_dir / "article.md")
         topic = str((publish_meta.get("selected_topic") or {}).get("title", "")).strip()
 
-        core_data = self._text_list(data_report.get("core_data"))
-        evidence_notes = self._text_list(data_report.get("evidence_notes"))
-        growth_numbers = self._text_list(data_report.get("growth_numbers"))
+        normalized_article = re.sub(r"\s+", "", article).casefold()
+        def in_article(values):
+            return [value for value in self._text_list(values)
+                    if re.sub(r"\s+", "", value).casefold() in normalized_article]
+        core_data = in_article(data_report.get("core_data"))
+        evidence_notes = in_article(data_report.get("evidence_notes"))
+        paragraphs = self._article_paragraphs(article)
         fact_items = self._unique_visual_items(
             [
                 *core_data,
                 *evidence_notes,
-                *self._text_list(data_report.get("key_points")),
-                *self._article_paragraphs(article),
-                str(publish_meta.get("summary", "")),
+                *[paragraph for paragraph in paragraphs if re.search(r"\d", paragraph)],
+                *(paragraphs[:2] if not core_data else []),
             ],
-            limit=5,
+            limit=3,
         )
         tracking_items = self._unique_visual_items(
             [
-                *self._text_list(data_report.get("watch_metrics")),
-                *self._text_list(data_report.get("key_points")),
+                *in_article(data_report.get("watch_metrics")),
+                *in_article(data_report.get("key_points")),
             ],
-            limit=4,
+            limit=3,
         )
         if not tracking_items:
             tracking_items = self._unique_visual_items(
                 [
-                    *self._text_list(data_report.get("risk_flags")),
-                    *self._article_paragraphs(article)[-3:],
+                    *in_article(data_report.get("risk_flags")),
+                    *paragraphs[-2:],
                 ],
-                limit=4,
+                limit=3,
             ) or fact_items
-        evidence_values = [
-            *core_data,
-            *evidence_notes,
-            *growth_numbers,
-            article,
-        ]
+        # The reviewed final body owns what a public illustration may claim.
+        # Earlier model reports can contain numbers removed during revision.
+        evidence_values = ["\n\n".join(paragraphs)]
         metrics = self._extract_visual_metrics(evidence_values)
         chart = self._build_statistical_chart(evidence_values)
-        source_note = self._source_note(data_report, publish_meta)
-        period_label = self._period_label(evidence_values)
-        notes = self._text_list(data_report.get("risk_flags"))[:2]
-        evidence_strength = data_report.get("evidence_strength")
-        if not metrics and str(evidence_strength).strip().isdigit() and int(evidence_strength) > 0:
-            metrics = [{"label": "证据强度", "value": str(int(evidence_strength)), "unit": "/100"}]
+        source_note = self._source_note(data_report, publish_meta, article=article)
+        period_label = self._period_label([*evidence_values, article])
+        notes = in_article(data_report.get("risk_flags"))[:2]
 
         explicit_prompts = self._load_infographic_prompts(publish_dir)
         if explicit_prompts:
@@ -896,6 +979,8 @@ class ImageGenerationService:
 
     @staticmethod
     def _article_paragraphs(article: str) -> list[str]:
+        article = re.split(r"(?:^|\n)\s*(?:参考来源|参考资料|参考文献|来源链接|资料来源)\s*[:：]\s*(?:\n|$)",
+                           str(article or ""), maxsplit=1)[0]
         raw_blocks = re.split(r"\n\s*\n", str(article or ""))
         paragraphs = []
         for block in raw_blocks:
@@ -912,9 +997,8 @@ class ImageGenerationService:
         for value in values:
             cleaned = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", str(value or ""))
             cleaned = re.sub(r"\s+", " ", cleaned).strip()
-            if len(cleaned) < 8:
+            if len(cleaned) < 8 or len(cleaned) > 160:
                 continue
-            cleaned = cls._clip_visual_text(cleaned, 96)
             key = re.sub(r"\W+", "", cleaned).lower()
             if not key or key in seen:
                 continue
@@ -937,7 +1021,7 @@ class ImageGenerationService:
         metric_pattern = re.compile(
             r"(?P<value>[+-]?\d+(?:\.\d+)?(?:\s*[-~至—]\s*[+-]?\d+(?:\.\d+)?)?)\s*"
             r"(?P<unit>万亿元|亿元|万元|千亿|万亿|万台|万辆|万件|GWh|MWh|kWh|GW|MW|km/h|"
-            r"个月|小时|分钟|天|项|台|辆|件|%|％|亿|万)",
+            r"千瓦时|度|个月|小时|分钟|天|项|台|辆|件|%|％|亿|万)",
             re.IGNORECASE,
         )
         metrics: list[dict[str, str]] = []
@@ -945,6 +1029,12 @@ class ImageGenerationService:
         for source in values:
             text = str(source or "")
             for match in metric_pattern.finditer(text):
+                # A range with repeated units is kept in its complete sentence,
+                # rather than presenting either endpoint as a single value.
+                if re.match(r"\s*[-~至—]\s*\d", text[match.end():]) or re.search(
+                    r"\d\s*(?:%|％|度|辆|台|万元|亿元)\s*[-~至—]\s*$", text[:match.start()]
+                ):
+                    continue
                 value = re.sub(r"\s+", "", match.group("value"))
                 unit = match.group("unit").replace("％", "%")
                 key = (value, unit.lower())
@@ -955,6 +1045,8 @@ class ImageGenerationService:
                         "label": cls._metric_label(text, match.start()),
                         "value": value,
                         "unit": unit,
+                        "qualifier": ("预计" if re.search(r"预计[^。；\n]{0,8}$", text[max(0, match.start() - 12):match.start()])
+                                      else "约" if re.search(r"(?:约|约为|近)\s*$", text[max(0, match.start() - 4):match.start()]) else ""),
                     }
                 )
                 seen.add(key)
@@ -971,7 +1063,7 @@ class ImageGenerationService:
         context = re.sub(r"\d{4}年(?:上半年|下半年|第[一二三四]季度)", "", context)
         context = re.sub(r"[+-]?\d+(?:\.\d+)?(?:[-~至—][+-]?\d+(?:\.\d+)?)?"
                          r"(?:万亿元|亿元|万元|千亿|万亿|万台|万辆|万件|GWh|MWh|kWh|GW|MW|km/h|"
-                         r"个月|小时|分钟|天|项|台|辆|件|%|％|亿|万)", "", context, flags=re.IGNORECASE)
+                         r"千瓦时|度|个月|小时|分钟|天|项|台|辆|件|%|％|亿|万)", "", context, flags=re.IGNORECASE)
         context = context.strip("，,：:；;、()（）")
         context = re.sub(r"(?:由|从|约|约为|达到|为)$", "", context).strip()
         if not context:
@@ -985,6 +1077,8 @@ class ImageGenerationService:
     ) -> dict[str, Any]:
         """Return a chart only when the source contains a defensible comparison."""
         text = "\n".join(str(value or "") for value in values)
+        if re.search(r"\d\s*[%％]\s*[-~至—]\s*\d", text):
+            return {}
         share_chart = cls._extract_share_chart(text)
         comparison_chart = cls._extract_percentage_comparison(text)
         if share_chart:
@@ -1097,7 +1191,15 @@ class ImageGenerationService:
             }
         return None
 
-    def _source_note(self, data_report: dict[str, Any], publish_meta: dict[str, Any]) -> str:
+    def _source_note(self, data_report: dict[str, Any], publish_meta: dict[str, Any], *, article: str = "") -> str:
+        references = re.split(r"(?:^|\n)\s*(?:参考来源|参考资料|参考文献|来源链接|资料来源)\s*[:：]\s*(?:\n|$)",
+                              article, maxsplit=1)
+        if len(references) == 2:
+            for line in references[1].splitlines():
+                if line.strip():
+                    citation = re.sub(r"https?://\S+", "", line).strip("；; ")
+                    citation = " · ".join(re.split(r"[；;]", citation)[:2])
+                    return self._clip_visual_text(citation, 86)
         notes = self._text_list(data_report.get("evidence_notes"))
         for note in notes:
             if any(token in note for token in ("来源", "公告", "报告", "数据")):
@@ -1118,6 +1220,7 @@ class ImageGenerationService:
         patterns = [
             r"截至\d{4}年\d{1,2}月\d{1,2}日(?:止[^，。；\n]*)?",
             r"\d{4}年(?:上半年|下半年|第[一二三四]季度)",
+            r"20\d{2}-\d{2}-\d{2}(?=T|\b)",
         ]
         for pattern in patterns:
             match = re.search(pattern, text)

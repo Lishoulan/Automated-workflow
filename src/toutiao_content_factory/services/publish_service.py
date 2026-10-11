@@ -33,7 +33,7 @@ from toutiao_content_factory.services.compliance_service import get_proxy_server
 from toutiao_content_factory.services.content_guard_service import ContentGuardService
 from toutiao_content_factory.services.creative_scoring_service import CreativeScoringService
 from toutiao_content_factory.services.growth_ops_service import GrowthOpsService
-from toutiao_content_factory.services.image_generation_service import generate_text_cover
+from toutiao_content_factory.services.image_generation_service import article_image_fingerprint, generate_text_cover
 from toutiao_content_factory.services.notification_service import NotificationService
 from toutiao_content_factory.services.publish_precheck_service import PublishPrecheckService
 # 健壮性增强模块：动态重试退避 / 弹窗守卫 / 定位器降级 / 发布状态双重校验
@@ -1866,8 +1866,20 @@ class PublishService:
 
         publish_images_dir = run_dir / self.settings.review.publish_dirname / "images"
         run_images_dir = run_dir / "images"
+        image_report = self._load_json(publish_images_dir.parent / "image_generation_result.json") or {}
+        allowed_names = None
+        if image_report.get("body_image_fingerprint"):
+            meta = self._load_json(publish_images_dir.parent / "publish_meta.json") or {}
+            title = str(meta.get("selected_title", "")).strip() or "科技行业观察"
+            article = self._read_text(publish_images_dir.parent / "article.md")
+            if image_report["body_image_fingerprint"] != article_image_fingerprint(title, article):
+                notes.append("Skipped stale body images: the reviewed title or article changed after image generation.")
+                return []
+            allowed_names = {Path(str(path)).name for path in image_report.get("publish_artifacts", {}).get("infographics", [])}
         assets: list[Path] = []
         for filename in ("infographic_1.png", "infographic_2.png"):
+            if allowed_names is not None and filename not in allowed_names:
+                continue
             for root in (publish_images_dir, run_images_dir):
                 candidate = root / filename
                 if candidate.is_file() and candidate.stat().st_size > 0:

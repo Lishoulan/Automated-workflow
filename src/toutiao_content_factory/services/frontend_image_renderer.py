@@ -113,6 +113,7 @@ class FrontendImageRenderer:
         period_label: str = "",
         notes: list[str] | None = None,
         brand: str = _BRAND,
+        compact: bool = False,
     ) -> str | None:
         """Render an infographic (800x1200) from HTML template."""
         if metrics is None:
@@ -132,8 +133,9 @@ class FrontendImageRenderer:
             notes=notes or [],
             brand=brand,
             date=datetime.now().strftime("%Y.%m.%d"),
+            compact=compact,
         )
-        return self._screenshot(html, output_path, width=800, height=1200)
+        return self._screenshot(html, output_path, width=800, height=800 if compact else 1200)
 
     # ---- Auto-extract helpers ----
 

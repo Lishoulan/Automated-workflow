@@ -24,7 +24,7 @@
     height: 1200px;
     overflow: hidden;
     padding: 42px 40px 28px;
-    font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", Arial, sans-serif;
+    font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", Arial, sans-serif;
     background: var(--paper);
     color: var(--ink);
   }
@@ -318,7 +318,7 @@
   .evidence-text {
     align-self: center;
     color: #33434c;
-    font-size: 13px;
+    font-size: 18px;
     line-height: 1.58;
   }
 
@@ -348,7 +348,7 @@
   .source-note {
     overflow: hidden;
     color: var(--muted);
-    font-size: 10px;
+    font-size: 13px;
     line-height: 1.45;
     white-space: nowrap;
     text-overflow: ellipsis;
@@ -373,6 +373,14 @@
     font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
     font-size: 10px;
   }
+  {% if compact %}
+  body { height: 800px; padding: 30px; }
+  .header { padding-bottom: 16px; }
+  .header h1 { font-size: 28px; }
+  .evidence-panel, .checklist-panel { min-height: 0; }
+  .evidence-text { font-size: 21px; }
+  .metric-value { font-size: 23px; }
+  {% endif %}
 </style>
 </head>
 <body>
@@ -388,7 +396,7 @@
       {% for metric in metrics %}
       <article class="metric-card">
         <div class="metric-label">{{ metric.label }}</div>
-        <div class="metric-value">{{ metric.value }}<span class="metric-unit">{{ metric.unit }}</span></div>
+        <div class="metric-value">{{ metric.qualifier|default('') }}{{ metric.value }}<span class="metric-unit">{{ metric.unit }}</span></div>
       </article>
       {% endfor %}
     </section>

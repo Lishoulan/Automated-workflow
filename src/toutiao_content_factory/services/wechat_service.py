@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import html
 import json
 import logging
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 try:
     from urllib.request import ProxyHandler, build_opener
@@ -1375,9 +1376,12 @@ class WechatPublishService:
         # and can access the fingerprint from the page context
         base = self.settings.wechat.base_url.rstrip("/")
         editor_url = f"{base}/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=77&token={token}&lang=zh_CN"
-        with suppress(Exception):
-            page.goto(editor_url, wait_until="domcontentloaded", timeout=15000)
-            page.wait_for_timeout(2000)
+        page.goto(editor_url, wait_until="commit", timeout=30000)
+        page.wait_for_function(
+            "() => !!document.querySelector('#title') && "
+            "!!document.querySelector('.ProseMirror, [contenteditable=\"true\"]')",
+            timeout=30000,
+        )
 
         cover_file_id, cover_cdn_url = self._browser_upload_cover(page, token, cover_path)
         if not cover_file_id:
@@ -1600,52 +1604,50 @@ class WechatPublishService:
         return app_msg_id
 
     def _upload_image_via_http(self, page, token: str, image_path: Path, filename: str = "cover.png") -> tuple[str, str]:
-        """通过 Python urllib 直接发起 HTTP 请求上传图片，避免 fetch('file://') 的 CORS 限制。"""
-        cookies = page.context.cookies()
-        cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-
-        upload_url = f"https://mp.weixin.qq.com/cgi-bin/filetransfer?action=upload_material&scene=1&f=json&writetype=doublewrite&groupid=1&token={token}"
-        boundary = f"----WebKitFormBoundary{uuid.uuid4().hex[:16]}"
-
-        body = (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-            f"Content-Type: image/png\r\n\r\n"
-        ).encode()
-        body += image_path.read_bytes()
-        body += f"\r\n--{boundary}--\r\n".encode()
-
-        req = Request(
-            upload_url,
-            data=body,
-            headers={
-                "Cookie": cookie_str,
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-                "Referer": page.url,
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
-            },
-        )
+        """Upload bytes through the authenticated browser's existing transport."""
+        if urlsplit(page.url).hostname != "mp.weixin.qq.com" or not token:
+            raise RuntimeError("WeChat image upload requires an authenticated backend page")
+        encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
         try:
-            with urlopen(req, timeout=30) as resp:
-                result = json.loads(resp.read().decode("utf-8", "ignore"))
+            result = page.evaluate("""async ({token, encoded, filename}) => {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 30000);
+                try {
+                    const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+                    const body = new FormData();
+                    body.append('file', new Blob([bytes], {type: 'image/png'}), filename);
+                    const query = new URLSearchParams({action: 'upload_material', scene: '1',
+                        f: 'json', writetype: 'doublewrite', groupid: '1', token});
+                    const response = await fetch('/cgi-bin/filetransfer?' + query, {
+                        method: 'POST', body, credentials: 'same-origin', signal: controller.signal,
+                    });
+                    if (!response.ok) throw new Error('Upload HTTP status ' + response.status);
+                    return await response.json();
+                } finally {
+                    clearTimeout(timeout);
+                }
+            }""", {"token": token, "encoded": encoded, "filename": filename})
         except Exception as exc:
-            self.logger.warning("HTTP upload failed: %s", exc)
+            self.logger.warning("Browser image upload failed (%s)", type(exc).__name__)
             return "", ""
 
         if not isinstance(result, dict):
             self.logger.warning("Upload returned non-dict: %s", str(result)[:200])
             return "", ""
 
-        self.logger.info("Upload API full response: %s", json.dumps(result, ensure_ascii=False)[:500])
-
-        ret = int((result.get("base_resp") or {}).get("ret", -1))
+        try:
+            ret = int((result.get("base_resp") or {}).get("ret", -1))
+        except (AttributeError, TypeError, ValueError):
+            return "", ""
         if ret != 0:
-            self.logger.warning("Upload API returned error: %s", json.dumps(result, ensure_ascii=False)[:300])
+            self.logger.warning("Upload API returned error code: %s", ret)
             return "", ""
 
-        file_id = str(result.get("content", "")).strip()
-        cdn_url = str(result.get("cdn_url", result.get("cdn_mid_url", ""))).strip()
-        self.logger.info("Image uploaded via HTTP: file_id=%s cdn_url=%s", file_id, cdn_url[:80])
+        file_id = str(result.get("content") or "").strip()
+        cdn_url = str(result.get("cdn_url") or result.get("cdn_mid_url") or "").strip()
+        if not file_id or not cdn_url:
+            return "", ""
+        self.logger.info("Image uploaded through authenticated browser: file_id=%s", file_id)
         return file_id, cdn_url
 
     def _browser_upload_cover(self, page, token: str, cover_path: Path) -> tuple[str, str]:
@@ -1699,8 +1701,12 @@ class WechatPublishService:
     ) -> str | None:
         base = self.settings.wechat.base_url.rstrip("/")
         new_url = f"{base}/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=77&token={token}&lang=zh_CN"
-        page.goto(new_url, wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(5000)
+        page.goto(new_url, wait_until="commit", timeout=30000)
+        page.wait_for_function(
+            "() => !!document.querySelector('#title') && "
+            "!!document.querySelector('.ProseMirror, [contenteditable=\"true\"]')",
+            timeout=30000,
+        )
 
         for _ in range(10):
             self._dismiss_irrelevant_wechat_dialogs(page)

@@ -31,10 +31,18 @@ def main():
                PYTHONPATH=os.pathsep.join([str(ROOT / "src"), str(ROOT)]))
     suite = ["test_publication_stress.py", "test_wechat_audit_integrity.py", "test_wechat_draft_delivery.py",
              "test_wechat_publication_loop.py", "test_cloud_material_supply.py", "test_wechat_growth_service.py",
-             "test_generation_cost_service.py", "test_revenue_experiment_service.py", "test_publication_stress_runner.py"]
+             "test_generation_cost_service.py", "test_revenue_experiment_service.py", "test_publication_stress_runner.py",
+             "test_cloud_publication_fault_stress.py", "test_publication_watchdog.py", "test_platform_health_service.py",
+             "test_wechat_cloud.py", "test_wechat_cloud_metrics.py", "test_wechat_publish_recovery.py",
+             "test_wechat_reviewed_cloud.py", "test_wechat_structured_request_limits.py",
+             "test_publish_retry_no_duplicate.py", "test_image_generation_service.py"]
     command = [sys.executable, "-m", "pytest", "-p", "scripts.publication_stress_guard", "-q",
                "-o", "addopts=", "-o", "junit_family=xunit1", "--junitxml=" + str(args.output / "tests.xml")]
     command.extend(str(ROOT / "tests" / name) for name in suite)
+    # Browser transport smoke needs an installed browser; isolated selector and
+    # response faults do not. Include only those portable boundary checks here.
+    command.append(str(ROOT / "tests/test_wechat_browser_upload.py"))
+    command.extend(["-k", "not test_browser_transport_uploads_real_multipart_without_external_network"])
     started, started_ns, status, code = time.monotonic(), time.time_ns(), "failed", 1
     try:
         with (args.output / "pytest.log").open("w", encoding="utf-8") as log:
@@ -61,8 +69,10 @@ def main():
                           "failed": case.find("failure") is not None or case.find("error") is not None,
                           "skipped": case.find("skipped") is not None,
                           "load": {item.get("name"): item.get("value") for item in case.findall("properties/property")}})
-    stress_cases = [row for row in cases if row["suite"].endswith("test_publication_stress")]
-    if status == "passed" and (not stress_cases or any(row["skipped"] or row["failed"] for row in stress_cases)
+    stress_cases = [row for row in cases if row["suite"].endswith(("test_publication_stress", "test_cloud_publication_fault_stress"))]
+    required_suites = {"test_publication_stress", "test_cloud_publication_fault_stress"}
+    observed_suites = {row["suite"].split(".")[-1] for row in stress_cases}
+    if status == "passed" and (not required_suites <= observed_suites or any(row["skipped"] or row["failed"] for row in stress_cases)
                                or any(row["failed"] for row in cases)):
         status, code = "incomplete_report", 1
     report = {"status": status, "scale": args.scale,

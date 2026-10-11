@@ -33,7 +33,8 @@ def _title_lines(title, font, width):
     return lines
 
 
-def generate_cloud_cover(title: str, output: Path, *, settings=None, logger=None) -> str:
+def generate_cloud_cover(title: str, output: Path, *, settings=None, logger=None,
+                         prompt_override: str | None = None, illustration_only: bool = False) -> str:
     account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
     token = os.environ.get("CLOUDFLARE_AI_TOKEN", "").strip()
     if not re.fullmatch(r"[a-fA-F0-9]{32}", account) or not token:
@@ -67,6 +68,8 @@ def generate_cloud_cover(title: str, output: Path, *, settings=None, logger=None
             "front or rear car view, grille, badge, license plate, readable markings "
             "or recognizable real vehicle design. Premium architectural model aesthetic."
         )
+    if prompt_override:
+        prompt = prompt_override
     if len(prompt) > 2048:
         raise RuntimeError("Cover prompt exceeds the cloud model input limit")
     output.with_name("cover_free_prompt.txt").write_text(prompt, encoding="utf-8")
@@ -96,6 +99,9 @@ def generate_cloud_cover(title: str, output: Path, *, settings=None, logger=None
         if min(image.size) < 256 or max(ImageStat.Stat(image.convert("RGB")).stddev) < 2:
             raise RuntimeError("Cloudflare returned a blank or undersized image")
         image.convert("RGB").save(raw, "PNG")
+        if illustration_only:
+            image.convert("RGB").save(output, "PNG", optimize=True)
+            return str(output)
         artwork = ImageOps.fit(image.convert("RGB"), (600, 511), method=Image.Resampling.LANCZOS)
     from toutiao_content_factory.services.image_generation_service import load_font
 

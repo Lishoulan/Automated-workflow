@@ -189,11 +189,11 @@ def generate_text_cover(title, output_path):
 def gen_infographic(text, output_path, *, spec=None):
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    W, H = 800, 1000
+    W, H = 800, (800 if spec and spec.get("compact") else 1000)
     img = Image.new("RGBA", (W, H), (245, 247, 250, 255))
     draw = ImageDraw.Draw(img)
     if spec is not None:
-        draw.rounded_rectangle((30, 30, 770, 970), radius=16, fill=(255, 255, 255, 255))
+        draw.rounded_rectangle((30, 30, 770, H - 30), radius=16, fill=(255, 255, 255, 255))
         draw.rectangle((60, 66, 100, 71), fill=(0, 143, 122, 255))
         draw.text((116, 58), str(spec.get("eyebrow", "文章要点")), font=load_font(20), fill=(0, 143, 122, 255))
         y = 104
@@ -217,22 +217,24 @@ def gen_infographic(text, output_path, *, spec=None):
             y += 130
         draw.text((60, y), str(spec.get("section_title", "文章要点")), font=load_font(23), fill=(23, 37, 47, 255))
         y += 44
+        point_size = 20 if spec.get("compact") else 23
+        line_height = 30 if spec.get("compact") else 34
         for item in list(spec.get("items", []))[:4]:
-            lines = wrap_text(str(item), load_font(23), 640, 20)
+            lines = wrap_text(str(item), load_font(point_size), 640, 20)
             # Omit a whole point when it cannot fit. Truncating a sentence can
             # remove a qualification such as "not yet confirmed".
-            if y + len(lines) * 34 + 18 > 825:
+            if y + len(lines) * line_height + 18 > H - 175:
                 continue
             draw.ellipse((60, y + 10, 67, y + 17), fill=(0, 143, 122, 255))
             for line in lines:
-                draw.text((82, y), line, font=load_font(23), fill=(23, 37, 47, 255))
-                y += 34
+                draw.text((82, y), line, font=load_font(point_size), fill=(23, 37, 47, 255))
+                y += line_height
             y += 18
-        draw.line((60, 846, 740, 846), fill=(220, 228, 224, 255), width=1)
+        draw.line((60, H - 154, 740, H - 154), fill=(220, 228, 224, 255), width=1)
         source = str(spec.get("source_note", "根据本文整理"))
         for index, line in enumerate(wrap_text(source, load_font(16), 680, 3)):
-            draw.text((60, 862 + index * 23), line, font=load_font(16), fill=(99, 112, 120, 255))
-        draw.text((60, 942), "原创信息图 · " + str(spec.get("brand", "")), font=load_font(14), fill=(99, 112, 120, 255))
+            draw.text((60, H - 138 + index * 23), line, font=load_font(16), fill=(99, 112, 120, 255))
+        draw.text((60, H - 58), "原创信息图 · " + str(spec.get("brand", "")), font=load_font(14), fill=(99, 112, 120, 255))
         img.save(output, format="PNG")
         return str(output.resolve())
     cm = 30
@@ -329,20 +331,26 @@ class ImageGenerationService:
     def generate_weitoutiao_image(self, run_dir: Path, content: str) -> Path | None:
         """Render one original card from the actual short post, without API calls."""
         paragraphs = self._article_paragraphs(content)
-        # Whole short paragraphs preserve qualifiers and avoid image-sized essays.
-        items = self._unique_visual_items(
-            [p for p in paragraphs if not p.startswith("#") and not re.search(r"https?://", p)],
-            limit=2,
-        )
-        if len(items) < 2:
-            return None
         destination = run_dir / self.settings.review.publish_dirname / "images" / "weitoutiao.png"
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.unlink(missing_ok=True)
+        report_path = destination.parent.parent / "weitoutiao_image_result.json"
+        report_path.unlink(missing_ok=True)
+        # Whole short paragraphs preserve qualifiers and avoid image-sized essays.
+        candidates = [p for p in paragraphs if "#" not in p and not re.search(r"https?://", p)]
+        items = self._unique_visual_items(
+            [*[p for p in candidates if re.search(r"\d+(?:\.\d+)?\s*(?:度|辆|亿元|分钟|%)", p)],
+             *[p for p in candidates if len(p) <= 110], *candidates],
+            limit=2,
+        )
+        if len(items) < 2:
+            report_path.write_text(json.dumps({"status": "skipped", "reason": "insufficient_visual_points",
+                "content_fingerprint": article_image_fingerprint("", content), "api_attempted": False}), encoding="utf-8")
+            return None
         title = "本文要点"
         spec = {"title": title, "eyebrow": "原创信息图 · 非现场照片", "metrics": [],
                 "section_title": "两点看清这件事", "items": items, "chart": {}, "notes": [],
-                "source_note": "根据本条微头条正文整理；具体来源见正文。", "period_label": "",
+                "source_note": "根据本条正文整理 · 信息图非现场照片", "period_label": "",
                 "brand": self.settings.brand_name, "compact": True}
         try:
             renderer = self._get_frontend_renderer()
@@ -352,7 +360,7 @@ class ImageGenerationService:
                 gen_infographic(title, str(destination), spec=spec)
             report = {"status": "generated", "content_fingerprint": article_image_fingerprint("", content),
                       "filename": destination.name, "items": items, "api_attempted": False}
-            (destination.parent.parent / "weitoutiao_image_result.json").write_text(
+            report_path.write_text(
                 json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
             return destination
         finally:
@@ -1058,7 +1066,8 @@ class ImageGenerationService:
     def _metric_label(cls, text: str, start: int) -> str:
         context = re.sub(r"\s+", "", text[max(0, start - 34):start])
         context = re.split(r"[。；;\n]", context)[-1]
-        context = re.split(r"[，,]", context)[-1]
+        context = re.split(r"[，,、]", context)[-1]
+        context = re.sub(r"^(?:该报道以|报道以)", "", context)
         context = re.sub(r"^.*?(?:公告|报告|披露)[：:]", "", context)
         context = re.sub(r"\d{4}年(?:上半年|下半年|第[一二三四]季度)", "", context)
         context = re.sub(r"[+-]?\d+(?:\.\d+)?(?:[-~至—][+-]?\d+(?:\.\d+)?)?"

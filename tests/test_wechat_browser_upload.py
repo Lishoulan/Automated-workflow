@@ -43,7 +43,10 @@ def test_upload_failure_neither_retries_nor_logs_credentials(service, tmp_path, 
     assert "private-token" not in caplog.text and "cookie-secret" not in caplog.text
 
 
-@pytest.mark.parametrize("url,token", [("https://example.com", "123"), ("https://mp.weixin.qq.com", "")])
+@pytest.mark.parametrize("url,token", [
+    ("https://example.com", "123"), ("https://mp.weixin.qq.com", ""),
+    ("http://mp.weixin.qq.com", "123"), ("https://mp.weixin.qq.com:8443", "123"),
+])
 def test_upload_rejects_other_origins_and_missing_login(service, tmp_path, url, token):
     page = MagicMock(url=url)
     with pytest.raises(RuntimeError, match="authenticated backend"):

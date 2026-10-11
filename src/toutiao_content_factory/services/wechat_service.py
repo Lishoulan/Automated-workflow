@@ -1605,7 +1605,9 @@ class WechatPublishService:
 
     def _upload_image_via_http(self, page, token: str, image_path: Path, filename: str = "cover.png") -> tuple[str, str]:
         """Upload bytes through the authenticated browser's existing transport."""
-        if urlsplit(page.url).hostname != "mp.weixin.qq.com" or not token:
+        origin = urlsplit(page.url)
+        if (origin.scheme != "https" or origin.hostname != "mp.weixin.qq.com"
+                or origin.port not in (None, 443) or not token):
             raise RuntimeError("WeChat image upload requires an authenticated backend page")
         encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
         try:
@@ -1632,7 +1634,7 @@ class WechatPublishService:
             return "", ""
 
         if not isinstance(result, dict):
-            self.logger.warning("Upload returned non-dict: %s", str(result)[:200])
+            self.logger.warning("Upload returned non-dict (%s)", type(result).__name__)
             return "", ""
 
         try:

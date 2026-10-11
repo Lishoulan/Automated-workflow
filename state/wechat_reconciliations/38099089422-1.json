@@ -1,0 +1,21 @@
+{
+  "run_key": "38099089422:1",
+  "account": "小椰科技",
+  "verified_at": "2026-10-11T00:54:57.480640+00:00",
+  "outcome": "not_saved",
+  "original_outcome": "uncertain",
+  "evidence": {
+    "logged_in": true,
+    "target_visible": false,
+    "body_text": "首页\n内容管理\n草稿箱\n素材库\n发表记录\n原创\n合集\n互动管理\n数据分析\n收入变现\n账号成长\n营销与服务\n设置与开发\n新的功能\n通知中心\n3\n小椰科技\n草稿箱\n 文章模板 \n文章 2\n新的创作\n特斯拉 Optimus 最新进展：我盯了 7 月 24 日这条线\n更新于 07月24日\n交付节奏:硬件良率的爬坡曲线\n更新于 07月22日\n已加载全部内容\n\n关于腾讯 服务协议 规则中心 腾讯客服 侵权投诉 反馈官号weixingongzhong 上传日志\n\nCopyright © 2012-2026 Tencent. All Rights Reserved.\n\n问题反馈"
+  },
+  "execution_evidence": [
+    "Cover upload failed before operate_appmsg draft creation; empty cdn_url skipped API creation.",
+    "Editor fallback Page.goto timed out before title filling, content paste or draft save.",
+    "Read-only backend shows exactly two July drafts and all entries loaded; no current draft."
+  ],
+  "run_url": "https://github.com/Lishoulan/Automated-workflow/actions/runs/38099089422",
+  "screenshot_sha256": "a99ae0ab1027e3fec54740ae188fe6cd699f9f1a6389bbdf1237efdb4bff16b4",
+  "original_report_sha256": "dbdd76fa146554fd3462444cc320a437fcff0467e9eaae1f9547f7a2fa5452f1",
+  "formal_publication_performed": false
+}

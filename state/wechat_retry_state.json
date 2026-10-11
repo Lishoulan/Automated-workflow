@@ -814,6 +814,12 @@
             "reconciliation_evidence": "state/wechat_reconciliations/38099089422-1.json",
             "proof_sha256": "80056c52ce801ebb486bf35450a968c8ea11f39982b148ca4fc93f95d2d5bd20"
           }
+        },
+        "38100057732:1": {
+          "status": "running",
+          "started_at": "2026-10-11T00:55:39.570113+00:00",
+          "parent": "",
+          "elapsed_seconds": 0
         }
       },
       "dispatches": {},

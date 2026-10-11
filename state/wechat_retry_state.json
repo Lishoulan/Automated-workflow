@@ -802,10 +802,14 @@
     "2026-10-11": {
       "runs": {
         "38099089422:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-11T00:38:19.715635+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 430.969,
+          "outcome": "error",
+          "draft_delivery": {
+            "status": "uncertain"
+          }
         }
       },
       "dispatches": {},

@@ -1,72 +1,41 @@
-name: Network Reach Probe
-
-# 诊断用：从 GitHub runner 探测材料抓取链路要访问的站点是否可达。
-# 用来判定"云端抓不到正文素材"是不是网络可达性问题（本地 vs runner 对比）。
-# 只读、无副作用，可以随时删除。
+name: Publication Stress Test
 
 on:
   workflow_dispatch:
+    inputs:
+      scale:
+        description: 'Isolated load multiplier (1-5); no model or platform requests'
+        type: choice
+        default: '1'
+        options: ['1', '2', '3', '4', '5']
+
+permissions:
+  contents: read
 
 jobs:
-  probe:
+  stress:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      TZ: Asia/Shanghai
+      STRESS_SCALE: ${{ inputs.scale || '1' }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-
-      - name: Probe reachability (direct)
-        run: python scripts/probe_network_reach.py
-
-      - name: Probe Chinese search endpoints (the real question)
-        run: python scripts/probe_cn_search.py
-
-      - name: Install material-search dependencies
-        run: |
-          pip install --quiet httpx2 beautifulsoup4 lxml playwright
-          python -m playwright install --with-deps chromium
-
-      - name: Material search end-to-end (each backend + smart fetch)
-        run: |
-          python - <<'PY'
-          import sys
-          sys.path.insert(0, "src")
-          from toutiao_content_factory.services import material_search_service as mss
-
-          TITLE = "男子高空作业绳子被2楼老人剪断"
-          for backend in mss.SEARCH_BACKENDS:
-              name = backend[0]
-              print("=" * 70)
-              print("backend:", name)
-              hits = mss._search_with_backend(backend, TITLE, retries=1, pause=1.0)
-              print("  hits:", len(hits))
-              for hit in hits[:3]:
-                  url = str(hit.get("url", ""))
-                  print("   -", str(hit.get("title", ""))[:56])
-                  print("     ", url[:100])
-                  try:
-                      page, final_url, how = mss.fetch_text_smart(url, timeout=20)
-                  except Exception as exc:
-                      print("     smart fetch error:", type(exc).__name__, exc)
-                      continue
-                  body = ""
-                  if page:
-                      try:
-                          body = mss.extract_article_body(page, min_chars=200)
-                      except Exception as exc:
-                          print("     extract error:", type(exc).__name__, exc)
-                  print(f"     smart[{how}] html={len(page or '')} body={len(body)}")
-                  if body:
-                      print("        preview:", body[:110].replace("\n", " "))
-
-          for title in ("男子高空作业绳子被2楼老人剪断",
-                        "老人在家摔倒后，子女才发现没人知道他的日常情况"):
-              bundle = mss.collect_material(title, max_sources=3, min_body_chars=400)
-              print(f"collect_material({title[:20]}...) usable={len(bundle.usable)} "
-                    f"total_chars={bundle.total_chars}")
-          PY
+          python-version: '3.11'
+          cache: pip
+      - name: Install test dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Run isolated load and failure tests
+        run: python scripts/run_publication_stress.py --scale "$STRESS_SCALE"
+      - name: Preserve stress evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publication-stress-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .runtime/publication-stress/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

@@ -816,10 +816,14 @@
           }
         },
         "38100057732:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-11T00:55:39.570113+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 233.422,
+          "outcome": "failed",
+          "draft_delivery": {
+            "status": "not_saved"
+          }
         }
       },
       "dispatches": {},

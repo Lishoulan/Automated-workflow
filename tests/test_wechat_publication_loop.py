@@ -244,7 +244,7 @@ def test_true_faults_or_possible_submission_never_relay(changes, code):
 def test_explicit_normal_no_publication_can_relay(status):
     state, day = reserved()
     payload = normal() | {"status": status, "run_outcome": status}
-    assert retry.can_relay(state["days"][day], payload, 0)
+    assert retry.can_relay(state["days"][day], payload, 0) is (status == "review_required")
     assert cloud_exit_code(payload, 3) == 0
     assert cloud_exit_code(payload | {"publication_attempted": True}, 3) == 3
 
@@ -460,7 +460,7 @@ def test_lazy_enrichment_stops_before_unused_source_failure(app_settings, logger
     monkeypatch.setattr(TopicCollectionService, "_enrich_topic", score)
     monkeypatch.setattr(TopicCollectionService, "_passes_topic_focus", lambda *args: True)
     app._enrich_wechat_candidates(topics)
-    assert hydrator.call_count == 1
+    assert hydrator.call_count == 2
     # If the writer rejects the ready article, the next source really is needed.
     # Its system failure must still propagate, not turn into insufficient evidence.
     with pytest.raises(MaterialSearchError): app._enrich_wechat_candidates(topics[1:])

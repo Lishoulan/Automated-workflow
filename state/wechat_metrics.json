@@ -944,7 +944,29 @@
       "elapsed_seconds": null,
       "runtime_status": "ok",
       "native_exit_code": null
+    },
+    {
+      "run_key": "38101560750:1",
+      "started_at": "2026-10-11T01:22:17.416772+00:00",
+      "mode": "draft",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [],
+      "attempt_count": 0,
+      "enrichment_count": 6,
+      "eligible_candidate_count": 0,
+      "audited_candidate_count": 0,
+      "review_pass_count": 0,
+      "rejection_reasons": [],
+      "publication": {},
+      "expected_publication": {},
+      "draft_delivery": {
+        "status": "not_saved"
+      },
+      "elapsed_seconds": 152.92,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-11T09:16:49.308193+08:00"
+  "updated_at": "2026-10-11T09:24:53.605419+08:00"
 }

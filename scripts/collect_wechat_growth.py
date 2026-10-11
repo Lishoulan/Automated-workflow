@@ -47,6 +47,12 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "wechat_growth_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     (args.output / "wechat_growth_report.md").write_text(growth.render_growth_report(report), encoding="utf-8")
+    from toutiao_content_factory.services.generation_cost_service import build_cost_summary
+    revenue_report = {"account": report["account"], "observed_at": report["observed_at"],
+        "monetization": report["monetization"], "ad_activation": report["ad_activation"],
+        "generation_costs": build_cost_summary(settings.output_dir if settings else ROOT / "output"),
+        "net_profit": None, "note": "公众号后台金额与头条收入分开记录；未核实扣费、结算及完整成本时不计算净利润。"}
+    (args.output / "wechat_revenue_report.json").write_text(json.dumps(revenue_report, ensure_ascii=False, indent=2), encoding="utf-8")
     if not args.read_only:
         from wechat_cloud_run import write_state_file
         write_state_file(state, growth.STATE_PATH, "chore(wechat): record read-only content observations [skip ci]")

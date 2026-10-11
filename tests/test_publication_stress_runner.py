@@ -8,12 +8,12 @@ import pytest
 from scripts import run_publication_stress as runner
 
 
-@pytest.mark.parametrize("case", ["missing", "stale", "malformed", "skipped", "contradictory", "timeout", "passed"])
+@pytest.mark.parametrize("case", ["missing", "stale", "malformed", "skipped", "contradictory", "missing_fault_suite", "timeout", "passed"])
 def test_runner_requires_current_complete_non_skipped_stress_evidence(tmp_path, monkeypatch, case):
     output = tmp_path / "evidence"
     output.mkdir()
     xml = output / "tests.xml"
-    valid = '<testsuites><testsuite><testcase name="test_load" classname="tests.test_publication_stress" time="1"/></testsuite></testsuites>'
+    valid = '<testsuites><testsuite><testcase name="test_load" classname="tests.test_publication_stress" time="1"/><testcase name="test_fault" classname="tests.test_cloud_publication_fault_stress" time="1"/></testsuite></testsuites>'
     if case in {"stale", "timeout"}:
         xml.write_text(valid)
         os.utime(xml, (1, 1))
@@ -30,6 +30,8 @@ def test_runner_requires_current_complete_non_skipped_stress_evidence(tmp_path, 
             if case == "malformed": data = "<broken"
             if case == "skipped": data = valid.replace('/>', '><skipped/></testcase>')
             if case == "contradictory": data = valid.replace('/>', '><failure/></testcase>')
+            if case == "missing_fault_suite":
+                data = '<testsuites><testsuite><testcase name="test_load" classname="tests.test_publication_stress" time="1"/></testsuite></testsuites>'
             xml.write_text(data)
         return subprocess.CompletedProcess(command, 0)
     monkeypatch.setattr(runner, "run_process_tree", execute)

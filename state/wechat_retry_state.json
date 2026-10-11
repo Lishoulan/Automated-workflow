@@ -808,7 +808,11 @@
           "elapsed_seconds": 430.969,
           "outcome": "error",
           "draft_delivery": {
-            "status": "uncertain"
+            "status": "not_saved",
+            "previous_status": "uncertain",
+            "verified_at": "2026-10-11T00:54:57.480640+00:00",
+            "reconciliation_evidence": "state/wechat_reconciliations/38099089422-1.json",
+            "proof_sha256": "80056c52ce801ebb486bf35450a968c8ea11f39982b148ca4fc93f95d2d5bd20"
           }
         }
       },

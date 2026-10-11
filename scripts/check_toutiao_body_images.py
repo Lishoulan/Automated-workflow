@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 import argparse
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -18,16 +19,16 @@ from toutiao_content_factory.services.publish_service import PublishService
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["render", "inspect-upload"], default="render")
+    parser.add_argument("--mode", choices=["render", "inspect-upload", "upload-preview", "ai-upload-preview"], default="render")
     args = parser.parse_args()
     settings = load_settings(ROOT, account_key="robot_notes")
     # This verification has no API credentials, paid calls, or publishing.
-    settings.image_generation = replace(settings.image_generation, backend="frontend", max_generated_assets=2)
+    settings.image_generation = replace(settings.image_generation, backend="image2" if args.mode == "ai-upload-preview" else "frontend", max_generated_assets=2)
     destination = ROOT / "output/automation/toutiao_body_image_check"
     run = destination / "run"
     publish = run / settings.review.publish_dirname
     publish.mkdir(parents=True, exist_ok=True)
-    if args.mode == "inspect-upload":
+    if args.mode in {"inspect-upload", "upload-preview", "ai-upload-preview"}:
         from playwright.sync_api import sync_playwright
         service = PublishService(settings, logging.getLogger("upload-inspection"))
         with sync_playwright() as playwright:
@@ -39,6 +40,33 @@ def main():
                 service._goto_publish_page(page, url)
                 page.wait_for_timeout(3000)
                 service._check_toutiao_login(page, [])
+                upload_events = []
+                page.on("requestfailed", lambda request: upload_events.append({"path": urlsplit(request.url).path,
+                    "status": "requestfailed", "method": request.method, "failure": request.failure}))
+                def capture(response):
+                    if response.request.method != "POST":
+                        return
+                    try:
+                        payload = response.json()
+                        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+                        upload_events.append({"path": urlsplit(response.url).path, "status": response.status,
+                          "code": payload.get("code", payload.get("err_no")) if isinstance(payload, dict) else None,
+                          "keys": list(payload) if isinstance(payload, dict) else [],
+                          "data_keys": list(data) if isinstance(data, dict) else [],
+                          "image_reference_count": len(service._weitoutiao_image_references(data))})
+                    except Exception:
+                        pass
+                page.on("response", capture)
+                upload_summary = None
+                upload_error = None
+                if args.mode in {"upload-preview", "ai-upload-preview"}:
+                    article = (ROOT / "tests/fixtures/toutiao_body_image_article.md").read_text(encoding="utf-8")
+                    content = "\n\n".join(ImageGenerationService._article_paragraphs(article)[:4])
+                    asset = ImageGenerationService(settings, logging.getLogger("micro-preview")).generate_weitoutiao_image(run, content)
+                    try:
+                        upload_summary = service._try_apply_weitoutiao_image(page, asset, [])
+                    except Exception as exc:
+                        upload_error = type(exc).__name__
                 inspection = page.evaluate("""() => ({
                   files: Array.from(document.querySelectorAll('input[type=file]')).map(e => ({
                     accept: e.accept, multiple: e.multiple, name: e.name,
@@ -46,11 +74,21 @@ def main():
                     ancestors: [e.parentElement, e.parentElement?.parentElement, e.parentElement?.parentElement?.parentElement].map(a => a?.className || '')
                   })),
                   imageControls: Array.from(document.querySelectorAll('[class]')).filter(e => /upload|image|picture|photo/.test(e.className) && e.children.length < 3).slice(0,60).map(e => ({tag: e.tagName, class: e.className, text: (e.innerText || '').slice(0,45)}))
+                  ,dialogControls: Array.from(document.querySelectorAll('[class]')).filter(e => /drawer|modal|close|confirm/.test(e.className) && e.children.length < 3).slice(0,60).map(e => ({tag: e.tagName, class: e.className, text: (e.innerText || '').slice(0,45)}))
                 })""")
-                inspection.update(publication_attempted=False, upload_attempted=False)
+                image_report_path = publish / "weitoutiao_image_result.json"
+                inspection.update(publication_attempted=False, upload_attempted=args.mode in {"upload-preview", "ai-upload-preview"},
+                                  upload_events=upload_events, upload_error=upload_error, upload_summary=upload_summary,
+                                  image_generation=json.loads(image_report_path.read_text(encoding="utf-8")) if image_report_path.exists() else {},
+                                  image_state=service._weitoutiao_image_state(page))
                 (destination / "upload-inspection.json").write_text(json.dumps(inspection, ensure_ascii=False, indent=2), encoding="utf-8")
                 page.screenshot(path=str(destination / "micro-editor.png"), full_page=False)
-                print(json.dumps(inspection, ensure_ascii=False))
+                print(json.dumps({"mode": args.mode, "publication_attempted": False,
+                    "image_count": (upload_summary or {}).get("inserted_count", 0), "upload_error": upload_error}, ensure_ascii=False))
+                if args.mode in {"upload-preview", "ai-upload-preview"} and (upload_summary or {}).get("inserted_count") != 1:
+                    raise RuntimeError("Cloud micro-post image upload preview was not confirmed")
+                if args.mode == "ai-upload-preview" and inspection["image_generation"].get("ai_generated") is not True:
+                    raise RuntimeError("AI image generation was not confirmed")
             finally:
                 browser.close()
         return

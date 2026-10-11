@@ -189,11 +189,11 @@ def generate_text_cover(title, output_path):
 def gen_infographic(text, output_path, *, spec=None):
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    W, H = 800, 1000
+    W, H = 800, (800 if spec and spec.get("compact") else 1000)
     img = Image.new("RGBA", (W, H), (245, 247, 250, 255))
     draw = ImageDraw.Draw(img)
     if spec is not None:
-        draw.rounded_rectangle((30, 30, 770, 970), radius=16, fill=(255, 255, 255, 255))
+        draw.rounded_rectangle((30, 30, 770, H - 30), radius=16, fill=(255, 255, 255, 255))
         draw.rectangle((60, 66, 100, 71), fill=(0, 143, 122, 255))
         draw.text((116, 58), str(spec.get("eyebrow", "文章要点")), font=load_font(20), fill=(0, 143, 122, 255))
         y = 104
@@ -217,22 +217,24 @@ def gen_infographic(text, output_path, *, spec=None):
             y += 130
         draw.text((60, y), str(spec.get("section_title", "文章要点")), font=load_font(23), fill=(23, 37, 47, 255))
         y += 44
+        point_size = 20 if spec.get("compact") else 23
+        line_height = 30 if spec.get("compact") else 34
         for item in list(spec.get("items", []))[:4]:
-            lines = wrap_text(str(item), load_font(23), 640, 20)
+            lines = wrap_text(str(item), load_font(point_size), 640, 20)
             # Omit a whole point when it cannot fit. Truncating a sentence can
             # remove a qualification such as "not yet confirmed".
-            if y + len(lines) * 34 + 18 > 825:
+            if y + len(lines) * line_height + 18 > H - 175:
                 continue
             draw.ellipse((60, y + 10, 67, y + 17), fill=(0, 143, 122, 255))
             for line in lines:
-                draw.text((82, y), line, font=load_font(23), fill=(23, 37, 47, 255))
-                y += 34
+                draw.text((82, y), line, font=load_font(point_size), fill=(23, 37, 47, 255))
+                y += line_height
             y += 18
-        draw.line((60, 846, 740, 846), fill=(220, 228, 224, 255), width=1)
+        draw.line((60, H - 154, 740, H - 154), fill=(220, 228, 224, 255), width=1)
         source = str(spec.get("source_note", "根据本文整理"))
         for index, line in enumerate(wrap_text(source, load_font(16), 680, 3)):
-            draw.text((60, 862 + index * 23), line, font=load_font(16), fill=(99, 112, 120, 255))
-        draw.text((60, 942), "原创信息图 · " + str(spec.get("brand", "")), font=load_font(14), fill=(99, 112, 120, 255))
+            draw.text((60, H - 138 + index * 23), line, font=load_font(16), fill=(99, 112, 120, 255))
+        draw.text((60, H - 58), "原创信息图 · " + str(spec.get("brand", "")), font=load_font(14), fill=(99, 112, 120, 255))
         img.save(output, format="PNG")
         return str(output.resolve())
     cm = 30
@@ -329,20 +331,56 @@ class ImageGenerationService:
     def generate_weitoutiao_image(self, run_dir: Path, content: str) -> Path | None:
         """Render one original card from the actual short post, without API calls."""
         paragraphs = self._article_paragraphs(content)
-        # Whole short paragraphs preserve qualifiers and avoid image-sized essays.
-        items = self._unique_visual_items(
-            [p for p in paragraphs if not p.startswith("#") and not re.search(r"https?://", p)],
-            limit=2,
-        )
-        if len(items) < 2:
-            return None
         destination = run_dir / self.settings.review.publish_dirname / "images" / "weitoutiao.png"
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.unlink(missing_ok=True)
+        report_path = destination.parent.parent / "weitoutiao_image_result.json"
+        report_path.unlink(missing_ok=True)
+        prompt = self._build_toutiao_illustration_prompt(content)
+        (destination.parent.parent / "weitoutiao_image_prompt.txt").write_text(prompt, encoding="utf-8")
+        source = run_dir / "images" / "weitoutiao_ai_source.png"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.unlink(missing_ok=True)
+        backend = ""
+        errors = []
+        if self._api_backend_requested():
+            try:
+                self._generate_api_image(prompt, source, self.settings.image_generation.cover_size)
+                backend = "image2"
+            except Exception as exc:
+                source.unlink(missing_ok=True)
+                errors.append({"backend": "image2", "error_type": type(exc).__name__})
+        if not backend and os.environ.get("CLOUDFLARE_AI_TOKEN"):
+            from toutiao_content_factory.services.wechat_cloud_cover import generate_cloud_cover
+            try:
+                generate_cloud_cover("微头条主题插画", source, settings=self.settings, logger=self.logger,
+                                     prompt_override=prompt, illustration_only=True)
+                backend = "cloudflare_flux"
+            except Exception as exc:
+                source.unlink(missing_ok=True)
+                errors.append({"backend": "cloudflare_flux", "error_type": type(exc).__name__})
+        if backend:
+            self._compose_toutiao_illustration(source, destination)
+            report_path.write_text(json.dumps({"status": "generated", "backend": backend,
+                "ai_generated": True, "label": "AI示意图 · 非现场照片", "provider_errors": errors,
+                "content_fingerprint": article_image_fingerprint("", content), "filename": destination.name,
+                "api_attempted": self._api_backend_requested()}, ensure_ascii=False, indent=2), encoding="utf-8")
+            return destination
+        # Whole short paragraphs preserve qualifiers and avoid image-sized essays.
+        candidates = [p for p in paragraphs if "#" not in p and not re.search(r"https?://", p)]
+        items = self._unique_visual_items(
+            [*[p for p in candidates if re.search(r"\d+(?:\.\d+)?\s*(?:度|辆|亿元|分钟|%)", p)],
+             *[p for p in candidates if len(p) <= 110], *candidates],
+            limit=2,
+        )
+        if len(items) < 2:
+            report_path.write_text(json.dumps({"status": "skipped", "reason": "insufficient_visual_points",
+                "content_fingerprint": article_image_fingerprint("", content), "api_attempted": False}), encoding="utf-8")
+            return None
         title = "本文要点"
         spec = {"title": title, "eyebrow": "原创信息图 · 非现场照片", "metrics": [],
                 "section_title": "两点看清这件事", "items": items, "chart": {}, "notes": [],
-                "source_note": "根据本条微头条正文整理；具体来源见正文。", "period_label": "",
+                "source_note": "根据本条正文整理 · 信息图非现场照片", "period_label": "",
                 "brand": self.settings.brand_name, "compact": True}
         try:
             renderer = self._get_frontend_renderer()
@@ -351,8 +389,9 @@ class ImageGenerationService:
             if not destination.exists():
                 gen_infographic(title, str(destination), spec=spec)
             report = {"status": "generated", "content_fingerprint": article_image_fingerprint("", content),
-                      "filename": destination.name, "items": items, "api_attempted": False}
-            (destination.parent.parent / "weitoutiao_image_result.json").write_text(
+                      "filename": destination.name, "items": items, "backend": "local_information_card",
+                      "ai_generated": False, "provider_errors": errors, "api_attempted": self._api_backend_requested()}
+            report_path.write_text(
                 json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
             return destination
         finally:
@@ -360,6 +399,30 @@ class ImageGenerationService:
             if self._frontend_renderer is not None:
                 self._frontend_renderer.close()
                 self._frontend_renderer = None
+
+    @staticmethod
+    def _build_toutiao_illustration_prompt(content: str) -> str:
+        return (
+            "Premium editorial conceptual illustration for a Chinese news analysis, not a documentary photo. "
+            "Theme from the actual article: " + json.dumps(content[:500], ensure_ascii=False) + ". "
+            "Choose one relevant focal subject and a coherent physical setting. Sophisticated magazine art direction, "
+            "credible proportions, detailed natural materials, soft cinematic daylight, warm ivory and restrained teal "
+            "with amber accents, subtle depth, calm composition, generous breathing room, wide landscape. "
+            "Generic anonymous objects; people, if essential, must be tiny silhouettes without identifiable faces. "
+            "Do not recreate an actual incident or imply this is a photograph of the reported event. "
+            "Do not render any text, letters, numbers, logos, labels, charts, watermarks or readable signs. "
+            "Avoid infographic panels, text cards, neon effects, decorative clutter, distorted anatomy or machinery."
+        )
+
+    @staticmethod
+    def _compose_toutiao_illustration(source: Path, output: Path) -> None:
+        with Image.open(source) as image:
+            canvas = ImageOps.fit(image.convert("RGB"), (1200, 800), method=Image.Resampling.LANCZOS)
+        draw = ImageDraw.Draw(canvas)
+        draw.rectangle((0, 746, 1200, 800), fill=(245, 243, 236))
+        draw.text((28, 759), "AI示意图 · 非现场照片", font=load_font(23), fill=(65, 76, 80))
+        output.parent.mkdir(parents=True, exist_ok=True)
+        canvas.save(output, format="PNG", optimize=True)
 
     def _resolve_image_api_key(self) -> str:
         image_settings = self.settings.image_generation
@@ -562,7 +625,7 @@ class ImageGenerationService:
 
         wechat_cover = getattr(self.settings, "platform", "") == "wechat"
         cover_prompt = (self._build_wechat_cover_prompt(title)
-                        if wechat_cover else self._build_api_cover_prompt(title))
+                        if wechat_cover else self._build_toutiao_illustration_prompt(title + "\n" + self._read_text(publish_dir / "article.md")))
         cover_backend = ""
         api_attempted = False
         api_error_type = ""
@@ -616,11 +679,14 @@ class ImageGenerationService:
                     api_error_detail,
                     bool(getattr(self.settings.image_generation, "fallback_to_renderer", True)),
                 )
-                if wechat_cover and os.environ.get("CLOUDFLARE_AI_TOKEN"):
+                if os.environ.get("CLOUDFLARE_AI_TOKEN"):
                     from toutiao_content_factory.services.wechat_cloud_cover import generate_cloud_cover
                     free_api_attempted = True
                     try:
-                        generate_cloud_cover(title, cr, settings=self.settings, logger=self.logger)
+                        if wechat_cover:
+                            generate_cloud_cover(title, cr, settings=self.settings, logger=self.logger)
+                        else:
+                            generate_cloud_cover(title, cr, settings=self.settings, logger=self.logger, prompt_override=cover_prompt)
                         cover_backend = "cloudflare_flux"
                     except Exception as cloud_exc:
                         free_api_error_detail = _format_api_error(cloud_exc)
@@ -657,6 +723,14 @@ class ImageGenerationService:
         if cr.exists():
             with Image.open(cr) as cover_image:
                 cover_image.save(cp, format="PNG", optimize=True)
+        illustration = None
+        illustration_output = pi / "illustration_1.png"
+        illustration_output.unlink(missing_ok=True)
+        if not wechat_cover and include_infographics and cover_backend in {"image2", "cloudflare_flux"}:
+            raw_illustration = api_cover_source if cover_backend == "image2" else ri / "cover_free_ai.png"
+            if raw_illustration.exists():
+                self._compose_toutiao_illustration(raw_illustration, illustration_output)
+                illustration = illustration_output
         ips = []
         publish_infographic_paths = []
         infographic_specs = []
@@ -759,8 +833,9 @@ class ImageGenerationService:
             "publish_artifacts": {
                 "cover": str(cp),
                 "infographics": [str(p) for p in publish_infographic_paths],
+                "illustration": str(illustration) if illustration else "",
             },
-            "inline_ready": bool(publish_infographic_paths),
+            "inline_ready": bool(publish_infographic_paths or illustration),
             "body_image_fingerprint": article_image_fingerprint(title, self._read_text(publish_dir / "article.md")),
             "infographic_specs": successful_infographic_specs,
         }
@@ -852,13 +927,16 @@ class ImageGenerationService:
         article = self._read_text(publish_dir / "article.md")
         topic = str((publish_meta.get("selected_topic") or {}).get("title", "")).strip()
 
-        normalized_article = re.sub(r"\s+", "", article).casefold()
+        paragraphs = self._article_paragraphs(article)
+        def normalize_point(value):
+            return re.sub(r"\s+", "", value).casefold().strip("。.!！？?")
+        body_units = {normalize_point(unit) for paragraph in paragraphs
+                      for unit in [paragraph, *re.split(r"(?<=[。！？!?])", paragraph)] if unit.strip()}
         def in_article(values):
             return [value for value in self._text_list(values)
-                    if re.sub(r"\s+", "", value).casefold() in normalized_article]
+                    if normalize_point(value) in body_units]
         core_data = in_article(data_report.get("core_data"))
         evidence_notes = in_article(data_report.get("evidence_notes"))
-        paragraphs = self._article_paragraphs(article)
         fact_items = self._unique_visual_items(
             [
                 *core_data,
@@ -1058,7 +1136,8 @@ class ImageGenerationService:
     def _metric_label(cls, text: str, start: int) -> str:
         context = re.sub(r"\s+", "", text[max(0, start - 34):start])
         context = re.split(r"[。；;\n]", context)[-1]
-        context = re.split(r"[，,]", context)[-1]
+        context = re.split(r"[，,、]", context)[-1]
+        context = re.sub(r"^(?:该报道以|报道以)", "", context)
         context = re.sub(r"^.*?(?:公告|报告|披露)[：:]", "", context)
         context = re.sub(r"\d{4}年(?:上半年|下半年|第[一二三四]季度)", "", context)
         context = re.sub(r"[+-]?\d+(?:\.\d+)?(?:[-~至—][+-]?\d+(?:\.\d+)?)?"

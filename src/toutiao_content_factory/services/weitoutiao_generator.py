@@ -382,6 +382,10 @@ class WeiToutiaoStandaloneGenerator:
             user_prompt += ("\n标题明确真实人物或机构、事件及后果；前两句给出核心事件与已核验的信息，"
                             "按本次开头实验的顺序组织。数字、冲突、结果和引语必须能回指素材，"
                             "不得扩大矛盾、补造细节或把报道时间写成事发时间。")
+        user_prompt += ("\n读者价值：前两句说明本案的具体主体、动作及已确认的变化；"
+                        "正文至少讲清一个有素材依据的区别、条件或实际影响，不重复新闻摘要凑字数。"
+                        "有数字时保留对象、时间和约数；不能用来源未给出的收益、损失或极端冲突提高吸引力。"
+                        "结尾给出本案的判断边界或一个读者能回答的具体问题，不使用泛化互动口号。")
         if verified_story and persona == "story_comment" and not self._is_public_policy_topic(topic, persona):
             topic._content_experiment = self._opening_experiment()
             opening = (

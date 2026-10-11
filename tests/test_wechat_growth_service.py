@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from toutiao_content_factory.services.generation_cost_service import BEIJING
-from toutiao_content_factory.services.wechat_growth_service import article_url, merge_observation, build_growth_report, render_growth_report
+from toutiao_content_factory.services.wechat_growth_service import article_url, merge_observation, build_growth_report, render_growth_report, parse_monetization_text
 
 START = datetime(2026, 10, 9, 10, tzinfo=BEIJING)
 URL = "https://mp.weixin.qq.com/s/test-article"
@@ -94,3 +94,50 @@ def test_schedule_and_collector_never_invoke_content_or_publication():
     assert "runs-on: ubuntu-latest" in workflow and "WECHAT_EXECUTION_HOST: cloud" in workflow
     assert "WECHAT_FIXED_DEVICE_DIR" not in workflow and "self-hosted" not in workflow
     assert "单篇涨粉" in render_growth_report(build_growth_report(merge_observation({}, observation(), account="小椰科技")))
+
+
+@pytest.mark.parametrize("text,activation,income", [
+    ("未开通流量主，满足条件后可申请", "not_activated", {}),
+    ("流量主已开通 昨日收入（元）0.00 累计收入 ¥12.34", "active", {"yesterday": 0.0, "cumulative": 12.34}),
+    ("开通流量主 昨日收入 1234 余额100.00元", "unverified", {}),
+    ("已开通流量主 未开通流量主", "unverified", {}),
+])
+def test_monetization_requires_explicit_status_amount_scope_and_currency(text, activation, income):
+    result = parse_monetization_text(text, source_path="/income")
+    assert result["activation"] == activation
+    assert {k:v["amount"] for k,v in result["income"].items()} == income
+    report = build_growth_report(merge_observation({}, observation(monetization=result), account="小椰科技"))
+    assert report["ad_activation"] == activation
+    assert report["monetization"]["income"] == result["income"]
+    assert "token" not in str(report["monetization"])
+
+
+def test_unavailable_current_income_does_not_inherit_old_confirmation_or_zero():
+    first = observation(monetization=parse_monetization_text("已开通流量主 昨日收入 ¥3.00"))
+    state = merge_observation({}, first, account="小椰科技")
+    state = merge_observation(state, observation(6, monetization={"activation": "unverified", "income": {}, "reason": "login_expired"}), account="小椰科技")
+    report = build_growth_report(state)
+    assert report["ad_activation"] == "unverified" and report["monetization"]["income"] == {}
+    assert state["monetization_snapshots"][0]["income"]["yesterday"]["amount"] == 3
+    assert "保持未知，不记为零" in render_growth_report(report)
+
+
+def test_visible_advertising_income_entry_ignores_hidden_duplicates_and_activation_actions():
+    from types import SimpleNamespace
+    from toutiao_content_factory.services.wechat_growth_service import collect_monetization_observation
+    clicks = []
+    class Entry:
+        def __init__(self, visible): self.visible = visible
+        def is_visible(self): return self.visible
+        def click(self, **kw): clicks.append("income_navigation")
+    class Page:
+        url = "https://mp.weixin.qq.com/cgi-bin/admanagepage?token=private"
+        def get_by_text(self, text, exact):
+            assert text not in {"申请开通", "开通流量主"}
+            return SimpleNamespace(all=lambda: [Entry(False), Entry(True)] if text == "广告收入" else [])
+        def wait_for_timeout(self, ms): pass
+        def locator(self, selector): return SimpleNamespace(inner_text=lambda **kw: "未开通流量主 申请开通")
+    page = Page()
+    result = collect_monetization_observation(page, SimpleNamespace(pages=[page]))
+    assert clicks == ["income_navigation"] and result["activation"] == "not_activated"
+    assert "token" not in str(result)

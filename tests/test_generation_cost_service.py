@@ -76,3 +76,29 @@ def test_bad_usage_does_not_turn_success_into_a_retry_or_zero_cost(tmp_path):
                                    "total_tokens": float("nan")}}, prompt_rate=.1, completion_rate=.2)
     report = build_cost_summary(tmp_path)
     assert report["by_status"] == {"succeeded": 1} and report["estimated_by_currency"] == {}
+
+
+def test_explicit_matched_provider_billing_is_distinct_from_estimates_and_profit(tmp_path):
+    with GenerationCostAttempt(settings(tmp_path), None, kind="image", model="m") as receipt:
+        receipt.complete({"id": "req_matched", "billing": {"request_id": "req_matched", "status": "charged", "amount": .12, "currency": "USD"}})
+    report = build_cost_summary(tmp_path)
+    assert report["status"] == "tracked_cost_verified"
+    assert report["actual_total"] == .12 and report["actual_currency"] == "USD"
+    assert report["actual_verified_by_currency"] == {"USD": .12} and report["net_profit"] is None
+    with GenerationCostAttempt(settings(tmp_path), None, kind="text", model="m") as second:
+        second.complete()
+    report = build_cost_summary(tmp_path)
+    assert report["status"] == "actual_cost_partially_verified"
+    assert report["actual_total"] is None and report["unverified_cost_calls"] == 1
+
+
+@pytest.mark.parametrize("changes,sdk_retries", [
+    ({"request_id": "other"}, 0), ({"currency": None}, 0),
+    ({"amount": True}, 0), ({"status": "estimated"}, 0), ({}, 2),
+])
+def test_unmatched_or_retry_incomplete_billing_cannot_prove_actual_cost(tmp_path, changes, sdk_retries):
+    billing = {"request_id": "req_1", "status": "charged", "amount": .1, "currency": "CNY", **changes}
+    with GenerationCostAttempt(settings(tmp_path), None, kind="text", model="m", sdk_retries=sdk_retries) as receipt:
+        receipt.complete({"id": "req_1", "billing": billing})
+    report = build_cost_summary(tmp_path)
+    assert report["actual_total"] is None and report["verified_cost_calls"] == 0

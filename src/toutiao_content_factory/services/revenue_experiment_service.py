@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -175,6 +176,7 @@ class RevenueExperimentService:
                 "revenue_as_of_date": work.get("revenue_as_of_date", ""), "counters_as_of_date": observed_at[:10],
             })
         attribution = self._per_content_attribution({"records": income_records})
+        costs = build_cost_summary(self.output_dir, now=reference_time)
         experiment = self._experiment_status(
             growth_snapshot=growth_snapshot,
             growth_feedback=growth_feedback,
@@ -190,7 +192,13 @@ class RevenueExperimentService:
             "account_key": str(account_snapshot.get("account_key", readiness.get("account_key", ""))),
             "readiness": readiness,
             "account": account_snapshot.get("account") or {},
-            "generation_costs": build_cost_summary(self.output_dir, now=reference_time),
+            "generation_costs": costs,
+            "revenue_reconciliation": {"account_key": str(account_snapshot.get("account_key", "")),
+                "income_observed_at": account_snapshot.get("generated_at"),
+                "income_source": "logged_in_creator_backend", "income_window_days": self.WINDOW_DAYS,
+                "settled_income": income_summary.get("settled_total"),
+                "actual_cost_status": costs["status"], "net_profit": None,
+                "reason": "只有完整扣费、相同期间与币种及全部成本均已核实，才能计算净利润。"},
             "income": {
                 "currency": str(revenue.get("currency", "CNY")),
                 "total": revenue.get("total"),
@@ -234,6 +242,7 @@ class RevenueExperimentService:
             f"- 最近7天收益：{self._money(income.get('latest_7d'))}",
             f"- 前7天收益：{self._money(income.get('previous_7d'))}",
             f"- 生成成本：{costs.get('status', 'untracked')}；记录 {costs.get('recorded_calls', 0)} 次调用，估算 {json.dumps(costs.get('estimated_by_currency', {}), ensure_ascii=False)}；实际扣费及净利润未知。",
+            f"- 扣费凭据核对：{costs.get('verified_cost_calls', 0)}/{costs.get('recorded_calls', 0)} 次；有凭据金额 {json.dumps(costs.get('actual_verified_by_currency', {}), ensure_ascii=False)}；未回传金额不按零处理。",
             f"- 单篇精确收益覆盖：{attribution.get('exact_count', 0)}/{attribution.get('total_count', 0)}（{attribution.get('coverage_pct', 0)}%）",
             f"- 收益页采集：{collection.get('status', 'unknown')}，匹配作品 {collection.get('matched_works', 0)}，金额冲突 {collection.get('conflicting_works', 0)}；采集时间 {collection.get('observed_at', '未知')}",
             "",
@@ -276,17 +285,26 @@ class RevenueExperimentService:
         return "\n".join(lines)
 
     def _income_summary(self, rows: list[dict[str, Any]], reference_time: datetime) -> dict[str, Any]:
-        cutoff_30 = reference_time.date() - timedelta(days=self.WINDOW_DAYS - 1)
-        cutoff_7 = reference_time.date() - timedelta(days=6)
-        cutoff_14 = reference_time.date() - timedelta(days=13)
-        settled = []
+        current = reference_time.date()
+        end = current if any(self._parse_datetime(row.get("day")) and self._parse_datetime(row["day"]).date() == current
+                             and row.get("pending") is False for row in rows) else current - timedelta(days=1)
+        cutoff_30 = end - timedelta(days=self.WINDOW_DAYS - 1)
+        cutoff_7 = end - timedelta(days=6)
+        cutoff_14 = end - timedelta(days=13)
+        unique, conflicts = {}, set()
+        def amount(value):
+            return type(value) in {int, float} and math.isfinite(value) and value >= 0
         for row in rows:
             day = self._parse_datetime(row.get("day"))
-            if not day or day.date() < cutoff_30 or row.get("pending"):
+            if not day or not cutoff_30 <= day.date() <= end or row.get("pending"):
                 continue
-            if not isinstance(row.get("total"), (int, float)):
+            if not amount(row.get("total")):
                 continue
-            settled.append((day.date(), row))
+            key = day.date()
+            if key in unique and any(unique[key].get(field) != row.get(field) for field in ("total", "article", "weitoutiao", "video")):
+                conflicts.add(key)
+            unique.setdefault(key, row)
+        settled = [(day, row) for day, row in sorted(unique.items()) if day not in conflicts]
         total = round(sum(float(row.get("total", 0) or 0) for _, row in settled), 4)
         latest_7d = round(
             sum(float(row.get("total", 0) or 0) for day, row in settled if day >= cutoff_7), 4
@@ -299,14 +317,13 @@ class RevenueExperimentService:
             ),
             4,
         )
-        by_format = {
-            "article": round(sum(float(row.get("article", 0) or 0) for _, row in settled), 4),
-            "weitoutiao": round(
-                sum(float(row.get("weitoutiao", 0) or 0) for _, row in settled), 4
-            ),
-            "video": round(sum(float(row.get("video", 0) or 0) for _, row in settled), 4),
-        }
+        by_format = {key: round(sum(float(row[key]) for _, row in settled), 4)
+                     if settled and all(amount(row.get(key)) for _, row in settled) else None
+                     for key in ("article", "weitoutiao", "video")}
         return {
+            "window_start": cutoff_30.isoformat(), "window_end": end.isoformat(),
+            "conflicting_days": [day.isoformat() for day in sorted(conflicts)],
+            "coverage_complete": len(settled) == self.WINDOW_DAYS,
             "settled_days": len(settled),
             "settled_total": total if settled else None,
             "latest_7d": latest_7d if settled else None,

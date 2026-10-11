@@ -3867,9 +3867,13 @@ class PublishService:
 
     def _apply_default_work_declarations(self, page, notes: list[str]) -> None:
         selected_labels: list[str] = []
-        cleared_labels: list[str] = []
 
         desired_checked_groups = [
+            [
+                "label.byte-checkbox:has-text('引用AI')",
+                "label.byte-checkbox:has-text('内容由AI生成')",
+                "label.byte-checkbox:has(input[value='3'])",
+            ],
             [
                 "label.byte-checkbox:has-text('取材网络')",
                 "label.byte-checkbox:has(input[value='4'])",
@@ -3880,27 +3884,14 @@ class PublishService:
                 "label.byte-checkbox:has(input[value='2'])",
             ],
         ]
-        desired_unchecked_groups = [
-            [
-                "label.byte-checkbox:has-text('引用AI')",
-                "label.byte-checkbox:has(input[value='3'])",
-            ],
-        ]
 
         for selectors in desired_checked_groups:
             label = self._set_named_checkbox_state(page, selectors, checked=True)
             if label:
                 selected_labels.append(label)
 
-        for selectors in desired_unchecked_groups:
-            label = self._set_named_checkbox_state(page, selectors, checked=False)
-            if label:
-                cleared_labels.append(label)
-
         if selected_labels:
             notes.append(f"Applied work declarations: {', '.join(selected_labels)}")
-        if cleared_labels:
-            notes.append(f"Cleared work declarations: {', '.join(cleared_labels)}")
 
     def _apply_safe_publish_options(self, page, notes: list[str], *, declare_first_release: bool = True) -> None:
         applied_labels: list[str] = []

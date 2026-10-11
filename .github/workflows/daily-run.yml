@@ -305,6 +305,7 @@ jobs:
       RUFLO_ENABLED: "0"
 
       # ---- 发布结果通知 ----
+      NOTIFY_URGENT_QUEUE_ONLY: '1'
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
       SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
       NOTIFY_DAILY_LIMIT: ${{ secrets.NOTIFY_DAILY_LIMIT || '5' }}
@@ -1438,6 +1439,7 @@ jobs:
       RUFLO_ENABLED: "0"
 
       # ---- 发布结果通知 ----
+      NOTIFY_URGENT_QUEUE_ONLY: '1'
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
       SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
       NOTIFY_DAILY_LIMIT: ${{ secrets.NOTIFY_DAILY_LIMIT || '5' }}
@@ -1539,6 +1541,9 @@ jobs:
       github.event.schedule == '0 14 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: publication-notification-ledger
+      cancel-in-progress: false
 
     env:
       PYTHONUTF8: "1"
@@ -1583,11 +1588,26 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      - name: Restore durable notification quota
+        id: notification-ledger
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: PYTHONPATH="$GITHUB_WORKSPACE/src" python scripts/publication_watchdog.py --ledger restore
+
       - name: Send unified daily report
         run: |
           PYTHONPATH="$GITHUB_WORKSPACE/src" python main.py \
             --send-daily-report \
             --account "$TOUTIAO_ACCOUNT"
+
+      - name: Persist shared notification quota and report receipt
+        if: always() && steps.notification-ledger.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f output/automation/notification_log.jsonl ]; then
+            PYTHONPATH="$GITHUB_WORKSPACE/src" python scripts/publication_watchdog.py --ledger save
+          fi
 
       - name: Upload daily report artifacts
         if: always()

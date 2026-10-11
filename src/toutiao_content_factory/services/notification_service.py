@@ -171,15 +171,19 @@ class ServerChanNotifier(NotificationChannel):
                     if isinstance(result, dict):
                         code = result.get("code")
                         errno = result.get("errno")
+                        if code is None and errno is None:
+                            ok = False
                         if code is not None and str(code) != "0":
                             ok = False
                         if errno is not None and str(errno) != "0":
                             ok = False
+                    else:
+                        ok = False
                 if not ok:
                     logger.error("ServerChan通知失败: HTTP %s", response.status_code)
                 return ok
         except Exception as e:
-            logger.error(f"ServerChan通知失败: {e}")
+            logger.error("ServerChan通知失败: %s", type(e).__name__)
             return False
 
 
@@ -344,6 +348,12 @@ class NotificationService:
 
     def notify_urgent(self, title: str, message: str) -> None:
         """即时发送紧急通知，但仍受持久化的每日额度和去重保护。"""
+        if os.environ.get("NOTIFY_URGENT_QUEUE_ONLY", "").lower() in {"1", "true", "yes"}:
+            # Cloud content jobs have independent caches. The watchdog owns
+            # delivery and shares a serialized ledger with the nightly digest.
+            self._write_fallback_log(title, message, kind="urgent",
+                                     metadata={"queued_for_cloud_monitor": True})
+            return
         self._broadcast(title, message, force=True)
 
     @staticmethod

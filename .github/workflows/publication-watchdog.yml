@@ -1,0 +1,76 @@
+name: Publication Watchdog
+
+on:
+  workflow_run:
+    workflows: [Daily Run, WeChat Daily Run, WeChat Content Metrics]
+    types: [completed]
+    branches: [main]
+  schedule:
+    # Independent hourly checks also detect a missed content schedule.
+    - cron: '47 * * * *'
+  workflow_dispatch:
+    inputs:
+      test_notification:
+        description: 'Send one quota-aware test reminder; no generation or submission'
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      # Serialize with the nightly digest that shares the durable ledger.
+      group: publication-notification-ledger
+      cancel-in-progress: false
+    env:
+      PYTHONUTF8: '1'
+      PYTHONPATH: ${{ github.workspace }}/src
+      TZ: Asia/Shanghai
+      GH_TOKEN: ${{ github.token }}
+      WATCH_TOUTIAO_ACCOUNT: robot_notes
+      SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      BARK_URL: ${{ secrets.BARK_URL }}
+      DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+      WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
+      PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+      NOTIFY_DAILY_LIMIT: ${{ secrets.NOTIFY_DAILY_LIMIT || '5' }}
+      TEST_NOTIFICATION: ${{ inputs.test_notification == true && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Restore existing notification quota records
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            output/accounts/*/automation/notification_log.jsonl
+            output/automation/notification_log.jsonl
+          key: publication-watchdog-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            daily-notification-log-main-
+      - name: Install notification dependencies
+        run: pip install httpx
+      - name: Check outcomes and send cloud reminders
+        run: |
+          if [ "$TEST_NOTIFICATION" = '1' ]; then
+            python scripts/publication_watchdog.py --test-notification
+          else
+            python scripts/publication_watchdog.py
+          fi
+      - name: Save reminder receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publication-watchdog-${{ github.run_id }}-${{ github.run_attempt }}
+          path: output/automation/publication_watchdog_result.json
+          if-no-files-found: ignore
+          retention-days: 14

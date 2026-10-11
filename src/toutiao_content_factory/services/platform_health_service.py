@@ -457,11 +457,10 @@ class PlatformHealthService:
             # Try to send notification if available
             if self.notification_service:
                 try:
-                    self.notification_service.send_notification(
-                        title=f"[{platform.upper()}] Login expired - QR code saved",
+                    self.notification_service.notify_urgent(
+                        title=f"[URGENT] {platform} session expired",
                         message=f"Login page screenshot saved to: {screenshot_path}. "
                                 f"Please re-login at {self.settings.publishing.base_url or 'the platform backend'}.",
-                        notification_type="login_expired",
                     )
                 except Exception:
                     pass

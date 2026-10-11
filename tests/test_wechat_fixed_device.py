@@ -96,19 +96,22 @@ def test_fixed_run_does_not_restore_cloud_cookies(app_settings, monkeypatch, ref
     assert not report.get("publication_attempted")
 
 
-def test_fixed_workflow_keeps_shared_concurrency_and_disables_cloud_cache():
+def test_workflow_is_cloud_only_and_keeps_shared_concurrency():
     workflow = yaml.load((ROOT / ".github/workflows/wechat-daily-run.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     job = workflow["jobs"]["wechat"]
-    assert "wechat-fixed" in job["runs-on"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["env"]["WECHAT_EXECUTION_HOST"] == "cloud"
+    assert "WECHAT_FIXED_DEVICE_DIR" not in job["env"]
     assert workflow["concurrency"]["group"] == "wechat-default"
     assert workflow["concurrency"]["cancel-in-progress"] == "false"
     for step in job["steps"]:
         if "actions/cache" in step.get("uses", ""):
-            if "WECHAT_EXECUTION_HOST == 'fixed'" in step["if"]:
+            if step.get("name") == "Import existing accepted history":
                 assert set(step["with"]["path"].splitlines()) == {
                     "output/wechat_publish_history.json", "output/growth_ops/generation_costs/"}
             else:
-                assert "WECHAT_EXECUTION_HOST != 'fixed'" in step["if"]
+                assert ".runtime/automation/wechat_cloud_session.enc" in step["with"]["path"]
+                assert "WECHAT_SESSION_CACHE_VERSION" in step["with"]["key"]
 
 
 def test_fixed_manual_publish_cannot_bypass_shared_budget(app_settings, monkeypatch):

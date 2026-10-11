@@ -48,14 +48,13 @@ permissions:
 jobs:
   wechat:
     if: github.event_name == 'workflow_dispatch' || vars.WECHAT_CLOUD_ENABLED == 'true'
-    runs-on: ${{ fromJSON(vars.WECHAT_EXECUTION_HOST == 'fixed' && '["self-hosted","Windows","wechat-fixed"]' || '["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 50
     defaults:
       run:
         shell: bash
     env:
-      WECHAT_EXECUTION_HOST: ${{ vars.WECHAT_EXECUTION_HOST || 'cloud' }}
-      WECHAT_FIXED_DEVICE_DIR: ${{ vars.WECHAT_FIXED_DEVICE_DIR }}
+      WECHAT_EXECUTION_HOST: cloud
       TZ: Asia/Shanghai
       PYTHONUTF8: '1'
       PYTHONPATH: ${{ github.workspace }}/src
@@ -86,38 +85,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        if: vars.WECHAT_EXECUTION_HOST != 'fixed'
         with:
           python-version: '3.11'
           cache: pip
       - name: Install dependencies and cloud browser
-        if: vars.WECHAT_EXECUTION_HOST != 'fixed'
         run: |
           pip install -r requirements.txt
           playwright install --with-deps chromium
+      - name: Import existing accepted history
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            output/wechat_publish_history.json
+            output/growth_ops/generation_costs/
+          key: wechat-history-import-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            wechat-fixed-default-v1-
       - name: Restore encrypted session and accepted history
-        if: vars.WECHAT_EXECUTION_HOST != 'fixed'
         uses: actions/cache/restore@v4
         with:
           path: |
             .runtime/automation/wechat_cloud_session.enc
             output/wechat_publish_history.json
             output/growth_ops/generation_costs/
-          key: wechat-default-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          key: wechat-cloud-default-${{ vars.WECHAT_SESSION_CACHE_VERSION || 'v1' }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            wechat-default-v2-
-            wechat-default-v1-
-      - name: Restore accepted history on the fixed device
-        if: vars.WECHAT_EXECUTION_HOST == 'fixed'
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            output/wechat_publish_history.json
-            output/growth_ops/generation_costs/
-          key: wechat-fixed-default-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            wechat-fixed-default-v1-
-            wechat-default-v2-
+            wechat-cloud-default-${{ vars.WECHAT_SESSION_CACHE_VERSION || 'v1' }}-
       - name: Validate login or run reviewed publication
         id: publish
         run: |
@@ -127,22 +120,14 @@ jobs:
             python scripts/wechat_cloud_run.py --account default --mode "$RUN_MODE"
           fi
       - name: Save refreshed encrypted session and accepted history
-        if: always() && vars.WECHAT_EXECUTION_HOST != 'fixed'
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: |
             .runtime/automation/wechat_cloud_session.enc
             output/wechat_publish_history.json
             output/growth_ops/generation_costs/
-          key: wechat-default-v2-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Save accepted history on the fixed device
-        if: always() && vars.WECHAT_EXECUTION_HOST == 'fixed'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            output/wechat_publish_history.json
-            output/growth_ops/generation_costs/
-          key: wechat-fixed-default-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          key: wechat-cloud-default-${{ vars.WECHAT_SESSION_CACHE_VERSION || 'v1' }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Summarize actual outcome
         if: always() && inputs.cover_check != true
         run: |

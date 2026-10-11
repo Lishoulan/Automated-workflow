@@ -14,23 +14,53 @@ permissions:
 
 jobs:
   observe:
-    if: vars.WECHAT_CLOUD_ENABLED == 'true' && vars.WECHAT_EXECUTION_HOST == 'fixed'
-    runs-on: [self-hosted, Windows, wechat-fixed]
+    if: vars.WECHAT_CLOUD_ENABLED == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
         shell: bash
     env:
-      WECHAT_EXECUTION_HOST: fixed
-      WECHAT_FIXED_DEVICE_DIR: ${{ vars.WECHAT_FIXED_DEVICE_DIR }}
+      WECHAT_EXECUTION_HOST: cloud
+      WECHAT_SESSION_KEY: ${{ secrets.WECHAT_SESSION_KEY }}
+      WECHAT_SESSION_SEED: ${{ secrets.WECHAT_SESSION_SEED_DEFAULT }}
+      TARGET_PLATFORM: wechat
       TZ: Asia/Shanghai
       PYTHONUTF8: '1'
       PYTHONPATH: ${{ github.workspace }}/src
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies and cloud browser
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+      - name: Restore encrypted session and accepted history
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .runtime/automation/wechat_cloud_session.enc
+            output/wechat_publish_history.json
+            output/growth_ops/generation_costs/
+          key: wechat-cloud-default-${{ vars.WECHAT_SESSION_CACHE_VERSION || 'v1' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            wechat-cloud-default-${{ vars.WECHAT_SESSION_CACHE_VERSION || 'v1' }}-
       - name: Read published article metrics
+        id: collect
         run: python scripts/collect_wechat_growth.py
+      - name: Save encrypted session and accepted history
+        if: steps.collect.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .runtime/automation/wechat_cloud_session.enc
+            output/wechat_publish_history.json
+            output/growth_ops/generation_costs/
+          key: wechat-cloud-default-${{ vars.WECHAT_SESSION_CACHE_VERSION || 'v1' }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Save observations
         if: always()
         uses: actions/upload-artifact@v4

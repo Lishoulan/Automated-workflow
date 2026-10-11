@@ -90,5 +90,7 @@ def test_schedule_and_collector_never_invoke_content_or_publication():
     assert "OPENAI_API_KEY" not in workflow and "IMAGE_API_KEY" not in workflow
     script = (root / "scripts/collect_wechat_growth.py").read_text(encoding="utf-8")
     assert "path=growth.STATE_PATH, strict=True" in script and "if not args.read_only:" in script
-    assert "configure_environment" not in script and "load_settings" not in script
+    assert "configure_environment" not in script
+    assert "runs-on: ubuntu-latest" in workflow and "WECHAT_EXECUTION_HOST: cloud" in workflow
+    assert "WECHAT_FIXED_DEVICE_DIR" not in workflow and "self-hosted" not in workflow
     assert "单篇涨粉" in render_growth_report(build_growth_report(merge_observation({}, observation(), account="小椰科技")))

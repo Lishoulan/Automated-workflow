@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '37 */6 * * *'
   workflow_dispatch:
+    inputs:
+      read_only:
+        description: 'Collect backend evidence without updating the shared state'
+        type: boolean
+        default: false
 
 concurrency:
   group: wechat-default
@@ -29,6 +34,7 @@ jobs:
       PYTHONUTF8: '1'
       PYTHONPATH: ${{ github.workspace }}/src
       GH_TOKEN: ${{ github.token }}
+      READ_ONLY_CHECK: ${{ inputs.read_only == true && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -51,7 +57,12 @@ jobs:
             wechat-cloud-default-${{ vars.WECHAT_SESSION_CACHE_VERSION || 'v1' }}-
       - name: Read published article metrics
         id: collect
-        run: python scripts/collect_wechat_growth.py
+        run: |
+          if [ "$READ_ONLY_CHECK" = "1" ]; then
+            python scripts/collect_wechat_growth.py --read-only
+          else
+            python scripts/collect_wechat_growth.py
+          fi
       - name: Save encrypted session and accepted history
         if: steps.collect.outcome == 'success'
         uses: actions/cache/save@v4
@@ -66,6 +77,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wechat-content-metrics-${{ github.run_id }}-${{ github.run_attempt }}
-          path: output/automation/wechat_growth_report.*
+          path: |
+            output/automation/wechat_growth_report.*
+            output/automation/wechat_revenue_report.json
           if-no-files-found: ignore
           retention-days: 30

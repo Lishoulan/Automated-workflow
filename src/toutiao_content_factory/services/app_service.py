@@ -144,7 +144,27 @@ class ContentFactoryAppService:
                 self.settings.account_key,
             )
         filtered_topics = self.topic_automation.filter_topics_for_account(topic_report.topics)
-        if len(filtered_topics) != len(topic_report.topics):
+        if self.settings.wechat_auto_publish_mode:
+            # Reuse the existing account-scoped pool, not a second approval store.
+            # Reserves are source material only and must pass the current gates.
+            from collections import defaultdict
+            known = {topic.url or topic.title for topic in filtered_topics}
+            reserves = []
+            for topic in self.topic_pool_service.list_pending_topics(limit=12):
+                if (topic.url or topic.title) in known or not topic.source_records:
+                    continue
+                if not topic_collector._filter_by_freshness([topic], defaultdict(int)):
+                    continue
+                if not topic_collector._passes_topic_focus(topic, defaultdict(int)):
+                    continue
+                topic._wechat_from_reserve = True
+                topic.quality_flags = list(dict.fromkeys([*topic.quality_flags, "cached_material"]))
+                reserves.append(topic)
+                known.add(topic.url or topic.title)
+                if len(reserves) == 3:
+                    break
+            filtered_topics.extend(self.topic_automation.filter_topics_for_account(reserves))
+        if filtered_topics != topic_report.topics:
             for index, topic in enumerate(filtered_topics, start=1):
                 topic.rank = index
             topic_report.topics = filtered_topics
@@ -2998,6 +3018,7 @@ class ContentFactoryAppService:
             return (bool(topic.source_records) and getattr(topic, "_wechat_original_gate_passed", True) is not False
                     and topic.evidence_strength >= 55 and topic.quality_score >= 55
                     and not set(topic.quality_flags) & {"title_only", "weak_evidence", "weak_subject"})
+        ready_count = 0
         try:
             collector = TopicCollectionService(self.settings, self.logger)
             from collections import defaultdict
@@ -3007,14 +3028,19 @@ class ContentFactoryAppService:
                     previous = self._wechat_enriched_topics[key]
                     topic.__dict__.update(previous.__dict__)
                     if ready(topic):
-                        break
+                        ready_count += 1
+                        if ready_count >= 3:
+                            break
                     continue
                 flags = set(topic.quality_flags)
                 thin = not topic.source_records or len(topic.snippet or "") < 600 or bool(flags & {"title_only", "weak_evidence"})
-                thin = thin or os.environ.get("WECHAT_REGENERATING") == "1"
+                thin = (thin or os.environ.get("WECHAT_REGENERATING") == "1"
+                        or getattr(topic, "_wechat_from_reserve", False) or "cached_material" in flags)
                 if not thin:
                     if ready(topic):
-                        break
+                        ready_count += 1
+                        if ready_count >= 3:
+                            break
                     continue
                 if not collector._has_concrete_industry_keyword(topic) or not collector._filter_by_freshness([topic], defaultdict(int)):
                     topic._wechat_original_gate_passed = False
@@ -3023,9 +3049,19 @@ class ContentFactoryAppService:
                 if self._wechat_enrichment_count >= 10 or time.monotonic() >= self._wechat_enrichment_deadline:
                     break
                 self._wechat_enrichment_count += 1
-                hydrated = self.topic_automation._hydrate_topic_material(
-                    topic, deadline=min(self._wechat_enrichment_deadline, time.monotonic() + 60),
-                )
+                from toutiao_content_factory.services.material_search_service import MaterialSearchError, MaterialBudgetExceeded
+                try:
+                    hydrated = self.topic_automation._hydrate_topic_material(
+                        topic, deadline=min(self._wechat_enrichment_deadline, time.monotonic() + 60),
+                    )
+                except (MaterialSearchError, MaterialBudgetExceeded) as exc:
+                    if not ready_count:
+                        raise
+                    # Optional material stock must not lose an already usable
+                    # primary candidate when another source is unavailable.
+                    topic._wechat_original_gate_passed = False
+                    self.logger.warning("Optional WeChat material unavailable: %s", type(exc).__name__)
+                    continue
                 if hydrated:
                     # Original scoring derives flags from the newly fetched text.
                     collector._enrich_topic(topic)
@@ -3036,12 +3072,30 @@ class ContentFactoryAppService:
                     topic._wechat_original_gate_passed = False
                 self._wechat_enriched_topics[key] = topic
                 if ready(topic):
-                    break
+                    ready_count += 1
+                    if ready_count >= 3:
+                        break
         finally:
             self._wechat_enrichment_remaining_seconds = max(0, self._wechat_enrichment_deadline - time.monotonic())
         # prepare_auto_run reloads the pool: carry provenance and rescored values
         # through that boundary, without rewriting the shared daily topic file.
         self.topic_automation._wechat_enriched_topics = self._wechat_enriched_topics
+        from toutiao_content_factory.models import DailyTopicsReport
+        usable = [topic for topic in topics if ready(topic)][:3]
+        if usable:
+            self.topic_pool_service.ingest_report(DailyTopicsReport(
+                generated_at=datetime.now().isoformat(), lookback_days=0,
+                max_topic_age_hours=self.settings.topic_collection.max_topic_age_hours,
+                focus_industries=list(self.settings.topic_collection.focus_industries),
+                total_raw_items=len(usable), total_selected_items=len(usable), topics=usable),
+                source_label="wechat_verified_material")
+        supply = {"account": self.settings.account_key, "checked_at": datetime.now().isoformat(),
+            "status": "material_ready" if usable else "waiting_for_material",
+            "usable_material_count": len(usable), "enrichment_count": self._wechat_enrichment_count,
+            "candidates": [{"title": topic.title, "url": topic.url} for topic in usable],
+            "review_approved": False, "note": "材料储备须重新核实并审核，不是已批准稿件。"}
+        (self.settings.automation_dir / "wechat_supply_report.json").write_text(
+            json.dumps(supply, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _resolve_run_dir_from_exports(self, exported_files: dict[str, str]) -> Path | None:
         run_dir_candidates = [

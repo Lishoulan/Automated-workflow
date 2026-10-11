@@ -2,11 +2,28 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from toutiao_content_factory.services.revenue_experiment_service import (
     RevenueExperimentService,
 )
+
+
+def test_income_reconciliation_deduplicates_days_and_excludes_invalid_or_conflicting_amounts(tmp_path):
+    service = RevenueExperimentService(tmp_path, logging.getLogger("reconcile"))
+    rows = [{"day": "2026-10-10", "pending": False, "total": .1}]*2
+    rows += [{"day": "2026-10-09", "pending": False, "total": .2},
+             {"day": "2026-10-09", "pending": False, "total": .3},
+             {"day": "2026-10-11", "pending": True, "total": 100},
+             {"day": "2026-10-12", "pending": False, "total": 100},
+             {"day": "2026-10-08", "pending": False, "total": True},
+             {"day": "2026-10-07", "pending": False, "total": float("nan")}]
+    report = service._income_summary(rows, datetime(2026, 10, 11, 8))
+    assert report["settled_total"] == .1 and report["settled_days"] == 1
+    assert report["window_end"] == "2026-10-10" and report["window_start"] == "2026-09-11"
+    assert report["conflicting_days"] == ["2026-10-09"] and not report["coverage_complete"]
+    assert report["by_format"]["article"] is None
 
 
 def _account_snapshot() -> dict:

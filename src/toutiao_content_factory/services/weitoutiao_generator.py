@@ -15,6 +15,7 @@ import re
 from dataclasses import asdict
 from difflib import SequenceMatcher
 from datetime import datetime
+from decimal import Decimal
 from itertools import islice
 from pathlib import Path
 from typing import Any, Iterator
@@ -23,9 +24,9 @@ from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import AIRequestError, AIResponseFormatError
 from toutiao_content_factory.models import TopicCandidate
 from toutiao_content_factory.services.automation import TopicAutomationService
-from toutiao_content_factory.services.article_sanitizer import looks_like_html_document
+from toutiao_content_factory.services.article_sanitizer import looks_like_html_document, normalize_weitoutiao_headline
 from toutiao_content_factory.services.compliance_service import count_today_published_by_platform
-from toutiao_content_factory.services.growth_feedback_service import topic_feedback_score
+from toutiao_content_factory.services.growth_feedback_service import topic_feedback_score, STORY_OPENING_PROTOCOL_VERSION
 from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.services.publish_service import PublishService
 from toutiao_content_factory.services.topic_selection_evidence import selection_evidence
@@ -169,12 +170,15 @@ STORY_COMMENT_USER = """请围绕下面这件真实发生的事，写一条微�
    没有结果时交代已确认的进展或争议，不能补造结局。标题本身要提供信息，
    不用“这事最该说的是什么”“背后值得深思”等通用尾巴遮住核心事实。不要加"标题："前缀，
    不要用省略号故弄玄虚，不要用"震惊""竟然"这类标题党词。
-2. 正文 250-400 字，2-4 个短段，每段最多 3 行，顺序是：
+2. 正文 250-400 字，3-5 个短段，通常每段不超过80字，顺序是：
+   - 【信息流首屏】微头条没有独立标题栏，第一行就是读者看到的开头。
+     首行15-25字只突出一项已核验的具体事实或结果；前40字说清核心变化，
+     正文首段只保留两句，不堆叠人名、地名、金额、日期和完整经过。
    - 【前两句】前40-60字直接交代具体人物、矛盾和已确认结果，不用“最近看到一则消息”等铺垫。
    - 【把事说清楚】用素材里的事实交代发生了什么、涉及谁、结果如何；素材没写的不要补。
    - 【当事人的处境】仅写素材明确提及的约束和做法，不猜测他为什么这样做。
    - 【独立分析】围绕素材中的两项事实说明一个容易混淆的区别、判断条件或证据边界。
-     用“从这些事实看”标明这是作者分析，不当成当事人发言或法院新增结论。
+     用自然的转折标明这是作者分析，不当成当事人发言或法院新增结论，不强制套固定口头禅。
      说明哪些事能确认、哪些事不能从该案推出，给读者一个与本事直接相关的判断方法。
      不添加未经核对的法律条文、办事流程或专业建议，不用“引人深思”“值得我们学习”等感想凑字。
      先找出读者最容易误解的一点，再用本案已有事实解释；例如诉求与判决范围、
@@ -336,7 +340,7 @@ class WeiToutiaoStandaloneGenerator:
 
     # ── 写作 ──────────────────────────────────────────────
 
-    def _opening_experiment(self) -> dict[str, str]:
+    def _opening_experiment(self) -> dict[str, Any]:
         path = self.settings.output_dir / "growth_ops" / "performance" / "wtt_content_experiments.json"
         try:
             ledger = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -345,10 +349,11 @@ class WeiToutiaoStandaloneGenerator:
             records = {}
         counts = {"result_first": 0, "situation_first": 0}
         for record in records.values() if isinstance(records, dict) else []:
-            if isinstance(record, dict) and record.get("variant") in counts:
+            if isinstance(record, dict) and record.get("variant") in counts and record.get("protocol_version", 1) == STORY_OPENING_PROTOCOL_VERSION:
                 counts[record["variant"]] += 1
         variant = min(counts, key=counts.get)
-        return {"id": "story_opening_v1", "variable": "opening_order", "variant": variant}
+        return {"id": "story_opening_v1", "variable": "opening_order", "variant": variant,
+                "protocol_version": STORY_OPENING_PROTOCOL_VERSION}
 
     def generate_content(self, topic: TopicCandidate, persona: str = "hot_comment") -> str:
         """按人设模板写一条独立微头条（含标题行 + 正文 + 话题标签）。"""
@@ -400,7 +405,7 @@ class WeiToutiaoStandaloneGenerator:
             temperature=0.55 if self._is_story_context(topic, persona) else 0.85,
             max_tokens=900,
         )
-        content = raw.strip()
+        content = normalize_weitoutiao_headline(raw)
         if looks_like_html_document(content):
             raise AIResponseFormatError(
                 "WeiToutiao model response was an HTML document instead of post text."
@@ -416,6 +421,7 @@ class WeiToutiaoStandaloneGenerator:
                     "区分丢失者、捡拾者和处置人员，不能把某人的动作或提醒套给另一人。"
                     "不能把监控提供线索改成直接发现物品，不能把查找过程改成持续追查某个人。"
                     "保留历史报道年份和案件裁判范围，不能把旧案写成今日新闻。"
+                    "不替司法机关认定诈骗，不把媒体质疑、承诺金额或项目总投资改成已确认的罪名或损失。"
                     "事实复述和作者分析必须分段。分析只能基于素材中能核对的事实，"
                     "用‘从这些事实看’标明推断，保留有依据的区别和证据边界，不把分析写成报道事实。"
                     "删去空泛道理，大段照搬报道应改为事实概要加实质分析，不仅换词重排。"
@@ -426,7 +432,8 @@ class WeiToutiaoStandaloneGenerator:
                 user_prompt=f"{user_prompt}\n\n待复核稿（可能有错误）：\n{content[:MAX_WTT_CHARS]}",
                 temperature=0.1,
                 max_tokens=900,
-            ).strip()
+            )
+            content = normalize_weitoutiao_headline(content)
             if looks_like_html_document(content):
                 raise AIResponseFormatError("WeiToutiao fact review returned an HTML document.")
             self.logger.info("WeiToutiao source-based fact review completed: %s", topic.title)
@@ -498,6 +505,9 @@ class WeiToutiaoStandaloneGenerator:
             return "story_evidence_guard"
         compact = re.sub(r"\s+", "", str(content or ""))
         source_text = re.sub(r"\s+", "", str(topic.snippet or ""))
+        if getattr(topic, "_verified_source_material", False):
+            if self._story_number_tokens(compact) - self._story_number_tokens(source_text):
+                return "story_number_evidence_guard"
         if "顺着轨迹" in source_text and re.search(
             r"(?:监控|探头)下.{0,8}(?:找回|找到|发现).{0,6}(?:手机|包裹|物品)", compact,
         ):
@@ -518,6 +528,26 @@ class WeiToutiaoStandaloneGenerator:
         if getattr(topic, "_verified_source_material", False) and self._source_copy_share(topic, content) >= 0.8:
             return "story_source_copy_guard"
         return ""
+
+    @staticmethod
+    def _story_number_tokens(text: str) -> set[tuple[Decimal, str]]:
+        # Compare measurements, not bare digits that might also occur in an
+        # unrelated date. This is an additional guard, not a full fact audit.
+        pattern = r"(?<![\d.])(\d+(?:\.\d+)?)\s*((?:亿|万)(?:人|辆|套|户|次)|亿元|万元|亿|万|元|%|％|(?:个)?(?:钢架大棚|破烂暖棚|大棚|暖棚|棚)|天|年|月|日|人|辆|套|户|次|倍)"
+        tokens = set()
+        money = {"亿元": Decimal(100000000), "亿": Decimal(100000000), "万元": Decimal(10000), "万": Decimal(10000), "元": Decimal(1)}
+        for match in re.finditer(pattern, str(text or "")[:6000]):
+            value, unit = Decimal(match[1]), match[2]
+            if unit in money:
+                value, unit = value * money[unit], "元"
+            elif unit.startswith(("亿", "万")):
+                value, unit = value * (Decimal(100000000) if unit[0] == "亿" else Decimal(10000)), unit[1:]
+            elif "棚" in unit:
+                unit = "棚"
+            elif unit == "％":
+                unit = "%"
+            tokens.add((value, unit))
+        return tokens
 
     @staticmethod
     def _source_copy_share(topic: TopicCandidate, content: str) -> float:
@@ -670,6 +700,7 @@ class WeiToutiaoStandaloneGenerator:
             raise AIResponseFormatError(
                 "WeiToutiao content was an HTML document instead of post text."
             )
+        content = normalize_weitoutiao_headline(content)
         root = self.settings.output_dir / "wtt_standalone"
         root.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")

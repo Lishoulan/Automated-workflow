@@ -268,9 +268,18 @@ def build_growth_feedback(
     }
 
 
+STORY_OPENING_PROTOCOL_VERSION = 2
+
+
 def opening_experiment_summary(checkpoints: dict[str, Any]) -> dict[str, Any]:
     groups: list[dict[str, Any]] = []
     works = checkpoints.get("works", {})
+    experiment_works = [work for work in works.values() if isinstance(work, dict)
+        and work.get("type") == "weitoutiao" and isinstance(work.get("content_experiment"), dict)
+        and work["content_experiment"].get("id") == "story_opening_v1"] if isinstance(works, dict) else []
+    protocol = STORY_OPENING_PROTOCOL_VERSION if any(work["content_experiment"].get("protocol_version") == STORY_OPENING_PROTOCOL_VERSION
+        for work in experiment_works) else 1
+    excluded = sum(work["content_experiment"].get("protocol_version", 1) != protocol for work in experiment_works)
     for label in ("24h", "72h"):
         for variant in ("result_first", "situation_first"):
             samples = []
@@ -279,6 +288,8 @@ def opening_experiment_summary(checkpoints: dict[str, Any]) -> dict[str, Any]:
                     continue
                 experiment = work.get("content_experiment", {})
                 if not isinstance(experiment, dict) or experiment.get("id") != "story_opening_v1" or experiment.get("variant") != variant:
+                    continue
+                if experiment.get("protocol_version", 1) != protocol:
                     continue
                 sample = (work.get("checkpoints") or {}).get(label)
                 if isinstance(sample, dict) and classify_checkpoint_capture(label, float(sample.get("capture_delay_hours", 0))) == "on_schedule" and int(sample.get("impressions", 0)) > 0:
@@ -305,7 +316,8 @@ def opening_experiment_summary(checkpoints: dict[str, Any]) -> dict[str, Any]:
             "read_rate_target_pct": 2.0,
             "target_met": preferred and higher["read_rate_pct"] >= 2.0,
             "automatic_switch": False})
-    return {"id": "story_opening_v1", "variable": "opening_order", "status": "comparison_ready" if ready else "collecting", "groups": groups,
+    return {"id": "story_opening_v1", "variable": "opening_order", "protocol_version": protocol,
+            "legacy_works_excluded": excluded, "status": "comparison_ready" if ready else "collecting", "groups": groups,
             "comparisons": comparisons, "read_rate_target_pct": 2.0,
             "note": "不同真实作品的描述性比较；24h和72h分开统计，迟到采样排除，不据此自动推断因果或收益。"}
 

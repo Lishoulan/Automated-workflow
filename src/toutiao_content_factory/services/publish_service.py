@@ -22,6 +22,7 @@ from toutiao_content_factory.models import PublishRecord
 from toutiao_content_factory.services.automation import TOPIC_DEDUP_WINDOW_DAYS
 from toutiao_content_factory.services.article_sanitizer import (
     clean_article_text,
+    normalize_weitoutiao_headline,
     looks_like_html_document,
     strip_external_source_metadata,
 )
@@ -1626,7 +1627,7 @@ class PublishService:
         if not publish_dir.exists():
             raise FileNotFoundError(f"Publish package not found: {publish_dir}")
         publish_meta = self._load_json(publish_dir / "publish_meta.json") or {}
-        article = self._sanitize_article_for_publish(self._read_text(publish_dir / "article.md").strip())
+        article = self._sanitize_article_for_publish(normalize_weitoutiao_headline(self._read_text(publish_dir / "article.md")))
         if len(article.replace("\n", "").replace(" ", "")) < 200:
             raise RuntimeError("WeiToutiao content is too short after sanitization (minimum 200 chars).")
 
@@ -1634,7 +1635,7 @@ class PublishService:
         # 避免把整篇 1500 字长文直接塞进微头条（信息流里微头条以短观点+标签引流效果最好）。
         # 独立微头条场景传入 content_override，直接使用已写好的短内容，不再截取。
         if content_override and len(content_override.replace("\n", "").replace(" ", "")) >= 200:
-            wtt_content = self._sanitize_article_for_publish(content_override.strip())
+            wtt_content = self._sanitize_article_for_publish(normalize_weitoutiao_headline(content_override))
         else:
             wtt_content = self._build_weitoutiao_content(article, publish_dir)
             if not wtt_content:

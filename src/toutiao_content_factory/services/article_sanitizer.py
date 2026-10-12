@@ -22,6 +22,17 @@ def looks_like_html_document(value: object) -> bool:
         return True
     return bool(_HTML_DOCUMENT_PREFIX_PATTERN.match(prefix))
 
+
+def normalize_weitoutiao_headline(text: str) -> str:
+    """Keep the reader-facing first line when a model adds a title label."""
+    lines = str(text or "").strip().splitlines()
+    if not lines:
+        return ""
+    lines[0] = re.sub(r"^(?:\*\*|#{1,3}\s*)?(?:标题|title)\s*[：:]\s*", "", lines[0].strip(), flags=re.I)
+    if lines[0].endswith("**"):
+        lines[0] = lines[0][:-2].rstrip()
+    return "\n".join(lines)
+
 _MIN_WORD_COUNT = 800
 _warned_short_article = False
 

@@ -1038,7 +1038,33 @@
       "runtime_status": "ok",
       "native_exit_code": 0,
       "submission_outcome": "draft"
+    },
+    {
+      "run_key": "38253896196:1",
+      "started_at": "2026-10-12T13:11:51.837778+00:00",
+      "mode": "draft",
+      "excluded": true,
+      "outcome": "draft",
+      "reason_codes": [],
+      "attempt_count": 0,
+      "enrichment_count": 0,
+      "eligible_candidate_count": 0,
+      "audited_candidate_count": 0,
+      "review_pass_count": 0,
+      "rejection_reasons": [],
+      "publication": {},
+      "expected_publication": {},
+      "draft_delivery": {
+        "status": "saved",
+        "title": "人形机器人进入落地期，先看交付能力而不是演示效果",
+        "draft_media_id": "",
+        "app_msg_id": "100001396"
+      },
+      "elapsed_seconds": null,
+      "runtime_status": "ok",
+      "native_exit_code": null,
+      "submission_outcome": "draft"
     }
   ],
-  "updated_at": "2026-10-12T10:28:03.113439+08:00"
+  "updated_at": "2026-10-12T21:11:53.654971+08:00"
 }

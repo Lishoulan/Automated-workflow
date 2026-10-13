@@ -877,10 +877,12 @@
           "draft_delivery": {}
         },
         "38399359536:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-13T12:44:12.160141+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 9.662,
+          "outcome": "publish_login_required",
+          "draft_delivery": {}
         }
       },
       "dispatches": {},

@@ -869,10 +869,12 @@
     "2026-10-13": {
       "runs": {
         "38342206360:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-13T03:33:39.937259+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 8.016,
+          "outcome": "publish_login_required",
+          "draft_delivery": {}
         }
       },
       "dispatches": {},

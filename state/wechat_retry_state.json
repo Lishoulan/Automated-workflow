@@ -438,10 +438,12 @@
     "2026-10-14": {
       "runs": {
         "38498164941:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-14T01:54:52.199468+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 7.762,
+          "outcome": "publish_login_required",
+          "draft_delivery": {}
         }
       },
       "dispatches": {},

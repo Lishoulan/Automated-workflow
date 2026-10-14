@@ -446,10 +446,12 @@
           "draft_delivery": {}
         },
         "38548091483:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-14T10:14:46.671366+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 9.855,
+          "outcome": "publish_login_required",
+          "draft_delivery": {}
         }
       },
       "dispatches": {},

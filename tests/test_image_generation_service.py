@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 from toutiao_content_factory.services.image_generation_service import (
     ImageGenerationAPIUnavailable,
@@ -565,6 +565,28 @@ def test_micro_image_prefers_model_then_cloud_free_then_card(app_settings, tmp_p
     assert report["ai_generated"] is (primary_ok or free_ok)
     if report["ai_generated"]:
         assert Image.open(asset).size == (1200, 800)
+
+
+@pytest.mark.parametrize("background", ["white", "black", "teal"])
+def test_ai_disclosure_preserves_artwork_and_is_readable_on_light_and_dark_images(tmp_path, background):
+    source, output = tmp_path / "source.png", tmp_path / "publish/illustration.png"
+    artwork = Image.new("RGB", (1200, 800), background)
+    artwork.save(source)
+    original_bytes = source.read_bytes()
+
+    ImageGenerationService._compose_toutiao_illustration(source, output)
+
+    with Image.open(output) as result:
+        assert result.size == artwork.size and result.mode == "RGB"
+        changed = ImageChops.difference(result, artwork).convert("L").getbbox()
+        assert changed is not None
+        # Disclosure stays in one corner; the former full-width footer is gone.
+        assert changed[0] >= 0.65 * result.width and changed[1] >= 0.9 * result.height
+        assert result.crop((0, 746, 700, 800)).tobytes() == artwork.crop((0, 746, 700, 800)).tobytes()
+        colors = {color for count, color in result.crop(changed).getcolors(100000)}
+        # A solid light backing and dark glyphs keep contrast independent of the source.
+        assert (245, 243, 236) in colors and (65, 76, 80) in colors
+    assert source.read_bytes() == original_bytes
 
 
 def test_report_fragments_cannot_remove_body_qualifiers_or_use_reference_only_numbers(app_settings, tmp_path):

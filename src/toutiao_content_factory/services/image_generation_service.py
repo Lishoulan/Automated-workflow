@@ -434,8 +434,17 @@ class ImageGenerationService:
         with Image.open(source) as image:
             canvas = ImageOps.fit(image.convert("RGB"), (1200, 800), method=Image.Resampling.LANCZOS)
         draw = ImageDraw.Draw(canvas)
-        draw.rectangle((0, 746, 1200, 800), fill=(245, 243, 236))
-        draw.text((28, 759), "AI示意图 · 非现场照片", font=load_font(23), fill=(65, 76, 80))
+        # Keep the disclosure legible without covering the entire bottom edge.
+        label = "AI示意图 · 非现场照片"
+        font = load_font(23)
+        bounds = draw.textbbox((0, 0), label, font=font)
+        width, height = bounds[2] - bounds[0], bounds[3] - bounds[1]
+        right, bottom = canvas.width - 24, canvas.height - 24
+        left, top = right - width - 28, bottom - height - 20
+        draw.rounded_rectangle((left, top, right, bottom), radius=10,
+                               fill=(245, 243, 236), outline=(215, 216, 208))
+        draw.text((left + 14 - bounds[0], top + 10 - bounds[1]), label,
+                  font=font, fill=(65, 76, 80))
         output.parent.mkdir(parents=True, exist_ok=True)
         canvas.save(output, format="PNG", optimize=True)
 

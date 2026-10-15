@@ -589,6 +589,19 @@ def test_ai_disclosure_preserves_artwork_and_is_readable_on_light_and_dark_image
     assert source.read_bytes() == original_bytes
 
 
+@pytest.mark.parametrize("content,scene", [
+    ("男子国庆请假被公司开除，劳动合同解除争议有了进展。", "workplace desk"),
+    ("老人赠房后未获赡养，法院明确房产份额返还范围。", "house keys"),
+    ("子女轮流赡养老人，家人讨论养老院安排。", "two empty chairs"),
+    ("家长公开孩子体检经过，医生称本次检查正常。", "unmarked measuring tool"),
+    ("机器人进入工厂的新工位。" + "现有报道仍需核对。" * 35 + "其他行业发生劳动合同纠纷。", "industrial robot"),
+])
+def test_social_illustration_uses_the_lead_subject_without_recreating_people(content, scene):
+    prompt = ImageGenerationService._build_toutiao_illustration_prompt(content)
+    assert scene in prompt
+    assert "without identifiable faces" in prompt and "Do not recreate an actual incident" in prompt
+
+
 def test_report_fragments_cannot_remove_body_qualifiers_or_use_reference_only_numbers(app_settings, tmp_path):
     run = _prepare_run(tmp_path)
     (run / "publish/article.md").write_text("据报道，预计每天服务80辆车，实际尚未确认。\n\n相关数字不能当成实测结果。\n\n参考来源：\n旧文涉及3000亿元的市场。", encoding="utf-8")

@@ -268,7 +268,7 @@ def build_growth_feedback(
     }
 
 
-STORY_OPENING_PROTOCOL_VERSION = 2
+STORY_OPENING_PROTOCOL_VERSION = 3
 
 
 def opening_experiment_summary(checkpoints: dict[str, Any]) -> dict[str, Any]:
@@ -277,8 +277,9 @@ def opening_experiment_summary(checkpoints: dict[str, Any]) -> dict[str, Any]:
     experiment_works = [work for work in works.values() if isinstance(work, dict)
         and work.get("type") == "weitoutiao" and isinstance(work.get("content_experiment"), dict)
         and work["content_experiment"].get("id") == "story_opening_v1"] if isinstance(works, dict) else []
-    protocol = STORY_OPENING_PROTOCOL_VERSION if any(work["content_experiment"].get("protocol_version") == STORY_OPENING_PROTOCOL_VERSION
-        for work in experiment_works) else 1
+    versions = [work["content_experiment"].get("protocol_version", 1) for work in experiment_works]
+    protocol = max((version for version in versions if type(version) is int
+                    and 1 <= version <= STORY_OPENING_PROTOCOL_VERSION), default=1)
     excluded = sum(work["content_experiment"].get("protocol_version", 1) != protocol for work in experiment_works)
     for label in ("24h", "72h"):
         for variant in ("result_first", "situation_first"):

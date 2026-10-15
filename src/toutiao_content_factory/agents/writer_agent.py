@@ -173,7 +173,7 @@ class WriterAgent(BaseAgent):
         self._llm_expansion_call_count = 0
         prompt = ("为微信公众号撰写完整中文文章。正文2000～2200字，最低1750字；参考来源和引用模板不计篇幅。"
             "按六节大纲，每节330～370字，组织成自然短段落，每段不超过180字。开头直接说明具体主体、变化和适用范围。"
-            "第一段先回答读者为何关心：哪个具体变化影响对事件的理解、最容易误读的是什么。"
+            "第一段用80～120字先回答读者为何关心：哪个具体变化影响对事件的理解、最容易误读的是什么；不重复标题或摘要。"
             "前两句分别交代已确认的变化与读者能获得的具体解释，避免抽象设问和先讲行业背景。"
             "每节用一个读者问题推进；涉及能力或费用时保留验证条件，不把演示写成实际普及。"
             "最后一节整理两到三条可收藏的核对要点，每条回到已有事实或明确未知边界，不承诺领取尚不存在的资料。"
@@ -196,7 +196,8 @@ class WriterAgent(BaseAgent):
               "每节text替换为约350字正文，fact_ids只保留该节实际使用的绑定事实编号："
             + self.json_text({"sections": [{"section_id": index, "section": section["section"],
                 "fact_ids": section["fact_ids"], "text": "替换为本节正文"}
-                for index, section in enumerate(data_report.writing_outline)], "summary": "摘要", "tags": []})
+                for index, section in enumerate(data_report.writing_outline)],
+                "summary": "用60～90字交代具体主体、已核验变化和文章解答的一个问题，不写泛泛行业意义，不承诺领取资料，不加入正文没有的事实", "tags": []})
             + "\n结尾只提出一个与原文变量相关的问题：" + requirements(data_report.article_kind)["closing"])
         payload = self.request_json(
             "你是微信公众号事实编辑，只输出调用提示定义的合法JSON。严格使用给定分类大纲及其证据编号。"

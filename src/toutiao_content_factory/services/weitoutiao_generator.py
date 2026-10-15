@@ -426,6 +426,9 @@ class WeiToutiaoStandaloneGenerator:
                     "用‘从这些事实看’标明推断，保留有依据的区别和证据边界，不把分析写成报道事实。"
                     "删去空泛道理，大段照搬报道应改为事实概要加实质分析，不仅换词重排。"
                     "前两句按指定顺序交代具体人物、矛盾和已确认结果；标题准确对应正文，不藏结果诱导点击。"
+                    "最终检查首行不超过32字、正文每段不超过120字；通常每段80字以内。"
+                    "正文首句推进新信息，不原样重复标题；过长时拆分或压缩表达，不截断事实与限定。"
+                    "不能把家长的担忧改成医学判断，也不给家长列身高、骨龄或发育方面的建议。"
                     "输出纠正后的完整微头条：标题加250至400字正文和话题标签。"
                     "不输出核对说明，不增加健康或投资建议；素材不足时只输出‘素材不足’。"
                 ),
@@ -519,7 +522,9 @@ class WeiToutiaoStandaloneGenerator:
             return "story_speculation_guard"
         if re.search(
             r"(?:胃病|高血压|基础病).{0,25}(?:建议|应该|需要|得|悠着|注意|不能)"
-            r"|(?:赶紧|立即|及时|应该|建议|记得|一定要|千万别).{0,12}(?:就医|去医院|服药|用药|治疗|急诊)",
+            r"|(?:赶紧|立即|及时|应该|建议|记得|一定要|千万别).{0,12}(?:就医|去医院|服药|用药|治疗|急诊)"
+            r"|(?:需要|应该|应当|建议)(?:关注|检查|监测|注意|重视).{0,12}(?:骨龄|身高|生长|发育)"
+            r"|要防(?:止)?过度生长",
             compact,
         ):
             return "story_health_advice_guard"
@@ -527,6 +532,17 @@ class WeiToutiaoStandaloneGenerator:
             return "story_safety_guard"
         if getattr(topic, "_verified_source_material", False) and self._source_copy_share(topic, content) >= 0.8:
             return "story_source_copy_guard"
+        if getattr(topic, "_verified_source_material", False) and self._content_char_count(content) >= MIN_WTT_CHARS:
+            lines = [line.strip() for line in str(content).splitlines() if line.strip() and not line.strip().startswith("#")]
+            headline = lines[0] if lines else ""
+            if len(headline) > 32:
+                return "story_opening_length_guard"
+            if len(lines) > 1:
+                normalize = lambda value: re.sub(r"\W+", "", value)
+                if len(normalize(headline)) >= 10 and normalize(lines[1]).startswith(normalize(headline)):
+                    return "story_opening_repeat_guard"
+                if any(len(line) > 120 for line in lines[1:]):
+                    return "story_paragraph_length_guard"
         return ""
 
     @staticmethod
@@ -942,6 +958,7 @@ class WeiToutiaoStandaloneGenerator:
                             "reason": "content_too_short",
                             "stage": "generation",
                             "generation_mode": generation_mode,
+                            "generation_fallback_reason": fallback_reason,
                         }
                     )
                     continue

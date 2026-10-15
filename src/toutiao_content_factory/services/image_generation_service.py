@@ -405,6 +405,10 @@ class ImageGenerationService:
     @staticmethod
     def _build_toutiao_illustration_prompt(content: str) -> str:
         subjects = [
+            (("劳动合同", "旷工", "请假", "被开除", "解聘", "欠薪", "加班"), "A contemporary workplace desk with a closed unmarked folder, plain time clock and an empty chair. Employment dispute concept, no temples or landmarks."),
+            (("房产", "赠房", "过户", "居住权", "拆迁", "继承"), "A set of house keys beside a miniature ordinary home and a closed unmarked folder on a quiet table. Property rights concept, no contracts with readable text."),
+            (("赡养", "养老院", "照护", "独居"), "A quiet ordinary living room with two empty chairs and a small tea table in warm daylight. Family care concept, no identifiable people or staged distress."),
+            (("体检", "骨龄", "身高"), "An unmarked measuring tool and a closed plain notebook in a neutral studio. A conceptual illustration only, no children, patients, medical results or diagrams."),
             (("充电", "补电", "补能"), "An unbranded mobile charging truck with modular battery equipment, next to one generic electric car connected by a plausible charging cable, in a contemporary highway rest-stop bay. Architectural miniature, clearly show charging equipment; no temples or mountains."),
             (("机器人", "人形"), "One physically plausible industrial robot with visible joints and gripper in a clean assembly workshop."),
             (("储能", "电池", "新能源"), "Modular battery cabinets and an orderly clean energy installation, credible engineering proportions."),
@@ -414,7 +418,7 @@ class ImageGenerationService:
             (("工人", "工资", "外卖", "快递"), "An anonymous worker viewed from behind beside generic delivery equipment in an ordinary modern urban setting."),
             (("汽车", "车企", "高速"), "One unbranded generic vehicle in a contemporary road-service setting, no recognizable model or readable license plate."),
         ]
-        subject = next((scene for words, scene in subjects if any(word in content for word in words)),
+        subject = next((scene for words, scene in subjects if any(word in content[:250] for word in words)),
                        "One meaningful everyday physical object inferred from the theme, in a simple studio setting without identifiable geography.")
         return (
             "Premium editorial conceptual illustration for a news analysis, not a documentary photo. "

@@ -463,7 +463,7 @@ def extract_article_body(page_html: str, min_chars: int = 600, *, wechat_mode: b
     # 取 <body> 范围，避免 head 里的 meta 干扰
     m = re.search(r"(?is)<body[^>]*>(.*?)</body>", page_html)
     fragment = m.group(1) if m else page_html
-    primary = _ArticleContainerParser(("artibody", "chan_newsDetail", "paragraph", "js_content") if wechat_mode else ("artibody", "chan_newsDetail"))
+    primary = _ArticleContainerParser(("artibody", "chan_newsDetail", "main-content", "paragraph", "js_content") if wechat_mode else ("artibody", "chan_newsDetail", "main-content"))
     primary.feed(fragment)
     if primary.found:
         if not primary.complete:
@@ -504,7 +504,7 @@ def extract_article_body(page_html: str, min_chars: int = 600, *, wechat_mode: b
 _DEAD_BACKENDS: set[str] = set()
 
 MATERIAL_CACHE_TTL_SECONDS = 6 * 60 * 60
-MATERIAL_CACHE_VERSION = 3
+MATERIAL_CACHE_VERSION = 4
 MATERIAL_FETCH_BUDGET_SECONDS = 120
 
 

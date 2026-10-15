@@ -83,16 +83,88 @@ def test_new_opening_protocol_does_not_compare_against_pre_fix_posts(app_setting
     from toutiao_content_factory.services.growth_feedback_service import opening_experiment_summary
     service = generator(app_settings, logger)
     assignment = service._opening_experiment()
-    assert assignment["protocol_version"] == 2
+    assert assignment["protocol_version"] == 3
     works = {}
     for index in range(30):
         works[str(index)] = {"type": "weitoutiao", "content_experiment": {"id": "story_opening_v1",
-            "variant": "result_first" if index < 15 else "situation_first"},
+            "variant": "result_first" if index < 15 else "situation_first", "protocol_version": 2},
             "checkpoints": {"24h": {"impressions": 100, "reads": 20, "capture_delay_hours": 0}}}
     assert opening_experiment_summary({"works": works})["status"] == "comparison_ready"
+    assert opening_experiment_summary({"works": works})["protocol_version"] == 2
     works["new"] = {"type": "weitoutiao", "content_experiment": assignment,
         "checkpoints": {"24h": {"impressions": 100, "reads": 3, "capture_delay_hours": 0}}}
     report = opening_experiment_summary({"works": works})
-    assert report["status"] == "collecting" and report["protocol_version"] == 2
+    assert report["status"] == "collecting" and report["protocol_version"] == 3
     assert sum(group["samples"] for group in report["groups"]) == 1
     assert report["legacy_works_excluded"] == 30
+
+
+@pytest.mark.parametrize("wechat_mode", [False, True])
+def test_main_content_excludes_recommendations_and_cannot_inflate_material_evidence(wechat_mode):
+    from toutiao_content_factory.services.material_search_service import MaterialBundle, MaterialSource, assess_material_evidence
+    article = "当事人公开了一次常规检查的经过，医生回应了她的问题，未提供其他诊疗信息。" * 12
+    sidebar = "其他新闻涉及7个棚、9亿元投资和另一人的健康争议，不能用于本案。" * 30
+    page = f'<body><div id="main-content"><p>{article}</p><div><p>公开记录尚无后续变化。</p></div></div><div id="article-recommend"><p>{sidebar}</p></div></body>'
+    body = extract_article_body(page, min_chars=100, wechat_mode=wechat_mode)
+    assert article in body and "其他新闻" not in body and "9亿元" not in body
+    bundle = MaterialBundle("公开记录", [MaterialSource("公开记录", "https://kan.china.com/article/example.html", body, True)])
+    assert not assess_material_evidence(bundle).passed  # Only ~400 real characters, not a 900-character article.
+    assert extract_article_body('<div id="main-content"><p>' + article, min_chars=100, wechat_mode=wechat_mode) == ""
+
+
+@pytest.mark.parametrize("advice", [
+    "家长需要关注孩子的骨龄发育情况。",
+    "特殊基因组合要防过度生长。",
+    "父母应该监测儿童的身高变化。",
+])
+def test_story_does_not_turn_a_family_checkup_into_health_advice(app_settings, logger, advice):
+    service = generator(app_settings, logger)
+    topic = TopicCandidate(title="公开体检记录", url="", source="公开报道", source_type="test",
+        snippet="家长分享常规检查经过，医生表示本次检查未发现异常。")
+    assert service._model_story_fallback_reason(topic, "story_comment", advice) == "story_health_advice_guard"
+    assert not service._model_story_fallback_reason(topic, "story_comment", "家长表示担心身高，医生称本次检查正常。该记录不能推出其他孩子的发育状况。")
+
+
+def _mobile_story():
+    return ("老人获返还房产份额，法院明确撤销范围\n\n"
+            "这起纠纷涉及老人此前转出的房产份额。公开裁判明确了本人的请求范围，其他人的权利并未在本案中一并处理。\n\n"
+            "判断此案，需要先分清提出请求的人和争议中的财产。新闻里的家庭关系说明了争议背景，却不能直接扩大裁判处理的范围。\n\n"
+            "一个值得注意的区别是，提出请求和获得支持是两件事。标题说清已确认的结果，正文还需要交代这个结果实际处理到了哪一步。\n\n"
+            "从已披露的条件看，读者可以理解这次纠纷的处理边界。其他家庭是否适用同样处理，仍取决于各自的事实，不能只凭关系相似就下结论。")
+
+
+@pytest.mark.parametrize("defect,reason", [
+    ("long_opening", "story_opening_length_guard"),
+    ("repeat_opening", "story_opening_repeat_guard"),
+    ("wall_of_text", "story_paragraph_length_guard"),
+])
+def test_reviewed_story_must_still_meet_mobile_reading_limits(app_settings, logger, defect, reason):
+    service = generator(app_settings, logger)
+    topic = TopicCandidate(title="房产份额纠纷", url="", source="公开报道", source_type="test", snippet="公开报道说明了裁判处理的范围。")
+    topic._verified_source_material = True
+    valid = _mobile_story()
+    assert not service._model_story_fallback_reason(topic, "story_comment", valid)
+    lines = valid.splitlines()
+    if defect == "long_opening":
+        lines[0] = "老人此前转出房产份额后产生争议，法院明确此次撤销涉及本人份额，其他人的财产权利尚未在本案中处理"
+    elif defect == "repeat_opening":
+        lines[2] = lines[0] + "。" + lines[2]
+    else:
+        lines = [lines[0], "", "".join(lines[1:])]
+    assert service._model_story_fallback_reason(topic, "story_comment", "\n".join(lines)) == reason
+
+
+def test_failed_mobile_check_skips_without_another_model_call_or_publication(app_settings, logger):
+    from dataclasses import replace
+    service = generator(app_settings, logger)
+    app_settings.publishing = replace(app_settings.publishing, weitoutiao_enabled=True, weitoutiao_personas=["story_comment"])
+    topic = TopicCandidate(title="房产份额纠纷", url="", source="公开报道", source_type="test", snippet="裁判处理本人份额。")
+    topic._verified_source_material = True
+    bad = "第一行堆满了案情和多个处置细节，既没有控制信息量，也把所有发生经过都放在读者看到的第一行里\n\n" + _mobile_story().split("\n\n", 1)[1]
+    service._iter_eligible_topics = MagicMock(return_value=[topic])
+    service.openai_service.create_text_completion = MagicMock(return_value=bad)
+    service.publish_service.publish_weitoutiao = MagicMock()
+    result = service.publish_standalone(count=1)
+    service.publish_service.publish_weitoutiao.assert_not_called()
+    assert service.openai_service.create_text_completion.call_count == 2
+    assert result["skipped"][0]["generation_fallback_reason"] == "story_opening_length_guard"

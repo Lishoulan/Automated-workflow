@@ -449,7 +449,12 @@ def test_verified_story_uses_report_body_instead_of_short_hotlist_summary(app_se
     topic._verified_source_material = True
     generator._iter_eligible_topics = MagicMock(return_value=[topic])
     generator.openai_service.create_text_completion = MagicMock(
-        return_value="根据报道，广场举行合唱活动，妈妈请执勤女警帮忙照看孩子。" * 12
+        return_value="妈妈请执勤女警帮忙照看孩子\n\n" + "\n\n".join([
+            "根据报道，广场举行合唱活动，妈妈请执勤女警帮忙照看孩子。公开经过交代了请求帮助的主体和当时的安排，未提供其他家庭经历。",
+            "这段记录里可以区分两个动作：群众参加活动，与执勤人员回应具体求助。理解报道时应当看清各自的情境，不能把一个动作直接说成另一个。",
+            "从公开事实看，妈妈提出请求和女警是否接下照护任务，需要分别交代。已有经过说明了当事人的做法，并不能说明其他未在现场的人的行为。",
+            "理解这个片段的价值，在于把已经披露的动作与读者自己的感受分开。观察一件具体的小事，不需要替当事人补出对话、情绪或后续结果。",
+        ])
     )
     generator.publish_service.publish_weitoutiao = MagicMock()
 

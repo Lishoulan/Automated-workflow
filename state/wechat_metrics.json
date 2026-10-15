@@ -1198,7 +1198,33 @@
       "runtime_status": "ok",
       "native_exit_code": 0,
       "submission_outcome": "draft"
+    },
+    {
+      "run_key": "38716521386:1",
+      "started_at": "2026-10-15T09:56:20.231547+00:00",
+      "mode": "draft",
+      "excluded": true,
+      "outcome": "draft",
+      "reason_codes": [],
+      "attempt_count": 0,
+      "enrichment_count": 0,
+      "eligible_candidate_count": 0,
+      "audited_candidate_count": 0,
+      "review_pass_count": 0,
+      "rejection_reasons": [],
+      "publication": {},
+      "expected_publication": {},
+      "draft_delivery": {
+        "status": "saved",
+        "title": "英伟达后，苹果成全球第二市值突破5万亿企业",
+        "draft_media_id": "",
+        "app_msg_id": "100001400"
+      },
+      "elapsed_seconds": null,
+      "runtime_status": "ok",
+      "native_exit_code": null,
+      "submission_outcome": "draft"
     }
   ],
-  "updated_at": "2026-10-15T09:37:01.511956+08:00"
+  "updated_at": "2026-10-15T17:56:21.550213+08:00"
 }

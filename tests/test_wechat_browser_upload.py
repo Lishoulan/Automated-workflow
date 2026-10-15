@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import sys
 from unittest.mock import MagicMock
 
@@ -62,6 +63,89 @@ def test_editor_must_be_ready_before_upload_or_save(service, tmp_path, method):
         getattr(service, method)(page, "123", "title", "summary", "<p>body</p>", tmp_path / "cover.png")
     assert page.goto.call_args.kwargs["wait_until"] == "commit"
     page.evaluate.assert_not_called()
+
+
+@pytest.mark.parametrize("summary,expected", [("公司只披露固定工位测试，未公布其他场景结果。", "0"), ("", "0")])
+def test_native_draft_transport_sends_the_actual_digest_fields(service, tmp_path, monkeypatch, summary, expected):
+    page = MagicMock()
+    captured = {}
+    def evaluate(script, args=None):
+        if isinstance(args, dict) and "content" in args:
+            captured.update(args)
+            return json.dumps({"appMsgId": "777", "base_resp": {"ret": 0}})
+        return "isolated-fingerprint"
+    page.evaluate.side_effect = evaluate
+    monkeypatch.setattr(service, "_browser_upload_cover", lambda *a: ("123", "https://cdn.test/cover"))
+    monkeypatch.setattr(service, "_browser_upload_square_cover", lambda *a: ("456", "https://cdn.test/square"))
+    assert service._browser_create_draft(page, "123", "title", summary, "<p>body</p>", tmp_path / "cover.png") == "777"
+    assert captured["summaryFields"] == {"digest0": summary, "auto_gen_digest0": expected}
+
+
+@pytest.mark.parametrize("verified", [True, False])
+@pytest.mark.parametrize("summary", ["公司只披露固定工位测试，未公布其他场景结果。", ""])
+def test_editor_fallback_verifies_summary_before_saving(service, tmp_path, monkeypatch, verified, summary):
+    page = MagicMock(url="https://mp.weixin.qq.com/cgi-bin/appmsg?appmsgid=777")
+    saved = []
+    def evaluate(script, args=None):
+        if args == summary:
+            return verified
+        if args == "title":
+            return "ok:title"
+        if args == "<p>body</p>":
+            return "pasted"
+        saved.append(True)
+        return "clicked"
+    page.evaluate.side_effect = evaluate
+    monkeypatch.setattr(service, "_dismiss_irrelevant_wechat_dialogs", lambda *a: None)
+    monkeypatch.setattr(service, "_ensure_rgb_image", lambda path: path)
+    monkeypatch.setattr(service, "_upload_cover_via_image_library", lambda *a: True)
+    if verified:
+        assert service._browser_create_draft_via_editor(page, "123", "title", summary, "<p>body</p>", tmp_path / "cover.png") == "777"
+        assert saved
+    else:
+        with pytest.raises(RuntimeError, match="summary"):
+            service._browser_create_draft_via_editor(page, "123", "title", summary, "<p>body</p>", tmp_path / "cover.png")
+        assert not saved
+
+
+def test_api_preserves_safe_empty_digest_instead_of_clipping_html(service):
+    from toutiao_content_factory.services.reader_value_service import grounded_summary
+    paragraph = "网上流传该产品已经盈利的说法。" + "公告介绍了固定工位测试的操作条件。" * 9 + "不过公司公告没有披露盈利。"
+    summary = grounded_summary("", paragraph)
+    assert summary == ""
+    payload = service._build_article_payload(title="产品测试", summary=summary,
+        article_html="<p>" + paragraph + "</p>", thumb_media_id="123")
+    assert payload["digest"] == ""
+
+
+@pytest.mark.parametrize("method", ["api", "_browser_create_draft", "_browser_create_draft_via_editor"])
+def test_delivery_never_slices_a_complete_excerpt_to_a_smaller_configured_limit(service, tmp_path, monkeypatch, method):
+    object.__setattr__(service.settings.wechat, "digest_max_length", 12)
+    summary = "公司披露已完成固定工位测试，尚未披露商业订单和盈利。"
+    html = "<p>" + summary + "</p>"
+    if method == "api":
+        payload = service._build_article_payload(title="产品测试", summary=summary, article_html=html, thumb_media_id="123")
+        assert payload["digest"] == ""
+        return
+    page = MagicMock(url="https://mp.weixin.qq.com/cgi-bin/appmsg?appmsgid=777")
+    captured = []
+    def evaluate(script, args=None):
+        if isinstance(args, dict) and "content" in args:
+            captured.append(args["summaryFields"]["digest0"])
+            assert args["summaryFields"]["auto_gen_digest0"] == "0"
+            return json.dumps({"appMsgId": "777", "base_resp": {"ret": 0}})
+        if "const target = document.querySelector('#js_description" in script:
+            captured.append(args)
+            return True
+        return "isolated-fingerprint"
+    page.evaluate.side_effect = evaluate
+    monkeypatch.setattr(service, "_browser_upload_cover", lambda *a: ("123", "https://cdn.test/cover"))
+    monkeypatch.setattr(service, "_browser_upload_square_cover", lambda *a: ("456", "https://cdn.test/square"))
+    monkeypatch.setattr(service, "_dismiss_irrelevant_wechat_dialogs", lambda *a: None)
+    monkeypatch.setattr(service, "_ensure_rgb_image", lambda path: path)
+    monkeypatch.setattr(service, "_upload_cover_via_image_library", lambda *a: True)
+    getattr(service, method)(page, "123", "title", summary, html, tmp_path / "cover.png")
+    assert captured == [""]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Live browser transport check uses installed Edge")

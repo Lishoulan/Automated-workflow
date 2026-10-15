@@ -575,7 +575,7 @@ class WechatPublishService:
         return {
             "title": title,
             "author": wechat.author_name or self.settings.account_label,
-            "digest": self._clip_digest(summary or article_html),
+            "digest": self._clip_digest(summary),
             "content": article_html,
             "content_source_url": "",
             "thumb_media_id": thumb_media_id,
@@ -1244,7 +1244,9 @@ class WechatPublishService:
         cleaned = re.sub(r"\s+", " ", str(digest or "").strip())
         if len(cleaned) <= max_length:
             return cleaned
-        return cleaned[: max_length - 1].rstrip("，,。！？!?；;：:") + "…"
+        # A complete excerpt may include a qualification at its end. Preserve
+        # the explicit missing-summary state rather than slice that context.
+        return ""
 
     def _load_json(self, path: Path) -> dict[str, Any]:
         if not path.exists():
@@ -1429,7 +1431,7 @@ class WechatPublishService:
             formData.append('content0', args.content);
             formData.append('author0', args.author);
             formData.append('fileid0', args.fileId);
-            formData.append('digest0', '');
+            Object.entries(args.summaryFields).forEach(([name, value]) => formData.append(name, value));
             formData.append('sourceurl0', '');
             formData.append('need_open_comment0', '1');
             formData.append('music_id0', '');
@@ -1458,7 +1460,6 @@ class WechatPublishService:
             formData.append('cdn_1_1_url0', args.sqCdnUrl);
             formData.append('cdn_url0', args.cdnUrl);
             formData.append('cover_check_info', JSON.stringify({err_format: '', err_idx: 0}));
-            formData.append('auto_gen_digest0', '1');
             formData.append('auto_elect_comment0', '1');
             formData.append('auto_elect_reply0', '1');
             formData.append('option_version0', '5');
@@ -1559,6 +1560,7 @@ class WechatPublishService:
             "fileId": str(cover_file_id),
             "cdnUrl": str(cover_cdn_url),
             "sqCdnUrl": str(sq_cdn_url),
+            "summaryFields": {"digest0": self._clip_digest(summary), "auto_gen_digest0": "0"},
         })
 
         self.logger.info("Draft create result: %s", str(create_result)[:500])
@@ -1824,6 +1826,21 @@ class WechatPublishService:
 
         if not cover_uploaded:
             self.logger.warning("Cover image could not be set. Draft save may fail with '请选择封面' error.")
+
+        summary = self._clip_digest(summary)
+        summary_set = page.evaluate("""(summary) => {
+            const target = document.querySelector('#js_description, textarea[name="digest"], textarea[name="description"], textarea[placeholder*="摘要"]');
+            if (!target) return false;
+            const input = target.matches('textarea, input') ? target : target.querySelector('textarea, input');
+            if (!input) return false;
+            const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')?.set;
+            if (setter) setter.call(input, summary); else input.value = summary;
+            input.dispatchEvent(new Event('input', {bubbles: true}));
+            input.dispatchEvent(new Event('change', {bubbles: true}));
+            return input.value === summary;
+        }""", summary)
+        if summary_set is not True:
+            raise RuntimeError("WeChat summary could not be verified; the draft was not saved.")
 
         save_result = page.evaluate("""() => {
             const btn = document.querySelector('#js_submit button');

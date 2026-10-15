@@ -420,6 +420,7 @@ def test_story_selection_replaces_headline_without_verified_material(app_setting
     object.__setattr__(app_settings.publishing, "weitoutiao_personas", ["story_comment"])
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.material"))
     weak, rich = _topic(), _topic()
+    weak.title = "老人借钱无记录，亲属发生争议"
     rich.title = "社区志愿者帮老人找到走失家人"
     rich.rank = 2
     generator.topic_automation._load_daily_topics = MagicMock(

@@ -117,6 +117,7 @@ def build_growth_feedback(
     checkpoints: dict[str, Any],
     *,
     generated_at: str | None = None,
+    reader_value_batch: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     rows = _checkpoint_rows(checkpoints)
     on_schedule_count = sum(row["capture_quality"] == "on_schedule" for row in rows)
@@ -265,6 +266,7 @@ def build_growth_feedback(
         "stop_loss": stopped_for_report[:20],
         "current_summary": snapshot.get("summary", {}) if isinstance(snapshot, dict) else {},
         "opening_experiment": opening_experiment_summary(checkpoints),
+        "reader_value_batch": reader_value_batch or {},
     }
 
 
@@ -388,6 +390,18 @@ def render_daily_growth_report(feedback: dict[str, Any]) -> str:
     if negative and negative[0][1] < 0:
         lines.append(f"- 降低“{negative[0][0]}”相关选题频次，等待新角度或新事实。")
     lines.append("- 新作品继续在 24 小时和 72 小时回收展现、阅读与评论数据。")
+    batch = feedback.get("reader_value_batch") or {}
+    if batch:
+        lines.extend(["", "## 信息价值5—7篇复盘", "",
+            f"状态：{batch.get('status', 'unknown')}；真实新作品 {batch.get('cohort_size', 0)}/7；5篇提示复盘。",
+            "首阶段阅读率目标2%，同时要求单篇阅读中位数增加、展现中位数不下降。",
+            "| 窗口 | 有效篇数 | 阅读率 | 阅读中位数 | 展现中位数 | 判断 |",
+            "|---|---:|---:|---:|---:|---|"])
+        for label, row in batch.get("windows", {}).items():
+            lines.append(f"| {label} | {row['samples']} | {row['read_rate_pct']} | {row['median_reads']} | {row['median_impressions']} | {row['verdict']} |")
+        lines.append(str(batch.get("note", "基线未齐或状态待核时，不判断增长。")))
+        if batch.get("next_action"):
+            lines.append(str(batch["next_action"]))
     topic_feedback = feedback.get("topic_feedback", {})
     lines.append(f"- 题材调权：{topic_feedback.get('status', 'collecting')}，合格样本 {topic_feedback.get('qualified_samples', 0)}/{TOPIC_WEIGHT_MIN_SAMPLES}；单题材至少5条才调权。")
     experiment = feedback.get("opening_experiment", {})

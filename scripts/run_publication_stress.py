@@ -38,7 +38,8 @@ def main():
                PYTHONUTF8="1", WECHAT_FREE_COVER_ONLY="0",
                PYTHONPATH=os.pathsep.join([str(ROOT / "src"), str(ROOT)]))
     suite = ["test_publication_stress.py", "test_wechat_audit_integrity.py", "test_wechat_draft_delivery.py",
-             "test_toutiao_read_conversion.py", "test_weitoutiao_generator.py", "test_material_recovery.py",
+             "test_toutiao_read_conversion.py", "test_reader_value_rollout.py", "test_reader_value_experiment.py",
+             "test_weitoutiao_generator.py", "test_material_recovery.py",
              "test_growth_feedback_service.py", "test_growth_checkpoints.py", "test_growth_wechat_automation.py",
              "test_wechat_publication_loop.py", "test_cloud_material_supply.py", "test_wechat_growth_service.py",
              "test_generation_cost_service.py", "test_revenue_experiment_service.py", "test_publication_stress_runner.py",

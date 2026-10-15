@@ -183,6 +183,20 @@ def test_unapproved_export_retains_review_and_never_claims_approval(app_settings
         review.prepare_wechat_draft(run)
 
 
+def test_draft_export_summary_tracks_the_final_revised_body(app_settings, logger, monkeypatch):
+    enable(app_settings)
+    run = app_settings.runs_dir / "revised-summary"
+    run.mkdir()
+    body = "公司仅公布固定工位的测试记录。该记录不能证明产品已经在家庭场景投入使用。"
+    review = ReviewWorkflowService(app_settings, logger)
+    monkeypatch.setattr(review, "_load_bundle", lambda *a: (ReviewBundle(titles=["测试范围"], article=body,
+        summary="公司已经在家庭场景实现全面交付。"), None))
+    exported = review.prepare_wechat_draft(run)
+    meta = json.loads(exported["publish_meta"].read_text(encoding="utf-8"))
+    assert meta["summary"] == exported["publish_article"].read_text(encoding="utf-8").strip()
+    assert "不能证明" in meta["summary"]
+
+
 def setup_cloud(settings, monkeypatch, rows=(), used_seconds=0):
     enable(settings)
     now = datetime.now(timezone.utc).isoformat()

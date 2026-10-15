@@ -19,6 +19,8 @@ from toutiao_content_factory.services.article_sanitizer import clean_article_tex
 from toutiao_content_factory.services.company_entities import COMPANY_SUFFIXES
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.openai_service import OpenAIContentService
+from toutiao_content_factory.services.reader_value_service import build_reader_brief, generic_padding_reason, grounded_summary
+from toutiao_content_factory.exceptions import LowQualityAbortException
 
 
 class WriterAgent(BaseAgent):
@@ -170,6 +172,9 @@ class WriterAgent(BaseAgent):
         from toutiao_content_factory.services.wechat_evidence import prepare_article, build_outline, requirements, effective_body_chars
         if not data_report.writing_outline:
             build_outline(data_report)
+        reader_brief = build_reader_brief(data_report.topic_title,
+            [str(row.get("quote", "")) for row in data_report.fact_evidence if row.get("source_role") != "background"],
+            profile="technology_business")
         self._llm_expansion_call_count = 0
         prompt = ("为微信公众号撰写完整中文文章。正文2000～2200字，最低1750字；参考来源和引用模板不计篇幅。"
             "按六节大纲，每节330～370字，组织成自然短段落，每段不超过180字。开头直接说明具体主体、变化和适用范围。"
@@ -189,6 +194,8 @@ class WriterAgent(BaseAgent):
             + "\n分类大纲与每节允许的证据编号：" + self.json_text(data_report.writing_outline)
             + "\nevidence_scope为boundary_only的节没有直接披露依据，只解释相应事实不能证明什么、还缺哪些核对条件；不得补造能力、机制、验证结果或重复前节。"
             + "\n完整事实记录：" + self.json_text(data_report.fact_evidence)
+            + "\n本题读者问题与原句简报（不是已验证答案）：" + self.json_text(reader_brief)
+            + "\n回答本题问题，解释原文事实的关系；不要把正文写成通用核对流程说明，也不要靠市值排名推导产品能力或投资价值。"
             + "\n出处：" + self.json_text([{key: source.get(key, "") for key in
                 ("source_id", "title", "url", "publisher", "published_at", "source_role")}
                 for source in data_report.source_records if source.get("source_role") != "background"])
@@ -223,10 +230,15 @@ class WriterAgent(BaseAgent):
         # The old JSON shape remains readable; it still passes all grounding gates.
         article = "\n\n".join(parts) or str(payload.get("article", ""))
         grounded = strip_internal_source_labels(prepare_article(article, data_report))
-        return GeneratedContent(article=grounded, summary=self.clean_publish_text(str(payload.get("summary", ""))),
+        if generic_padding_reason(grounded):
+            raise LowQualityAbortException("Reader value check rejected known generic padding.")
+        summary = grounded_summary(self.clean_publish_text(str(payload.get("summary", ""))), grounded)
+        return GeneratedContent(article=grounded, summary=summary,
             grounding_diagnostics=[{"before_cleanup_chars": effective_body_chars(article),
                 "after_cleanup_chars": effective_body_chars(grounded), "final_body_chars": effective_body_chars(grounded), "accepted_section_count": len(seen),
-                "returned_section_count": len(sections) if isinstance(sections, list) else 0}],
+                "returned_section_count": len(sections) if isinstance(sections, list) else 0,
+                "reader_value_brief": reader_brief,
+                "summary_status": "body_excerpt" if summary else "missing_safe_excerpt"}],
             comment_prompt=requirements(data_report.article_kind)["closing"], style_name=style.label,
             article_angle=data_report.suggested_angle, cache_note=cache_context.note,
             tags=self._sanitize_tags(payload.get("tags"), data_report), content_format=data_report.content_format,

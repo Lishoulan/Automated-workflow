@@ -298,6 +298,10 @@ def test_runtime_diagnoses_article_report_and_provider_separately(app_settings, 
 
 @pytest.mark.parametrize("mode", ["success", "429", "timeout"])
 def test_single_call_has_no_sdk_retry_and_total_timeout_cancels_transport(app_settings, logger, monkeypatch, mode):
+    # Resolve lazy SDK resource imports before timing the mocked transport.
+    # Cold Windows imports and host diagnostics are outside this contract.
+    from openai.resources.chat import AsyncChat  # noqa: F401
+
     requests, cancelled, options, clients = [], [], [], []
     async def handler(request):
         requests.append(request)
@@ -314,7 +318,10 @@ def test_single_call_has_no_sdk_retry_and_total_timeout_cancels_transport(app_se
         options.append(kwargs)
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         clients.append(client)
-        return AsyncOpenAI(**kwargs, http_client=client)
+        sdk = AsyncOpenAI(**kwargs, http_client=client)
+        # Keep host diagnostics out of the transport cancellation deadline.
+        sdk._platform = "Unknown"
+        return sdk
     monkeypatch.setattr("toutiao_content_factory.services.openai_service.AsyncOpenAI", factory)
     service = OpenAIContentService(app_settings, logger, force_mock=True)
     service.client = SimpleNamespace(api_key="test", base_url="https://model.invalid/v1")

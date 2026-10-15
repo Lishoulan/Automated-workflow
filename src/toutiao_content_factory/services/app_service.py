@@ -2992,11 +2992,14 @@ class ContentFactoryAppService:
         quality gates still decide which candidates can be written.
         """
         from toutiao_content_factory.services.wechat_evidence import build_facts, scope_source_records
+        from toutiao_content_factory.services.reader_value_service import wechat_value_priority
+        from toutiao_content_factory.services.topic_selection_evidence import selection_evidence
         records = scope_source_records(topic.source_records, topic.url, event_published_at=topic.published_at)
         facts = build_facts(records, include_background=False)
         current_chars = sum(len(record.get("original_text", "")) for record in records
                             if record.get("source_role") != "background")
-        return (-min(len(facts), 24), -min(current_chars, 2100),
+        return (selection_evidence(topic)["priority"], wechat_value_priority(topic, facts),
+                -min(len(facts), 24), -min(current_chars, 2100),
                 -min(len(topic.snippet or ""), 900) if not records else 0,
                 -int(topic.evidence_strength or 0), -int(topic.quality_score or 0),
                 -int(topic.total_score or 0), -int(topic.title_potential_score or 0))

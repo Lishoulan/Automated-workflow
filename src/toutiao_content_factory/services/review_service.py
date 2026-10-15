@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from toutiao_content_factory.services.reader_value_service import grounded_summary
+
 import json
 import logging
 import re
@@ -167,7 +169,7 @@ class ReviewWorkflowService:
         meta_path = directory / "publish_meta.json"
         article_path.write_text(article + "\n", encoding="utf-8")
         meta_path.write_text(json.dumps({"selected_title": title, "selected_title_index": index,
-            "summary": self._text_cleaner.clean_publish_text(bundle.summary), "selected_topic": topic.__dict__ if topic else None,
+            "summary": grounded_summary(bundle.summary, article), "selected_topic": topic.__dict__ if topic else None,
             "source_run_dir": str(run_dir), "approval_mode": "pending_manual_review",
             "score_snapshot": bundle.score_snapshot, "validation_notes": bundle.validation_notes,
             "review_notes": bundle.review_notes, "revision_suggestions": bundle.revision_suggestions,
@@ -215,6 +217,8 @@ class ReviewWorkflowService:
             clean_article = bundle.article.strip()
         clean_title = self.publish_service._clip_title(self._text_cleaner.strip_prompt_leakage(chosen_title).strip())
         clean_summary = self._text_cleaner.strip_prompt_leakage(bundle.summary).strip()
+        if self.settings.platform == "wechat":
+            clean_summary = grounded_summary(clean_summary, clean_article)
         clean_comment = self._text_cleaner.strip_prompt_leakage(bundle.comment_prompt).strip()
 
         if automated and self.settings.wechat_auto_publish_mode:

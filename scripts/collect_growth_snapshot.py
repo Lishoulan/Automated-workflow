@@ -424,6 +424,7 @@ def main() -> int:
             cutoff=observed_at - timedelta(days=args.days),
         )
         snapshot = build_snapshot(contents, observed_at, args.days)
+        snapshot["account"] = args.account
         attach_opening_experiments(snapshot, _load_json(output_dir / "growth_ops" / "performance" / "wtt_content_experiments.json"))
         attach_content_income(snapshot, _load_json(output_dir / "growth_ops" / "performance" / "content_income_collection.json"), observed_at)
     except (OSError, ValueError, KeyError, RuntimeError) as exc:
@@ -446,10 +447,16 @@ def main() -> int:
     snapshot["checkpoint_file"] = str(checkpoint_path)
     target = output_dir / "growth_snapshot.json"
     _write_json_atomic(target, snapshot)
+    reader_batch = None
+    from toutiao_content_factory.services.reader_value_experiment import STATE_PATH, ensure_batch, update_batch
+    if args.account == "robot_notes" or (output_dir / STATE_PATH).exists():
+        ensure_batch(output_dir, account=args.account)
+        reader_batch = update_batch(output_dir, snapshot, checkpoints, account=args.account)
     feedback = build_growth_feedback(
         snapshot,
         checkpoints,
         generated_at=observed_at.isoformat(timespec="seconds"),
+        reader_value_batch=reader_batch,
     )
     growth_outputs = write_growth_outputs(output_dir, feedback)
     revenue_outputs = RevenueExperimentService(

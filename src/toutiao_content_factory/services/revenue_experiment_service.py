@@ -20,7 +20,7 @@ class RevenueExperimentService:
     WINDOW_DAYS = 30
     WTT_SAMPLE_TARGET = 30
     ARTICLE_SAMPLE_TARGET = 8
-    WTT_READ_RATE_TARGET = 4.0
+    WTT_READ_RATE_TARGET = 2.0
     THOUSAND_IMPRESSION_SHARE_TARGET = 20.0
 
     def __init__(self, output_dir: Path, logger: logging.Logger) -> None:
@@ -481,9 +481,13 @@ class RevenueExperimentService:
         if readiness.get("status") != "ready":
             actions.append("先复核创作收益权益和信用分，再恢复真实发布。")
         if mature_wtt_samples < self.WTT_SAMPLE_TARGET:
-            actions.append("继续积累不重复且完成24/72小时回收的微头条样本，达到30篇后再调整题材权重。")
+            actions.append("统计题材调权仍需30条合格样本；题材聚焦与信息价值改进立即执行，不等待该门槛。")
+        batch = growth_feedback.get("reader_value_batch") or {}
+        actions.append(f"按5—7篇新作品复盘24/72小时阅读量、阅读率及展现；当前 {batch.get('status', 'not_started')}，不能只看提交成功。")
+        if batch.get("next_action"):
+            actions.append(str(batch["next_action"]))
         if float(wtt.get("read_rate_pct", 0) or 0) < self.WTT_READ_RATE_TARGET:
-            actions.append("微头条阅读率低于4%，优先优化开头事实钩子和题材聚焦。")
+            actions.append("微头条阅读率低于首阶段2%目标；优先回答具体读者问题，并要求阅读量增加和展现不下降。")
         if int(article.get("reads", 0) or 0) == 0 and int(article.get("works", 0) or 0) > 0:
             actions.append("文章仍为零阅读，只保留高证据深度首发，每周最多2篇。")
         if float(attribution.get("coverage_pct", 0) or 0) < 80:
@@ -496,6 +500,7 @@ class RevenueExperimentService:
         return {
             "status": "decision_ready" if decision_ready else "collecting",
             "snapshot_window_days": int(growth_snapshot.get("window_days", 0) or 0),
+            "reader_value_batch": batch,
             "targets": targets,
             "next_actions": actions,
         }

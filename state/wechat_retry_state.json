@@ -171,14 +171,36 @@
     "2026-10-15": {
       "runs": {
         "38665760074:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-15T01:28:28.672895+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 510.994,
+          "outcome": "draft_only",
+          "draft_delivery": {
+            "status": "saved",
+            "title": "英伟达后，苹果成全球第二市值突破5万亿企业",
+            "draft_media_id": "",
+            "app_msg_id": "100001400"
+          }
         }
       },
       "dispatches": {},
-      "failed_inputs": []
+      "failed_inputs": [
+        {
+          "fingerprint": "eebb4dfc08248507051940fa40ffaa3db3afc36024850cc342c3ebf8ae4bc7c3",
+          "source_fingerprint": "67c8eb4ffac599efe5d5c3aaf78614a20080d47553d702b739d0d0d7ed902ff5",
+          "requirements": [
+            "正文存在重复的长段表述，请合并或重写后再发布。",
+            "请合并或重写正文中的重复长段表述。",
+            "请避免使用绝对化表述，如'完全'。",
+            "请核实并修正文章中的事实性错误，如数字、单位、统计对象和统计期等。",
+            "请确保文章的逻辑性，避免出现逻辑跳跃或不当的因果关系陈述。",
+            "请关注文章的结构，确保段落之间的连贯性和逻辑推进。",
+            "请提高文章的原创性，避免使用空泛的套话和重复的表达。",
+            "请检查文章的合规性，避免出现绝对化表述、标题党、误导性因果和内部流程标签泄露等问题。"
+          ]
+        }
+      ]
     }
   }
 }

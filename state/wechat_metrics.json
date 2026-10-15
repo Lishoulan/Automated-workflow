@@ -1163,7 +1163,42 @@
       "elapsed_seconds": null,
       "runtime_status": "ok",
       "native_exit_code": null
+    },
+    {
+      "run_key": "38665760074:1",
+      "started_at": "2026-10-15T01:28:28.672895+00:00",
+      "mode": "draft",
+      "excluded": false,
+      "outcome": "draft",
+      "reason_codes": [
+        "article_too_short",
+        "quality_audit_incomplete",
+        "quality_review_required"
+      ],
+      "attempt_count": 1,
+      "enrichment_count": 7,
+      "eligible_candidate_count": 3,
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "正文存在重复的长段表述，请合并或重写后再发布。",
+        "存在绝对化表述：'完全'",
+        "正文存在重复的长段表述，请合并或重写后再发布。",
+        "正文存在重复的长段表述，请合并或重写后再发布。"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "draft_delivery": {
+        "status": "saved",
+        "title": "英伟达后，苹果成全球第二市值突破5万亿企业",
+        "draft_media_id": "",
+        "app_msg_id": "100001400"
+      },
+      "elapsed_seconds": 509.377,
+      "runtime_status": "ok",
+      "native_exit_code": 0,
+      "submission_outcome": "draft"
     }
   ],
-  "updated_at": "2026-10-14T23:57:50.231483+08:00"
+  "updated_at": "2026-10-15T09:37:01.511956+08:00"
 }

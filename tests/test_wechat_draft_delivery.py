@@ -5,7 +5,7 @@ import os
 import sys
 import subprocess
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -168,13 +168,14 @@ def test_unapproved_export_retains_review_and_never_claims_approval(app_settings
     status.write_text('{"status":"pending","reviewer_notes":"Check the source"}')
     review = ReviewWorkflowService(app_settings, logger)
     monkeypatch.setattr(review, "_load_bundle", lambda *a: (ReviewBundle(titles=["Actual title"],
-        article="Actual source-based body.", revision_suggestions=["Verify the conclusion"]), None))
+        article="Actual source-based body.", summary="根据baidu_hot公开资料，事实仍待核对。", revision_suggestions=["Verify the conclusion"]), None))
     before = status.read_bytes()
     exported = review.prepare_wechat_draft(run)
     meta = json.loads(exported["publish_meta"].read_text())
     assert status.read_bytes() == before
     assert "approved_at" not in meta and meta["approval_mode"] == "pending_manual_review"
     assert meta["revision_suggestions"] == ["Verify the conclusion"]
+    assert "baidu_hot" not in meta["summary"]
     with pytest.raises(RuntimeError, match="already exists"):
         review.prepare_wechat_draft(run)
     app_settings.wechat = replace(app_settings.wechat, draft_only=False)
@@ -269,7 +270,7 @@ def test_draft_timeout_never_claims_publication(app_settings, monkeypatch, phase
 
 def test_draft_success_retains_delivery_id_and_excludes_publication_metrics(app_settings, monkeypatch):
     setup_cloud(app_settings, monkeypatch, [{"run_key": "legacy:1", "mode": "publish",
-        "started_at": "2026-10-08T01:00:00+00:00", "outcome": "submit_uncertain"}])
+        "started_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(), "outcome": "submit_uncertain"}])
     def deliver(command, **kw):
         write_phase(app_settings, "saving_draft")
         (app_settings.automation_dir / "wechat_scheduled_result.json").write_text(json.dumps({

@@ -167,7 +167,7 @@ class ReviewWorkflowService:
         meta_path = directory / "publish_meta.json"
         article_path.write_text(article + "\n", encoding="utf-8")
         meta_path.write_text(json.dumps({"selected_title": title, "selected_title_index": index,
-            "summary": bundle.summary, "selected_topic": topic.__dict__ if topic else None,
+            "summary": self._text_cleaner.clean_publish_text(bundle.summary), "selected_topic": topic.__dict__ if topic else None,
             "source_run_dir": str(run_dir), "approval_mode": "pending_manual_review",
             "score_snapshot": bundle.score_snapshot, "validation_notes": bundle.validation_notes,
             "review_notes": bundle.review_notes, "revision_suggestions": bundle.revision_suggestions,

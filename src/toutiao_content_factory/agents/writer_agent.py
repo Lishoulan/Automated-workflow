@@ -15,7 +15,7 @@ import yaml
 from toutiao_content_factory.agents.base import BaseAgent
 from toutiao_content_factory.config import AppSettings, IterationOverrides, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, InsightReport, TrendReport
-from toutiao_content_factory.services.article_sanitizer import clean_article_text
+from toutiao_content_factory.services.article_sanitizer import clean_article_text, strip_internal_source_labels
 from toutiao_content_factory.services.company_entities import COMPANY_SUFFIXES
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.openai_service import OpenAIContentService
@@ -222,8 +222,8 @@ class WriterAgent(BaseAgent):
                 seen.add(section)
         # The old JSON shape remains readable; it still passes all grounding gates.
         article = "\n\n".join(parts) or str(payload.get("article", ""))
-        grounded = prepare_article(article, data_report)
-        return GeneratedContent(article=grounded, summary=str(payload.get("summary", "")),
+        grounded = strip_internal_source_labels(prepare_article(article, data_report))
+        return GeneratedContent(article=grounded, summary=self.clean_publish_text(str(payload.get("summary", ""))),
             grounding_diagnostics=[{"before_cleanup_chars": effective_body_chars(article),
                 "after_cleanup_chars": effective_body_chars(grounded), "final_body_chars": effective_body_chars(grounded), "accepted_section_count": len(seen),
                 "returned_section_count": len(sections) if isinstance(sections, list) else 0}],

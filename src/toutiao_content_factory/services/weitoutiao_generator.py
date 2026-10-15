@@ -24,7 +24,7 @@ from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.exceptions import AIRequestError, AIResponseFormatError
 from toutiao_content_factory.models import TopicCandidate
 from toutiao_content_factory.services.automation import TopicAutomationService
-from toutiao_content_factory.services.article_sanitizer import looks_like_html_document, normalize_weitoutiao_headline
+from toutiao_content_factory.services.article_sanitizer import looks_like_html_document, normalize_weitoutiao_headline, strip_internal_source_labels
 from toutiao_content_factory.services.compliance_service import count_today_published_by_platform
 from toutiao_content_factory.services.growth_feedback_service import topic_feedback_score, STORY_OPENING_PROTOCOL_VERSION
 from toutiao_content_factory.services.openai_service import OpenAIContentService
@@ -373,7 +373,7 @@ class WeiToutiaoStandaloneGenerator:
         user_prompt = user_template.format(
             title=str(topic.title or "").strip(),
             summary=summary[:6000] if verified_story else summary[:400],
-            source="公开报道（见素材中的来源标记）" if verified_story else str(topic.source or "").strip() or "公开信息",
+            source="公开报道（见素材中的来源标记）" if verified_story else strip_internal_source_labels(str(topic.source or "").strip()) or "公开信息",
             positioning=positioning or "用数据拆热点、用产业链看趋势兑现",
             source_time=str(topic.published_at or "未提供，不得自行补充"),
             time_instruction=(
@@ -658,7 +658,7 @@ class WeiToutiaoStandaloneGenerator:
         if not summary:
             summary = title
         summary = summary[:280]
-        source = re.sub(r"\s+", " ", str(topic.source or "公开信息").strip()) or "公开信息"
+        source = strip_internal_source_labels(re.sub(r"\s+", " ", str(topic.source or "公开信息").strip())) or "公开信息"
         if self._is_story_context(topic, persona):
             headline = title[:30]
             if not self._is_public_policy_topic(topic, persona):

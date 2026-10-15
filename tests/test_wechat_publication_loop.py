@@ -35,6 +35,21 @@ def report():
                       topic_title="陕西储能通知")
 
 
+def test_wechat_writer_removes_collector_labels_before_review_and_cleans_summary(app_settings, mock_openai_service, logger):
+    enable(app_settings)
+    data = report()
+    before = json.dumps(data.source_records, ensure_ascii=False)
+    writer = WriterAgent(app_settings, MagicMock(), mock_openai_service, logger)
+    writer.request_json = MagicMock(return_value={
+        "article": "据baidu_hot公开资料，陕西发布储能通知，要求相关储能项目与配套新能源项目同期投产。",
+        "summary": "根据baidu_hot消息，陕西储能通知涉及同期投产要求。", "tags": []})
+    generated = writer._write_wechat(TrendReport(), data, app_settings.get_style(), CacheContext())
+    assert "baidu_hot" not in generated.article and "baidu_hot" not in generated.summary
+    assert "同期投产" in generated.article
+    assert json.dumps(data.source_records, ensure_ascii=False) == before
+    assert "https://a.test/policy" in generated.article
+
+
 def normal():
     return {"status": "review_required", "publication_attempted": False, "native_exit_code": 0}
 

@@ -168,3 +168,28 @@ def test_failed_mobile_check_skips_without_another_model_call_or_publication(app
     service.publish_service.publish_weitoutiao.assert_not_called()
     assert service.openai_service.create_text_completion.call_count == 2
     assert result["skipped"][0]["generation_fallback_reason"] == "story_opening_length_guard"
+
+
+@pytest.mark.parametrize("code", ["baidu_hot", "toutiao_hot", "hot_board"])
+def test_collector_ids_do_not_appear_in_public_prose_or_replace_real_source_urls(code):
+    from toutiao_content_factory.services.article_sanitizer import strip_internal_source_labels, clean_article_text
+    url = f"https://source.test/{code}/report?ref={code}"
+    raw = f"根据{code}公开材料，项目建设5个棚。新华社披露了相关进展。\n\n参考来源：\n《项目报道》；新华社；2026-10-15；{url}"
+    clean = clean_article_text(raw, min_word_count=0)
+    assert f"根据{code}" not in clean
+    assert "项目建设5个棚" in clean and "新华社" in clean
+    assert url in clean
+    assert clean_article_text(clean, min_word_count=0) == clean
+    assert strip_internal_source_labels("my_baidu_hot_v2 与 NVIDIA_AI 是技术标识。") == "my_baidu_hot_v2 与 NVIDIA_AI 是技术标识。"
+
+
+def test_local_policy_fallback_and_model_source_hint_do_not_expose_collector_id(app_settings, logger):
+    service = generator(app_settings, logger)
+    topic = TopicCandidate(title="养老金公开政策信息", url="", source="baidu_hot", source_type="baidu_hot",
+        summary="相关信息仍需核对适用范围和正式文件。")
+    fallback = service.build_local_fallback_content(topic, "story_comment")
+    assert "baidu_hot" not in fallback and "正式文件" in fallback
+    service.openai_service.create_text_completion = MagicMock(return_value="养老金政策需要核对适用范围。")
+    service.generate_content(topic, "hot_comment")
+    assert "baidu_hot" not in service.openai_service.create_text_completion.call_args.kwargs["user_prompt"]
+    assert topic.source == topic.source_type == "baidu_hot"  # Internal provenance remains available.

@@ -132,6 +132,11 @@ INLINE_HEADING_RE = re.compile(r"(?<!\n)\s+(?=#{1,6}\s*)")
 # Source names occasionally leak from an evidence note into the model output.
 # Only source-like labels are removed so ordinary prose such as "限制条件："
 # remains publishable.
+_COLLECTOR_SOURCE_CODE_RE = re.compile(
+    r"(?P<url>https?://[^\s<>\"']+)|"
+    r"(?<![A-Za-z0-9_])(?:baidu_hot|toutiao_hot|hot_board)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
 _SOURCE_LABEL_HINTS = (
     "前瞻",
     "观察",
@@ -341,7 +346,9 @@ def strip_internal_source_labels(text: str) -> str:
             return match.group(0)
         return match.group("boundary")
 
-    cleaned = str(text or "")
+    # Collector IDs identify discovery channels, not publishers. Keep evidence
+    # URLs and internal provenance unchanged; only normalize reader-facing prose.
+    cleaned = _COLLECTOR_SOURCE_CODE_RE.sub(lambda match: match.group("url") or "公开材料", str(text or ""))
     for _ in range(3):
         leading = _LEADING_SOURCE_LABEL_RE.match(cleaned)
         if leading and is_source_like(leading.group("label")):

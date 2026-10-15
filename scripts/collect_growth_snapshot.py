@@ -72,7 +72,9 @@ def attach_opening_experiments(snapshot: dict, experiments: dict) -> None:
     for group in matches.values():
         if len(group) == 1:
             work, record = group[0]
-            work["content_experiment"] = {k: record[k] for k in ("id", "variable", "variant") if k in record}
+            work["content_experiment"] = {
+                k: record[k] for k in ("id", "variable", "variant", "protocol_version") if k in record
+            }
 
 
 def attach_content_income(snapshot: dict, income_report: dict, observed_at: datetime) -> None:

@@ -40,6 +40,31 @@ def test_opening_experiment_requires_unique_exact_title_time_and_type_match():
     assert "content_experiment" not in trial["works"][0]
 
 
+def test_opening_protocol_survives_collection_and_persistence_without_mixing_legacy():
+    from toutiao_content_factory.services.growth_feedback_service import opening_experiment_summary
+
+    created = datetime(2026, 10, 15, 9, tzinfo=timezone(timedelta(hours=8)))
+    observed = created + timedelta(hours=25)
+    snapshot = build_snapshot([_work(created, 100, 2)], observed, 30)
+    record = {"id": "story_opening_v1", "variable": "opening_order", "variant": "result_first",
+              "protocol_version": 3, "title": snapshot["works"][0]["title"],
+              "submitted_at": created.isoformat(), "status": "submitted_for_review"}
+    previous = {"works": {"legacy": {"type": "weitoutiao",
+        "content_experiment": {"id": "story_opening_v1", "variant": "situation_first"},
+        "checkpoints": {"24h": {"impressions": 1000, "reads": 200, "capture_delay_hours": 0}}}}}
+
+    attach_opening_experiments(snapshot, {"records": {"new": record}})
+    persisted, _ = update_checkpoints(snapshot, previous, observed)
+    report = opening_experiment_summary(persisted)
+
+    assert report["protocol_version"] == 3
+    assert report["legacy_works_excluded"] == 1
+    first, second = report["groups"][:2]
+    assert (first["samples"], first["impressions"], first["reads"]) == (1, 100, 2)
+    assert second["samples"] == 0
+    assert report["comparisons"] == []
+
+
 def test_precise_income_joins_by_id_time_title_and_type_and_keeps_zero_known():
     created = datetime(2026, 10, 2, 9, tzinfo=timezone(timedelta(hours=8)))
     observed = created + timedelta(days=3)

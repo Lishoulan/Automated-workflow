@@ -651,6 +651,10 @@ class WeiToutiaoStandaloneGenerator:
 
     def build_local_fallback_content(self, topic: TopicCandidate, persona: str = "hot_comment") -> str:
         """Build an evidence-only short post without inventing facts when the model is down."""
+        if self._is_story_context(topic, persona):
+            # A headline and generic cautions add no story-specific information.
+            # Policy safety failures must also skip, rather than publish padding.
+            return ""
         title = re.sub(r"\s+", " ", str(topic.title or "").strip()) or "今日行业观察"
         summary = re.sub(r"\s+", " ", str(topic.summary or "").strip())
         if not summary:
@@ -659,23 +663,6 @@ class WeiToutiaoStandaloneGenerator:
             summary = title
         summary = summary[:280]
         source = strip_internal_source_labels(re.sub(r"\s+", " ", str(topic.source or "公开信息").strip())) or "公开信息"
-        if self._is_story_context(topic, persona):
-            headline = title[:30]
-            if not self._is_public_policy_topic(topic, persona):
-                # A source summary plus generic advice is not an original story.
-                # Let the minimum-content gate skip it when writing is unavailable.
-                return ""
-            content = (
-                f"{headline}\n\n"
-                f"根据{source}目前公开的信息，可以确认的是：{summary}。"
-                "这里需要把已经发生的事实、网友观点和仍待确认的信息分开。\n\n"
-                "如果话题涉及政策、社保、养老或公共待遇，还要继续核对适用地区、"
-                "生效时间和主管部门正式文件。公开讨论不等于规则已经改变，"
-                "没有明确人物和处理结果时，也不补写具体人物的经历。\n\n"
-                "普通读者可以先保存权威来源，再根据后续公开进展更新判断。"
-                f"这件事里，你最希望主管部门先说明哪一个具体问题？\n\n{self._build_tags(topic, persona)}"
-            )
-            return content[:MAX_WTT_CHARS]
         headline = f"{title[:24]}，真正值得关注的是后续兑现"
         if persona == "warm":
             opening = "热点会过去，但一条公开信息留下的观察线索不会立刻消失。"

@@ -183,12 +183,12 @@ def test_collector_ids_do_not_appear_in_public_prose_or_replace_real_source_urls
     assert strip_internal_source_labels("my_baidu_hot_v2 与 NVIDIA_AI 是技术标识。") == "my_baidu_hot_v2 与 NVIDIA_AI 是技术标识。"
 
 
-def test_local_policy_fallback_and_model_source_hint_do_not_expose_collector_id(app_settings, logger):
+def test_blocked_policy_fallback_and_model_source_hint_do_not_expose_collector_id(app_settings, logger):
     service = generator(app_settings, logger)
     topic = TopicCandidate(title="养老金公开政策信息", url="", source="baidu_hot", source_type="baidu_hot",
         summary="相关信息仍需核对适用范围和正式文件。")
     fallback = service.build_local_fallback_content(topic, "story_comment")
-    assert "baidu_hot" not in fallback and "正式文件" in fallback
+    assert fallback == ""
     service.openai_service.create_text_completion = MagicMock(return_value="养老金政策需要核对适用范围。")
     service.generate_content(topic, "hot_comment")
     assert "baidu_hot" not in service.openai_service.create_text_completion.call_args.kwargs["user_prompt"]

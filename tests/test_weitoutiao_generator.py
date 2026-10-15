@@ -355,7 +355,7 @@ def test_verified_story_uses_corrected_review_and_review_failures_block_publish(
     generator.publish_service.publish_weitoutiao.assert_not_called()
 
 
-def test_story_local_fallback_has_no_industry_template_language(app_settings) -> None:
+def test_story_policy_fallback_does_not_pad_a_headline_with_generic_reminders(app_settings) -> None:
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.story"))
     topic = TopicCandidate(
         title="农民交公粮能否视同缴社保",
@@ -368,10 +368,7 @@ def test_story_local_fallback_has_no_industry_template_language(app_settings) ->
 
     content = generator.build_local_fallback_content(topic, persona="story_comment")
 
-    assert "公开讨论不等于规则已经改变" in content
-    assert "#社会热点" in content
-    for marker in ("产业链", "上下游", "订单", "利润兑现"):
-        assert marker not in content
+    assert content == ""
 
 
 def test_story_policy_classifier_ignores_unrelated_snippet_and_tags(app_settings) -> None:
@@ -535,7 +532,7 @@ def test_standalone_preview_builds_package_without_publishing(app_settings) -> N
     generator.publish_service.publish_weitoutiao.assert_not_called()
 
 
-def test_policy_story_preview_replaces_hallucinated_model_case(app_settings) -> None:
+def test_policy_story_preview_blocks_hallucinations_without_a_template_replacement(app_settings) -> None:
     generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.policy"))
     topic = TopicCandidate(
         title="农民交公粮能否视同缴社保",
@@ -552,13 +549,28 @@ def test_policy_story_preview_replaces_hallucinated_model_case(app_settings) -> 
     )
 
     result = generator.preview_standalone()
-    content = Path(result["exports"]["standalone_priority_article"]).read_text(encoding="utf-8")
+    assert result == {"status": "content_too_short", "exports": {}}
+    assert not (app_settings.output_dir / "wtt_standalone").exists()
 
-    assert result["generation_mode"] == "local_fallback"
-    assert "当事人" not in content
-    assert "合同" not in content
-    assert "收据" not in content
-    assert "公开讨论不等于规则已经改变" in content
+
+def test_real_policy_fallback_is_skipped_before_image_generation_or_submission(app_settings) -> None:
+    object.__setattr__(app_settings.publishing, "weitoutiao_enabled", True)
+    object.__setattr__(app_settings.publishing, "weitoutiao_personas", ["story_comment"])
+    generator = WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("test.wtt.policy"))
+    topic = TopicCandidate(title="“看病请人陪”有国家标准了", url="https://example.test/accompanying",
+        source="baidu_hot", source_type="baidu_hot",
+        summary="“看病请人陪”有国家标准了 规范服务解老人难题_中华网。")
+    generator._iter_eligible_topics = MagicMock(return_value=[topic])
+    generator.generate_content = MagicMock(return_value="标题加摘要和提醒。" * 40)
+    generator.publish_service.publish_weitoutiao = MagicMock()
+
+    result = generator.publish_standalone(count=1)
+
+    assert result["accepted"] == result["generated"] == 0
+    assert result["skipped"][0]["generation_fallback_reason"] == "policy_story_evidence_guard"
+    assert result["exports"] == {}
+    assert not (app_settings.output_dir / "wtt_standalone").exists()
+    generator.publish_service.publish_weitoutiao.assert_not_called()
 
 
 def test_fallback_report_merges_pending_and_evergreen_topics(app_settings) -> None:

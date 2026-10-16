@@ -1,43 +1,6 @@
 {
   "schema_version": 1,
   "days": {
-    "2026-10-08": {
-      "runs": {
-        "operator-prepared-2026-10-08:1": {
-          "status": "completed",
-          "started_at": "2026-10-07T16:18:13.180011+00:00",
-          "parent": "",
-          "elapsed_seconds": 5179.717,
-          "head_sha": "9a0f9ea4492a30b689eec0fa439d48a43cda3aee",
-          "outcome": "review_required",
-          "no_submission_verified": true,
-          "backend_verification": "2026-10-07T17:42:30.745066+00:00",
-          "manual_review_requested": true,
-          "reviewed_body_hash": "2d98c00e7c50b75436f696fcfe125a0e2adc5e63629fd40432efa8ddee8c6b9e"
-        },
-        "operator-integrity-audit-2026-10-08:1": {
-          "status": "completed",
-          "started_at": "2026-10-08T02:10:26.257830+00:00",
-          "parent": "",
-          "elapsed_seconds": 35.431875,
-          "head_sha": "ede09a914c8b0dfd7461f1ac7a764cdd9cb85e53",
-          "outcome": "review_required",
-          "publication_attempted": false,
-          "audit_status": "incomplete",
-          "valid_model_approval": false,
-          "fingerprint": "eabaa18280f7fab69cec2c8d70de28ef319362ab387cc40387aaf35a78179ede"
-        },
-        "37719117765:1": {
-          "status": "completed",
-          "started_at": "2026-10-08T02:42:40.042835+00:00",
-          "parent": "",
-          "elapsed_seconds": 99.057,
-          "outcome": "error"
-        }
-      },
-      "dispatches": {},
-      "failed_inputs": []
-    },
     "2026-10-09": {
       "runs": {
         "37873030668:1": {
@@ -201,6 +164,18 @@
           ]
         }
       ]
+    },
+    "2026-10-16": {
+      "runs": {
+        "38834471923:1": {
+          "status": "running",
+          "started_at": "2026-10-16T01:20:20.258130+00:00",
+          "parent": "",
+          "elapsed_seconds": 0
+        }
+      },
+      "dispatches": {},
+      "failed_inputs": []
     }
   }
 }

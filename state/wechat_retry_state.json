@@ -168,10 +168,17 @@
     "2026-10-16": {
       "runs": {
         "38834471923:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-16T01:20:20.258130+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 406.273,
+          "outcome": "draft_only",
+          "draft_delivery": {
+            "status": "saved",
+            "title": "苹果Minions项目：闲置MacGPU助AI推理提速",
+            "draft_media_id": "",
+            "app_msg_id": "100001404"
+          }
         }
       },
       "dispatches": {},

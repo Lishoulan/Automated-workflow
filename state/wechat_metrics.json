@@ -1224,7 +1224,33 @@
       "runtime_status": "ok",
       "native_exit_code": null,
       "submission_outcome": "draft"
+    },
+    {
+      "run_key": "38834471923:1",
+      "started_at": "2026-10-16T01:20:20.258130+00:00",
+      "mode": "draft",
+      "excluded": false,
+      "outcome": "draft",
+      "reason_codes": [],
+      "attempt_count": 1,
+      "enrichment_count": 10,
+      "eligible_candidate_count": 2,
+      "audited_candidate_count": 1,
+      "review_pass_count": 1,
+      "rejection_reasons": [],
+      "publication": {},
+      "expected_publication": {},
+      "draft_delivery": {
+        "status": "saved",
+        "title": "苹果Minions项目：闲置MacGPU助AI推理提速",
+        "draft_media_id": "",
+        "app_msg_id": "100001404"
+      },
+      "elapsed_seconds": 404.367,
+      "runtime_status": "ok",
+      "native_exit_code": 0,
+      "submission_outcome": "draft"
     }
   ],
-  "updated_at": "2026-10-15T17:56:21.550213+08:00"
+  "updated_at": "2026-10-16T09:27:07.788777+08:00"
 }

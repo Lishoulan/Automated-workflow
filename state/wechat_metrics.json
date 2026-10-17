@@ -1276,7 +1276,41 @@
       "runtime_status": "ok",
       "native_exit_code": null,
       "submission_outcome": "draft"
+    },
+    {
+      "run_key": "38990274792:1",
+      "started_at": "2026-10-17T01:19:09.659479+00:00",
+      "mode": "draft",
+      "excluded": false,
+      "outcome": "draft",
+      "reason_codes": [
+        "quality_audit_incomplete",
+        "quality_review_required"
+      ],
+      "attempt_count": 1,
+      "enrichment_count": 8,
+      "eligible_candidate_count": 1,
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "部分段落存在从局部事件直接推导行业结论的情况，需加强逻辑递进和因果链条的合理性。",
+        "部分段落长度较长，建议适当拆分以提升阅读节奏。",
+        "存在绝对化表述：'绝对'",
+        "存在绝对化表述：'完全'"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "draft_delivery": {
+        "status": "saved",
+        "title": "芯片股暴跌12%，市场情绪转向谨慎",
+        "draft_media_id": "",
+        "app_msg_id": "100001408"
+      },
+      "elapsed_seconds": 665.792,
+      "runtime_status": "ok",
+      "native_exit_code": 0,
+      "submission_outcome": "draft"
     }
   ],
-  "updated_at": "2026-10-16T17:51:28.701047+08:00"
+  "updated_at": "2026-10-17T09:30:19.056878+08:00"
 }

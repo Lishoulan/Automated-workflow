@@ -1310,7 +1310,33 @@
       "runtime_status": "ok",
       "native_exit_code": 0,
       "submission_outcome": "draft"
+    },
+    {
+      "run_key": "39020847961:1",
+      "started_at": "2026-10-17T09:22:57.641156+00:00",
+      "mode": "draft",
+      "excluded": true,
+      "outcome": "draft",
+      "reason_codes": [],
+      "attempt_count": 0,
+      "enrichment_count": 0,
+      "eligible_candidate_count": 0,
+      "audited_candidate_count": 0,
+      "review_pass_count": 0,
+      "rejection_reasons": [],
+      "publication": {},
+      "expected_publication": {},
+      "draft_delivery": {
+        "status": "saved",
+        "title": "芯片股暴跌12%，市场情绪转向谨慎",
+        "draft_media_id": "",
+        "app_msg_id": "100001408"
+      },
+      "elapsed_seconds": null,
+      "runtime_status": "ok",
+      "native_exit_code": null,
+      "submission_outcome": "draft"
     }
   ],
-  "updated_at": "2026-10-17T09:30:19.056878+08:00"
+  "updated_at": "2026-10-17T17:22:59.248931+08:00"
 }

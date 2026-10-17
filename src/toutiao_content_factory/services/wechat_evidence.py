@@ -132,6 +132,14 @@ def source_metadata(page_html: str, *, source_url: str = "") -> dict:
             if value:
                 values.setdefault(field, value)
     host = urlsplit(source_url).hostname or ""
+    if (host == "www.hncourt.gov.cn" or host.endswith(".hncourt.gov.cn")) and urlsplit(source_url).path == "/public/detail.php":
+        title = re.search(r'<p\b[^>]*\bid=["\']hztitle["\'][^>]*>(.*?)</p>', page_html, re.S | re.I)
+        date = re.search(r'<span\b[^>]*\bclass=["\'][^"\']*\barticle_time\b[^"\']*["\'][^>]*>\s*发布时间[：:]\s*([^<>]+)</span>', page_html, re.S | re.I)
+        if title:
+            values.setdefault("og:title", html.unescape(re.sub(r"<[^>]+>", "", title[1])).strip())
+            if date:
+                values.setdefault("datepublished", html.unescape(date[1]).strip())
+            values.setdefault("article:publisher", host)
     if host in {"court.gov.cn", "www.court.gov.cn"}:
         header = re.search(r'<ul\b[^>]*\bclass=[\"\'][^\"\']*\bmessage\b[^\"\']*[\"\'][^>]*>(.*?)</ul>',
                            page_html, re.S | re.I)

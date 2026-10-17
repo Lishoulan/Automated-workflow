@@ -430,6 +430,7 @@ class PublishRecord:
     status: str
     notes: list[str] = field(default_factory=list)
     external_url: str = ""
+    content_experiment: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PublishRecord":
@@ -443,6 +444,7 @@ class PublishRecord:
             status=str(payload.get("status", "")),
             notes=list(payload.get("notes", [])),
             external_url=str(payload.get("external_url", "")),
+            content_experiment=dict(payload.get("content_experiment") or {}),
         )
 
 
@@ -507,6 +509,7 @@ class TopicCandidate:
     cover_variant: str = ""
     platform_variant: str = ""
     topic_bucket: str = ""
+    revenue_selection: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "TopicCandidate":
@@ -550,6 +553,7 @@ class TopicCandidate:
             cover_variant=str(payload.get("cover_variant", "")),
             platform_variant=str(payload.get("platform_variant", "")),
             topic_bucket=str(payload.get("topic_bucket", "")),
+            revenue_selection=dict(payload.get("revenue_selection") or {}),
         )
 
 

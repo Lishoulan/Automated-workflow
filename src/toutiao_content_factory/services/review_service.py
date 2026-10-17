@@ -49,8 +49,10 @@ class ReviewWorkflowService:
         self.publish_service = PublishService(settings, logger)
         self.growth_ops_service = GrowthOpsService(settings, logger)
         self.monetization_service = MonetizationService(settings, logger)
+        from toutiao_content_factory.services.revenue_feedback import adaptive_selection_enabled
         self.creative_scoring_service = CreativeScoringService(
-            settings.output_dir / "creative_score_calibration.json", wechat_mode=settings.wechat_auto_publish_mode
+            None if adaptive_selection_enabled(settings) else settings.output_dir / "creative_score_calibration.json",
+            wechat_mode=settings.wechat_auto_publish_mode,
         )
         self._text_cleaner = BaseAgent.__new__(BaseAgent)
         self._text_cleaner.settings = settings
@@ -251,6 +253,14 @@ class ReviewWorkflowService:
             "creative_gate_status": "pending_cover" if automated else "manual_override",
         }
         selected_topic_payload = selected_topic.__dict__ if selected_topic is not None else {}
+        from toutiao_content_factory.services.revenue_feedback import adaptive_selection_enabled, SELECTION_PROTOCOL, topic_category
+        if adaptive_selection_enabled(self.settings) and selected_topic is not None:
+            # Observe the existing title variants; no extra draft/model request.
+            meta_payload["content_experiment"] = {
+                "id": "article_title_v1", "variable": "title_pattern", "protocol_version": 1,
+                "variant": selected_topic.title_variant or "source_bound_title",
+                "selection_protocol": SELECTION_PROTOCOL, "category": topic_category(selected_topic),
+            }
         topic_title_text = str(selected_topic_payload.get("title", ""))
         content_intent = str(selected_topic_payload.get("commercial_intent", "")).strip() or "medium"
         content_mix_value = str(selected_topic_payload.get("content_mix", "")).strip() or "professional"

@@ -41,6 +41,7 @@ def _minimal_settings(tmp_path: Path) -> SimpleNamespace:
         industry_focus="科技商业",
         brand_positioning="科技分析",
         openai_api_key=None,
+        wechat_auto_publish_mode=False,
         openai_base_url=None,
         openai_model="gpt-4.1-mini",
         temperature=0.2,

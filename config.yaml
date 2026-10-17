@@ -395,6 +395,8 @@ accounts:
     enabled: true
   robot_notes:
     label: 手蓝人间故事（原机器人笔记）
+    revenue_optimization:
+      adaptive_topic_selection: true
     browser_profile_dir: .runtime/accounts/robot-notes/toutiao_profile
     industry:
       brand_name: 手蓝人间故事

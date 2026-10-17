@@ -93,13 +93,15 @@ def test_missing_micro_upload_control_allows_clean_text_fallback(app_settings, l
 
 
 @pytest.mark.parametrize("matching", [True, False])
-def test_micro_publish_image_evidence_controls_success_history(app_settings, logger, tmp_path, monkeypatch, matching):
+@pytest.mark.parametrize("override", [True, False])
+def test_micro_publish_image_evidence_controls_success_history(app_settings, logger, tmp_path, monkeypatch, matching, override):
     from toutiao_content_factory.services import publish_service as module
     app_settings.publishing = replace(app_settings.publishing, weitoutiao_enabled=True)
     content = "\n\n".join((Path(__file__).parent / "fixtures/toutiao_body_image_article.md").read_text(encoding="utf-8").split("\n\n")[:4])
     publish = tmp_path / app_settings.review.publish_dirname
     publish.mkdir()
     (publish / "article.md").write_text(content, encoding="utf-8")
+    (publish / "publish_meta.json").write_text(json.dumps({"content_experiment": {"protocol_version": 4}}), encoding="utf-8")
     service = PublishService(app_settings, logger)
     page, browser = MagicMock(), MagicMock()
     page.url = "https://mp.toutiao.com/profile_v4/weitoutiao/publish"
@@ -128,7 +130,9 @@ def test_micro_publish_image_evidence_controls_success_history(app_settings, log
     monkeypatch.setattr(service, "_load_history", lambda: [])
     saved = []
     monkeypatch.setattr(service, "_save_history", lambda records: saved.extend(records))
-    result = service.publish_weitoutiao(tmp_path, content_override=content)
+    result = service.publish_weitoutiao(tmp_path, content_override=content if override else None)
+    expected = service._sanitize_article_for_publish(content, preserve_sentence_endings=True)
+    assert result["submitted_opening"] == expected.split("\n\n", 1)[0]
     assert result["status"] == ("submitted_for_review" if matching else "publish_uncertain")
     assert result["images"]["request_verified"] is matching
     assert len(saved) == 1 and saved[0].status == result["status"]

@@ -82,6 +82,43 @@ def test_precise_income_joins_by_id_time_title_and_type_and_keeps_zero_known():
         assert "platform_revenue" not in trial["works"][0]
 
 
+def test_continuous_opening_joins_actual_submitted_first_paragraph_without_fuzzy_titles():
+    import copy
+    created = datetime(2026, 10, 16, 9, tzinfo=timezone(timedelta(hours=8)))
+    lead = "法院支持陆奶奶撤销本人转出的赠房份额。其他共有人转出的份额，未在本案中处理。"
+    snapshot = build_snapshot([_work(created, 198, 0)], created + timedelta(hours=25), 30)
+    snapshot["works"][0]["title"] = lead.rstrip("。")
+    record = {"id": "story_opening_v1", "variable": "opening_order", "variant": "result_first",
+              "protocol_version": 4, "title": lead[:20], "submitted_opening": lead,
+              "submitted_at": created.isoformat(), "status": "submitted_for_review"}
+    attach_opening_experiments(snapshot, {"records": {"one": record}})
+    assert snapshot["works"][0]["content_experiment"]["protocol_version"] == 4
+    for change in ({"submitted_opening": lead + "不能扩大到全部房产。"}, {"submitted_at": (created - timedelta(hours=1)).isoformat()},
+                   {"status": "publish_uncertain"}, {"protocol_version": 3}):
+        trial = copy.deepcopy(snapshot)
+        trial["works"][0].pop("content_experiment", None)
+        attach_opening_experiments(trial, {"records": {"one": {**record, **change}}})
+        assert "content_experiment" not in trial["works"][0]
+    for records, works in (({"one": record, "two": record}, snapshot["works"]),
+                           ({"one": record}, [snapshot["works"][0], {**snapshot["works"][0], "gid": "another"}])):
+        trial = {"works": copy.deepcopy(works)}
+        for work in trial["works"]:
+            work.pop("content_experiment", None)
+        attach_opening_experiments(trial, {"records": records})
+        assert all("content_experiment" not in work for work in trial["works"])
+
+
+def test_protocol4_missing_actual_submission_text_is_not_repaired_from_local_title():
+    created = datetime(2026, 10, 16, 9, tzinfo=timezone(timedelta(hours=8)))
+    record = {"id": "story_opening_v1", "variant": "result_first", "protocol_version": 4,
+              "title": "老人拒交物业费，法院最后怎么判", "submitted_at": created.isoformat(), "status": "submitted_for_review"}
+    for text in (None, "", "   "):
+        trial = build_snapshot([_work(created, 100, 2)], created + timedelta(hours=25), 30)
+        candidate = {**record, "submitted_opening": text}
+        attach_opening_experiments(trial, {"records": {"one": candidate}})
+        assert "content_experiment" not in trial["works"][0]
+
+
 def test_growth_checkpoints_capture_24h_then_72h_and_compute_delta() -> None:
     created = datetime(2026, 9, 25, 8, tzinfo=timezone(timedelta(hours=8)))
     first_observed = created + timedelta(hours=25)

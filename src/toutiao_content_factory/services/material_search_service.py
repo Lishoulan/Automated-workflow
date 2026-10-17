@@ -418,9 +418,11 @@ def strip_tags(text: str) -> str:
 class _ArticleContainerParser(HTMLParser):
     """Isolate a known primary article container, including nested divs."""
 
-    def __init__(self, container_ids: tuple[str, ...] = ("artibody",)):
+    def __init__(self, container_ids: tuple[str, ...] = ("artibody",), *, span_class: str = ""):
         super().__init__(convert_charrefs=True)
         self.container_ids = container_ids
+        self.span_class = span_class
+        self.active_tag = "div"
         self.depth = 0
         self.found = False
         self.complete = False
@@ -429,7 +431,12 @@ class _ArticleContainerParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if self.complete:
             return
-        if tag == "div" and (self.depth or dict(attrs).get("id") in self.container_ids):
+        attributes = dict(attrs)
+        if not self.depth and not self.found and tag == "span" and self.span_class in attributes.get("class", "").split() and self.span_class:
+            self.active_tag = "span"
+        starts = (tag == "div" and attributes.get("id") in self.container_ids) or (
+            tag == "span" and self.span_class and self.span_class in attributes.get("class", "").split())
+        if tag == self.active_tag and (self.depth or starts):
             self.depth += 1
             self.found = True
         if self.depth:
@@ -438,7 +445,7 @@ class _ArticleContainerParser(HTMLParser):
     def handle_endtag(self, tag):
         if self.depth:
             self.parts.append(f"</{tag}>")
-            if tag == "div":
+            if tag == self.active_tag:
                 self.depth -= 1
                 self.complete = self.depth == 0
 
@@ -447,7 +454,7 @@ class _ArticleContainerParser(HTMLParser):
             self.parts.append(html.escape(data))
 
 
-def extract_article_body(page_html: str, min_chars: int = 600, *, wechat_mode: bool = False) -> str:
+def extract_article_body(page_html: str, min_chars: int = 600, *, wechat_mode: bool = False, require_court_container: bool = False) -> str:
     """从页面 HTML 里抽出正文段落。
 
     做法：按块级标签切段，逐行剔除导航/版权类噪声，保留足够长的中文句子，
@@ -463,8 +470,14 @@ def extract_article_body(page_html: str, min_chars: int = 600, *, wechat_mode: b
     # 取 <body> 范围，避免 head 里的 meta 干扰
     m = re.search(r"(?is)<body[^>]*>(.*?)</body>", page_html)
     fragment = m.group(1) if m else page_html
-    primary = _ArticleContainerParser(("artibody", "chan_newsDetail", "main-content", "paragraph", "js_content") if wechat_mode else ("artibody", "chan_newsDetail", "main-content"))
+    court_header = require_court_container or bool(re.search(r'\bid=["\']hztitle["\']', fragment, re.I))
+    primary = _ArticleContainerParser(
+        () if court_header else (("artibody", "chan_newsDetail", "main-content", "paragraph", "js_content") if wechat_mode else ("artibody", "chan_newsDetail", "main-content")),
+        span_class="detail_content" if court_header else "",
+    )
     primary.feed(fragment)
+    if court_header and not primary.found:
+        return ""
     if primary.found:
         if not primary.complete:
             return ""
@@ -1002,14 +1015,16 @@ def collect_material(
             page, final_url, how = fetch_text_smart(url, timeout=timeout,
                                                   deadline=fetch_deadline)
             source.url = final_url or url
-            if preserve_sources:
+            host = urllib.parse.urlsplit(source.url).hostname or ""
+            court_report = (host == "www.hncourt.gov.cn" or host.endswith(".hncourt.gov.cn")) and urllib.parse.urlsplit(source.url).path == "/public/detail.php"
+            if preserve_sources or court_report:
                 from toutiao_content_factory.services.wechat_evidence import source_metadata, is_event_article
                 metadata = source_metadata(page, source_url=source.url)
                 source.publisher = metadata["publisher"]
                 source.published_at = metadata["published_at"]
                 source.date_verified = metadata["date_verified"]
                 source.title = metadata["page_title"] or source.title
-                if not is_event_article(source.title, source.url):
+                if preserve_sources and not is_event_article(source.title, source.url):
                     source.evidence_type = "aggregation"
                     source.error = "专题或游戏目录页不是对应事件的原始报道"
                     bundle.sources.append(source)
@@ -1018,7 +1033,8 @@ def collect_material(
             # Keep it for supplementary retrieval; the unchanged bundle gate
             # decides whether the combined current-event material is sufficient.
             body = extract_article_body(page, min_chars=1 if preserve_sources else min_body_chars,
-                                        **({"wechat_mode": True} if preserve_sources else {}))
+                                        **({"wechat_mode": True} if preserve_sources else {}),
+                                        **({"require_court_container": True} if court_report else {}))
             if body:
                 source.body = body
                 source.ok = True

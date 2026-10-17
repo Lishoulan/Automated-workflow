@@ -94,7 +94,7 @@ def _snapshot(snapshot, account):
     return observed, works
 
 
-def _sample(entry, label, *, work=None, observed=None):
+def qualified_checkpoint_sample(entry, label, *, work=None, observed=None):
     samples = entry.get("checkpoints", {}) if isinstance(entry, dict) else {}
     row = samples.get(label) if isinstance(samples, dict) else None
     if not isinstance(row, dict) or any(type(row.get(key)) is not int or row[key] < 0 for key in ("impressions", "reads")):
@@ -176,7 +176,7 @@ def ensure_batch(output_dir: Path, *, account: str) -> dict:
             ordered = sorted(works.values(), key=lambda row: row["created_at"], reverse=True)
             for label in CHECKPOINT_TOLERANCE_HOURS:
                 rows = [(row["gid"], sample) for row in ordered
-                        if (sample := _sample(checkpoints.get(row["gid"]), label, work=row, observed=observed)) is not None]
+                        if (sample := qualified_checkpoint_sample(checkpoints.get(row["gid"]), label, work=row, observed=observed)) is not None]
                 windows[label] = _stats(rows, limit=7)
             state = {"schema": 1, "strategy": STRATEGY, "account": account, "started_at": now.isoformat(),
                      "last_observed_at": observed.isoformat(), "baseline": {
@@ -197,7 +197,7 @@ def _report(state, observed, works, checkpoints):
             if not current or current.get("title") != item["title"] or current.get("created_at") != item["created_at"]:
                 continue
             entry = checkpoints.get("works", {}).get(item["gid"], {})
-            sample = _sample(entry, label, work=current, observed=observed)
+            sample = qualified_checkpoint_sample(entry, label, work=current, observed=observed)
             if sample is not None:
                 rows.append((item["gid"], sample))
             else:

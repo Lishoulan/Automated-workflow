@@ -715,6 +715,7 @@ class RevenueOptimizationSettings:
     """
 
     enabled: bool = True
+    adaptive_topic_selection: bool = False
     lookback_days: int = 30
     min_samples: int = 10
     weak_rpm_threshold: float = 0.0
@@ -746,6 +747,7 @@ class RevenueOptimizationSettings:
         stop_ratio = max(cooldown_ratio, min(1.0, _float_value("stop_weak_ratio", 0.8, "REVENUE_STOP_WEAK_RATIO")))
         return cls(
             enabled=_env_flag("REVENUE_OPTIMIZATION_ENABLED", bool(payload.get("enabled", True))),
+            adaptive_topic_selection=bool(payload.get("adaptive_topic_selection", False)),
             lookback_days=max(1, _int_value("lookback_days", 30, "REVENUE_OPTIMIZATION_LOOKBACK_DAYS")),
             min_samples=max(1, _int_value("min_samples", 10, "REVENUE_OPTIMIZATION_MIN_SAMPLES")),
             weak_rpm_threshold=_float_value("weak_rpm_threshold", 0.0, "REVENUE_WEAK_RPM_THRESHOLD"),

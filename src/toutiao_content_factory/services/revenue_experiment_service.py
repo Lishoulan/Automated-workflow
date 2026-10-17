@@ -41,6 +41,11 @@ class RevenueExperimentService:
             self.output_dir / "growth_ops" / "performance" / "account_snapshot.json"
         )
         account_snapshot = self._latest_account_snapshot(account_payload)
+        # The live feed rolls after 30 days. The existing snapshot artifact owns
+        # the optional history; conflicting settled reports remain separate.
+        daily_history = account_payload.get("settled_daily_history", [])
+        if isinstance(daily_history, list) and daily_history:
+            account_snapshot = {**account_snapshot, "settled_daily_history": daily_history}
         performance = self._load_json(self.output_dir / "performance_metrics.json")
         snapshot = growth_snapshot or self._load_json(self.output_dir / "growth_snapshot.json")
         feedback = growth_feedback or self._load_json(self.output_dir / "growth_feedback.json")
@@ -157,8 +162,18 @@ class RevenueExperimentService:
             else {}
         )
         income = revenue.get("income") if isinstance(revenue.get("income"), dict) else {}
-        daily_rows = [row for row in (income.get("daily") or []) if isinstance(row, dict)]
+        daily_rows = [row for row in [*(income.get("daily") or []), *(account_snapshot.get("settled_daily_history") or [])]
+                      if isinstance(row, dict)]
         income_summary = self._income_summary(daily_rows, reference_time)
+        income_windows = {str(days): self._income_summary(daily_rows, reference_time, days=days)
+                          for days in (7, 30, 90)}
+        settled_dates = [stamp for row in daily_rows if row.get("pending") is False
+                         and self._valid_amount(row.get("total"))
+                         and (stamp := self._parse_datetime(row.get("day"))) is not None
+                         and stamp.date() <= reference_time.date()]
+        latest_settled = max(settled_dates, key=lambda value: value.date()) if settled_dates else None
+        settled_windows = {str(days): self._income_summary(daily_rows, latest_settled, days=days)
+                           for days in (7, 30, 90)} if latest_settled else {}
         format_metrics = self._format_metrics(growth_snapshot, income_summary)
         income_records = list(performance.get("records") or [])
         # The published-work API exposes micro-posts that the management DOM
@@ -193,10 +208,18 @@ class RevenueExperimentService:
             "readiness": readiness,
             "account": account_snapshot.get("account") or {},
             "generation_costs": costs,
+            "cost_windows": {str(days): costs if days == 30 else build_cost_summary(self.output_dir, now=reference_time, days=days)
+                             for days in (7, 30, 90)},
+            "income_windows": income_windows,
+            "latest_settled_windows": settled_windows,
+            "traffic_windows": self._traffic_windows(growth_snapshot, reference_time),
+            "category_feedback": growth_feedback.get("revenue_feedback", {}),
             "revenue_reconciliation": {"account_key": str(account_snapshot.get("account_key", "")),
                 "income_observed_at": account_snapshot.get("generated_at"),
                 "income_source": "logged_in_creator_backend", "income_window_days": self.WINDOW_DAYS,
-                "settled_income": income_summary.get("settled_total"),
+                "settled_income": income_summary.get("complete_total"),
+                "observed_settled_income": income_summary.get("settled_total"),
+                "cash_received": None, "settlement_scope": "creator_backend_accounted_income_not_bank_receipt",
                 "actual_cost_status": costs["status"], "net_profit": None,
                 "reason": "只有完整扣费、相同期间与币种及全部成本均已核实，才能计算净利润。"},
             "income": {
@@ -238,7 +261,7 @@ class RevenueExperimentService:
             "",
             f"- 账号：{dashboard.get('account_key') or '未知'}",
             f"- 收益准备状态：{readiness.get('status', 'unknown')}",
-            f"- 30天已结算收益：{self._money(income.get('settled_total'))}",
+            f"- 30天完整结算收益：{self._money(income.get('complete_total'))}；已取得 {income.get('settled_days', 0)}/30 天，共 {self._money(income.get('settled_total'))}",
             f"- 最近7天收益：{self._money(income.get('latest_7d'))}",
             f"- 前7天收益：{self._money(income.get('previous_7d'))}",
             f"- 生成成本：{costs.get('status', 'untracked')}；记录 {costs.get('recorded_calls', 0)} 次调用，估算 {json.dumps(costs.get('estimated_by_currency', {}), ensure_ascii=False)}；实际扣费及净利润未知。",
@@ -255,10 +278,13 @@ class RevenueExperimentService:
             row = formats.get(key) or {}
             lines.append(
                 f"| {label} | {row.get('works', 0)} | {row.get('impressions', 0)} | "
-                f"{row.get('reads', 0)} | {row.get('read_rate_pct', 0):.2f}% | "
+                f"{row.get('reads', '未知')} | {row.get('read_rate_pct') if row.get('read_rate_pct') is not None else '未知'}% | "
                 f"{self._money(row.get('revenue'))} | {self._money(row.get('revenue_per_1000_impressions'))} |"
             )
         lines.extend(["", "## 实验进度"])
+        for days, window in (dashboard.get("income_windows") or {}).items():
+            lines.append(f"- {days}天自然窗口 {window['window_start']}～{window['window_end']}：完整收益 {self._money(window['complete_total'])}，已取得 {window['settled_days']}/{days} 天。")
+        lines.append("- 展现和阅读为发布队列的累计计数，不能与自然日收益相除；来源、截止时间不齐时千次收益未知。")
         for target in experiment.get("targets", []):
             lines.append(
                 f"- {target.get('label')}：{target.get('current')}/{target.get('target')}，"
@@ -284,19 +310,22 @@ class RevenueExperimentService:
         )
         return "\n".join(lines)
 
-    def _income_summary(self, rows: list[dict[str, Any]], reference_time: datetime) -> dict[str, Any]:
+    @staticmethod
+    def _valid_amount(value: Any) -> bool:
+        try:
+            return type(value) in {int, float} and math.isfinite(value) and value >= 0
+        except OverflowError:
+            return False
+
+    def _income_summary(self, rows: list[dict[str, Any]], reference_time: datetime, *, days: int = 30) -> dict[str, Any]:
         current = reference_time.date()
         end = current if any(self._parse_datetime(row.get("day")) and self._parse_datetime(row["day"]).date() == current
                              and row.get("pending") is False for row in rows) else current - timedelta(days=1)
-        cutoff_30 = end - timedelta(days=self.WINDOW_DAYS - 1)
+        cutoff_30 = end - timedelta(days=days - 1)
         cutoff_7 = end - timedelta(days=6)
         cutoff_14 = end - timedelta(days=13)
         unique, conflicts = {}, set()
-        def amount(value):
-            try:
-                return type(value) in {int, float} and math.isfinite(value) and value >= 0
-            except OverflowError:
-                return False
+        amount = self._valid_amount
         aggregation_errors = []
         def finite_sum(values, name):
             value = sum(values)
@@ -306,7 +335,7 @@ class RevenueExperimentService:
             return round(value, 4)
         for row in rows:
             day = self._parse_datetime(row.get("day"))
-            if not day or not cutoff_30 <= day.date() <= end or row.get("pending"):
+            if not day or not cutoff_30 <= day.date() <= end or row.get("pending") is not False:
                 continue
             if not amount(row.get("total")):
                 continue
@@ -321,16 +350,24 @@ class RevenueExperimentService:
         by_format = {key: finite_sum((float(row[key]) for _, row in settled), "by_format." + key)
                      if settled and all(amount(row.get(key)) for _, row in settled) else None
                      for key in ("article", "weitoutiao", "video")}
+        present = {day for day, _ in settled}
+        missing = [end - timedelta(days=i) for i in range(days) if end - timedelta(days=i) not in present]
+        complete = not missing and not aggregation_errors
+        latest_complete = all(end - timedelta(days=i) in present for i in range(7))
+        previous_complete = all(end - timedelta(days=i) in present for i in range(7, 14))
         return {
             "window_start": cutoff_30.isoformat(), "window_end": end.isoformat(),
             "conflicting_days": [day.isoformat() for day in sorted(conflicts)],
-            "coverage_complete": len(settled) == self.WINDOW_DAYS and not aggregation_errors,
+            "coverage_complete": complete, "complete_total": total if complete else None,
+            "missing_days": [day.isoformat() for day in sorted(missing)],
+            "scope": "earnings_date_settled_daily", "window_days": days,
             "aggregation_errors": aggregation_errors,
             "settled_days": len(settled),
             "settled_total": total if settled else None,
-            "latest_7d": latest_7d if settled else None,
-            "previous_7d": previous_7d if settled else None,
-            "change_7d": round(latest_7d - previous_7d, 4) if settled and latest_7d is not None and previous_7d is not None else None,
+            "observed_latest_7d": latest_7d if settled else None,
+            "latest_7d": latest_7d if latest_complete else None,
+            "previous_7d": previous_7d if previous_complete else None,
+            "change_7d": round(latest_7d - previous_7d, 4) if latest_complete and previous_complete and latest_7d is not None and previous_7d is not None else None,
             "by_format": by_format if settled else {},
         }
 
@@ -340,8 +377,9 @@ class RevenueExperimentService:
         income_summary: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
         summary = growth_snapshot.get("summary") if isinstance(growth_snapshot.get("summary"), dict) else {}
-        snapshot_days = int(growth_snapshot.get("window_days", 0) or 0)
-        aligned = snapshot_days == self.WINDOW_DAYS
+        # Matching duration is insufficient: these counters are lifetime totals
+        # for works created in the window, not traffic earned on those days.
+        aligned = False
         by_format_income = income_summary.get("by_format") or {}
         out: dict[str, dict[str, Any]] = {}
         for key in ("article", "weitoutiao"):
@@ -352,9 +390,6 @@ class RevenueExperimentService:
             revenue = by_format_income.get(key)
             rpm = None
             rpr = None
-            if aligned and isinstance(revenue, (int, float)):
-                rpm = round(float(revenue) * 1000 / impressions, 4) if impressions else None
-                rpr = round(float(revenue) * 1000 / reads, 4) if reads else None
             out[key] = {
                 "works": works,
                 "impressions": impressions,
@@ -363,11 +398,16 @@ class RevenueExperimentService:
                 "read_rate_pct": round(reads * 100 / impressions, 4) if impressions else 0.0,
                 "works_above_1000_impressions": 0,
                 "works_above_1000_share_pct": 0.0,
-                "revenue": revenue if isinstance(revenue, (int, float)) else None,
+                "revenue": revenue if income_summary.get("coverage_complete") and self._valid_amount(revenue) else None,
+                "observed_revenue": revenue if self._valid_amount(revenue) else None,
                 "revenue_per_1000_impressions": rpm,
                 "revenue_per_1000_reads": rpr,
                 "window_aligned": aligned,
+                "scope": "creation_cohort_cumulative_observed_inventory",
             }
+            if not raw:
+                for field in ("works", "impressions", "reads", "zero_read_works", "read_rate_pct"):
+                    out[key][field] = None
         works = growth_snapshot.get("works") if isinstance(growth_snapshot.get("works"), list) else []
         for key in out:
             group = [row for row in works if str(row.get("type", "")) == key]
@@ -377,6 +417,30 @@ class RevenueExperimentService:
                 round(above * 100 / len(group), 2) if group else 0.0
             )
         return out
+
+    def _traffic_windows(self, snapshot: dict[str, Any], reference: datetime) -> dict[str, Any]:
+        """Observed creation cohorts, explicitly not calendar-day traffic."""
+        result = {}
+        for days in (7, 30, 90):
+            groups = {}
+            for kind in ("article", "weitoutiao"):
+                rows = []
+                for work in snapshot.get("works", []):
+                    created = self._parse_datetime(work.get("created_at"))
+                    if (work.get("type") != kind or created is None
+                            or not reference.date() - timedelta(days=days - 1) <= created.date() <= reference.date()):
+                        continue
+                    if all(type(work.get(k)) is int and work[k] >= 0 for k in ("impressions", "reads")):
+                        rows.append(work)
+                impressions = sum(w["impressions"] for w in rows)
+                reads = sum(w["reads"] for w in rows)
+                groups[kind] = {"observed_works": len(rows), "impressions": impressions if rows else None,
+                    "reads": reads if rows else None, "comments": sum(w.get("comments", 0) for w in rows)
+                        if rows and all(type(w.get("comments")) is int and w["comments"] >= 0 for w in rows) else None,
+                    "read_rate_pct": round(reads * 100 / impressions, 4) if impressions else None}
+            result[str(days)] = {"scope": "creation_cohort_lifetime_counters", "inventory_complete": False,
+                "calendar_traffic": None, "candidate_supply": None, "formats": groups}
+        return result
 
     def _per_content_attribution(self, performance: dict[str, Any]) -> dict[str, Any]:
         records = performance.get("records") if isinstance(performance.get("records"), list) else []
@@ -394,7 +458,7 @@ class RevenueExperimentService:
                 continue
             seen.add(key)
             revenue = record.get("platform_revenue")
-            exact = revenue is not None and (
+            exact = self._valid_amount(revenue) and (
                 bool(record.get("revenue_amount_known"))
                 or str(record.get("platform_revenue_status", "")) in {"", "available"}
             )
@@ -416,7 +480,10 @@ class RevenueExperimentService:
                     "revenue_as_of_date": record.get("revenue_as_of_date", ""),
                     "revenue_per_1000_impressions": (
                         round(exact_revenue * 1000 / impressions, 4)
-                        if exact and impressions and (not record.get("revenue_as_of_date") or record.get("revenue_as_of_date") == record.get("counters_as_of_date"))
+                        if exact and impressions and record.get("revenue_scope") == "checkpoint_cumulative"
+                        and record.get("revenue_counters_captured_at")
+                        and self._parse_datetime(record.get("revenue_counters_captured_at"))
+                        and record.get("revenue_counters_captured_at") == record.get("counters_captured_at")
                         else None
                     ),
                 }

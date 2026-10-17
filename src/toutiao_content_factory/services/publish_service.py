@@ -671,6 +671,7 @@ class PublishService:
             status=str(result_payload.get("status", "published")),
             notes=[str(item) for item in result_payload.get("notes", [])],
             external_url=str(result_payload.get("external_url", "")),
+            content_experiment=dict(publish_meta.get("content_experiment") or {}),
         )
         if not result_payload.get("publish_verified", True):
             backend_summary = result_payload.get("backend_response_summary", {})
@@ -1627,7 +1628,10 @@ class PublishService:
         if not publish_dir.exists():
             raise FileNotFoundError(f"Publish package not found: {publish_dir}")
         publish_meta = self._load_json(publish_dir / "publish_meta.json") or {}
-        article = self._sanitize_article_for_publish(normalize_weitoutiao_headline(self._read_text(publish_dir / "article.md")))
+        experiment = publish_meta.get("content_experiment") or {}
+        continuous = isinstance(experiment, dict) and experiment.get("protocol_version") == 4
+        clean_options = {"preserve_sentence_endings": True} if continuous else {}
+        article = self._sanitize_article_for_publish(normalize_weitoutiao_headline(self._read_text(publish_dir / "article.md")), **clean_options)
         if len(article.replace("\n", "").replace(" ", "")) < 200:
             raise RuntimeError("WeiToutiao content is too short after sanitization (minimum 200 chars).")
 
@@ -1635,7 +1639,9 @@ class PublishService:
         # 避免把整篇 1500 字长文直接塞进微头条（信息流里微头条以短观点+标签引流效果最好）。
         # 独立微头条场景传入 content_override，直接使用已写好的短内容，不再截取。
         if content_override and len(content_override.replace("\n", "").replace(" ", "")) >= 200:
-            wtt_content = self._sanitize_article_for_publish(normalize_weitoutiao_headline(content_override))
+            wtt_content = self._sanitize_article_for_publish(normalize_weitoutiao_headline(content_override), **clean_options)
+        elif continuous:
+            wtt_content = article
         else:
             wtt_content = self._build_weitoutiao_content(article, publish_dir)
             if not wtt_content:
@@ -1794,6 +1800,7 @@ class PublishService:
                         "external_url": page.url,
                         "notes": self._finalize_notes(notes),
                         "platform": "toutiao_weitoutiao",
+                        "submitted_opening": wtt_content.split("\n\n", 1)[0] if continuous else "",
                         "images": image_summary,
                         "backend_response_summary": self._compact_backend_response(response_json),
                         "publish_request_summary": {
@@ -2282,7 +2289,7 @@ class PublishService:
             return ""
         return path.read_text(encoding="utf-8")
 
-    def _sanitize_article_for_publish(self, article: str) -> str:
+    def _sanitize_article_for_publish(self, article: str, *, preserve_sentence_endings: bool = False) -> str:
         if looks_like_html_document(article):
             raise RuntimeError(
                 "Publish content was an HTML document instead of article text."
@@ -2298,6 +2305,8 @@ class PublishService:
         sanitized_lines: list[str] = []
         for raw_line in cleaned.splitlines():
             line = self._sanitize_publish_text(raw_line.strip())
+            if preserve_sentence_endings and line and raw_line.endswith(("。", "！", "？", "!", "?")) and not line.endswith(raw_line[-1]):
+                line += raw_line[-1]
             if not line and sanitized_lines and sanitized_lines[-1] != "":
                 sanitized_lines.append("")
                 continue

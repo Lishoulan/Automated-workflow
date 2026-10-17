@@ -159,8 +159,8 @@ def test_dashboard_keeps_unknown_per_content_revenue_out_of_rpm() -> None:
     unknown, exact = attribution["rows"]
     assert unknown["revenue"] is None
     assert unknown["revenue_per_1000_impressions"] is None
-    assert exact["revenue_per_1000_impressions"] == 0.75
-    assert dashboard["formats"]["weitoutiao"]["revenue_per_1000_impressions"] > 0
+    assert exact["revenue_per_1000_impressions"] is None  # no matching counter cutoff
+    assert dashboard["formats"]["weitoutiao"]["revenue_per_1000_impressions"] is None
     targets = dashboard["experiment"]["targets"]
     assert targets[0]["current"] == 3
     assert targets[1]["current"] == 4

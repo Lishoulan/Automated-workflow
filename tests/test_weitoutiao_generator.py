@@ -251,6 +251,7 @@ def test_generation_failure_uses_next_topic_without_fetching_unused_reserves(app
     topics = [_topic() for _ in range(3)]
     for i, topic in enumerate(topics):
         topic.title = f"老人房产继承案例第{i}件"
+        topic.url = f"https://example.test/independent-case/{i}"
         topic.rank = i + 1
     generator.topic_automation._load_daily_topics = MagicMock(return_value=SimpleNamespace(topics=topics))
     generator.topic_automation._available_topics = MagicMock(side_effect=lambda items: items)
@@ -422,6 +423,7 @@ def test_story_selection_replaces_headline_without_verified_material(app_setting
     weak, rich = _topic(), _topic()
     weak.title = "老人借钱无记录，亲属发生争议"
     rich.title = "社区志愿者帮老人找到走失家人"
+    rich.url = "https://example.test/independent-case/community"
     rich.rank = 2
     generator.topic_automation._load_daily_topics = MagicMock(
         return_value=MagicMock(topics=[weak, rich])
@@ -447,7 +449,7 @@ def test_verified_story_uses_report_body_instead_of_short_hotlist_summary(app_se
     topic._verified_source_material = True
     generator._iter_eligible_topics = MagicMock(return_value=[topic])
     generator.openai_service.create_text_completion = MagicMock(
-        return_value="妈妈请执勤女警帮忙照看孩子\n\n" + "\n\n".join([
+        return_value="\n\n".join([
             "根据报道，广场举行合唱活动，妈妈请执勤女警帮忙照看孩子。公开经过交代了请求帮助的主体和当时的安排，未提供其他家庭经历。",
             "这段记录里可以区分两个动作：群众参加活动，与执勤人员回应具体求助。理解报道时应当看清各自的情境，不能把一个动作直接说成另一个。",
             "从公开事实看，妈妈提出请求和女警是否接下照护任务，需要分别交代。已有经过说明了当事人的做法，并不能说明其他未在现场的人的行为。",

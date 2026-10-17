@@ -39,10 +39,13 @@ def main():
                PYTHONPATH=os.pathsep.join([str(ROOT / "src"), str(ROOT)]))
     suite = ["test_publication_stress.py", "test_wechat_audit_integrity.py", "test_wechat_draft_delivery.py",
              "test_toutiao_read_conversion.py", "test_reader_value_rollout.py", "test_reader_value_experiment.py",
+             "test_story_source_supply.py", "test_story_feed_lead.py",
              "test_weitoutiao_generator.py", "test_material_recovery.py",
              "test_growth_feedback_service.py", "test_growth_checkpoints.py", "test_growth_wechat_automation.py",
              "test_wechat_publication_loop.py", "test_cloud_material_supply.py", "test_wechat_growth_service.py",
              "test_generation_cost_service.py", "test_revenue_experiment_service.py", "test_publication_stress_runner.py",
+             "test_revenue_feedback.py", "test_revenue_window_scope.py", "test_creator_account_income.py",
+             "test_revenue_optimization.py", "test_topic_candidate_serialization.py", "test_config.py",
              "test_cloud_publication_fault_stress.py", "test_publication_watchdog.py", "test_platform_health_service.py",
              "test_wechat_cloud.py", "test_wechat_cloud_metrics.py", "test_wechat_publish_recovery.py",
              "test_wechat_reviewed_cloud.py", "test_wechat_structured_request_limits.py",

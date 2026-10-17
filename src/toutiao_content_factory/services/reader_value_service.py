@@ -30,6 +30,15 @@ def story_reader_fit(topic) -> dict:
             return bool(re.search(r"员工|职工|工人|劳动者|雇员|打工|劳动|用工|加班费|考勤|薪资|薪酬|强制加班|公司(?:安排|要求)", text))
         return True
     tracks = [name for name, markers in STORY_TRACKS.items() if any(relevant_marker(word) for word in markers)]
+    if "婚介" in text and re.search(r"退款|退费|服务费|失联|纠纷|法院|判决|返还", text):
+        if "消费权益" not in tracks:
+            tracks.append("消费权益")
+    if "物业服务合同" in text and re.search(r"纠纷|争议|法院|判决", text):
+        if "消费权益" not in tracks:
+            tracks.append("消费权益")
+    if "彩礼" in text and re.search(r"返还|退还|诉讼|法院|判决|婚约.{0,8}争议", text):
+        if "家庭财产" not in tracks:
+            tracks.append("家庭财产")
     if "老人" in text and any(word in text for word in ("走失", "找回家人", "找到走失", "认亲", "志愿者帮")):
         if "养老照护" not in tracks:
             tracks.append("养老照护")

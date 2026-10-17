@@ -877,8 +877,10 @@ class ImageGenerationService:
         except (KeyError, AttributeError):
             content_domain = str(getattr(self.settings, "content_domain", "industry"))
         title_score_payload = pm.get("creative_score") if isinstance(pm.get("creative_score"), dict) else {}
+        from toutiao_content_factory.services.revenue_feedback import adaptive_selection_enabled
         scorer = CreativeScoringService(
-            self.settings.output_dir / "creative_score_calibration.json", wechat_mode=self.settings.wechat_auto_publish_mode
+            None if adaptive_selection_enabled(self.settings) else self.settings.output_dir / "creative_score_calibration.json",
+            wechat_mode=self.settings.wechat_auto_publish_mode,
         )
         if not title_score_payload:
             title_score_payload = scorer.score_title(

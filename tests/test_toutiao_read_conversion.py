@@ -83,7 +83,7 @@ def test_new_opening_protocol_does_not_compare_against_pre_fix_posts(app_setting
     from toutiao_content_factory.services.growth_feedback_service import opening_experiment_summary
     service = generator(app_settings, logger)
     assignment = service._opening_experiment()
-    assert assignment["protocol_version"] == 3
+    assert assignment["protocol_version"] == 4
     works = {}
     for index in range(30):
         works[str(index)] = {"type": "weitoutiao", "content_experiment": {"id": "story_opening_v1",
@@ -94,7 +94,7 @@ def test_new_opening_protocol_does_not_compare_against_pre_fix_posts(app_setting
     works["new"] = {"type": "weitoutiao", "content_experiment": assignment,
         "checkpoints": {"24h": {"impressions": 100, "reads": 3, "capture_delay_hours": 0}}}
     report = opening_experiment_summary({"works": works})
-    assert report["status"] == "collecting" and report["protocol_version"] == 3
+    assert report["status"] == "collecting" and report["protocol_version"] == 4
     assert sum(group["samples"] for group in report["groups"]) == 1
     assert report["legacy_works_excluded"] == 30
 

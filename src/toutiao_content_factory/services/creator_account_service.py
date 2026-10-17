@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -492,6 +493,38 @@ def save_account_snapshot(
     account = snapshot.get("account") if isinstance(snapshot.get("account"), dict) else {}
     quality = snapshot.get("quality") if isinstance(snapshot.get("quality"), dict) else {}
 
+    # Keep observed settled days inside the already cached account artifact.
+    # Never overwrite a conflicting receipt or reconstruct money from totals.
+    previous_snapshot = payload.get("latest") or {}
+    same_account = (previous_snapshot.get("account_key") == snapshot.get("account_key")
+                    and (previous_snapshot.get("account") or {}).get("media_id") == account.get("media_id"))
+    income = revenue.get("income") or {}
+    previous_daily = ((previous_snapshot.get("revenue") or {}).get("income") or {}).get("daily") or []
+    candidates = [*(payload.get("settled_daily_history") or []), *previous_daily] if same_account else []
+    candidates.extend(income.get("daily") or [])
+    settled_history = {}
+    try:
+        reference_day = date.fromisoformat(day)
+    except ValueError:
+        reference_day = date.today()
+    for row in candidates:
+        if not isinstance(row, dict) or row.get("pending") is not False:
+            continue
+        try:
+            row_day = date.fromisoformat(str(row.get("day", "")))
+            amount = row.get("total")
+            if (row_day > reference_day or type(amount) not in (int, float)
+                    or not math.isfinite(amount) or amount < 0):
+                continue
+        except (ValueError, OverflowError):
+            continue
+        receipt = {key: row.get(key) for key in ("day", "pending", "total", "article", "weitoutiao", "video")}
+        settled_history[json.dumps(receipt, sort_keys=True)] = receipt
+    if settled_history:
+        settled_end = date.fromisoformat(max(row["day"] for row in settled_history.values()))
+        settled_history = {key: row for key, row in settled_history.items()
+                           if (settled_end - date.fromisoformat(row["day"])).days < 90}
+
     history = [row for row in history if str(row.get("observed_date", "")).strip() != day]
     history.append(
         {
@@ -521,6 +554,7 @@ def save_account_snapshot(
         "revenue_delta_vs_last_observation": delta,
         "previous_observation_date": str(previous[-1]["observed_date"]) if previous else "",
         "history": history,
+        "settled_daily_history": sorted(settled_history.values(), key=lambda row: row["day"]),
         "updated_at": snapshot.get("generated_at"),
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

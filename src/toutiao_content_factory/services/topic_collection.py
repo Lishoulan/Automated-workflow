@@ -1208,6 +1208,9 @@ class TopicCollectionService:
         topics: list[TopicCandidate],
         filtered_out: dict[str, int],
     ) -> list[TopicCandidate]:
+        from toutiao_content_factory.services.revenue_feedback import adaptive_selection_enabled
+        if adaptive_selection_enabled(self.settings):
+            return topics  # Editorial scope only; quality/time checks still run.
         matched_topics = [item for item in topics if item.matched_industries]
         filtered_out["industry_mismatch"] += max(len(topics) - len(matched_topics), 0)
         if not matched_topics:
@@ -1748,6 +1751,12 @@ class TopicCollectionService:
         if self._has_blocking_quality_issue(topic):
             filtered_out["low_quality"] += 1
             return False
+        from toutiao_content_factory.services.revenue_feedback import adaptive_selection_enabled
+        if adaptive_selection_enabled(self.settings):
+            if any(token in body_text for token in self.HOT_TOPIC_BLOCKLIST):
+                filtered_out["low_quality"] += 1
+                return False
+            return True
         if "international" in set(self.topic_settings.focus_industries):
             if any(token in title_text for token in self.INTERNATIONAL_FALSE_POSITIVE_TOKENS):
                 filtered_out["weak_focus"] += 1

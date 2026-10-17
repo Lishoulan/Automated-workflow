@@ -119,6 +119,7 @@ def build_growth_feedback(
     generated_at: str | None = None,
     reader_value_batch: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from toutiao_content_factory.services.revenue_feedback import build_revenue_feedback
     rows = _checkpoint_rows(checkpoints)
     on_schedule_count = sum(row["capture_quality"] == "on_schedule" for row in rows)
     late_count = len(rows) - on_schedule_count
@@ -266,11 +267,12 @@ def build_growth_feedback(
         "stop_loss": stopped_for_report[:20],
         "current_summary": snapshot.get("summary", {}) if isinstance(snapshot, dict) else {},
         "opening_experiment": opening_experiment_summary(checkpoints),
+        "revenue_feedback": build_revenue_feedback(snapshot, checkpoints),
         "reader_value_batch": reader_value_batch or {},
     }
 
 
-STORY_OPENING_PROTOCOL_VERSION = 3
+STORY_OPENING_PROTOCOL_VERSION = 4
 
 
 def opening_experiment_summary(checkpoints: dict[str, Any]) -> dict[str, Any]:
@@ -278,6 +280,7 @@ def opening_experiment_summary(checkpoints: dict[str, Any]) -> dict[str, Any]:
     works = checkpoints.get("works", {})
     experiment_works = [work for work in works.values() if isinstance(work, dict)
         and work.get("type") == "weitoutiao" and isinstance(work.get("content_experiment"), dict)
+        and not work["content_experiment"].get("selection_protocol")
         and work["content_experiment"].get("id") == "story_opening_v1"] if isinstance(works, dict) else []
     versions = [work["content_experiment"].get("protocol_version", 1) for work in experiment_works]
     protocol = max((version for version in versions if type(version) is int
@@ -290,6 +293,8 @@ def opening_experiment_summary(checkpoints: dict[str, Any]) -> dict[str, Any]:
                 if not isinstance(work, dict) or work.get("type") != "weitoutiao":
                     continue
                 experiment = work.get("content_experiment", {})
+                if isinstance(experiment, dict) and experiment.get("selection_protocol"):
+                    continue  # Adaptive cohorts are compared by category in revenue_feedback.
                 if not isinstance(experiment, dict) or experiment.get("id") != "story_opening_v1" or experiment.get("variant") != variant:
                     continue
                 if experiment.get("protocol_version", 1) != protocol:

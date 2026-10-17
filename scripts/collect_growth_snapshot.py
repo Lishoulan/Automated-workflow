@@ -27,7 +27,7 @@ from toutiao_content_factory.services.growth_feedback_service import (
 from toutiao_content_factory.services.revenue_experiment_service import (
     RevenueExperimentService,
 )
-from toutiao_content_factory.services.content_income_service import ARTICLE_INCOME_PATH
+from toutiao_content_factory.services.content_income_service import ARTICLE_INCOME_PATH, platform_item_id
 
 ROOT = Path(__file__).resolve().parents[1]
 BEIJING = timezone(timedelta(hours=8))
@@ -35,7 +35,7 @@ LIST_URL = "https://mp.toutiao.com/mp/agw/creator_center/list/v2"
 
 
 def attach_opening_experiments(snapshot: dict, experiments: dict) -> None:
-    """Join within this account by unique exact title and submission time.
+    """Join by unique exact display text and submission time in this account.
 
     Micro-post submission responses do not always expose a stable work ID.
     Ambiguous, cross-type, stale or duplicate matches remain unassigned.
@@ -53,7 +53,15 @@ def attach_opening_experiments(snapshot: dict, experiments: dict) -> None:
                 continue
             if record.get("variant") not in {"result_first", "situation_first"} or record.get("status") not in {"published", "submitted", "submitted_for_review", "success"}:
                 continue
-            title = normalize_title(record.get("title", ""))
+            # The platform displays the first paragraph for micro-posts. A
+            # protocol4 lead is longer than the package's clipped title field.
+            # Use only the actual publisher text, never a prefix/fuzzy match.
+            display = record.get("title", "")
+            if record.get("protocol_version") == 4:
+                display = record.get("submitted_opening")
+                if not isinstance(display, str) or not display.strip():
+                    continue
+            title = normalize_title(display)
             if not title or title != normalize_title(work.get("title", "")):
                 continue
             try:
@@ -73,8 +81,35 @@ def attach_opening_experiments(snapshot: dict, experiments: dict) -> None:
         if len(group) == 1:
             work, record = group[0]
             work["content_experiment"] = {
-                k: record[k] for k in ("id", "variable", "variant", "protocol_version") if k in record
+                k: record[k] for k in ("id", "variable", "variant", "protocol_version", "selection_protocol", "category") if k in record
             }
+
+
+def attach_article_experiments(snapshot: dict, history: list) -> None:
+    """Articles have stable URLs. Reuse publish history, never fuzzy titles."""
+    if not isinstance(history, list):
+        return
+    for work in snapshot.get("works", []):
+        if work.get("type") != "article":
+            continue
+        matches = []
+        for record in history:
+            if (not isinstance(record, dict) or record.get("platform") != "toutiao"
+                    or record.get("status") not in {"published", "submitted_for_review", "success"}
+                    or platform_item_id(record.get("external_url", "")) != work.get("gid")
+                    or normalize_title(record.get("title")) != normalize_title(work.get("title"))
+                    or not isinstance(record.get("content_experiment"), dict)):
+                continue
+            try:
+                submitted = datetime.fromisoformat(record["published_at"])
+                submitted = submitted if submitted.tzinfo else submitted.replace(tzinfo=BEIJING)
+                created = datetime.fromisoformat(work["created_at"])
+                if created.tzinfo and abs((created - submitted).total_seconds()) <= 600:
+                    matches.append(record["content_experiment"])
+            except (KeyError, TypeError, ValueError):
+                continue
+        if len(matches) == 1:
+            work["content_experiment"] = dict(matches[0])
 
 
 def attach_content_income(snapshot: dict, income_report: dict, observed_at: datetime) -> None:
@@ -190,6 +225,8 @@ def update_checkpoints(
             continue
         entry = works_by_gid.get(gid)
         entry = dict(entry) if isinstance(entry, dict) else {}
+        if entry and any(key in entry and entry[key] != work.get(key) for key in ("gid", "type", "title", "created_at")):
+            continue  # Preserve the original receipt; changed identities need review.
         entry.update(
             {
                 "gid": gid,
@@ -205,8 +242,13 @@ def update_checkpoints(
                 },
             }
         )
-        if isinstance(work.get("content_experiment"), dict):
-            entry["content_experiment"] = work["content_experiment"]
+        experiment = work.get("content_experiment")
+        if isinstance(experiment, dict) and (not entry.get("checkpoints")
+                or entry.get("content_experiment") == experiment):
+            entry["content_experiment"] = dict(experiment)
+        # Captured measurements retain their original assignment (including
+        # unassigned). A later category/variant/policy change cannot relabel
+        # them; snapshot/entry mismatch excludes them from adaptive feedback.
         checkpoints = entry.get("checkpoints")
         checkpoints = dict(checkpoints) if isinstance(checkpoints, dict) else {}
         # Repair ledgers produced by schema 1, which could write the same late
@@ -246,6 +288,12 @@ def update_checkpoints(
                 "comments": int(work.get("comments") or 0),
                 "read_rate_pct": round(reads * 100 / impressions, 3) if impressions else 0.0,
             }
+            # Retain only provider-supplied scope/cutoff, never invent an aligned
+            # checkpoint amount from the later ready-date income table.
+            for key in ("platform_revenue", "platform_revenue_status", "revenue_amount_known", "revenue_gid",
+                        "revenue_settled", "revenue_scope", "revenue_source", "revenue_counters_captured_at"):
+                if key in work:
+                    checkpoints[label][key] = work[key]
             captured_now[label] += 1
         for label, sample in checkpoints.items():
             if not isinstance(sample, dict):
@@ -342,12 +390,12 @@ def merge_recovered_checkpoints(previous: dict, recovered: dict) -> tuple[dict, 
     return result, restored
 
 
-def _load_json(path: Path) -> dict:
+def _load_json(path: Path, *, expected_type: type = dict) -> dict | list:
     try:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+        return expected_type()
+    return payload if isinstance(payload, expected_type) else expected_type()
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
@@ -426,6 +474,7 @@ def main() -> int:
         snapshot = build_snapshot(contents, observed_at, args.days)
         snapshot["account"] = args.account
         attach_opening_experiments(snapshot, _load_json(output_dir / "growth_ops" / "performance" / "wtt_content_experiments.json"))
+        attach_article_experiments(snapshot, _load_json(output_dir / "publish_history.json", expected_type=list))
         attach_content_income(snapshot, _load_json(output_dir / "growth_ops" / "performance" / "content_income_collection.json"), observed_at)
     except (OSError, ValueError, KeyError, RuntimeError) as exc:
         print(f"Toutiao growth snapshot unavailable: {type(exc).__name__}", file=sys.stderr)

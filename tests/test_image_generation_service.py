@@ -63,6 +63,24 @@ def _prepare_run(tmp_path: Path) -> Path:
     return run_dir
 
 
+def test_adaptive_cover_gate_ignores_legacy_title_calibration(app_settings, tmp_path, monkeypatch):
+    monkeypatch.setattr("toutiao_content_factory.services.image_generation_service.platform.system", lambda: "Windows")
+    run_dir = _prepare_run(tmp_path)
+    path = run_dir / "publish/publish_meta.json"
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    metadata["selected_title"] = "3家工厂公开设备测试条件，能用于哪些场景？"
+    path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+    app_settings.output_dir.mkdir(parents=True, exist_ok=True)
+    (app_settings.output_dir / "creative_score_calibration.json").write_text(
+        json.dumps({"signal_adjustments": {"number": 10, "question_gap": 10}}), encoding="utf-8")
+    object.__setattr__(app_settings.revenue_optimization, "adaptive_topic_selection", True)
+    service = ImageGenerationService(app_settings, logging.getLogger("adaptive-cover"))
+    monkeypatch.setattr(service, "_get_frontend_renderer", lambda: None)
+    result = service.generate_for_run(run_dir, include_infographics=False)
+    scores = json.loads(Path(result["title_cover_score"]).read_text(encoding="utf-8"))
+    assert scores["title"]["calibration_adjustment"] == 0
+
+
 def test_generate_for_run_writes_independent_evidence_backed_infographics(
     app_settings, tmp_path: Path, monkeypatch
 ) -> None:

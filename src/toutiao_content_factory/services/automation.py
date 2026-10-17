@@ -396,7 +396,7 @@ class TopicAutomationService:
         """
         source = str(getattr(topic, "source", "") or "").strip()
         source_type = str(getattr(topic, "source_type", "") or "").strip()
-        return source == "evergreen_pool" or source_type == "evergreen"
+        return source == "evergreen_pool" or source_type in {"evergreen", "court_case"}
 
     def _hydrate_with_fallback(
         self,
@@ -492,7 +492,7 @@ class TopicAutomationService:
             # Apply the same evidence gate instead of accepting them by length alone.
             if (
                 len(existing) >= self.MATERIAL_MIN_CHARS
-                and topic.source_type not in {"baidu_hot", "hot_board"}
+                and topic.source_type not in {"baidu_hot", "hot_board", "court_case"}
                 and not wechat
             ):
                 existing_bundle = MaterialBundle(
@@ -523,7 +523,8 @@ class TopicAutomationService:
                 min_body_chars=self.MATERIAL_MIN_BODY_CHARS,
                 cache_dir=None if regenerate else self.settings.output_dir / "growth_ops" / ("wechat_source_material_v7" if wechat else "source_material"),
                 source_url=str(topic.url or ""),
-                **({"deadline": deadline, "preserve_sources": True} if wechat else {}),
+                **({"deadline": deadline} if deadline is not None else {}),
+                **({"preserve_sources": True} if wechat else {}),
             )
         except Exception as exc:
             if wechat:
@@ -539,8 +540,22 @@ class TopicAutomationService:
                 len(bundle.sources),
             )
             return False
+        primary = None
         if wechat:
             bundle = self._scope_wechat_material(topic, bundle)
+        elif topic.source_type == "court_case":
+            # Only metadata bound to this exact fetched original supplies its date.
+            primary = next((source for source in bundle.usable
+                            if source.url == topic.url and source.date_verified is True
+                            and source.evidence_type == "article"), None)
+            try:
+                stamp = datetime.fromisoformat(primary.published_at.replace("Z", "+00:00"))
+                if stamp.date() > datetime.now().date():
+                    raise ValueError("Future court report date")
+            except (ValueError, TypeError, AttributeError):
+                self.logger.warning("[素材] 法院案例缺少对应原文及可核实发布日期：%s", title)
+                return False
+            topic.published_at = primary.published_at
         assessment = assess_material_evidence(bundle)
         topic._material_evidence_assessment = asdict(assessment)
         topic._retrieved_source_urls = [str(source.url or "") for source in bundle.usable
@@ -556,6 +571,8 @@ class TopicAutomationService:
             )
             return False
         body = bundle.combined_text.strip()
+        if topic.source_type == "court_case" and primary:
+            body = f"【原文发布日期：{stamp.year}年{stamp.month}月{stamp.day}日】\n{body}"
         topic.snippet = body
         # Keep this run-local marker separate from persisted search digests.
         topic._verified_source_material = True
@@ -1162,6 +1179,7 @@ class TopicAutomationService:
             "selected_topic": asdict(enriched_topic),
             "material_evidence": material_evidence,
             "selection_evidence": selection_evidence(topic),
+            "revenue_selection": topic.revenue_selection,
             "auto_input_text": input_text,
         }
         json_path.write_text(json.dumps(json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1334,6 +1352,7 @@ class TopicAutomationService:
             )
         return TopicCandidate(
             title=topic.title,
+            revenue_selection=dict(topic.revenue_selection),
             url=topic.url,
             source=topic.source,
             source_type=topic.source_type,
@@ -1801,6 +1820,13 @@ class TopicAutomationService:
 
     def _apply_revenue_policy(self, topics: list[TopicCandidate]) -> list[TopicCandidate]:
         """Remove only hard-stop buckets and move cooldown buckets behind healthy ones."""
+        from toutiao_content_factory.services.revenue_feedback import adaptive_selection_enabled, rank_revenue_topics
+        if adaptive_selection_enabled(self.settings):
+            try:
+                feedback = json.loads((self.settings.output_dir / "growth_feedback.json").read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                feedback = {}
+            return rank_revenue_topics(topics, self.settings, feedback, content_type="article")
         candidates = self._load_revenue_cooling_candidates()
         if not candidates:
             return topics
@@ -2021,6 +2047,9 @@ class TopicAutomationService:
         这样换赛道只需要改配置，不会再被硬编码挡住。
         """
         account_key = self.settings.account_key
+        from toutiao_content_factory.services.revenue_feedback import adaptive_selection_enabled
+        if adaptive_selection_enabled(self.settings):
+            return True  # Source/freshness/quality gates are independent of editorial fit.
         focus = {str(item).strip() for item in self.settings.topic_collection.focus_industries}
         is_hot_source = topic.source_type in {"hot_board", "baidu_hot"}
 

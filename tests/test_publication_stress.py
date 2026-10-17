@@ -35,9 +35,12 @@ def test_concurrent_cost_receipts_and_live_reads(tmp_path, record_property):
     settings = SimpleNamespace(output_dir=tmp_path, account_key="stress", platform="test")
     stop = threading.Event()
     live = []
+    live_read_seconds = []
     def read():
         while not stop.wait(.01):
+            started = time.monotonic()
             live.append(build_cost_summary(tmp_path))
+            live_read_seconds.append(time.monotonic() - started)
     def write(index):
         with GenerationCostAttempt(settings, None, kind="text", model="mock") as receipt:
             if index % 7 == 0:
@@ -51,7 +54,10 @@ def test_concurrent_cost_receipts_and_live_reads(tmp_path, record_property):
             list(pool.map(write, range(count)))
     finally:
         stop.set()
-        reader.join(timeout=10)
+        # A synchronous scan already in progress must finish before fixture
+        # teardown. Windows antivirus/file contention can make a1000-file scan
+        # exceed10s; this is cleanup allowance, not a production latency target.
+        reader.join(timeout=30)
     assert not reader.is_alive()
     summary = build_cost_summary(tmp_path)
     assert summary["recorded_calls"] == count and summary["invalid_receipts"] == 0
@@ -63,6 +69,7 @@ def test_concurrent_cost_receipts_and_live_reads(tmp_path, record_property):
     record_property("concurrent_receipts", count)
     record_property("writers", 32)
     record_property("live_reads", len(live))
+    record_property("max_live_read_seconds", round(max(live_read_seconds, default=0), 3))
     record_property("transient_receipt_read_errors", sum(row["invalid_receipts"] for row in live))
 
 

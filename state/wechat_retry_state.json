@@ -168,14 +168,30 @@
     "2026-10-17": {
       "runs": {
         "38990274792:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-17T01:19:09.659479+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 667.862,
+          "outcome": "draft_only",
+          "draft_delivery": {
+            "status": "saved",
+            "title": "芯片股暴跌12%，市场情绪转向谨慎",
+            "draft_media_id": "",
+            "app_msg_id": "100001408"
+          }
         }
       },
       "dispatches": {},
-      "failed_inputs": []
+      "failed_inputs": [
+        {
+          "fingerprint": "be7655721448d4db231f257f25060ad1beae4a3477a2e200503ac122098a955f",
+          "source_fingerprint": "b121184567031282b96bd824c376a53e5180ffbe2ffc713098e301de2a94ae4a",
+          "requirements": [
+            "在段落中删除或修改绝对化表述，如'绝对'和'完全'，以符合行业动态文章的客观性要求。",
+            "在文章结尾明确指出哪个应用条件最值得继续观察，以符合写作前委员会摘要的要求。"
+          ]
+        }
+      ]
     }
   }
 }

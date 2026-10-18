@@ -156,10 +156,12 @@
     "2026-10-18": {
       "runs": {
         "39084908859:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-18T01:01:55.332783+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 9.06,
+          "outcome": "publish_login_required",
+          "draft_delivery": {}
         }
       },
       "dispatches": {},

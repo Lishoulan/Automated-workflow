@@ -9,11 +9,16 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from toutiao_content_factory.services.content_income_service import platform_item_id
 from toutiao_content_factory.services.generation_cost_service import build_cost_summary
+from toutiao_content_factory.services.revenue_feedback import (
+    MIN_IMPRESSIONS, MIN_SAMPLES, SELECTION_PROTOCOL, TRIAL_DIRECTIONS, build_revenue_feedback,
+)
 
 
 class RevenueExperimentService:
@@ -232,6 +237,8 @@ class RevenueExperimentService:
             "per_content_attribution": attribution,
             "content_income_collection": self._load_json(self.output_dir / "growth_ops" / "performance" / "content_income_collection.json"),
             "experiment": experiment,
+            "operating_trial": self.build_operating_report(
+                growth_snapshot, self._load_json(self.output_dir / "growth_checkpoints.json")),
             "feedback": {
                 "sample_count": int(growth_feedback.get("sample_count", 0) or 0),
                 "checkpoint_used": str(growth_feedback.get("checkpoint_used", "")),
@@ -247,6 +254,171 @@ class RevenueExperimentService:
                 "Account-level daily income is never distributed across posts by estimation."
             ),
         }
+
+    def build_operating_report(self, snapshot: dict, checkpoints: dict) -> dict:
+        """Use the existing report and captured ledger; never enroll older work."""
+        from toutiao_content_factory.services.reader_value_experiment import qualified_checkpoint_sample
+
+        trial = snapshot.get("operating_trial") or {}
+        if snapshot.get("account") != "robot_notes" or not trial:
+            return {}
+
+        def stamp(value):
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError("Operating observations require a timezone")
+            return parsed
+
+        try:
+            start, end, observed = map(stamp, (trial["started_at"], trial["ends_at"], snapshot["observed_at"]))
+            if (end - start != timedelta(days=30) or set(trial["directions"]) != set(TRIAL_DIRECTIONS)
+                    or not trial.get("id") or not trial.get("body_structure")):
+                raise ValueError("Invalid operating window")
+        except (KeyError, TypeError, ValueError):
+            return {"status": "invalid_trial", "net_profit": None, "works": []}
+        ledger = checkpoints.get("works", {}) if isinstance(checkpoints, dict) else {}
+        works = [w for w in snapshot.get("works", []) if isinstance(w, dict)]
+        # Keep prospective works when the platform's rolling feed drops them.
+        # These remain dated observations, never current counters synthesized.
+        present = {str(w.get("gid")) for w in works}
+        for gid, entry in ledger.items():
+            if (gid not in present and isinstance(entry, dict)
+                    and (entry.get("content_experiment") or {}).get("trial_id") == trial["id"]):
+                works.append({**entry, **(entry.get("latest") or {}), **(entry.get("income") or {})})
+        duplicate_ids = {gid for gid, n in Counter(str(w.get("gid")) for w in works).items() if n > 1}
+        enrolled = []
+        for work in works:
+            exp = work.get("content_experiment") or {}
+            try:
+                if (work.get("gid") and str(work["gid"]) not in duplicate_ids
+                        and exp.get("trial_id") == trial["id"]
+                        and start <= stamp(work["created_at"]) < end and stamp(work["created_at"]) <= observed):
+                    enrolled.append(work)
+            except (KeyError, TypeError, ValueError):
+                continue
+        owners = Counter((w.get("content_lineage") or {}).get("content_attempt_id", "") for w in enrolled)
+        window = {"now": observed, "since": start, "until": end, "account_key": "robot_notes"}
+        costs = build_cost_summary(self.output_dir, **window)
+        rows, comparable, allocated = [], [], set()
+        for work in enrolled:
+            gid, exp = str(work["gid"]), work.get("content_experiment") or {}
+            lineage = work.get("content_lineage") or {}
+            entry = ledger.get(gid, {})
+            captured_identity = (all(entry.get(k) == work.get(k) for k in ("gid", "type", "title", "created_at"))
+                                 and entry.get("content_experiment") == exp and entry.get("content_lineage", {}) == lineage)
+            attempt_id = lineage.get("content_attempt_id", "")
+            link_status = ("capture_identity_changed" if not captured_identity else
+                           "ambiguous_attempt" if attempt_id and owners[attempt_id] != 1 else
+                           "missing_attempt" if not isinstance(attempt_id, str) or not re.fullmatch(r"[a-f0-9]{32}", attempt_id)
+                           else "exact_attempt")
+            work_cost = {"status": "unlinked", "actual_total": None, "actual_currency": None, "event_ids": []}
+            if link_status == "exact_attempt":
+                work_cost = build_cost_summary(self.output_dir, content_attempt_id=attempt_id, **window)
+                if any(c["content_trial_id"] != trial["id"] for c in work_cost["calls"]):
+                    work_cost = {"status": "scope_conflict", "actual_total": None, "actual_currency": None, "event_ids": []}
+                    link_status = "cost_scope_changed"
+                allocated.update(work_cost["event_ids"])
+            money = {"amount": None, "currency": "CNY", "as_of_date": None, "scope": None,
+                     "source": None, "status": "unknown", "cash_received": None}
+            try:
+                ready = stamp(work["revenue_as_of_date"] + "T00:00:00+08:00").date()
+                if (self._valid_amount(work.get("platform_revenue")) and work.get("revenue_amount_known") is True
+                        and work.get("platform_revenue_status") == "available" and work.get("revenue_gid") == gid
+                        and work.get("revenue_source") == "/mp/agw/statistic/v2/toutiao_income/article_income"
+                        and work.get("revenue_scope") == "cumulative_through_ready_date"
+                        and stamp(work["created_at"]).date() <= ready < observed.date()):
+                    money.update(amount=work["platform_revenue"], as_of_date=ready.isoformat(),
+                                 source=work["revenue_source"], scope=work["revenue_scope"], status="platform_accounted")
+            except (KeyError, ValueError, TypeError):
+                pass
+            samples = {}
+            for label in ("24h", "72h"):
+                try:
+                    samples[label] = qualified_checkpoint_sample(entry, label, work=work, observed=observed) if captured_identity else None
+                except (KeyError, ValueError, TypeError):
+                    samples[label] = None
+            if captured_identity:
+                comparable.append(work)
+            amount, actual = money["amount"], work_cost["actual_total"]
+            contribution = (round(amount - actual, 6) if amount is not None and actual is not None
+                            and work_cost["actual_currency"] == "CNY" else None)
+            rows.append({"gid": gid, "topic_title": lineage.get("topic_title") or None,
+                         "source_url": lineage.get("source_url") or None, "title": work.get("title"),
+                         "format": work.get("type"), "published_at": work["created_at"],
+                         "content_experiment": exp, "content_attempt_id": attempt_id or None,
+                         "counters_observed_at": work.get("last_observed_at", snapshot["observed_at"]),
+                         "impressions": work.get("impressions"), "reads": work.get("reads"), "comments": work.get("comments"),
+                         "interactions": {"comments": work.get("comments"), "likes": None, "shares": None, "favorites": None},
+                         "checkpoints": samples, "income": money, "cost_link_status": link_status,
+                         "generation_costs": work_cost, "verified_direct_contribution": contribution,
+                         "net_profit": None})
+        elapsed = max(0, int((observed - start).total_seconds() // 86400))
+        reviews = [day for day in (7, 14, 21, 28, 30) if day <= elapsed]
+        review_day = max(reviews, default=0)
+        cutoff = start + timedelta(days=review_day)
+        review_snapshot = {**snapshot, "works": comparable, "observed_at": cutoff.isoformat()}
+        feedback = build_revenue_feedback(review_snapshot, checkpoints)
+        recommendations = self._opening_recommendations(feedback.get("groups", []), trial) if review_day else []
+        evidence = [f"{g['format']}/{g['category']}/{g['variant']}/{g['checkpoint']}："
+                    f"{g['samples']}篇，{g['impressions']}展现、{g['reads']}阅读，单篇阅读中位数{g['median_reads']}"
+                    for g in feedback.get("groups", [])]
+        income_known = [r for r in rows if r["income"]["amount"] is not None]
+        paid = [r["gid"] for r in income_known if r["income"]["amount"] > 0]
+        known_weak = [g for g in feedback.get("groups", []) if g.get("status") == "comparable"]
+        decision = ("change_direction_or_stop" if observed >= end and known_weak
+                    and all(g["reads"] == 0 for g in known_weak) else "do_not_expand_unproven")
+        answers = {
+            "readership": "；".join(evidence) + "。不足15篇/1000展现时不能判断方向优劣。" if evidence else "尚无合格24/72小时样本，不能判断哪个方向得到阅读。",
+            "writing": ("开头存在同口径描述性改善，尚不证明因果；正文结构没有同口径对照。" if recommendations
+                        else "标题/开头与正文结构的改善尚未获有效样本验证。"),
+            "settled_income": f"取得单篇平台入账记录{len(income_known)}/{len(rows)}篇；正收入作品ID：{paid}。具体方向、金额和截止日见逐篇记录；账号日收入不分摊。",
+            "net_value": "全部相关扣费、其他成本与同期间收益未完整核实，净收益未知。",
+            "decision": ("成熟且可比较的组仍无阅读，建议改变内容方向或停止投入；不自动增加预算。" if decision == "change_direction_or_stop"
+                         else "暂不扩大投入；先补齐有效阅读与结算/成本证据，再决定改变方向或停止。"),
+        }
+        return {"schema": 1, "account": "robot_notes", "trial_id": trial["id"],
+                "body_structure": trial["body_structure"],
+                "started_at": start.isoformat(), "ends_at": end.isoformat(), "observed_at": observed.isoformat(),
+                "status": "closing_review" if observed >= end else "exploring", "elapsed_days": elapsed,
+                "works": rows, "generation_costs": costs,
+                "unallocated_cost_event_ids": sorted(set(costs["event_ids"]) - allocated),
+                "known_content_income_subtotal": round(sum(r["income"]["amount"] for r in income_known), 6) if income_known else None,
+                "content_income_complete": bool(rows) and len(income_known) == len(rows), "paying_gids": paid,
+                "net_profit": None, "decision": decision, "closing_answers": answers,
+                "weekly_review": {"due_days": reviews, "review_day": review_day,
+                    "evidence_cutoff": cutoff.isoformat(), "groups": feedback.get("groups", []),
+                    "opening_recommendations": recommendations, "causal_claim": False,
+                    "next_review_at": (start + timedelta(days=next((d for d in (7, 14, 21, 28, 30) if d > elapsed), 30))).isoformat()},
+                "cost_scope": "Only recorded, matched generation charges; rejected/unpublished calls remain unallocated. Other/unrecorded costs and full net profit are unknown."}
+
+    @staticmethod
+    def _opening_recommendations(groups, trial):
+        contexts = defaultdict(dict)
+        for group in groups:
+            if (group.get("format") == "weitoutiao" and group.get("trial_id") == trial["id"]
+                    and group.get("body_structure") == trial["body_structure"]
+                    and group.get("category") in TRIAL_DIRECTIONS
+                    and group.get("experiment_id") == "story_opening_v1" and group.get("protocol_version") == 4
+                    and group.get("selection_protocol") == SELECTION_PROTOCOL
+                    and group.get("status") == "comparable" and group.get("samples", 0) >= MIN_SAMPLES
+                    and group.get("impressions", 0) >= MIN_IMPRESSIONS):
+                contexts[(group["category"], group["checkpoint"])][group["variant"]] = group
+        result = []
+        for category in TRIAL_DIRECTIONS:
+            for label in ("72h", "24h"):
+                peers = contexts.get((category, label), {})
+                if set(peers) != {"result_first", "situation_first"}:
+                    continue
+                for variant, preferred in peers.items():
+                    other = peers["situation_first" if variant == "result_first" else "result_first"]
+                    if (preferred["read_rate_pct"] > other["read_rate_pct"] and preferred["median_reads"] > other["median_reads"]
+                            and preferred["median_impressions"] >= other["median_impressions"]):
+                        result.append({"category": category, "checkpoint": label, "preferred_variant": variant,
+                                       "gids": preferred["gids"], "comparison_gids": other["gids"],
+                                       "causal_claim": False, "profitability_verified": False,
+                                       "action": "prefer_4_of_5_keep_exploration"})
+                break  # A complete72h comparison owns the decision, even without a winner.
+        return result
 
     def render_markdown(self, dashboard: dict[str, Any]) -> str:
         readiness = dashboard.get("readiness") or {}
@@ -293,6 +465,24 @@ class RevenueExperimentService:
         lines.extend(["", "## 下一步动作"])
         for action in experiment.get("next_actions", []):
             lines.append(f"- {action}")
+        operating = dashboard.get("operating_trial") or {}
+        if operating.get("trial_id"):
+            lines.extend(["", "## 两方向真实作品经营记录", "",
+                f"- 实验：{operating['trial_id']}；{operating['started_at']}～{operating['ends_at']}；状态{operating['status']}。",
+                "- 平台入账、提现到账、已核实生成成本与全成本净收益分开记录；未知金额不按零计算。",
+                "", "| 作品ID | 方向/开头 | 发布 | 展现/阅读 | 24h阅读 | 72h阅读 | 单篇入账/截至 | 实际生成成本 |",
+                "|---|---|---|---:|---:|---:|---|---|"])
+            for row in operating["works"]:
+                exp, money, cost = row["content_experiment"], row["income"], row["generation_costs"]
+                first, last = row["checkpoints"]["24h"], row["checkpoints"]["72h"]
+                lines.append(f"| {row['gid']} | {exp.get('category')}/{exp.get('variant')} | {row['published_at']} | "
+                    f"{row['impressions']}/{row['reads']} | {first['reads'] if first else '未取得有效样本'} | "
+                    f"{last['reads'] if last else '未取得有效样本'} | {self._money(money['amount'])}/{money['as_of_date'] or '未知'} | "
+                    f"{cost['actual_total'] if cost['actual_total'] is not None else '未知'} {cost.get('actual_currency') or ''} |")
+            lines.extend(["", f"- 已到复盘节点：{operating['weekly_review']['due_days']}；"
+                f"下次节点：{operating['weekly_review']['next_review_at']}。"])
+            for question, answer in operating["closing_answers"].items():
+                lines.append(f"- {question}：{answer}")
         blockers = readiness.get("blockers") or []
         warnings = readiness.get("warnings") or []
         if blockers or warnings:

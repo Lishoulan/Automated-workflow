@@ -77,12 +77,16 @@ def attach_opening_experiments(snapshot: dict, experiments: dict) -> None:
         if len(candidates) == 1:
             key, record = candidates[0]
             matches.setdefault(key, []).append((work, record))
-    for group in matches.values():
+    for key, group in matches.items():
         if len(group) == 1:
             work, record = group[0]
             work["content_experiment"] = {
-                k: record[k] for k in ("id", "variable", "variant", "protocol_version", "selection_protocol", "category") if k in record
+                k: record[k] for k in ("id", "variable", "variant", "protocol_version", "selection_protocol", "category",
+                                      "trial_id", "body_structure") if k in record
             }
+            lineage = {k: record[k] for k in ("topic_title", "source_url", "content_attempt_id") if k in record}
+            if lineage:
+                work["content_lineage"] = {"run_key": key, **lineage}
 
 
 def attach_article_experiments(snapshot: dict, history: list) -> None:
@@ -144,7 +148,8 @@ def attach_content_income(snapshot: dict, income_report: dict, observed_at: date
         except (KeyError, ValueError, TypeError):
             continue
         work.update(platform_revenue=amount, platform_revenue_status="available", revenue_amount_known=True,
-                    revenue_as_of_date=ready.isoformat(), revenue_scope=row["scope"])
+                    revenue_as_of_date=ready.isoformat(), revenue_scope=row["scope"],
+                    revenue_gid=str(row["gid"]), revenue_source=row["source"])
 
 
 def _counter(stat: dict, label: str, fallback: str) -> int:
@@ -246,6 +251,12 @@ def update_checkpoints(
         if isinstance(experiment, dict) and (not entry.get("checkpoints")
                 or entry.get("content_experiment") == experiment):
             entry["content_experiment"] = dict(experiment)
+        lineage = work.get("content_lineage")
+        if isinstance(lineage, dict) and (not entry.get("checkpoints") or entry.get("content_lineage") == lineage):
+            entry["content_lineage"] = dict(lineage)
+        if work.get("revenue_amount_known") is True:
+            entry["income"] = {k: work[k] for k in ("platform_revenue", "platform_revenue_status", "revenue_amount_known",
+                "revenue_gid", "revenue_source", "revenue_as_of_date", "revenue_scope") if k in work}
         # Captured measurements retain their original assignment (including
         # unassigned). A later category/variant/policy change cannot relabel
         # them; snapshot/entry mismatch excludes them from adaptive feedback.
@@ -473,6 +484,11 @@ def main() -> int:
         )
         snapshot = build_snapshot(contents, observed_at, args.days)
         snapshot["account"] = args.account
+        from toutiao_content_factory.config import load_settings
+        from toutiao_content_factory.services.revenue_feedback import operating_trial
+        trial = operating_trial(load_settings(ROOT, account_key=args.account))
+        if trial:
+            snapshot["operating_trial"] = trial
         attach_opening_experiments(snapshot, _load_json(output_dir / "growth_ops" / "performance" / "wtt_content_experiments.json"))
         attach_article_experiments(snapshot, _load_json(output_dir / "publish_history.json", expected_type=list))
         attach_content_income(snapshot, _load_json(output_dir / "growth_ops" / "performance" / "content_income_collection.json"), observed_at)

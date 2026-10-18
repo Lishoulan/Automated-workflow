@@ -6,7 +6,7 @@
 
 **Architecture:** Extend the existing account-specific revenue policy, submission ledger, cost receipts and revenue report. The current scheduled production run has already yielded work1879355709157440; preserve that record and all prior evidence. No new agents, dashboards, queues or publication frequency.
 
-**Tech Stack:** Existing Python dataclasses/JSON, pytest isolation guard, GitHub Actions unchanged.
+**Tech Stack:** Existing Python dataclasses/JSON, pytest isolation guard, existing GitHub Actions. Skip the unrecorded diagnostic model ping for robot_notes; all schedules and permissions stay unchanged.
 
 **Spec:** `E:/Agent/.runtime/robot-notes-30d-20261018/operating-spec.md`, based on the user's seven operating requirements.
 

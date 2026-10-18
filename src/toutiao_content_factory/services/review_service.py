@@ -259,8 +259,13 @@ class ReviewWorkflowService:
             meta_payload["content_experiment"] = {
                 "id": "article_title_v1", "variable": "title_pattern", "protocol_version": 1,
                 "variant": selected_topic.title_variant or "source_bound_title",
-                "selection_protocol": SELECTION_PROTOCOL, "category": topic_category(selected_topic),
+                "selection_protocol": SELECTION_PROTOCOL,
+                "category": (selected_topic.revenue_selection or {}).get("category") or topic_category(selected_topic),
             }
+            selection = selected_topic.revenue_selection or {}
+            if selection.get("trial_enrolled"):
+                meta_payload["content_experiment"].update(
+                    trial_id=selection["trial_id"], body_structure="article_existing_v1")
         topic_title_text = str(selected_topic_payload.get("title", ""))
         content_intent = str(selected_topic_payload.get("commercial_intent", "")).strip() or "medium"
         content_mix_value = str(selected_topic_payload.get("content_mix", "")).strip() or "professional"

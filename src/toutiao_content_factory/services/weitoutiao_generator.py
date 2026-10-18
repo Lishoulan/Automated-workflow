@@ -35,7 +35,7 @@ from toutiao_content_factory.services.topic_selection_evidence import selection_
 from toutiao_content_factory.services.reader_value_service import story_reader_fit, build_reader_brief, generic_padding_reason
 from toutiao_content_factory.services.generation_cost_service import content_cost_scope
 from toutiao_content_factory.services.revenue_feedback import (
-    SELECTION_PROTOCOL, adaptive_selection_enabled, rank_revenue_topics, topic_category,
+    MIN_SAMPLES, SELECTION_PROTOCOL, adaptive_selection_enabled, operating_trial, rank_revenue_topics, topic_category,
 )
 from toutiao_content_factory.services.story_source_service import StorySourceService
 
@@ -411,6 +411,31 @@ class WeiToutiaoStandaloneGenerator:
             if isinstance(record, dict) and record.get("variant") in counts and record.get("protocol_version", 1) == STORY_OPENING_PROTOCOL_VERSION:
                 counts[record["variant"]] += 1
         variant = min(counts, key=counts.get)
+        if trial_id and adaptive:
+            trial = operating_trial(self.settings)
+            report_path = self.settings.output_dir / "growth_ops/revenue_experiment/revenue_30d_dashboard.json"
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))["operating_trial"]
+                now = datetime.now().astimezone()
+                observed = datetime.fromisoformat(report["observed_at"])
+                review = report["weekly_review"]
+                cutoff = datetime.fromisoformat(review["evidence_cutoff"])
+                if (report["account"] == self.settings.account_key and report["trial_id"] == trial_id == trial["id"]
+                        and report["body_structure"] == body_structure == trial["body_structure"]
+                        and datetime.fromisoformat(trial["started_at"]) <= now < datetime.fromisoformat(trial["ends_at"])
+                        and observed.tzinfo and 0 <= (now - observed).total_seconds() <= 36 * 3600
+                        and cutoff.tzinfo and cutoff <= observed and review["review_day"] in {7, 14, 21, 28, 30}):
+                    for recommendation in review["opening_recommendations"]:
+                        chosen = recommendation.get("preferred_variant")
+                        gids, compared = recommendation.get("gids", []), recommendation.get("comparison_gids", [])
+                        if (recommendation.get("category") == category and recommendation.get("checkpoint") in {"24h", "72h"}
+                                and chosen in counts and len(set(gids)) >= MIN_SAMPLES and len(set(compared)) >= MIN_SAMPLES
+                                and not set(gids).intersection(compared)):
+                            other = "situation_first" if chosen == "result_first" else "result_first"
+                            variant = other if sum(counts.values()) % 5 == 4 else chosen
+                            break
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                pass  # Missing, stale or incompatible evidence keeps balanced exploration.
         return {"id": "story_opening_v1", "variable": "opening_order", "variant": variant,
                 "protocol_version": STORY_OPENING_PROTOCOL_VERSION,
                 **({"trial_id": trial_id, "body_structure": body_structure} if trial_id else {}),
@@ -1291,6 +1316,9 @@ class WeiToutiaoStandaloneGenerator:
                         ledger = {"schema": 1, "records": {}}
                     ledger["records"][run_dir.name] = {
                         **experiment, "title": meta["selected_title"],
+                        "topic_title": (meta.get("generation_cost_context") or {}).get("topic_title", ""),
+                        "source_url": (meta.get("generation_cost_context") or {}).get("source_url", ""),
+                        "content_attempt_id": (meta.get("generation_cost_context") or {}).get("content_attempt_id", ""),
                         "submitted_opening": str(payload.get("submitted_opening") or ""),
                         "submitted_at": str(payload.get("published_at") or datetime.now().astimezone().isoformat()),
                         "status": str(payload["status"]),

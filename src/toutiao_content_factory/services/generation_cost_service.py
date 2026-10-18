@@ -128,12 +128,16 @@ class GenerationCostAttempt:
         self._save()
 
 
-def build_cost_summary(output_dir, *, now=None, days=30):
+def build_cost_summary(output_dir, *, now=None, days=30, since=None, until=None,
+                       account_key=None, content_attempt_id=None):
     now = now or datetime.now(BEIJING)
     if now.tzinfo is None:
         now = now.replace(tzinfo=BEIJING)
+    lower = since if since is not None else now - timedelta(days=days)
+    if lower.tzinfo is None or until is not None and until.tzinfo is None:
+        raise ValueError("Cost window needs timezone-aware bounds")
     rows, invalid = [], 0
-    for path in (Path(output_dir) / "growth_ops/generation_costs/events").glob("*.json"):
+    for path in sorted((Path(output_dir) / "growth_ops/generation_costs/events").glob("*.json")):
         try:
             row = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(row, dict):
@@ -145,7 +149,11 @@ def build_cost_summary(output_dir, *, now=None, days=30):
                 raise ValueError("Invalid cost receipt categories")
             if row.get("estimated_currency") is not None and not isinstance(row["estimated_currency"], str):
                 raise ValueError("Invalid cost receipt currency")
-            if now - timedelta(days=days) <= stamp <= now:
+            if account_key is not None and row.get("account_key") != account_key:
+                continue
+            if content_attempt_id is not None and row.get("content_attempt_id") != content_attempt_id:
+                continue
+            if lower <= stamp <= now and (until is None or stamp < until):
                 rows.append(row)
         except (OSError, ValueError, KeyError, TypeError):
             invalid += 1
@@ -169,6 +177,10 @@ def build_cost_summary(output_dir, *, now=None, days=30):
     complete = bool(rows) and verified == len(rows) and invalid == 0 and not actual_errors
     return {
         "schema": 1, "window_days": days, "recorded_calls": len(rows), "invalid_receipts": invalid,
+        "window_start": lower.isoformat(), "window_end_exclusive": until.isoformat() if until else None,
+        "event_ids": [row["event_id"] for row in rows],
+        "calls": [{key: row.get(key) for key in ("event_id", "content_attempt_id", "content_trial_id",
+                   "account_key", "kind", "status", "provider_request_id")} for row in rows],
         "aggregation_errors": aggregation_errors,
         "status": ("tracked_cost_verified" if complete else "actual_cost_partially_verified" if verified
                    else "actual_cost_unverified" if rows else "untracked"),

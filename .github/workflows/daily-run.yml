@@ -575,7 +575,7 @@ jobs:
           PY
 
       - name: Probe LLM endpoint
-        if: env.RUN_COLLECTION_ONLY != 'true'
+        if: env.RUN_COLLECTION_ONLY != 'true' && env.RUN_ACCOUNT != 'robot_notes'
         # 云端最隐蔽的故障模式：接口返回 HTTP 200，但 message.content 是一张 HTML 页面，
         # 于是每个 Agent 都静默退化成「本地兜底策略」，最终以
         # "Daily workflow did not produce any runnable candidates" 收场——

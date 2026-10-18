@@ -77,6 +77,41 @@ def test_trial_defaults_do_not_restrict_other_accounts_or_wechat(app_settings):
         assert "trial_id" not in result[0].revenue_selection
 
 
+@pytest.mark.parametrize("when", [datetime(2026, 10, 17, 23, 59, tzinfo=NOW.tzinfo),
+                                  datetime(2026, 11, 17, 0, 0, 1, tzinfo=NOW.tzinfo)])
+def test_trial_does_not_filter_or_tag_work_outside_enrollment(app_settings, when):
+    settings = enabled(app_settings)
+    candidates = [topic("法院审理继承纠纷，明确共有份额"), topic("消费者申请退款，核对交付记录")]
+    ranked = policy.rank_revenue_topics(candidates, settings, {}, content_type="weitoutiao", now=when)
+    assert len(ranked) == 2
+    assert all("trial_id" not in item.revenue_selection for item in ranked)
+    # The configured spec remains available for closing the report.
+    assert policy.operating_trial(settings)["id"] == TRIAL["id"]
+
+
+def test_generation_crossing_trial_end_does_not_keep_stale_assignment(app_settings, monkeypatch):
+    from toutiao_content_factory.services import weitoutiao_generator as module
+    settings = enabled(app_settings)
+    end = datetime(2026, 11, 17, tzinfo=NOW.tzinfo)
+    candidate = topic("消费者申请退款，核对交付记录")
+    policy.rank_revenue_topics([candidate], settings, {}, content_type="weitoutiao", now=end - timedelta(seconds=1))
+    assert candidate.revenue_selection["trial_enrolled"] is True
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return end.astimezone(tz) if tz else end
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    generator = module.WeiToutiaoStandaloneGenerator(settings, MagicMock())
+    generator.openai_service.create_text_completion = MagicMock(return_value="已披露的交付记录与服务约定存在区别。" * 20)
+    generator.generate_content(candidate, "hot_comment")
+    assert not candidate._generation_cost_context["trial_id"]
+    assert "本轮经营结构" not in generator.openai_service.create_text_completion.call_args.kwargs["user_prompt"]
+    assignment = generator._opening_experiment(category="consumer_practical", trial_id=TRIAL["id"], body_structure=policy.TRIAL_BODY_STRUCTURE)
+    assert "trial_id" not in assignment
+
+
 @pytest.mark.parametrize("bad", [{"id": "trial"}, {**TRIAL, "started_at": "2026-10-18"},
                                 {**TRIAL, "directions": ["entertainment"]}])
 def test_invalid_config_cannot_silently_start_an_uncontrolled_trial(app_settings, bad):
@@ -143,11 +178,19 @@ def test_full_real_draft_is_flagged_but_concrete_fact_distinction_remains_usable
     assert generic_padding_reason(useful) == ""
 
 
-def test_free_cover_trial_never_attempts_paid_api_and_keeps_candidate_ownership(app_settings, logger, tmp_path, monkeypatch):
+@pytest.mark.parametrize("active", [True, False])
+def test_free_cover_trial_never_attempts_paid_api_and_keeps_candidate_ownership(app_settings, logger, tmp_path, monkeypatch, active):
     from concurrent.futures import ThreadPoolExecutor
     from PIL import Image
     from toutiao_content_factory.services.image_generation_service import ImageGenerationService
     from toutiao_content_factory.services import wechat_cloud_cover
+    from toutiao_content_factory.services import image_generation_service as module
+    instant = NOW if active else datetime(2026, 11, 17, tzinfo=NOW.tzinfo)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant.astimezone(tz) if tz else instant
+    monkeypatch.setattr(module, "datetime", Clock)
     settings = enabled(app_settings)
     package = tmp_path / "candidate"
     publish = package / settings.review.publish_dirname
@@ -166,9 +209,12 @@ def test_free_cover_trial_never_attempts_paid_api_and_keeps_candidate_ownership(
     with ThreadPoolExecutor(max_workers=1) as executor:
         image = executor.submit(service.generate_weitoutiao_image, package, "消费者申请退款，服务是否交付需看已披露的具体记录。另一项约定与已确认的结果仍有区别。").result(timeout=10)
     assert image.is_file()
-    service._generate_api_image.assert_not_called()
+    if active:
+        service._generate_api_image.assert_not_called()
+    else:
+        service._generate_api_image.assert_called_once()  # existing routing restored at exact end
     report = json.loads((publish / "weitoutiao_image_result.json").read_text())
-    assert report["api_attempted"] is False and report["backend"] == "cloudflare_flux"
+    assert report["api_attempted"] is (not active) and report["backend"] == "cloudflare_flux"
     rows = [json.loads(p.read_text()) for p in (settings.output_dir / "growth_ops/generation_costs/events").glob("*.json")]
     assert len(rows) == 1 and rows[0]["content_attempt_id"] == "b" * 32
     assert rows[0]["actual_amount"] is None

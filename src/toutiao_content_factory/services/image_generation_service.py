@@ -339,7 +339,8 @@ class ImageGenerationService:
     def _generate_weitoutiao_image(self, run_dir: Path, content: str) -> Path | None:
         """Prefer one body-derived AI illustration, then a precise local card."""
         from toutiao_content_factory.services.revenue_feedback import operating_trial
-        api_requested = self._api_backend_requested() and not operating_trial(self.settings).get("free_cover_only", False)
+        api_requested = self._api_backend_requested() and not operating_trial(
+            self.settings, now=datetime.now().astimezone()).get("free_cover_only", False)
         paragraphs = self._article_paragraphs(content)
         destination = run_dir / self.settings.review.publish_dirname / "images" / "weitoutiao.png"
         destination.parent.mkdir(parents=True, exist_ok=True)

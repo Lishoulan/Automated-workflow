@@ -395,6 +395,8 @@ class WeiToutiaoStandaloneGenerator:
     # ── 写作 ──────────────────────────────────────────────
 
     def _opening_experiment(self, *, category: str = "", trial_id: str = "", body_structure: str = "") -> dict[str, Any]:
+        if trial_id and operating_trial(self.settings, now=datetime.now().astimezone()).get("id") != trial_id:
+            trial_id, body_structure = "", ""
         path = self.settings.output_dir / "growth_ops" / "performance" / "wtt_content_experiments.json"
         try:
             ledger = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -413,9 +415,8 @@ class WeiToutiaoStandaloneGenerator:
         variant = min(counts, key=counts.get)
         if trial_id and adaptive:
             trial = operating_trial(self.settings)
-            report_path = self.settings.output_dir / "growth_ops/revenue_experiment/revenue_30d_dashboard.json"
             try:
-                report = json.loads(report_path.read_text(encoding="utf-8"))["operating_trial"]
+                report = self._load_growth_feedback()["operating_trial"]
                 now = datetime.now().astimezone()
                 observed = datetime.fromisoformat(report["observed_at"])
                 review = report["weekly_review"]
@@ -450,6 +451,11 @@ class WeiToutiaoStandaloneGenerator:
         topic._content_experiment = {}
         topic._reader_value_brief = {}
         selection = topic.revenue_selection or {}
+        if selection.get("trial_id"):
+            current = operating_trial(self.settings, now=datetime.now().astimezone())
+            if current.get("id") != selection["trial_id"] or selection.get("trial_enrolled") is not True:
+                selection = {key: value for key, value in selection.items()
+                             if key not in {"trial_id", "trial_started_at", "trial_ends_at", "body_structure", "trial_enrolled"}}
         topic._generation_cost_context = {"account_key": self.settings.account_key, "content_attempt_id": uuid.uuid4().hex,
             "topic_title": topic.title, "source_url": topic.url, "trial_id": selection.get("trial_id", ""),
             "direction": selection.get("category", ""), "body_structure": selection.get("body_structure", "")}

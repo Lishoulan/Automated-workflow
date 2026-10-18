@@ -339,9 +339,6 @@ class RevenueExperimentService:
                     samples[label] = None
             if captured_identity:
                 comparable.append(work)
-            amount, actual = money["amount"], work_cost["actual_total"]
-            contribution = (round(amount - actual, 6) if amount is not None and actual is not None
-                            and work_cost["actual_currency"] == "CNY" else None)
             rows.append({"gid": gid, "topic_title": lineage.get("topic_title") or None,
                          "source_url": lineage.get("source_url") or None, "title": work.get("title"),
                          "format": work.get("type"), "published_at": work["created_at"],
@@ -350,7 +347,8 @@ class RevenueExperimentService:
                          "impressions": work.get("impressions"), "reads": work.get("reads"), "comments": work.get("comments"),
                          "interactions": {"comments": work.get("comments"), "likes": None, "shares": None, "favorites": None},
                          "checkpoints": samples, "income": money, "cost_link_status": link_status,
-                         "generation_costs": work_cost, "verified_direct_contribution": contribution,
+                         "generation_costs": work_cost, "verified_direct_contribution": None,
+                         "cost_coverage": "recorded_receipts_only_no_complete_attempt_reconciliation",
                          "net_profit": None})
         elapsed = max(0, int((observed - start).total_seconds() // 86400))
         reviews = [day for day in (7, 14, 21, 28, 30) if day <= elapsed]

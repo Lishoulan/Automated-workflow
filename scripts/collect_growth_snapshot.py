@@ -523,7 +523,6 @@ def main() -> int:
         generated_at=observed_at.isoformat(timespec="seconds"),
         reader_value_batch=reader_batch,
     )
-    growth_outputs = write_growth_outputs(output_dir, feedback)
     revenue_outputs = RevenueExperimentService(
         output_dir,
         logging.getLogger("revenue_experiment"),
@@ -531,6 +530,13 @@ def main() -> int:
         growth_snapshot=snapshot,
         growth_feedback=feedback,
     )
+    operating = _load_json(revenue_outputs["dashboard"]).get("operating_trial") or {}
+    if operating.get("trial_id"):
+        # This file is already preserved by both Actions cache lists. Keep the
+        # cache paths/version stable so earlier checkpoints/history survive.
+        feedback["operating_trial"] = {key: operating[key] for key in (
+            "account", "trial_id", "body_structure", "started_at", "ends_at", "observed_at", "weekly_review")}
+    growth_outputs = write_growth_outputs(output_dir, feedback)
     print(f"Growth snapshot: {target}")
     print(
         "Growth checkpoints: "

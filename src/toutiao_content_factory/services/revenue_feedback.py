@@ -39,8 +39,8 @@ def _time(value):
     return stamp
 
 
-def operating_trial(settings):
-    """An account-scoped editorial experiment, never source approval."""
+def operating_trial(settings, *, now=None):
+    """Configured reporting spec; with now, active enrollment only. Never approval."""
     raw = getattr(getattr(settings, "revenue_optimization", None), "operating_trial", {})
     if (not raw or not adaptive_selection_enabled(settings) or settings.account_key != "robot_notes"
             or str(getattr(settings, "platform", "")).lower() in {"wechat", "微信公众号"}
@@ -59,7 +59,13 @@ def operating_trial(settings):
     structure = raw.get("body_structure", TRIAL_BODY_STRUCTURE)
     if not isinstance(structure, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", structure):
         raise ValueError("Invalid operating trial body structure")
-    return {"id": raw["id"], "started_at": start.isoformat(), "ends_at": (start + timedelta(days=30)).isoformat(),
+    end = start + timedelta(days=30)
+    if now is not None:
+        if now.tzinfo is None:
+            raise ValueError("Operating trial clock requires a timezone")
+        if not start <= now < end:
+            return {}
+    return {"id": raw["id"], "started_at": start.isoformat(), "ends_at": end.isoformat(),
             "directions": list(directions), "body_structure": structure,
             "free_cover_only": raw.get("free_cover_only") is True}
 
@@ -236,7 +242,7 @@ def build_revenue_feedback(snapshot, checkpoints):
 
 def rank_revenue_topics(topics, settings, feedback, *, content_type, now=None):
     now = now or datetime.now(BEIJING)
-    trial = operating_trial(settings)
+    trial = operating_trial(settings, now=now)
     admissions = _trial_admissions(settings, trial, content_type) if trial else {}
     if trial:
         topics = [topic for topic in topics if trial_direction(topic) in trial["directions"]]

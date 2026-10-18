@@ -3,6 +3,8 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 import logging
 import json
+from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -99,8 +101,21 @@ def test_exact_work_income_and_cost_are_visible_without_claiming_full_profit(tmp
     assert row["checkpoints"]["24h"]["reads"] == 20
     assert row["income"]["amount"] == .1 and row["income"]["as_of_date"] == "2026-10-24"
     assert row["generation_costs"]["event_ids"] == [receipt.row["event_id"]]
-    assert row["verified_direct_contribution"] == .08
+    assert row["verified_direct_contribution"] is None  # no complete call inventory/bill
     assert row["net_profit"] is None and result["net_profit"] is None
+
+
+def test_missing_receipt_cannot_create_a_verified_positive_contribution(tmp_path, monkeypatch):
+    snapshot, checkpoints = cohort()
+    income(snapshot["works"][0])
+    cost(tmp_path)
+    # Receipt persistence intentionally tolerates IO failure to avoid retrying
+    # a charged provider request. Such an invisible call is not known to be free.
+    monkeypatch.setattr(GenerationCostAttempt, "_save", lambda self: None)
+    cost(tmp_path, billed=False)
+    row = report(tmp_path, snapshot, checkpoints)["works"][0]
+    assert row["generation_costs"]["recorded_calls"] == 1
+    assert row["verified_direct_contribution"] is None
 
 
 @pytest.mark.parametrize("changes", [
@@ -226,7 +241,7 @@ def test_production_opening_uses_only_fresh_same_trial_weekly_evidence(app_setti
     app_settings.account_key = "robot_notes"
     app_settings.revenue_optimization = RevenueOptimizationSettings.from_dict(
         {"adaptive_topic_selection": True, "operating_trial": TRIAL})
-    path = app_settings.output_dir / "growth_ops/revenue_experiment/revenue_30d_dashboard.json"
+    path = app_settings.output_dir / "growth_feedback.json"
     path.parent.mkdir(parents=True)
     operating = {"account": "robot_notes", "trial_id": TRIAL["id"], "body_structure": TRIAL["body_structure"],
         "observed_at": NOW.isoformat(), "weekly_review": {"review_day": 7, "evidence_cutoff": NOW.isoformat(),
@@ -240,3 +255,88 @@ def test_production_opening_uses_only_fresh_same_trial_weekly_evidence(app_setti
                     {"observed_at": (NOW - timedelta(hours=37)).isoformat()}):
         path.write_text(json.dumps({"operating_trial": {**operating, **changes}}), encoding="utf-8")
         assert generator._opening_experiment(**kwargs)["variant"] == "result_first"
+
+
+def test_fresh_runner_restores_weekly_decision_from_actual_workflow_cache(app_settings, tmp_path, monkeypatch):
+    import yaml
+    from toutiao_content_factory.services import weitoutiao_generator as module
+    from toutiao_content_factory.config import RevenueOptimizationSettings
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    app_settings.account_key = "robot_notes"
+    app_settings.revenue_optimization = RevenueOptimizationSettings.from_dict(
+        {"adaptive_topic_selection": True, "operating_trial": TRIAL})
+    snapshot, checkpoints = cohort()
+    base, captured = snapshot["works"].pop(), checkpoints["works"].popitem()[1]
+    for variant, reads in (("result_first", 20), ("situation_first", 40)):
+        for i in range(15):
+            work = deepcopy(base)
+            work["gid"] = f"{variant}{i}"
+            work["content_experiment"]["variant"] = variant
+            snapshot["works"].append(work)
+            entry = deepcopy(captured)
+            entry.update(gid=work["gid"], content_experiment=deepcopy(work["content_experiment"]))
+            for sample in entry["checkpoints"].values():
+                sample["reads"] = reads
+            checkpoints["works"][work["gid"]] = entry
+    operating = report(tmp_path, snapshot, checkpoints)
+    producer, stored, consumer = (tmp_path / name for name in ("producer", "cache", "consumer"))
+    relative = Path("output/accounts/robot-notes/growth_feedback.json")
+    (producer / relative).parent.mkdir(parents=True)
+    (producer / relative).write_text(json.dumps({"operating_trial": operating}), encoding="utf-8")
+    workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows/daily-run.yml").read_text(encoding="utf-8"))
+    steps = [step for job in workflow["jobs"].values() for step in job.get("steps", [])]
+    save = next(step for step in steps if step.get("name") == "Save publish history and checkpoints")
+    restore = next(step for step in steps if step.get("id") == "restore-history-cache")
+    for source_root, target_root, step in ((producer, stored, save), (stored, consumer, restore)):
+        for pattern in step["with"]["path"].splitlines():
+            for source in source_root.glob(pattern):
+                if source.is_file():
+                    target = target_root / source.relative_to(source_root)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
+    app_settings.output_dir = (consumer / relative).parent
+    generator = module.WeiToutiaoStandaloneGenerator(app_settings, logging.getLogger("fresh-runner"))
+    result = generator._opening_experiment(category="consumer_practical", trial_id=TRIAL["id"], body_structure=TRIAL["body_structure"])
+    assert result["variant"] == "situation_first"
+
+
+def test_existing_collection_writes_weekly_decision_into_cached_feedback(app_settings, tmp_path, monkeypatch):
+    from scripts import collect_growth_snapshot as collector
+    from toutiao_content_factory import config
+    from toutiao_content_factory.services import reader_value_experiment
+    from toutiao_content_factory.config import RevenueOptimizationSettings
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
+
+    app_settings.account_key = "robot_notes"
+    app_settings.revenue_optimization = RevenueOptimizationSettings.from_dict(
+        {"adaptive_topic_selection": True, "operating_trial": TRIAL})
+    snapshot, checkpoints = cohort()
+    runtime = tmp_path / "runtime"
+    snapshot["summary"] = {}
+    cookie = runtime / "automation/exported_cookies.json"
+    cookie.parent.mkdir(parents=True)
+    cookie.write_text("[]")
+    app_settings.output_dir.mkdir(parents=True, exist_ok=True)
+    (app_settings.output_dir / "growth_checkpoints.json").write_text(json.dumps(checkpoints), encoding="utf-8")
+    monkeypatch.setenv("ACCOUNT_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("ACCOUNT_OUTPUT_DIR", str(app_settings.output_dir))
+    monkeypatch.setattr(config, "load_settings", lambda *a, **kw: app_settings)
+    monkeypatch.setattr(collector, "fetch_published", lambda *a, **kw: [])
+    monkeypatch.setattr(collector, "build_snapshot", lambda *a, **kw: deepcopy(snapshot))
+    monkeypatch.setattr(collector, "datetime", Clock)
+    monkeypatch.setattr(reader_value_experiment, "_now", lambda: NOW)
+    monkeypatch.setattr(collector.sys, "argv", ["collect_growth_snapshot", "--account", "robot_notes"])
+    assert collector.main() == 0
+    feedback = json.loads((app_settings.output_dir / "growth_feedback.json").read_text(encoding="utf-8"))
+    assert feedback["operating_trial"]["trial_id"] == TRIAL["id"]
+    assert feedback["operating_trial"]["weekly_review"]["review_day"] == 7

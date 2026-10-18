@@ -1336,7 +1336,27 @@
       "runtime_status": "ok",
       "native_exit_code": null,
       "submission_outcome": "draft"
+    },
+    {
+      "run_key": "39084908859:1",
+      "started_at": "2026-10-18T01:01:55.332783+00:00",
+      "mode": "draft",
+      "excluded": false,
+      "outcome": "runtime_error",
+      "reason_codes": [],
+      "attempt_count": 0,
+      "enrichment_count": 0,
+      "eligible_candidate_count": 0,
+      "audited_candidate_count": 0,
+      "review_pass_count": 0,
+      "rejection_reasons": [],
+      "publication": {},
+      "expected_publication": {},
+      "draft_delivery": {},
+      "elapsed_seconds": 7.145,
+      "runtime_status": "error",
+      "native_exit_code": 2
     }
   ],
-  "updated_at": "2026-10-17T17:22:59.248931+08:00"
+  "updated_at": "2026-10-18T09:02:06.195471+08:00"
 }

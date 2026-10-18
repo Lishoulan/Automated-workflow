@@ -89,6 +89,12 @@ def generic_padding_reason(text: str) -> str:
     sentences = [part.strip() for part in re.split(r"(?<=[。！？])|\n+", str(text or "")) if part.strip()]
     padded = [part for part in sentences if any(marker in part for marker in markers)]
     total = sum(len(part) for part in sentences)
+    observed_advice = ("消费者需仔细阅读", "消费者应主动了解合同细节", "避免被动接受不利条款")
+    # Two generic advice sentences consume a substantial short-post analysis
+    # budget. This narrow rule is based on the real 2026-10-18 draft, not a
+    # blanket prohibition on discussing consumer rights or uncertainty.
+    if total <= 600 and sum(any(marker in part for marker in observed_advice) for part in sentences) >= 2:
+        return "known_generic_padding"
     return "known_generic_padding" if len(padded) >= 2 and sum(map(len, padded)) >= total * .35 else ""
 
 

@@ -9,6 +9,9 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 import math
+import json
+from pathlib import Path
+import re
 from statistics import median
 
 from toutiao_content_factory.services.topic_selection_evidence import selection_evidence
@@ -19,6 +22,8 @@ MIN_SAMPLES = 15
 MIN_IMPRESSIONS = 1000
 MIN_REVENUE_READS = 1000
 BEIJING = timezone(timedelta(hours=8))
+TRIAL_DIRECTIONS = {"consumer_practical": "消费权益与实用问题", "technology_everyday": "科技产业对普通人的影响"}
+TRIAL_BODY_STRUCTURE = "facts_distinction_boundary_v1"
 
 
 def adaptive_selection_enabled(settings):
@@ -32,6 +37,70 @@ def _time(value):
     if stamp.tzinfo is None:
         raise ValueError("Timezone required")
     return stamp
+
+
+def operating_trial(settings):
+    """An account-scoped editorial experiment, never source approval."""
+    raw = getattr(getattr(settings, "revenue_optimization", None), "operating_trial", {})
+    if (not raw or not adaptive_selection_enabled(settings) or settings.account_key != "robot_notes"
+            or str(getattr(settings, "platform", "")).lower() in {"wechat", "微信公众号"}
+            or getattr(settings, "wechat_auto_publish_mode", False)):
+        return {}
+    if not isinstance(raw, dict) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(raw.get("id", ""))):
+        raise ValueError("Invalid operating trial identity")
+    try:
+        start = _time(raw.get("started_at"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Operating trial needs an explicit timezone-aware start") from exc
+    directions = raw.get("directions")
+    if (not isinstance(directions, list) or len(directions) != 2
+            or not all(isinstance(value, str) for value in directions) or set(directions) != set(TRIAL_DIRECTIONS)):
+        raise ValueError("Operating trial must name the two registered reader directions")
+    structure = raw.get("body_structure", TRIAL_BODY_STRUCTURE)
+    if not isinstance(structure, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", structure):
+        raise ValueError("Invalid operating trial body structure")
+    return {"id": raw["id"], "started_at": start.isoformat(), "ends_at": (start + timedelta(days=30)).isoformat(),
+            "directions": list(directions), "body_structure": structure,
+            "free_cover_only": raw.get("free_cover_only") is True}
+
+
+def trial_direction(topic):
+    text = f"{topic.title} {topic.summary}"
+    technology = any(w in text for w in ("手机", "芯片", "人工智能", "机器人", "电池", "新能源", "充电", "操作系统", "系统更新", "软件", "数据安全", "隐私")) or bool(re.search(r"\bAI\b", text, re.I))
+    everyday = any(w in text for w in ("用户", "消费者", "家庭", "家用", "车主", "价格", "费用", "续费", "岗位", "就业", "工资", "工作", "安全补丁", "隐私"))
+    if technology and everyday:
+        return "technology_everyday"
+    if any(w in text for w in ("消费者", "消费权益", "退款", "退费", "退货", "维修", "保修", "押金", "预付", "租房", "物业费", "停车费", "网购", "社保", "医保", "养老金")):
+        return "consumer_practical"
+    return ""
+
+
+def _trial_admissions(settings, trial, content_type):
+    counts = {direction: 0 for direction in trial["directions"]}
+    path = Path(settings.output_dir) / ("growth_ops/performance/wtt_content_experiments.json" if content_type == "weitoutiao" else settings.publishing.history_filename)
+    if not path.exists():
+        return counts
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        if content_type == "weitoutiao":
+            records = payload["records"]
+            if not isinstance(records, dict):
+                raise ValueError("Invalid admissions")
+            rows = list(records.values())
+        else:
+            if not isinstance(payload, list):
+                raise ValueError("Invalid admissions")
+            rows = [{**r.get("content_experiment", {}), "status": r.get("status")}
+                    for r in payload if isinstance(r, dict) and r.get("platform") == "toutiao"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError("Operating trial admission history needs review; counts were not reset") from exc
+    for row in rows:
+        if (isinstance(row, dict) and row.get("trial_id") == trial["id"]
+                and row.get("selection_protocol") == SELECTION_PROTOCOL
+                and row.get("status") in {"published", "submitted", "submitted_for_review", "success"}
+                and row.get("category") in counts):
+            counts[row["category"]] += 1
+    return counts
 
 
 def topic_category(topic):
@@ -105,7 +174,7 @@ def build_revenue_feedback(snapshot, checkpoints):
             except (ValueError, TypeError, KeyError, OverflowError):
                 continue
             key = (work["type"], experiment["category"], experiment["id"], experiment["protocol_version"],
-                   experiment["selection_protocol"], experiment["variant"], label)
+                   experiment["selection_protocol"], experiment.get("trial_id", ""), experiment.get("body_structure", ""), experiment["variant"], label)
             groups[key].append((gid, sample, _settled_amount(entry, sample)))
     result = []
     for key, rows in sorted(groups.items()):
@@ -114,7 +183,7 @@ def build_revenue_feedback(snapshot, checkpoints):
         amounts = [amount for _, _, amount in rows if amount is not None]
         complete = len(amounts) == len(rows) and math.isfinite(sum(amounts))
         revenue = round(sum(amounts), 4) if complete else None
-        result.append(dict(zip(("format", "category", "experiment_id", "protocol_version", "selection_protocol", "variant", "checkpoint"), key),
+        result.append(dict(zip(("format", "category", "experiment_id", "protocol_version", "selection_protocol", "trial_id", "body_structure", "variant", "checkpoint"), key),
             samples=len(rows), gids=[gid for gid, _, _ in rows], impressions=impressions, reads=reads,
             read_rate_pct=round(reads * 100 / impressions, 4), median_reads=median([s["reads"] for _, s, _ in rows]),
             median_impressions=median([s["impressions"] for _, s, _ in rows]),
@@ -127,7 +196,7 @@ def build_revenue_feedback(snapshot, checkpoints):
     contexts = defaultdict(list)
     for group in result:
         if group["status"] == "comparable" and group["category"] != "unclassified":
-            context = tuple(group[k] for k in ("format", "experiment_id", "protocol_version", "selection_protocol", "variant", "checkpoint"))
+            context = tuple(group[k] for k in ("format", "experiment_id", "protocol_version", "selection_protocol", "trial_id", "body_structure", "variant", "checkpoint"))
             contexts[context].append(group)
     comparisons = []
     for context, peers in contexts.items():
@@ -167,6 +236,10 @@ def build_revenue_feedback(snapshot, checkpoints):
 
 def rank_revenue_topics(topics, settings, feedback, *, content_type, now=None):
     now = now or datetime.now(BEIJING)
+    trial = operating_trial(settings)
+    admissions = _trial_admissions(settings, trial, content_type) if trial else {}
+    if trial:
+        topics = [topic for topic in topics if trial_direction(topic) in trial["directions"]]
     section = feedback.get("revenue_feedback", {}) if isinstance(feedback, dict) else {}
     try:
         fresh = (section.get("account") == settings.account_key and section.get("selection_protocol") == SELECTION_PROTOCOL
@@ -174,9 +247,11 @@ def rank_revenue_topics(topics, settings, feedback, *, content_type, now=None):
     except (ValueError, TypeError):
         fresh = False
     for topic in topics:
-        category = topic_category(topic)
+        category = trial_direction(topic) if trial else topic_category(topic)
         groups = [g for g in section.get("groups", []) if fresh and g.get("format") == content_type
                   and g.get("category") == category and g.get("selection_protocol") == SELECTION_PROTOCOL
+                  and g.get("trial_id", "") == (trial["id"] if trial else "")
+                  and g.get("body_structure", "") == (trial["body_structure"] if trial else "")
                   and g.get("protocol_version") == (4 if content_type == "weitoutiao" else 1) and g.get("status") == "comparable"
                   and g.get("samples", 0) >= MIN_SAMPLES and g.get("impressions", 0) >= MIN_IMPRESSIONS]
         mature = [g for g in groups if g["checkpoint"] == "72h"]
@@ -201,5 +276,20 @@ def rank_revenue_topics(topics, settings, feedback, *, content_type, now=None):
             "settled_rpr": [g["revenue_per_1000_reads"] for g in groups],
             "feedback_status": "current" if fresh else "missing_stale_or_wrong_account",
             "approval": False}
-    return sorted(topics, key=lambda t: (selection_evidence(t)["priority"], -t.revenue_selection["score"],
-                                        t.rank if t.rank > 0 else 10_000))
+        if trial:
+            topic.revenue_selection.update(trial_id=trial["id"], trial_started_at=trial["started_at"],
+                trial_ends_at=trial["ends_at"], body_structure=trial["body_structure"],
+                trial_enrolled=_time(trial["started_at"]) <= now < _time(trial["ends_at"]))
+    ranked = sorted(topics, key=lambda t: (selection_evidence(t)["priority"], -t.revenue_selection["score"],
+                                         t.rank if t.rank > 0 else 10_000))
+    if not trial:
+        return ranked
+    # Try one best-source candidate per direction before exhausting a bounded
+    # retrieval allowance on one pool. Admission balance is not fact approval.
+    first = []
+    for direction in sorted(trial["directions"], key=lambda value: admissions[value]):
+        candidate = next((t for t in ranked if t.revenue_selection["category"] == direction), None)
+        if candidate is not None:
+            first.append(candidate)
+    first_ids = {id(topic) for topic in first}
+    return first + [topic for topic in ranked if id(topic) not in first_ids]

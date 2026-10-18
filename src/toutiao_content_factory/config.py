@@ -716,6 +716,7 @@ class RevenueOptimizationSettings:
 
     enabled: bool = True
     adaptive_topic_selection: bool = False
+    operating_trial: dict[str, Any] = field(default_factory=dict)
     lookback_days: int = 30
     min_samples: int = 10
     weak_rpm_threshold: float = 0.0
@@ -745,9 +746,13 @@ class RevenueOptimizationSettings:
 
         cooldown_ratio = max(0.0, min(1.0, _float_value("cooldown_weak_ratio", 0.5, "REVENUE_COOLDOWN_WEAK_RATIO")))
         stop_ratio = max(cooldown_ratio, min(1.0, _float_value("stop_weak_ratio", 0.8, "REVENUE_STOP_WEAK_RATIO")))
+        trial = payload.get("operating_trial") or {}
+        if not isinstance(trial, dict):
+            raise ValueError("operating_trial must be an object")
         return cls(
             enabled=_env_flag("REVENUE_OPTIMIZATION_ENABLED", bool(payload.get("enabled", True))),
             adaptive_topic_selection=bool(payload.get("adaptive_topic_selection", False)),
+            operating_trial=dict(trial),
             lookback_days=max(1, _int_value("lookback_days", 30, "REVENUE_OPTIMIZATION_LOOKBACK_DAYS")),
             min_samples=max(1, _int_value("min_samples", 10, "REVENUE_OPTIMIZATION_MIN_SAMPLES")),
             weak_rpm_threshold=_float_value("weak_rpm_threshold", 0.0, "REVENUE_WEAK_RPM_THRESHOLD"),

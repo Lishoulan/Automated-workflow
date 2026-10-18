@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from dataclasses import asdict
 from difflib import SequenceMatcher
 from datetime import datetime
@@ -32,6 +33,7 @@ from toutiao_content_factory.services.openai_service import OpenAIContentService
 from toutiao_content_factory.services.publish_service import PublishService
 from toutiao_content_factory.services.topic_selection_evidence import selection_evidence
 from toutiao_content_factory.services.reader_value_service import story_reader_fit, build_reader_brief, generic_padding_reason
+from toutiao_content_factory.services.generation_cost_service import content_cost_scope
 from toutiao_content_factory.services.revenue_feedback import (
     SELECTION_PROTOCOL, adaptive_selection_enabled, rank_revenue_topics, topic_category,
 )
@@ -392,7 +394,7 @@ class WeiToutiaoStandaloneGenerator:
 
     # ── 写作 ──────────────────────────────────────────────
 
-    def _opening_experiment(self, *, category: str = "") -> dict[str, Any]:
+    def _opening_experiment(self, *, category: str = "", trial_id: str = "", body_structure: str = "") -> dict[str, Any]:
         path = self.settings.output_dir / "growth_ops" / "performance" / "wtt_content_experiments.json"
         try:
             ledger = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -403,19 +405,29 @@ class WeiToutiaoStandaloneGenerator:
         adaptive = adaptive_selection_enabled(self.settings)
         for record in records.values() if isinstance(records, dict) else []:
             if isinstance(record, dict) and (record.get("selection_protocol", "") != (SELECTION_PROTOCOL if adaptive else "")
-                    or adaptive and record.get("category") != category):
+                    or adaptive and record.get("category") != category
+                    or record.get("trial_id", "") != trial_id or record.get("body_structure", "") != body_structure):
                 continue
             if isinstance(record, dict) and record.get("variant") in counts and record.get("protocol_version", 1) == STORY_OPENING_PROTOCOL_VERSION:
                 counts[record["variant"]] += 1
         variant = min(counts, key=counts.get)
         return {"id": "story_opening_v1", "variable": "opening_order", "variant": variant,
                 "protocol_version": STORY_OPENING_PROTOCOL_VERSION,
+                **({"trial_id": trial_id, "body_structure": body_structure} if trial_id else {}),
                 **({"selection_protocol": SELECTION_PROTOCOL, "category": category} if adaptive else {})}
+
+    def _content_completion(self, topic, **request):
+        with content_cost_scope(getattr(topic, "_generation_cost_context", {})):
+            return self.openai_service.create_text_completion(**request)
 
     def generate_content(self, topic: TopicCandidate, persona: str = "hot_comment") -> str:
         """按人设模板写一条独立微头条（含标题行 + 正文 + 话题标签）。"""
         topic._content_experiment = {}
         topic._reader_value_brief = {}
+        selection = topic.revenue_selection or {}
+        topic._generation_cost_context = {"account_key": self.settings.account_key, "content_attempt_id": uuid.uuid4().hex,
+            "topic_title": topic.title, "source_url": topic.url, "trial_id": selection.get("trial_id", ""),
+            "direction": selection.get("category", ""), "body_structure": selection.get("body_structure", "")}
         system_template, user_template = PERSONA_TEMPLATES.get(
             persona, PERSONA_TEMPLATES["hot_comment"]
         )
@@ -469,15 +481,24 @@ class WeiToutiaoStandaloneGenerator:
                         "正文至少讲清一个有素材依据的区别、条件或实际影响，不重复新闻摘要凑字数。"
                         "有数字时保留对象、时间和约数；不能用来源未给出的收益、损失或极端冲突提高吸引力。"
                         "结尾给出本题的判断边界或一个读者能回答的具体问题，不使用泛化互动口号。")
+        if selection.get("trial_id"):
+            user_prompt += ("\n本轮经营结构：具体结果或读者处境→两个原文事实形成的关键区别→适用边界。"
+                            "案例汇编只解释其中一个具体案件，不把不同案件拼成一件事。"
+                            "首句不能以‘某部门发布典型案例’等官宣背景代替案件结果；机构发布信息放来源说明。"
+                            "明确区分支持与未支持、约定与履行或适用与不适用，不能只说‘部分利息’等空泛结论。"
+                            "涉及利率、罚息等分步计算时保留‘再上浮/加收’关系；不能准确简述就省去简化数字。"
+                            "历史年份须说明是案件发生年还是报道公布年，不能相互替代。"
+                            "删去‘仔细阅读合同、主动了解细节’等重复泛化提醒，用本案事实推进分析。")
         if feed_layout:
-            topic._content_experiment = self._opening_experiment(category=topic_category(topic))
+            topic._content_experiment = self._opening_experiment(category=selection.get("category") or topic_category(topic),
+                trial_id=selection.get("trial_id", ""), body_structure=selection.get("body_structure", ""))
             opening = (
                 "第一句先说素材已确认的处置结果，第二句交代人物和矛盾。"
                 if topic._content_experiment["variant"] == "result_first"
                 else "第一句先说人物面对的具体处境和矛盾，第二句交代已确认的处置结果。"
             )
             user_prompt += f"\n本轮连续首段测试开头顺序：{opening}篇幅、分析结构与其他要求保持一致。没有处置结果则明确尚未确认，不编造。"
-        raw = self.openai_service.create_text_completion(
+        raw = self._content_completion(topic,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=0.55 if self._is_story_context(topic, persona) else 0.85,
@@ -491,7 +512,7 @@ class WeiToutiaoStandaloneGenerator:
         if verified_story and not self._is_public_policy_topic(topic, persona):
             # One bounded editing pass against the reporting used to draft it.
             # A failed review propagates to the existing skip/fallback boundary.
-            content = self.openai_service.create_text_completion(
+            content = self._content_completion(topic,
                 system_prompt=(
                     "你是事实核对编辑。原文素材是唯一事实依据，待复核稿不是依据。"
                     "逐句核对数字、日期、人物身份、动作、地点、先后顺序、因果和发言。"
@@ -858,6 +879,7 @@ class WeiToutiaoStandaloneGenerator:
             "source_copy_share": self._source_copy_share(topic, content),
             "selection_evidence": selection_evidence(topic),
             "revenue_selection": topic.revenue_selection,
+            "generation_cost_context": getattr(topic, "_generation_cost_context", {}),
             "reader_fit": getattr(topic, "_reader_fit", {}),
             "reader_value_brief": getattr(topic, "_reader_value_brief", {}),
         }

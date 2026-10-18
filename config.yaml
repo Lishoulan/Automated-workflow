@@ -397,12 +397,18 @@ accounts:
     label: 手蓝人间故事（原机器人笔记）
     revenue_optimization:
       adaptive_topic_selection: true
+      operating_trial:
+        id: robot_notes_profit_20261018
+        started_at: '2026-10-18T00:00:00+08:00'
+        directions: [consumer_practical, technology_everyday]
+        body_structure: facts_distinction_boundary_v1
+        free_cover_only: true
     browser_profile_dir: .runtime/accounts/robot-notes/toutiao_profile
     industry:
       brand_name: 手蓝人间故事
-      focus: 社会民生热点、家庭伦理、代际关系、职场与人情冷暖
-      audience: 40-65 岁关注家长里短、人情世故与生活经验的头条读者
-      positioning: 把真实发生的社会新闻讲成看得懂的人情故事，给读者一个实在的提醒。
+      focus: 消费权益与实用问题、科技产业变化对普通人的支出、工作与生活的影响
+      audience: 关注日常消费、实际权益和科技变化如何影响自身生活的成年头条读者
+      positioning: 用可靠来源解释具体读者问题，讲清已确认结果、关键条件和适用边界。
     writing:
       default_style: family_story
     # 热榜类社会新闻在采集时只有标题、没有正文，永远满足不了「≥6 条事实且 ≥320 字」
@@ -422,9 +428,15 @@ accounts:
       - baidu_hot
       - toutiao_hot
       - sina_social
+      - ithome
+      - 36kr
       focus_industries:
       - social_story
+      - consumer_practical
+      - technology_everyday
       keyword_map:
+        consumer_practical: [消费者, 退款, 退费, 退货, 预付, 押金, 保修, 维修, 物业费, 停车费, 网购, 养老金, 医保, 社保]
+        technology_everyday: [手机, 系统更新, 软件, 人工智能, AI, 机器人, 电池, 充电, 新能源, 芯片, 隐私, 就业]
         social_story:
         - 养老
         - 退休

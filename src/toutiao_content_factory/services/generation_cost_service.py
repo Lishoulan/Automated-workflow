@@ -8,10 +8,27 @@ import os
 import re
 import uuid
 from collections import Counter
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 BEIJING = timezone(timedelta(hours=8))
+_CONTENT_COST_SCOPE = ContextVar("generation_content_cost_scope", default={})
+
+
+@contextmanager
+def content_cost_scope(metadata):
+    """Own only this candidate's transport calls; workers restore saved scope."""
+    metadata = dict(metadata or {})
+    if metadata and (not isinstance(metadata.get("account_key"), str) or not metadata["account_key"]
+                     or not re.fullmatch(r"[a-f0-9]{32}", str(metadata.get("content_attempt_id", "")))):
+        raise ValueError("Invalid generation cost ownership")
+    token = _CONTENT_COST_SCOPE.set(metadata)
+    try:
+        yield metadata
+    finally:
+        _CONTENT_COST_SCOPE.reset(token)
 
 
 def _field(value, key):
@@ -46,6 +63,13 @@ class GenerationCostAttempt:
             "usage": None, "estimated_amount": None, "estimated_currency": None,
             "actual_amount": None, "actual_currency": None, "billing_status": "unverified",
         }
+        scope = _CONTENT_COST_SCOPE.get()
+        if scope.get("account_key") == self.row["account_key"]:
+            for source, target in (("content_attempt_id", "content_attempt_id"), ("trial_id", "content_trial_id"),
+                                   ("direction", "content_direction"), ("topic_title", "content_topic_title"),
+                                   ("source_url", "content_source_url"), ("body_structure", "content_body_structure")):
+                if isinstance(scope.get(source), str) and scope[source]:
+                    self.row[target] = scope[source]
 
     def _save(self):
         temporary = self.path.with_suffix(".tmp")

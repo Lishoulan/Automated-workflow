@@ -19,7 +19,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.services.creative_scoring_service import CreativeScoringService
-from toutiao_content_factory.services.generation_cost_service import GenerationCostAttempt
+from toutiao_content_factory.services.generation_cost_service import GenerationCostAttempt, content_cost_scope
 
 
 GRADIENT_PRESETS = [
@@ -329,7 +329,17 @@ class ImageGenerationService:
         return backend in self.API_BACKENDS or backend.startswith("gpt-image-")
 
     def generate_weitoutiao_image(self, run_dir: Path, content: str) -> Path | None:
+        # Publishing may run in another thread. Restore the exact saved
+        # candidate scope instead of inferring ownership from its timestamp.
+        metadata_path = run_dir / self.settings.review.publish_dirname / "publish_meta.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
+        with content_cost_scope(metadata.get("generation_cost_context") or {}):
+            return self._generate_weitoutiao_image(run_dir, content)
+
+    def _generate_weitoutiao_image(self, run_dir: Path, content: str) -> Path | None:
         """Prefer one body-derived AI illustration, then a precise local card."""
+        from toutiao_content_factory.services.revenue_feedback import operating_trial
+        api_requested = self._api_backend_requested() and not operating_trial(self.settings).get("free_cover_only", False)
         paragraphs = self._article_paragraphs(content)
         destination = run_dir / self.settings.review.publish_dirname / "images" / "weitoutiao.png"
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -343,7 +353,7 @@ class ImageGenerationService:
         source.unlink(missing_ok=True)
         backend = ""
         errors = []
-        if self._api_backend_requested():
+        if api_requested:
             try:
                 self._generate_api_image(prompt, source, self.settings.image_generation.cover_size)
                 backend = "image2"
@@ -364,7 +374,7 @@ class ImageGenerationService:
             report_path.write_text(json.dumps({"status": "generated", "backend": backend,
                 "ai_generated": True, "label": "AI示意图 · 非现场照片", "provider_errors": errors,
                 "content_fingerprint": article_image_fingerprint("", content), "filename": destination.name,
-                "api_attempted": self._api_backend_requested(), "ai_source": str(source),
+                "api_attempted": api_requested, "ai_source": str(source),
                 "free_api_attempted": bool(os.environ.get("CLOUDFLARE_AI_TOKEN") and not (backend == "image2"))}, ensure_ascii=False, indent=2), encoding="utf-8")
             return destination
         # Whole short paragraphs preserve qualifiers and avoid image-sized essays.
@@ -377,7 +387,7 @@ class ImageGenerationService:
         if len(items) < 2:
             report_path.write_text(json.dumps({"status": "skipped", "reason": "insufficient_visual_points",
                 "content_fingerprint": article_image_fingerprint("", content), "provider_errors": errors,
-                "api_attempted": self._api_backend_requested()}), encoding="utf-8")
+                "api_attempted": api_requested}), encoding="utf-8")
             return None
         title = "本文要点"
         spec = {"title": title, "eyebrow": "原创信息图 · 非现场照片", "metrics": [],
@@ -392,7 +402,7 @@ class ImageGenerationService:
                 gen_infographic(title, str(destination), spec=spec)
             report = {"status": "generated", "content_fingerprint": article_image_fingerprint("", content),
                       "filename": destination.name, "items": items, "backend": "local_information_card",
-                      "ai_generated": False, "provider_errors": errors, "api_attempted": self._api_backend_requested()}
+                      "ai_generated": False, "provider_errors": errors, "api_attempted": api_requested}
             report_path.write_text(
                 json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
             return destination

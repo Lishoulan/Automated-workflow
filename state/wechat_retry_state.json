@@ -159,10 +159,12 @@
           "draft_delivery": {}
         },
         "39239910677:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-19T10:47:55.548180+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 9.278,
+          "outcome": "publish_login_required",
+          "draft_delivery": {}
         }
       },
       "dispatches": {},

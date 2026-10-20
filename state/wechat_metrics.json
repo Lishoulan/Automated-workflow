@@ -1436,7 +1436,26 @@
       "elapsed_seconds": 6.04,
       "runtime_status": "error",
       "native_exit_code": 2
+    },
+    {
+      "run_key": "39357866521:1",
+      "started_at": "2026-10-20T02:15:39.018499+00:00",
+      "mode": "check",
+      "excluded": true,
+      "outcome": "runtime_error",
+      "reason_codes": [],
+      "attempt_count": 0,
+      "enrichment_count": 0,
+      "eligible_candidate_count": 0,
+      "audited_candidate_count": 0,
+      "review_pass_count": 0,
+      "rejection_reasons": [],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": null,
+      "runtime_status": "ok",
+      "native_exit_code": null
     }
   ],
-  "updated_at": "2026-10-20T09:49:59.100503+08:00"
+  "updated_at": "2026-10-20T10:15:57.889746+08:00"
 }

@@ -1,28 +1,6 @@
 {
   "schema_version": 1,
   "days": {
-    "2026-10-13": {
-      "runs": {
-        "38342206360:1": {
-          "status": "completed",
-          "started_at": "2026-10-13T03:33:39.937259+00:00",
-          "parent": "",
-          "elapsed_seconds": 8.016,
-          "outcome": "publish_login_required",
-          "draft_delivery": {}
-        },
-        "38399359536:1": {
-          "status": "completed",
-          "started_at": "2026-10-13T12:44:12.160141+00:00",
-          "parent": "",
-          "elapsed_seconds": 9.662,
-          "outcome": "publish_login_required",
-          "draft_delivery": {}
-        }
-      },
-      "dispatches": {},
-      "failed_inputs": []
-    },
     "2026-10-14": {
       "runs": {
         "38498164941:1": {
@@ -165,6 +143,18 @@
           "elapsed_seconds": 9.278,
           "outcome": "publish_login_required",
           "draft_delivery": {}
+        }
+      },
+      "dispatches": {},
+      "failed_inputs": []
+    },
+    "2026-10-20": {
+      "runs": {
+        "39355497925:1": {
+          "status": "running",
+          "started_at": "2026-10-20T01:49:48.967428+00:00",
+          "parent": "",
+          "elapsed_seconds": 0
         }
       },
       "dispatches": {},

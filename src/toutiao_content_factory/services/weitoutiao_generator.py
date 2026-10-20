@@ -307,7 +307,11 @@ class WeiToutiaoStandaloneGenerator:
                 self.logger.warning("WeiToutiao standalone fallback topic load failed: %s", exc)
 
         if story_account:
-            if sum(selection_evidence(topic)["priority"] == 0 for topic in ranked) < count:
+            if sum(
+                selection_evidence(topic)["priority"] == 0
+                and not self._is_public_policy_topic(topic, "story_comment")
+                for topic in ranked
+            ) < count:
                 originals = self.story_sources.candidates(deadline=min(supply_deadline, time.monotonic() + 16))
                 originals = self.topic_automation._available_topics(originals)
                 originals = self.topic_automation.filter_topics_for_account(originals)
@@ -334,6 +338,12 @@ class WeiToutiaoStandaloneGenerator:
             if story_account and time.monotonic() >= supply_deadline:
                 self.logger.info("Story source allowance exhausted; no additional retrieval started.")
                 break
+            if story_account and self._is_public_policy_topic(topic, "story_comment"):
+                # Public-policy summaries require a separate source-verified workflow.
+                # The existing story fallback intentionally cannot publish them;
+                # do not spend a model call or let them exhaust the eligible pool.
+                self.logger.info("WeiToutiao deferred public-policy topic before generation: %s", topic.title)
+                continue
             if story_account and not self.story_sources.can_retry(topic):
                 self.logger.info("Story source retry deferred after insufficient evidence: %s", topic.title)
                 continue

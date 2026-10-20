@@ -1128,6 +1128,16 @@ class ContentFactoryAppService:
                 attempt_record["title_quality_gate"] = title_selection
 
             if self.settings.platform == "wechat" and self.settings.wechat.draft_only and run_dir is not None and not dry_run:
+                # Avoid spending cover generation and a remote draft slot on the
+                # first unapproved candidate when another prepared candidate is
+                # available within the existing attempt/time budget. Never
+                # bypass review or turn a draft into a formal publication.
+                if not qualifies and attempt_index < min(attempt_limit, len(candidate_specs)):
+                    attempt_record.update(status="review_pending_next_candidate",
+                                          skip_reason="A later candidate may pass the existing quality gate")
+                    losing_attempts.append(attempt_record)
+                    self.logger.info("WeChat first candidate needs review; trying another prepared source.")
+                    continue
                 # Delivery is a human-review draft, independently of automatic publication approval.
                 try:
                     draft_exports = self.review_service.prepare_wechat_draft(run_dir)

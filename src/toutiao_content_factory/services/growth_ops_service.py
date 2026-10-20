@@ -2147,6 +2147,8 @@ articles:
             eligible = []
             for item in with_economics:
                 economics = dict(item.get("unit_economics", {}))
+                if metric in {"net_profit", "rpm"} and economics.get("profit_analysis_eligible") is not True:
+                    continue
                 if metric in {"net_profit", "rpm", "total_revenue"} and not economics.get(
                     "revenue_analysis_eligible", False
                 ):
@@ -2158,11 +2160,12 @@ articles:
                 }:
                     continue
                 eligible.append(item)
-            selected = sorted(
-                eligible,
-                key=lambda item: float(item.get("unit_economics", {}).get(metric, 0.0) or 0.0),
-                reverse=True,
-            )[:5]
+            groups: dict[str, list[dict[str, Any]]] = {}
+            for item in eligible:
+                currency = str(item.get("unit_economics", {}).get("currency", "CNY"))
+                groups.setdefault(currency, []).append(item)
+            selected = [item for currency in sorted(groups) for item in sorted(groups[currency],
+                key=lambda item: float(item.get("unit_economics", {}).get(metric, 0.0) or 0.0), reverse=True)[:5]]
             return [self._economics_summary_item(item, metric) for item in selected]
 
         tag_metrics: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
@@ -2241,17 +2244,19 @@ articles:
             "content_id": item.get("content_id", ""),
             "title": item.get("title", ""),
             "platform": item.get("platform", ""),
+            "currency": economics.get("currency", "CNY"),
             "commercial_intent": item.get("experiment_tags", {}).get("commercial_intent", ""),
             "content_mix": item.get("experiment_tags", {}).get("content_mix", ""),
             "metric": metric,
             "value": float(economics.get(metric, 0.0) or 0.0),
-            "net_profit": float(economics.get("net_profit", 0.0) or 0.0),
-            "rpm": float(economics.get("rpm", 0.0) or 0.0),
+            "net_profit": economics.get("net_profit"),
+            "rpm": economics.get("rpm"),
             "lead_revenue": float(economics.get("lead_revenue", 0.0) or 0.0),
             "leads": int(economics.get("leads", 0) or 0),
             "revenue_status": economics.get("revenue_status", "unknown"),
             "platform_revenue_status": economics.get("platform_revenue_status", "unknown"),
             "revenue_analysis_eligible": bool(economics.get("revenue_analysis_eligible", False)),
+            "profit_analysis_eligible": economics.get("profit_analysis_eligible") is True,
         }
 
     def _build_benchmark_markdown(self, payload: dict[str, Any]) -> str:
@@ -2458,20 +2463,25 @@ articles:
                 lines.append("")
         lines.append("## Revenue-oriented rankings")
         lines.append("")
-        for heading, key, unit in (
-            ("Net profit", "top_by_net_profit", " CNY"),
-            ("Net RPM", "top_by_rpm", " CNY/1k impressions"),
-            ("Lead revenue", "top_by_lead_revenue", " CNY"),
+        for heading, key, suffix in (
+            ("Net profit", "top_by_net_profit", ""),
+            ("Net RPM", "top_by_rpm", "/1k impressions"),
+            ("Lead revenue", "top_by_lead_revenue", ""),
         ):
             lines.append(f"### {heading}")
             ranking = summary.get(key, [])
             if not ranking:
                 lines.append("- No attributed content yet")
             else:
-                for index, item in enumerate(ranking, start=1):
+                ranks = {}
+                for item in ranking:
+                    currency = str(item.get("currency", "NOT_FOUND"))
+                    if currency not in ranks:
+                        lines.append(f"#### {currency}")
+                    ranks[currency] = ranks.get(currency, 0) + 1
                     lines.append(
-                        f"{index}. {item.get('title', '')} | {item.get('content_id', '')} | "
-                        f"{float(item.get('value', 0.0) or 0.0):.2f}{unit} | leads={item.get('leads', 0)}"
+                        f"{ranks[currency]}. {item.get('title', '')} | {item.get('content_id', '')} | "
+                        f"{float(item.get('value', 0.0) or 0.0):.2f} {currency}{suffix} | leads={item.get('leads', 0)}"
                     )
             lines.append("")
         return "\n".join(lines) + "\n"

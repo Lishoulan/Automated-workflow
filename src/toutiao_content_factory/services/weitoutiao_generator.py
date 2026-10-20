@@ -573,11 +573,51 @@ class WeiToutiaoStandaloneGenerator:
             if looks_like_html_document(content):
                 raise AIResponseFormatError("WeiToutiao fact review returned an HTML document.")
             self.logger.info("WeiToutiao source-based fact review completed: %s", topic.title)
+        if feed_layout:
+            content = self._reflow_verified_feed(content)
         # 模型偶尔不输出标签；发布包会直接把 content_override 交给微头条发布器，
         # 因此应在这里补齐，而不是只写入旁路的 tags.txt。
         if not self._extract_tags(content):
             content = content + "\n\n" + self._build_tags(topic, persona)
         return content if feed_layout else content[:MAX_WTT_CHARS]
+
+    @staticmethod
+    def _reflow_verified_feed(content: str) -> str:
+        """Restore paragraph breaks without rewriting or dropping reviewed text.
+
+        Layout is not factual approval. The caller's existing evidence, copy,
+        number, length and opening guards still decide whether to deliver it.
+        """
+        if WeiToutiaoStandaloneGenerator._feed_opening_reason(content) not in {
+            'story_opening_length_guard', 'story_paragraph_length_guard',
+        }:
+            return content
+        lines = content.strip().splitlines()
+        if not lines or not lines[0].rstrip().endswith(('。', '！', '？', '!', '?')):
+            return content
+        tags = []
+        while lines and (not lines[-1].strip() or lines[-1].strip().startswith('#')):
+            tags.insert(0, lines.pop())
+        prose = ' '.join(line.strip() for line in lines if line.strip())
+        sentences = re.findall(r'[^。！？!?]+[。！？!?]+[”’」』"]*|[^。！？!?]+$', prose)
+        if len(sentences) < 2:
+            return content
+        lead = ''.join(sentences[:2]).strip()
+        # A detached headline, an overlong sentence or ambiguous punctuation
+        # stays rejected; never truncate it to manufacture a passing opening.
+        if len(re.sub(r'\s+', '', lead)) > 90:
+            return content
+        paragraphs = [lead]
+        for sentence in sentences[2:]:
+            sentence = sentence.strip()
+            if len(paragraphs) > 1 and len(re.sub(r'\s+', '', paragraphs[-1] + sentence)) <= 120:
+                paragraphs[-1] += sentence
+            else:
+                paragraphs.append(sentence)
+        result = '\n\n'.join(paragraphs)
+        if tags:
+            result += '\n\n' + '\n'.join(tags).strip()
+        return result if not WeiToutiaoStandaloneGenerator._feed_opening_reason(result) else content
 
     def _build_tags(self, topic: TopicCandidate, persona: str = "") -> str:
         tags: list[str] = []
@@ -1089,6 +1129,7 @@ class WeiToutiaoStandaloneGenerator:
                         break
                     continue
 
+            model_content_char_count = self._content_char_count(content) if generation_mode == 'model' else None
             story_fallback_reason = self._model_story_fallback_reason(topic, persona, content)
             if generation_mode == "model" and story_fallback_reason:
                 generation_mode = "local_fallback"
@@ -1126,6 +1167,8 @@ class WeiToutiaoStandaloneGenerator:
                             "stage": "generation",
                             "generation_mode": generation_mode,
                             "generation_fallback_reason": fallback_reason,
+                            "model_content_char_count": model_content_char_count,
+                            "content_char_count": self._content_char_count(content),
                         }
                     )
                     continue

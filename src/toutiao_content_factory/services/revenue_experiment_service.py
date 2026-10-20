@@ -154,6 +154,7 @@ class RevenueExperimentService:
         growth_feedback: dict[str, Any],
         performance: dict[str, Any],
         readiness: dict[str, Any],
+        cost_account_key: str | None = None,
     ) -> dict[str, Any]:
         observed_at = str(
             growth_snapshot.get("observed_at")
@@ -196,7 +197,10 @@ class RevenueExperimentService:
                 "revenue_as_of_date": work.get("revenue_as_of_date", ""), "counters_as_of_date": observed_at[:10],
             })
         attribution = self._per_content_attribution({"records": income_records})
-        costs = build_cost_summary(self.output_dir, now=reference_time)
+        bound_cost_account = cost_account_key or account_snapshot.get("account_key") or growth_snapshot.get("account")
+        # A directory or a display name alone does not prove receipt ownership.
+        cost_scope = str(bound_cost_account) if bound_cost_account else "__UNBOUND_ACCOUNT__"
+        costs = build_cost_summary(self.output_dir, now=reference_time, account_key=cost_scope)
         experiment = self._experiment_status(
             growth_snapshot=growth_snapshot,
             growth_feedback=growth_feedback,
@@ -213,7 +217,7 @@ class RevenueExperimentService:
             "readiness": readiness,
             "account": account_snapshot.get("account") or {},
             "generation_costs": costs,
-            "cost_windows": {str(days): costs if days == 30 else build_cost_summary(self.output_dir, now=reference_time, days=days)
+            "cost_windows": {str(days): costs if days == 30 else build_cost_summary(self.output_dir, now=reference_time, days=days, account_key=cost_scope)
                              for days in (7, 30, 90)},
             "income_windows": income_windows,
             "latest_settled_windows": settled_windows,

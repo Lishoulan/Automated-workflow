@@ -857,11 +857,12 @@ class ContentFactoryAppService:
                         "; ".join(str(w) for w in warnings[:5]),
                     )
 
-        priority_weitoutiao_exports = self._publish_priority_weitoutiao(dry_run=dry_run)
-
         self._cleanup_stale_runs()
-        exported_files = dict(priority_weitoutiao_exports)
-        exported_files.update(self.collect_topics())
+        # The priority post shares today's collection with the article path.
+        # Restored daily_topics can still describe yesterday's exhausted pool.
+        exported_files = dict(self.collect_topics())
+        priority_weitoutiao_exports = self._publish_priority_weitoutiao(dry_run=dry_run)
+        exported_files.update(priority_weitoutiao_exports)
         self._heartbeat_daily_run_lock()
         benchmark_refresh_exports: dict[str, str] = {}
         try:

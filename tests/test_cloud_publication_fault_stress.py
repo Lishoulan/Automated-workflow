@@ -98,6 +98,9 @@ def cloud_state(settings, monkeypatch):
     monkeypatch.setenv("WECHAT_EXECUTION_HOST", "cloud")
     monkeypatch.setenv("WECHAT_DELIVERY_MODE", "draft")
     monkeypatch.setenv("WECHAT_SESSION_REFRESH", "0")
+    # delenv cannot register an absent key. Own it before simulating a hard
+    # cancellation, which exits before the worker can restore its run ID.
+    monkeypatch.setenv("WECHAT_EXECUTION_ID", "")
     for key in ("WECHAT_EXECUTION_ID", "WECHAT_RUN_DEADLINE_EPOCH", "WECHAT_GENERATION_DEADLINE_EPOCH",
                 "WECHAT_RETRY_PARENT", "WECHAT_RETRY_DAY", "WECHAT_VALIDATION_ID"):
         monkeypatch.delenv(key, raising=False)
@@ -109,7 +112,7 @@ def cloud_state(settings, monkeypatch):
     directory.mkdir(parents=True)
     def reader(*a, **kw):
         path = directory / Path(kw.get("path", "guard.json")).name
-        return json.loads(path.read_text()) if path.exists() else {}
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     def writer(state, path, message):
         (directory / Path(path).name).write_text(json.dumps(state))
     monkeypatch.setattr(cloud.xstate, "read_remote_state", reader)
@@ -155,7 +158,7 @@ def test_cloud_restart_faults_preserve_delivery_guards(app_settings, monkeypatch
                 cloud.main(["--mode", "draft"])
         else:
             assert cloud.main(["--mode", "draft"]) != 0
-            result = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text())
+            result = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text(encoding="utf-8"))
             assert result["publication_attempted"] is False and result["execution_host"] == "cloud"
             if fault == "lost_receipt":
                 assert result["draft_delivery"]["status"] == "uncertain"
@@ -191,7 +194,7 @@ def test_unreadable_or_unwritable_remote_guards_prevent_work(app_settings, monke
                 writer(state, path, message)
             monkeypatch.setattr(cloud, "write_state_file", fail_reservation)
         assert cloud.main(["--mode", "draft"]) == 1
-        report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text())
+        report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text(encoding="utf-8"))
         assert report["publication_attempted"] is False
     record_property("remote_guard_fault", fault)
     record_property("blocked_before_work", 10 * SCALE)
@@ -397,7 +400,7 @@ def test_watchdog_end_to_end_fault_receipts(tmp_path, monkeypatch, record_proper
     for _ in range(5 * SCALE):
         destination.write_text("")  # Reset only this isolated notification fixture.
         code = watchdog.main()
-        report = json.loads((destination.parent / "publication_watchdog_result.json").read_text())
+        report = json.loads((destination.parent / "publication_watchdog_result.json").read_text(encoding="utf-8"))
         assert report["alerts"]
         if fault in {"delivery_failed", "quota_exhausted"}:
             assert code == 1 and all(not row["acknowledged"] for row in report["alerts"])

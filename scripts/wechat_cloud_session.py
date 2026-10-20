@@ -45,10 +45,20 @@ def decrypt_state(encrypted: bytes, key: str, account: str) -> dict[str, Any]:
 def restore_session(settings: Any, encrypted_path: Path, key: str, seed: str, *, prefer_seed: bool = False) -> Path:
     # 缓存失效时才用初始种子，避免每次把新登录状态覆盖成旧状态。
     # Prefer refreshed encrypted state over the initial seed.
-    encrypted = encrypted_path.read_bytes() if encrypted_path.exists() and not prefer_seed else seed.encode()
+    cached = encrypted_path.exists() and not prefer_seed
+    encrypted = encrypted_path.read_bytes() if cached else seed.encode()
     if not encrypted:
         raise ValueError("WeChat cloud session is not configured.")
-    state = decrypt_state(encrypted, key, settings.account_key)
+    try:
+        state = decrypt_state(encrypted, key, settings.account_key)
+    except ValueError as exc:
+        # A rotated key can leave an old encrypted cache behind. A separately
+        # authenticated, same-account seed may recover it; a decrypted cache
+        # belonging to another account/schema must still fail closed.
+        if not cached or not seed or exc.__cause__ is None:
+            raise
+        state = decrypt_state(seed.encode(), key, settings.account_key)
+        logging.getLogger(__name__).warning('Unreadable encrypted cache; restored validated account-bound seed.')
     target = settings.account_runtime_dir / "automation" / "browser_state" / "WeChat_storage_state.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")

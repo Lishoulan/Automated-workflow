@@ -74,22 +74,29 @@ def match_publication(expected: dict, backend: dict, article: dict) -> dict | No
     never assigned the current year. An old same-title article cannot match.
     """
     from toutiao_content_factory.services.wechat_evidence import public_url
+    from toutiao_content_factory.services.wechat_growth_service import article_url
     account, title = expected.get("account", ""), expected.get("title", "")
     submitted = parse_time(expected.get("submitted_at", ""))
     published = parse_time(article.get("published_at", ""))
     backend_date = str(backend.get("published_at", "")).strip()
     url = public_url(article.get("url", ""))
-    if (backend.get("status") != "published" or not account or not title or not submitted or not published
+    official = (backend.get('evidence_source') == 'official_freepublish'
+                and backend.get('status') == 'platform_reported_published'
+                and type(backend.get('publish_status')) is int and backend['publish_status'] == 0
+                and expected.get('publish_id') and backend.get('publish_id') == expected['publish_id'])
+    if ((backend.get("status") != "published" and not official) or not account or not title or not submitted or not published
             or backend.get("account") != account or article.get("account") != account
             or normalized_body(backend.get("title", "")) != normalized_body(title)
             or normalized_body(article.get("title", "")) != normalized_body(title)
-            or not url.startswith("https://mp.weixin.qq.com/s/") or public_url(backend.get("url", "")) != url
+            or not article_url(url) or public_url(backend.get("url", "")) != url
             or not expected.get("body_hash") or len(normalized_body(article.get("body", ""))) < 300
             or body_hash(article.get("body", "")) != expected["body_hash"]
             or published < submitted - timedelta(minutes=5) or published > datetime.now(BEIJING) + timedelta(minutes=5)):
         return None
     exact_backend_time = parse_time(backend_date)
-    if exact_backend_time:
+    if official:
+        pass  # The identified API job supplies platform confirmation; public time remains independently checked.
+    elif exact_backend_time:
         if abs((exact_backend_time - published).total_seconds()) > 60:
             return None
     else:
@@ -98,7 +105,8 @@ def match_publication(expected: dict, backend: dict, article: dict) -> dict | No
             return None
     return {"account": account, "title": title, "url": url,
             "published_at": published.isoformat(), "body_hash": expected["body_hash"],
-            "backend_status": "published", "confirmed": True}
+            "backend_status": backend['status'], "confirmed": True,
+            **({'verification_method': 'official_api_and_public', 'publish_id': expected['publish_id']} if official else {})}
 
 
 def validate_metrics(payload: dict) -> dict:

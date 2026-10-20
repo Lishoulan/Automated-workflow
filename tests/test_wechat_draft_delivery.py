@@ -86,7 +86,7 @@ def test_relay_balance_is_checked_before_paid_cover(app_settings, monkeypatch, b
     monkeypatch.setattr(cover_check, "ImageGenerationService", FakeImages)
     assert cover_check.main() == (0 if balance else 1)
     assert len(calls) == (1 if balance else 0)
-    serialized = (app_settings.automation_dir / "wechat_cover_check/result.json").read_text()
+    serialized = (app_settings.automation_dir / "wechat_cover_check/result.json").read_text(encoding="utf-8")
     assert "do-not-persist" not in serialized
 
 
@@ -105,7 +105,7 @@ def test_free_cloud_cover_validation_never_contacts_relay(app_settings, monkeypa
             return {"image_generation_result": report, "cover_image": run / "images/cover.png"}
     monkeypatch.setattr(cover_check, "ImageGenerationService", FakeImages)
     assert cover_check.main() == 0
-    report = json.loads((app_settings.automation_dir / "wechat_cover_check/result.json").read_text())
+    report = json.loads((app_settings.automation_dir / "wechat_cover_check/result.json").read_text(encoding="utf-8"))
     assert report["model"] == "flux-1-schnell"
     assert report["publication_attempted"] is False and report["draft_saving_attempted"] is False
 
@@ -132,12 +132,12 @@ def test_draft_delivery_cannot_publish_even_with_submit_true(app_settings, logge
     monkeypatch.setattr(service, "_publish_via_browser_only", browser)
     monkeypatch.setattr(service.growth_ops_service, "register_publish_event", MagicMock(return_value={}))
     exports = service.publish_run(run, submit=True)
-    result = json.loads(exports["wechat_publish_result"].read_text())
+    result = json.loads(exports["wechat_publish_result"].read_text(encoding="utf-8"))
     assert result["status"] == "draft_saved"
     assert result["submit_requested"] is False and result["publication_attempted"] is False
     assert result["manual_publication_required"] is True
     assert "expected_publication" not in result
-    assert json.loads((run / "review_status.json").read_text())["status"] == "pending"
+    assert json.loads((run / "review_status.json").read_text(encoding="utf-8"))["status"] == "pending"
     submit.assert_not_called()
     if api:
         assert network.call_args.args[0] == "/cgi-bin/draft/add"
@@ -171,7 +171,7 @@ def test_unapproved_export_retains_review_and_never_claims_approval(app_settings
         article="Actual source-based body.", summary="根据baidu_hot公开资料，事实仍待核对。", revision_suggestions=["Verify the conclusion"]), None))
     before = status.read_bytes()
     exported = review.prepare_wechat_draft(run)
-    meta = json.loads(exported["publish_meta"].read_text())
+    meta = json.loads(exported["publish_meta"].read_text(encoding="utf-8"))
     assert status.read_bytes() == before
     assert "approved_at" not in meta and meta["approval_mode"] == "pending_manual_review"
     assert meta["revision_suggestions"] == ["Verify the conclusion"]
@@ -240,7 +240,7 @@ def test_saved_or_uncertain_draft_blocks_duplicate_generation(app_settings, monk
     runner = MagicMock(side_effect=AssertionError("Must not start another manuscript"))
     monkeypatch.setattr("toutiao_content_factory.services.wechat_execution.run_process_tree", runner)
     assert cloud.main(["--mode", "publish"]) == (0 if delivery == "saved" else 1)
-    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text())
+    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text(encoding="utf-8"))
     assert report["delivery_mode"] == "draft"
     assert report["publication_attempted"] is False
     assert report["formal_publication_confirmed"] is False
@@ -251,7 +251,7 @@ def test_draft_budget_exhaustion_does_not_start(app_settings, monkeypatch):
     _, child, _ = setup_cloud(app_settings, monkeypatch, used_seconds=5300)
     assert cloud.main(["--mode", "draft"]) == 0
     child.assert_not_called()
-    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text())
+    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text(encoding="utf-8"))
     assert report["retry_status"] == "daily_budget_exhausted"
 
 
@@ -259,7 +259,7 @@ def test_legacy_publish_command_honors_draft_configuration_without_workflow_over
     _, child, _ = setup_cloud(app_settings, monkeypatch, used_seconds=5300)
     monkeypatch.delenv("WECHAT_DELIVERY_MODE")
     assert cloud.main(["--mode", "publish"]) == 0
-    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text())
+    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text(encoding="utf-8"))
     assert report["delivery_mode"] == "draft" and report["publication_attempted"] is False
     child.assert_not_called()
 
@@ -275,7 +275,7 @@ def test_draft_timeout_never_claims_publication(app_settings, monkeypatch, phase
         raise subprocess.TimeoutExpired(command, kw["timeout"])
     monkeypatch.setattr("toutiao_content_factory.services.wechat_execution.run_process_tree", timeout)
     assert cloud.main(["--mode", "draft"]) == 1
-    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text())
+    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text(encoding="utf-8"))
     assert report["draft_delivery"]["status"] == ("uncertain" if uncertain else "not_saved")
     assert report["publication_attempted"] is False
     assert "wechat_status" not in report
@@ -293,7 +293,7 @@ def test_draft_success_retains_delivery_id_and_excludes_publication_metrics(app_
         return subprocess.CompletedProcess(command, 0)
     monkeypatch.setattr("toutiao_content_factory.services.wechat_execution.run_process_tree", deliver)
     assert cloud.main(["--mode", "draft"]) == 0
-    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text())
+    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text(encoding="utf-8"))
     assert report["draft_delivery"]["app_msg_id"] == "exact-id"
     assert not report["formal_publication_confirmed"]
     assert report["metrics"]["7"]["actual_publish_runs"] == 1  # Only the retained legacy run.
@@ -330,7 +330,7 @@ def test_draft_phase_without_current_proof_is_uncertain(app_settings, monkeypatc
     if damage == "stale":
         os.utime(path, ns=(started - 1000000000, started - 1000000000))
     elif damage == "wrong_run":
-        value = json.loads(path.read_text())
+        value = json.loads(path.read_text(encoding="utf-8"))
         value["run_id"] = "previous"
         path.write_text(json.dumps(value))
     elif damage == "invalid_json":
@@ -350,7 +350,7 @@ def test_success_without_draft_identifier_is_not_saved(app_settings, monkeypatch
         return subprocess.CompletedProcess(command, 0)
     monkeypatch.setattr("toutiao_content_factory.services.wechat_execution.run_process_tree", deliver)
     assert cloud.main(["--mode", "draft"]) == 1
-    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text())
+    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text(encoding="utf-8"))
     assert report["draft_delivery"]["status"] == "uncertain"
     assert report["status"] == "error" and report["publication_attempted"] is False
 
@@ -379,7 +379,7 @@ def test_retry_reservation_preserves_saved_draft_when_metrics_write_fails(app_se
     blocked = MagicMock(side_effect=AssertionError("Must not duplicate delivered draft"))
     monkeypatch.setattr("toutiao_content_factory.services.wechat_execution.run_process_tree", blocked)
     assert cloud.main(["--mode", "draft"]) == 1  # Metrics remain unavailable; delivery remains confirmed.
-    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text())
+    report = json.loads((app_settings.automation_dir / "wechat_cloud_result.json").read_text(encoding="utf-8"))
     assert report["status"] == "already_drafted"
     assert report["draft_delivery"]["app_msg_id"] == "exact-id"
     blocked.assert_not_called()

@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 import os
 import logging
+import re
 from datetime import datetime, timezone
 
 from toutiao_content_factory.services.wechat_metrics import match_publication
@@ -11,12 +12,17 @@ from toutiao_content_factory.services.wechat_metrics import match_publication
 BACKEND_RECORDS_JS = r"""() => {
   const account = document.querySelector('.account_box-panel-head__nickname, .acount_box-nickname')?.innerText.trim() || '';
   const records = [];
-  for (const link of document.querySelectorAll('a[href^="https://mp.weixin.qq.com/s/"]')) {
+  // The homepage labels same-day publications with 今天 HH:mm. Anchor
+  // that explicit relative date to this observation in Beijing time.
+  const beijing = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  for (const link of document.querySelectorAll('a[href^="https://mp.weixin.qq.com/s/"],a[href^="https://mp.weixin.qq.com/s?"]')) {
     const row = link.closest('.publish_hover_content, .weui-desktop-mass__content');
     if (!row || !/^已发表$/m.test(row.innerText)) continue;
     const date = row.innerText.match(/(?:\d{4}[-年])?\d{1,2}月\d{1,2}日/);
+    const today = /^今天\s+\d{1,2}:\d{2}$/m.test(row.innerText);
     records.push({account, title:link.innerText.trim(), url:link.href,
-      status:'published', published_at:date ? date[0] : ''});
+      status:'published', published_at:date ? date[0] : today
+        ? `${beijing.getUTCMonth() + 1}月${beijing.getUTCDate()}日` : ''});
   }
   return {account, records};
 }"""
@@ -100,8 +106,27 @@ def verify_pending(settings, expected_records: list[dict], *, timeout_seconds: i
             if any(row.get("account") and row["account"] != snapshot["account"] for row in expected_records):
                 raise RuntimeError("WeChat verification account mismatch")
             confirmed = {}
+            service = None
             for expected in expected_records:
                 candidates = [row for row in snapshot["records"] if row["title"] == expected.get("title")]
+                job_key = str(expected.get('official_job_key', ''))
+                if expected.get('publish_id') and re.fullmatch(r'[0-9a-f]{64}', job_key):
+                    from toutiao_content_factory.services.wechat_service import WechatPublishService
+                    from toutiao_content_factory.services.wechat_official_publish import query_job
+                    try:
+                        service = service or WechatPublishService(settings, logging.getLogger(__name__))
+                        service._api_deadline = deadline
+                        token = service._get_access_token()
+                        job = query_job(settings.automation_dir / 'wechat_official_jobs' / (job_key + '.json'),
+                            account=settings.account_key,
+                            expected={k: expected[k] for k in ('account', 'title', 'body_hash')},
+                            post=lambda endpoint, payload: service._wechat_post_json(endpoint, payload, access_token=token))
+                        if job.get('publish_id') == expected['publish_id'] and job.get('status') == 'platform_reported_published':
+                            candidates.extend({'status': job['status'], 'publish_status': 0, 'publish_id': job['publish_id'],
+                                'evidence_source': 'official_freepublish', 'account': expected['account'], 'title': expected['title'],
+                                'url': url} for url in job.get('article_urls', []))
+                    except (OSError, ValueError, RuntimeError):
+                        logging.getLogger(__name__).warning('Official status unavailable; retaining pending job and checking existing backend evidence.')
                 matches = []
                 for record in candidates:
                     public = context.new_page()
@@ -110,13 +135,15 @@ def verify_pending(settings, expected_records: list[dict], *, timeout_seconds: i
                         public.locator('#js_content').wait_for(timeout=remaining())
                         article = public.evaluate(PUBLIC_ARTICLE_JS)
                         article["url"] = public.url
+                        if record.get('evidence_source') == 'official_freepublish':
+                            record = {**record, 'api_article_url': record['url'], 'url': public.url}
                         timestamp = article.pop("timestamp", "")
                         if timestamp.isdigit():
                             article["published_at"] = datetime.fromtimestamp(int(timestamp), timezone.utc).isoformat()
                         else:
                             article["published_at"] = ""
                         proof = match_publication(expected, record, article)
-                        if proof:
+                        if proof and not any(row['url'] == proof['url'] for row in matches):
                             matches.append(proof)
                     finally:
                         public.close()

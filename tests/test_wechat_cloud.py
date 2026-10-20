@@ -56,6 +56,25 @@ def test_restored_state_and_refresh_survive_a_new_runner(app_settings, tmp_path,
     assert b"refreshed-value" not in encrypted.read_bytes()
 
 
+def test_rotated_key_recovers_only_from_a_valid_account_bound_seed(app_settings, tmp_path, state):
+    previous_key = Fernet.generate_key().decode()
+    current_key = Fernet.generate_key().decode()
+    encrypted = tmp_path / 'old-cache.enc'
+    encrypted.write_bytes(encrypt_state(state, previous_key, 'default'))
+    seed = encrypt_state(state, current_key, 'default').decode()
+    restored = restore_session(app_settings, encrypted, current_key, seed)
+    assert json.loads(restored.read_text(encoding='utf-8'))['cookies'][0]['value'] == 'private-value'
+
+
+def test_wrong_account_cache_is_not_silently_replaced_by_seed(app_settings, tmp_path, state):
+    key = Fernet.generate_key().decode()
+    encrypted = tmp_path / 'wrong-account.enc'
+    encrypted.write_bytes(encrypt_state(state, key, 'robot_notes'))
+    seed = encrypt_state(state, key, 'default').decode()
+    with pytest.raises(ValueError, match='different account'):
+        restore_session(app_settings, encrypted, key, seed)
+
+
 @pytest.mark.parametrize("status, accepted", [("submitted", True), ("published", True), ("draft_saved", False), ("error", False)])
 def test_only_current_day_accepted_publications_are_recorded(tmp_path, status, accepted):
     history = tmp_path / "history.json"

@@ -104,14 +104,48 @@ def test_workflow_is_cloud_only_and_keeps_shared_concurrency():
     assert "WECHAT_FIXED_DEVICE_DIR" not in job["env"]
     assert workflow["concurrency"]["group"] == "wechat-default"
     assert workflow["concurrency"]["cancel-in-progress"] == "false"
+    history_paths = {"output/wechat_publish_history.json", "output/growth_ops/generation_costs/"}
+    session_paths = history_paths | {".runtime/automation/wechat_cloud_session.enc"}
+    run_suffix = "${{ github.run_id }}-${{ github.run_attempt }}"
+    session_prefix = "wechat-cloud-default-${{ vars.WECHAT_SESSION_CACHE_VERSION || 'v1' }}-"
+    material_prefix = "wechat-material-default-"
+    official_prefix = "wechat-official-default-${{ github.ref_name }}-"
+    # Exact path/key contracts prevent credentials and receipts crossing cache boundaries.
+    caches = {
+        "Import existing accepted history": (
+            "restore", history_paths, "wechat-history-import-" + run_suffix, "wechat-fixed-default-v1-"),
+        "Restore encrypted session and accepted history": (
+            "restore", session_paths, session_prefix + run_suffix, session_prefix),
+        "Save refreshed encrypted session and accepted history": (
+            "save", session_paths, session_prefix + run_suffix, None),
+        "Restore verified source material reserve": (
+            "restore", {"output/automation/topic_pool/"}, material_prefix + run_suffix, material_prefix),
+        "Save source material reserve": (
+            "save", {"output/automation/topic_pool/"}, material_prefix + run_suffix, None),
+        "Restore official publication intents and receipts": (
+            "restore", {"output/automation/wechat_official_jobs/"}, official_prefix + run_suffix, official_prefix),
+        "Save official publication intents and receipts": (
+            "save", {"output/automation/wechat_official_jobs/"}, official_prefix + run_suffix, None),
+    }
+    observed = set()
     for step in job["steps"]:
         if "actions/cache" in step.get("uses", ""):
-            if step.get("name") == "Import existing accepted history":
-                assert set(step["with"]["path"].splitlines()) == {
-                    "output/wechat_publish_history.json", "output/growth_ops/generation_costs/"}
+            name = step.get("name")
+            assert name in caches, f"Unknown WeChat cache type: {name!r}"
+            assert name not in observed, f"Duplicate WeChat cache: {name}"
+            observed.add(name)
+            action, paths, key, restore_prefix = caches[name]
+            assert step["uses"] == f"actions/cache/{action}@v4", name
+            options = step["with"]
+            assert set(options["path"].splitlines()) == paths, f"Cache paths cross purpose boundary: {name}"
+            assert options["key"] == key, f"Cache key has wrong purpose or identity: {name}"
+            assert "secrets." not in json.dumps(options), f"Cache configuration exposes a login secret: {name}"
+            if restore_prefix is not None:
+                assert options["restore-keys"].splitlines() == [restore_prefix], name
+                assert set(options) == {"path", "key", "restore-keys"}, name
             else:
-                assert ".runtime/automation/wechat_cloud_session.enc" in step["with"]["path"]
-                assert "WECHAT_SESSION_CACHE_VERSION" in step["with"]["key"]
+                assert set(options) == {"path", "key"}, name
+    assert observed == set(caches), f"Missing WeChat caches: {set(caches) - observed}"
 
 
 def test_fixed_manual_publish_cannot_bypass_shared_budget(app_settings, monkeypatch):

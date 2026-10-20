@@ -30,6 +30,30 @@ logger = logging.getLogger("wechat_cloud")
 ACCEPTED_STATUSES = {"submitted", "submitted_for_review", "published", "success"}
 
 
+def reconcile_publications(settings, metrics_state):
+    """Verify existing receipts; human-published drafts never count as auto runs."""
+    expected, manual_keys = [], set()
+    for row in metrics_state['runs']:
+        if row.get('outcome') in metrics.PENDING or row.get('submission_outcome') in metrics.PENDING:
+            if row.get('outcome') != 'published_confirmed' and row.get('expected_publication'):
+                expected.append({**row['expected_publication'], 'run_key': row['run_key']})
+        handoff = row.get('draft_delivery', {}).get('handoff', {})
+        if (row.get('mode') == 'draft' and not row.get('excluded') and not row.get('manual_publication', {}).get('confirmed')
+                and row.get('draft_delivery', {}).get('status') == 'saved'
+                and all(handoff.get(k) for k in ('account', 'title', 'body_hash', 'saved_at'))):
+            expected.append({**handoff, 'submitted_at': handoff['saved_at'], 'run_key': row['run_key']})
+            manual_keys.add(row['run_key'])
+    confirmations = verify_pending(settings, expected) if expected else {}
+    manual = {key: proof for key, proof in confirmations.items() if key in manual_keys}
+    formal = {key: proof for key, proof in confirmations.items() if key not in manual_keys}
+    for row in metrics_state['runs']:
+        if row.get('run_key') in manual:
+            row['manual_publication'] = manual[row['run_key']]
+        elif row.get('run_key') in formal:
+            row.update(outcome='published_confirmed', publication=formal[row['run_key']])
+    return formal, manual
+
+
 def configure_environment(account: str, *, draft_only: bool = False) -> None:
     from toutiao_content_factory.config import account_env_name
 
@@ -266,9 +290,13 @@ def main(argv: list[str] | None = None) -> int:
     run_key = run_id + ":" + os.environ.get("GITHUB_RUN_ATTEMPT", "1") if run_id else ""
     started_at = datetime.now(timezone.utc).isoformat()
     confirmations = {}
+    manual_confirmations = {}
+    reconciliation_error = None
     retry_state = None
     reserved_started = None
     def finish(report, code, *, excluded=False):
+        if reconciliation_error:
+            report['publication_reconciliation_error'] = reconciliation_error
         report["execution_host"] = "fixed" if fixed_device else "cloud"
         report["delivery_mode"] = args.mode
         if args.mode == "draft":
@@ -278,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
         if confirmations:
             report["confirmed_publications"] = list(confirmations.values())
             report["formal_publication_confirmed"] = True
+        if manual_confirmations:
+            report['manual_publications_verified'] = list(manual_confirmations.values())
         if reserved_started is not None:
             report["processing_elapsed_seconds"] = round(time.monotonic() - reserved_started, 3)
         code = complete_run(settings, report, code, metrics_state=metrics_state, run_key=run_key,
@@ -312,14 +342,13 @@ def main(argv: list[str] | None = None) -> int:
         if run_key:
             metrics_state = metrics.validate_metrics(xstate.read_remote_state(
                 ROOT, branch=xstate.WECHAT_STATE_BRANCH, path=metrics.METRICS_PATH, strict=True))
-            pending = [{**row["expected_publication"], "run_key": row["run_key"]}
-                       for row in metrics_state["runs"] if (row.get("outcome") in metrics.PENDING or row.get("submission_outcome") in metrics.PENDING)
-                       and row.get("outcome") != "published_confirmed"
-                       and row.get("expected_publication")]
-            confirmations = verify_pending(settings, pending) if args.mode != "draft" else {}
-            for row in metrics_state["runs"]:
-                if row.get("run_key") in confirmations:
-                    row.update(outcome="published_confirmed", publication=confirmations[row["run_key"]])
+            try:
+                confirmations, manual_confirmations = reconcile_publications(settings, metrics_state)
+            except Exception as exc:
+                if args.mode != 'draft':
+                    raise
+                reconciliation_error = type(exc).__name__
+                logger.warning('Public read-back unavailable; draft receipts stay unconfirmed: %s', reconciliation_error)
             unresolved = [row for row in metrics_state["runs"] if (row.get("outcome") in metrics.PENDING or row.get("submission_outcome") in metrics.PENDING)
                           and row.get("outcome") != "published_confirmed"
                           and not row.get("excluded")]

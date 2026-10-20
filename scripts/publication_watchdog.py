@@ -162,9 +162,15 @@ def outcome_alert(platform, result):
         return f"【{platform}】提交结果待核", "平台可能已收到提交，结果尚未确认。请核对后台；自动流程保留防重复状态，不再次提交。"
     if result.get("retry_status") == "daily_budget_exhausted":
         return f"【{platform}】今日自动处理额度已用完", "今天尚未取得新草稿成功记录，运行次数或处理预算已耗尽。已停止补跑，下一执行窗口继续；请查看本次选题和审核报告。"
+    if result.get('metrics_error') or result.get('retry_state_error'):
+        return f"【{platform}】任务异常", "结果记录失败；保留已有投递事实和防重复状态，请核对云端回执。"
+    if (status == 'draft_only' and delivery.get('status') == 'saved'
+            and (delivery.get('app_msg_id') or delivery.get('draft_media_id'))
+            and not result.get('metrics_error') and not result.get('retry_state_error')):
+        return None  # Delivered for human review; it is not a failed delivery.
     if status in {"no_topics", "review_required", "draft_only", "degraded_to_draft"}:
         return f"【{platform}】本次未完成交付", "本次没有合格内容完成交付，可能是素材不足、审核未通过或降为草稿。请查看报告；不会为凑数量绕过审核。"
-    if status in {"failed", "error", "blocked", "blocked_by_ip", "partial_success"} or result.get("metrics_error") or result.get("retry_state_error"):
+    if status in {"failed", "error", "blocked", "blocked_by_ip", "partial_success"}:
         return f"【{platform}】任务异常", "自动任务或结果记录异常，请查看运行报告。提交状态不确定时先核对后台，避免重复发文。"
     return None
 

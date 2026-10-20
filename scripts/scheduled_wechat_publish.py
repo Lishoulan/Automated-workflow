@@ -746,7 +746,8 @@ def main(argv: list[str] | None = None) -> int:
         snapshot = fresh_json(workflow, workflow_started).get("final_attempt", {}).get("platform_results", {}).get("wechat", {})
         if snapshot.get("status") == "draft_saved" and (snapshot.get("draft_media_id") or snapshot.get("app_msg_id")):
             result["draft_delivery"] = {"status": "saved", "title": snapshot.get("title", ""),
-                "draft_media_id": snapshot.get("draft_media_id", ""), "app_msg_id": snapshot.get("app_msg_id", "")}
+                "draft_media_id": snapshot.get("draft_media_id", ""), "app_msg_id": snapshot.get("app_msg_id", ""),
+                **({'handoff': snapshot['draft_handoff']} if snapshot.get('draft_handoff') else {})}
     result.update({key: diagnostics[key] for key in ("reason_codes", "attempt_count", "publication_attempted", "enrichment_count", "eligible_candidate_count")})
     (settings.automation_dir / "wechat_review_diagnostics.json").write_text(
         json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding="utf-8"

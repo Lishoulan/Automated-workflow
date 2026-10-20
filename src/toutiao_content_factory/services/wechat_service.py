@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import json
 import logging
@@ -212,11 +213,28 @@ class WechatPublishService:
             from toutiao_content_factory.services.wechat_execution import require_submission_budget
             require_submission_budget()
 
+        requested = not draft_only and (submit or self.settings.wechat.auto_publish)
+        if requested and not self.settings.wechat.official_publish_enabled:
+            raise PermissionError('Official formal publication is disabled; explicit production authorization is required')
+        job_path = self._official_job_path(title, article)
+        if requested and job_path.exists():
+            from toutiao_content_factory.services.wechat_official_publish import query_job
+            from toutiao_content_factory.services.wechat_metrics import body_hash
+            token = self._get_access_token()
+            job = query_job(job_path, account=self.settings.account_key,
+                            expected={'account': self.settings.wechat.account_name, 'title': title, 'input_body_hash': body_hash(article)},
+                            post=lambda endpoint, payload: self._wechat_post_json(endpoint, payload, access_token=token))
+            result_path = publish_dir / 'wechat/wechat_publish_result.json'
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(json.dumps(self._official_result(job, job_path), ensure_ascii=False, indent=2), encoding='utf-8')
+            self._append_history(self._official_result(job, job_path))
+            return {'wechat_publish_result': result_path, 'wechat_official_job': job_path}
+
         try:
             pipeline = AntiAIFlavorPipeline()
             result = pipeline.process(article)
             density = result["density"]
-            if not self.settings.wechat_auto_publish_mode and not draft_only:
+            if not self.settings.wechat_auto_publish_mode and not draft_only and not requested:
                 article = result["processed_text"]
             self.logger.info(
                 "WeChat compliance: density_score=%d, noun_ratio=%.3f, verb_ratio=%.3f, avg_sent_len=%.1f",
@@ -275,13 +293,16 @@ class WechatPublishService:
                 inline_image_urls=[],
             )
         article_html_path.write_text(article_html, encoding="utf-8")
+        if requested and not api_available:
+            draft_only = True  # API failure never authorizes browser formal publishing.
         expected_publication = {}
-        if self.settings.wechat_auto_publish_mode and not draft_only:
+        if requested and not draft_only:
             from toutiao_content_factory.services.wechat_metrics import html_body_hash, assert_reviewed_body_preserved
             assert_reviewed_body_preserved(article, article_html)
             expected_publication = {"account": self.settings.wechat.account_name,
                                     "title": title, "body_hash": html_body_hash(article_html),
-                                    "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                                    "input_body_hash": self._input_body_hash(article),
+                                    "submitted_at": datetime.now(timezone.utc).isoformat()}
 
         if draft_only:
             from toutiao_content_factory.services.wechat_execution import write_phase
@@ -295,11 +316,15 @@ class WechatPublishService:
             )
             payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-            draft_response = self._wechat_post_json(
-                "/cgi-bin/draft/add",
-                {"articles": [payload]},
-                access_token=access_token,
-            )
+            try:
+                draft_response = self._wechat_post_json('/cgi-bin/draft/add', {'articles': [payload]}, access_token=access_token)
+            except RuntimeError as exc:
+                # Only explicit provider rejection proves no draft was created.
+                # Timeouts and ambiguous responses must not create another draft.
+                if not re.search(r'errcode[\x27\x22]?\s*[:=]\s*(?:48001|40164)\b', str(exc)):
+                    raise
+                draft_response = {'ret': '200002'}
+                draft_only, expected_publication = True, {}
             draft_media_id = str(draft_response.get("media_id", "")).strip()
             if not draft_media_id:
                 err_code = str(draft_response.get("ret", ""))
@@ -314,6 +339,8 @@ class WechatPublishService:
                 else:
                     raise RuntimeError(f"Draft creation did not return media_id: {draft_response}")
 
+        if requested and not api_available:
+            draft_only, expected_publication = True, {}
         publish_response: dict[str, Any] = {}
         should_submit = not draft_only and (submit or self.settings.wechat.auto_publish)
         if should_submit:
@@ -325,10 +352,12 @@ class WechatPublishService:
                 integrity = self._load_json(run_dir / "quality_review_council.json").get("audit_integrity", {})
                 write_phase(self.settings, "submitting", fingerprint=integrity.get("fingerprint", ""))
             if api_available and draft_media_id:
-                publish_response = self._submit_draft_via_browser(
-                    draft_media_id=draft_media_id,
-                    title=title,
-                )
+                from toutiao_content_factory.services.wechat_official_publish import submit_job
+                job = submit_job(job_path, account=self.settings.account_key, draft_media_id=draft_media_id,
+                                 expected=expected_publication, authorized=self.settings.wechat.official_publish_enabled,
+                                 post=lambda endpoint, payload: self._wechat_post_json(endpoint, payload, access_token=access_token))
+                publish_response = self._official_result(job, job_path)
+                expected_publication = publish_response['expected_publication']
         if not api_available:
             publish_response = self._publish_via_browser_only(
                 title=title,
@@ -358,8 +387,14 @@ class WechatPublishService:
             **({"draft_only": True, "manual_publication_required": True, "publication_attempted": False,
                 "review_status": str(review_status.get("status", "pending")),
                 "app_msg_id": str(publish_response.get("app_msg_id", "")),
-                "saved_at": datetime.now(timezone.utc).isoformat()} if draft_only else {}),
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "draft_handoff": {'account': self.settings.wechat.account_name, 'title': title,
+                    'body_hash': self._rendered_body_hash(article_html),
+                    'body_hash_basis': 'rendered_delivery_payload',
+                    'saved_at': datetime.now(timezone.utc).isoformat()}} if draft_only else {}),
             **({"expected_publication": expected_publication} if expected_publication else {}),
+            **({key: publish_response[key] for key in ('publish_id', 'official_job_status', 'official_job_key', 'article_urls', 'publication_confirmed')
+                if key in publish_response}),
         }
         result_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         self._append_history(result_payload)
@@ -1090,6 +1125,40 @@ class WechatPublishService:
         request = Request(url, data=data, headers={"Content-Type": "application/json; charset=utf-8"})
         return self._read_json_response(request)
 
+    def check_official_permissions(self) -> dict[str, Any]:
+        """Read access is evidence about reads, never authorization to submit."""
+        report = {'account_key': self.settings.account_key, 'checked_at': datetime.now(timezone.utc).isoformat(),
+                  'publication_attempted': False, 'draft_saving_attempted': False,
+                  'draft_read': 'unverified', 'freepublish_read': 'unverified',
+                  'formal_submit_permission': 'not_proven_by_read_access'}
+        if not self.settings.wechat.app_id or not self.settings.wechat.app_secret:
+            return {**report, 'status': 'credentials_not_configured'}
+        try:
+            token = self._get_access_token()
+        except WechatIpWhitelistBlockedException as exc:
+            return {**report, 'status': 'ip_whitelist_blocked', 'observed_egress_ip': exc.ip_address}
+        except Exception as exc:
+            return {**report, 'status': 'token_unavailable', 'error_type': type(exc).__name__}
+        for field, endpoint in [('draft_read', '/cgi-bin/draft/batchget'),
+                                ('freepublish_read', '/cgi-bin/freepublish/batchget')]:
+            try:
+                self._wechat_post_json(endpoint, {'offset': 0, 'count': 1, 'no_content': 1}, access_token=token)
+                report[field] = 'available'
+            except Exception as exc:
+                code = re.search(r'errcode[\x27\x22]?\s*[:=]\s*[\x27\x22]?(-?\d+)', str(exc))
+                if isinstance(exc, WechatIpWhitelistBlockedException) or (code and code[1] == '40164'):
+                    report[field] = 'ip_whitelist_blocked'
+                    report['observed_egress_ip'] = (exc.ip_address if isinstance(exc, WechatIpWhitelistBlockedException)
+                                                    else self._extract_invalid_ip(str(exc)))
+                else:
+                    report[field] = 'permission_denied' if code and code[1] == '48001' else 'unavailable'
+                report[field + '_error_type'] = type(exc).__name__
+        outcomes = {report['draft_read'], report['freepublish_read']}
+        status = ('ip_whitelist_blocked' if 'ip_whitelist_blocked' in outcomes else
+                  'read_permission_denied' if 'permission_denied' in outcomes else
+                  'observed' if outcomes == {'available'} else 'read_access_unverified')
+        return {**report, 'status': status}
+
     def _wechat_post_multipart(
         self,
         endpoint: str,
@@ -1130,8 +1199,14 @@ class WechatPublishService:
             request.add_header("X-Proxy-Secret", wechat.serv00_proxy_secret)
 
         opener = self._build_opener()
+        timeout = 60.0
+        deadline = getattr(self, '_api_deadline', None)
+        if deadline is not None:
+            timeout = min(timeout, deadline - time.monotonic())
+            if timeout <= 0:
+                raise TimeoutError('WeChat read-only verification timed out')
         try:
-            with opener.open(request, timeout=60) as response:
+            with opener.open(request, timeout=timeout) as response:
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
@@ -1140,8 +1215,13 @@ class WechatPublishService:
             raise RuntimeError(f"WeChat API request failed: {exc.reason}") from exc
 
         payload = json.loads(raw or "{}")
-        if int(payload.get("errcode", 0) or 0) != 0:
-            raise RuntimeError(f"WeChat API error: {payload}")
+        error_code = int(payload.get("errcode", 0) or 0)
+        if error_code:
+            if error_code in (40164, 40125):
+                # Token handling extracts the whitelist IP or credential category.
+                raise RuntimeError(f"WeChat API error: {payload}")
+            from toutiao_content_factory.services.wechat_official_publish import OfficialAPIError
+            raise OfficialAPIError(error_code)
         return payload
 
     def _build_opener(self):
@@ -1173,44 +1253,25 @@ class WechatPublishService:
             base = wechat.api_base_url.rstrip("/")
         url = f"{base}/cgi-bin/token?{query}"
 
-        # Cloudflare Worker 代理出口 IP 不固定，遇到 40164 时自动重试
-        max_retries = 5 if wechat.serv00_proxy_enabled else 1
-        last_exc = None
-        for attempt in range(1, max_retries + 1):
-            request = Request(url)
-            try:
-                payload = self._read_json_response(request)
-            except RuntimeError as exc:
-                payload_text = str(exc)
-                if "40164" in payload_text and "invalid ip" in payload_text.lower():
-                    ip_address = self._extract_invalid_ip(payload_text)
-                    last_exc = exc
-                    if attempt < max_retries:
-                        self.logger.warning(
-                            "[WeChat] IP 白名单拦截 (attempt %d/%d), 出口 IP: %s, 自动重试...",
-                            attempt, max_retries, ip_address or "unknown",
-                        )
-                        time.sleep(1)
-                        continue
-                    message = (
-                        f"[WeChat] 微信公众号 API 调用被白名单拦截（已重试 {max_retries} 次），"
-                        f"当前出口 IP: {ip_address or 'unknown'}。"
-                        "请前往微信公众平台后台更新接口白名单。"
-                    )
-                    self.logger.warning(message)
-                    raise WechatIpWhitelistBlockedException(message, ip_address=ip_address) from exc
-                if "40125" in payload_text and "invalid appsecret" in payload_text.lower():
-                    from toutiao_content_factory.exceptions import WechatAuthError
-                    message = (
-                        "[WeChat] 微信公众号 AppSecret 验证失败 (errcode=40125)。"
-                        "请检查: 1) WECHAT_APP_ID 和 WECHAT_APP_SECRET 是否正确; "
-                        "2) 微信后台是否已重置 AppSecret; "
-                        "3) .env 文件中是否有拼写错误或多余空格。"
-                    )
-                    self.logger.error(message)
-                    raise WechatAuthError(message) from exc
-                raise
-            break
+        # A whitelist rejection needs an approved stable egress, not IP rotation.
+        try:
+            payload = self._read_json_response(Request(url))
+        except RuntimeError as exc:
+            payload_text = str(exc)
+            if "40164" in payload_text and "invalid ip" in payload_text.lower():
+                ip_address = self._extract_invalid_ip(payload_text)
+                message = (
+                    f"[WeChat] 微信公众号 API 调用被白名单拦截，当前出口 IP: {ip_address or 'unknown'}。"
+                    "请核对固定出口并在微信公众平台后台更新接口白名单。"
+                )
+                self.logger.warning(message)
+                raise WechatIpWhitelistBlockedException(message, ip_address=ip_address) from exc
+            if "40125" in payload_text and "invalid appsecret" in payload_text.lower():
+                from toutiao_content_factory.exceptions import WechatAuthError
+                message = "[WeChat] 微信公众号 AppSecret 验证失败 (errcode=40125)，请在凭据管理中核对账号及密钥。"
+                self.logger.error(message)
+                raise WechatAuthError(message) from exc
+            raise
         token = str(payload.get("access_token", "")).strip()
         expires_in = int(payload.get("expires_in", 7200) or 7200)
         if not token:
@@ -1258,16 +1319,45 @@ class WechatPublishService:
             return ""
         return path.read_text(encoding="utf-8").strip()
 
+    @staticmethod
+    def _input_body_hash(article):
+        from toutiao_content_factory.services.wechat_metrics import body_hash
+        return body_hash(article)
+
+    @staticmethod
+    def _rendered_body_hash(article_html):
+        from toutiao_content_factory.services.wechat_metrics import html_body_hash
+        return html_body_hash(article_html)
+
+    def _official_job_path(self, title, article):
+        identity = [self.settings.account_key, self.settings.wechat.account_name, title, self._input_body_hash(article)]
+        key = hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()
+        return self.settings.automation_dir / 'wechat_official_jobs' / (key + '.json')
+
+    def _official_result(self, job, path):
+        status = job['status']
+        if status == 'platform_reported_published':
+            status = 'submitted_for_review'  # Public body verification is still required.
+        elif status in {'api_rejected', 'publish_failed_or_removed'}:
+            status = 'failed'
+        return {**job, 'status': status, 'official_job_status': job['status'], 'official_job_key': path.stem,
+                'expected_publication': {**job['expected_publication'], 'publish_id': job.get('publish_id', ''), 'official_job_key': path.stem},
+                'platform': 'wechat', 'title': job['expected_publication']['title'],
+                'published_at': job['created_at'], 'submit_requested': True, 'publication_confirmed': False,
+                'external_url': '', 'publish_url': ''}
+
     def _append_history(self, payload: dict[str, Any]) -> None:
         history: list[dict[str, Any]] = []
         if self.history_path.exists():
-            try:
-                history = json.loads(self.history_path.read_text(encoding="utf-8"))
-                if not isinstance(history, list):
-                    history = []
-            except Exception:
-                history = []
-        history.append(payload)
+            history = json.loads(self.history_path.read_text(encoding="utf-8"))
+            if not isinstance(history, list):
+                raise ValueError('Invalid WeChat history; refusing to reset publication evidence')
+        key = payload.get('official_job_key')
+        found = next((i for i, row in enumerate(history) if isinstance(row, dict) and key and row.get('official_job_key') == key), None)
+        if found is not None:
+            history[found] = {**history[found], **payload}
+        else:
+            history.append(payload)
         self.history_path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def initialize_135editor_login_session(self) -> dict[str, str]:

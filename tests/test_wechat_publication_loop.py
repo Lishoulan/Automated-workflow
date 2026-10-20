@@ -446,16 +446,35 @@ def test_wechat_refund_consumer_keywords_do_not_enter_technology_enrichment(app_
     assert collector._has_concrete_industry_keyword(unrelated)
 
 
-@pytest.mark.parametrize("phase,account,expected", [("preparing", "default", False), ("submitting", "default", True), ("preparing", "other", True)])
-def test_failed_run_phase_proves_no_submit_without_changing_real_failure(app_settings, phase, account, expected):
-    import time
+@pytest.mark.parametrize("phase,account,run_id,file_state,phase_result,expected", [
+    pytest.param("preparing", "default", "current", "fresh", False, False, id="preparing-default-False"),
+    pytest.param("saving_draft", "default", "current", "fresh", False, False, id="saving-draft"),
+    pytest.param("submitting", "default", "current", "fresh", True, True, id="submitting-default-True"),
+    pytest.param("preparing", "other", "current", "fresh", None, True, id="preparing-other-True"),
+    pytest.param("preparing", "default", "old", "fresh", None, True, id="wrong-run"),
+    pytest.param("preparing", "default", "current", "stale", None, True, id="stale"),
+    pytest.param("preparing", "default", "current", "missing", None, True, id="missing"),
+    pytest.param("unknown", "default", "current", "fresh", None, True, id="unknown-phase"),
+])
+def test_failed_run_phase_proves_no_submit_without_changing_real_failure(
+        app_settings, monkeypatch, phase, account, run_id, file_state, phase_result, expected):
+    from toutiao_content_factory.services.wechat_execution import phase_attempted
+    monkeypatch.setenv("WECHAT_EXECUTION_ID", "current")
     app_settings.automation_dir.mkdir(parents=True, exist_ok=True)
-    started = time.time_ns()
-    (app_settings.automation_dir / "wechat_publish_phase.json").write_text(json.dumps({"account_key": account,
-        "phase": phase, "publication_attempted": phase != "preparing"}), encoding="utf-8")
+    path = app_settings.automation_dir / "wechat_publish_phase.json"
+    assert not (app_settings.automation_dir / "last_daily_workflow_report.json").exists()
+    started = 1
+    if file_state != "missing":
+        path.write_text(json.dumps({"account_key": account, "run_id": run_id,
+            "phase": phase, "publication_attempted": phase == "submitting"}), encoding="utf-8")
+        # Establish freshness from the persisted timestamp rather than racing
+        # the wall clock; the stale case still checks the strict boundary.
+        started = path.stat().st_mtime_ns + (1 if file_state == "stale" else 0)
+    assert phase_attempted(app_settings, started) is phase_result
     diagnostic = review_diagnostics(app_settings, {"status": "failed"}, started)
     assert diagnostic["publication_attempted"] is expected
-    assert cloud_exit_code({"status": "failed", "native_exit_code": 1, "publication_attempted": expected}, 1) == 1
+    assert diagnostic["status"] == "failed"
+    assert cloud_exit_code({**diagnostic, "native_exit_code": 1}, 1) == 1
 
 
 def test_material_budget_is_distinct_from_system_failure(monkeypatch):

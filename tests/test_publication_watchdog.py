@@ -45,6 +45,14 @@ def test_valid_checks_drafts_and_pending_review_are_not_failures(result):
     assert watchdog.outcome_alert("公众号", result) is None
 
 
+def test_actual_draft_only_receipt_is_a_delivery_not_a_failure():
+    result = {'status': 'draft_only', 'wechat_status': 'draft_saved',
+              'draft_delivery': {'status': 'saved', 'app_msg_id': '100001408'},
+              'manual_publication_required': True, 'publication_attempted': False}
+    assert watchdog.outcome_alert('公众号', result) is None
+    assert '任务异常' in watchdog.outcome_alert('公众号', {**result, 'metrics_error': 'write_failed'})[0]
+
+
 def test_daily_missing_outputs_detected_even_without_any_workflow_run():
     alerts = watchdog.daily_alerts(NOW, {}, {"runs": []}, {})
     assert len(alerts) == 2

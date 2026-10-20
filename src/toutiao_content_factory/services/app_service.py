@@ -4202,6 +4202,7 @@ class ContentFactoryAppService:
             "submit_status": submit_status,
             "external_url": external_url,
             "draft_media_id": draft_media_id,
+            **({key: payload[key] for key in ('draft_handoff', 'publish_id', 'official_job_status', 'official_job_key', 'expected_publication') if key in payload}),
             **({"app_msg_id": str(payload.get("app_msg_id", "")), "title": str(payload.get("title", "")),
                 "manual_publication_required": True} if payload.get("draft_only") else {}),
         }

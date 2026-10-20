@@ -20,6 +20,10 @@ on:
         description: 'Check-only: validate a refreshed administrator login seed instead of expired cached credentials'
         type: boolean
         default: false
+      api_check:
+        description: 'Check-only: read official draft/freepublish permissions and report IP whitelist blocks; never writes a draft or publishes'
+        type: boolean
+        default: false
       cover_check:
         description: 'Generate one cover from the saved regression article; no WeChat login, draft, or publication'
         type: boolean
@@ -78,6 +82,8 @@ jobs:
       WECHAT_SESSION_SEED: ${{ secrets.WECHAT_SESSION_SEED_DEFAULT }}
       WECHAT_SESSION_REFRESH: ${{ inputs.refresh_session == true && '1' || '0' }}
       WECHAT_DELIVERY_MODE: draft
+      WECHAT_OFFICIAL_PUBLISH_ENABLED: '0'
+      API_CHECK: ${{ inputs.api_check == true && '1' || '0' }}
       RUN_MODE: ${{ inputs.mode || 'draft' }}
       WECHAT_RETRY_PARENT: ${{ inputs.retry_parent_run_id || '' }}
       WECHAT_RETRY_DAY: ${{ inputs.retry_day || '' }}
@@ -118,7 +124,26 @@ jobs:
           key: wechat-material-default-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             wechat-material-default-
+      - name: Restore official publication intents and receipts
+        uses: actions/cache/restore@v4
+        with:
+          path: output/automation/wechat_official_jobs/
+          key: wechat-official-default-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            wechat-official-default-${{ github.ref_name }}-
+      - name: Check official API permissions without publishing
+        if: inputs.api_check == true
+        env:
+          WECHAT_APP_ID: ${{ secrets.WECHAT_APP_ID }}
+          WECHAT_APP_SECRET: ${{ secrets.WECHAT_APP_SECRET }}
+        run: |
+          if [ "$RUN_MODE" != "check" ] || [ "$COVER_CHECK" = "1" ]; then
+            echo 'api_check requires mode=check and cover_check=false'
+            exit 2
+          fi
+          python scripts/check_wechat_official_api.py --account default --expected-app-id-sha256 da6831610f26448462cb3393098f77e55671032ed95fd0ac29e280321715a66a
       - name: Validate login or run reviewed publication
+        if: inputs.api_check != true
         id: publish
         run: |
           if [ "$COVER_CHECK" = "1" ]; then
@@ -141,13 +166,19 @@ jobs:
         with:
           path: output/automation/topic_pool/
           key: wechat-material-default-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save official publication intents and receipts
+        if: always() && inputs.api_check != true && inputs.mode != 'check'
+        uses: actions/cache/save@v4
+        with:
+          path: output/automation/wechat_official_jobs/
+          key: wechat-official-default-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Summarize actual outcome
         if: always() && inputs.cover_check != true
         run: |
           python - <<'PY'
           import json, os
           from pathlib import Path
-          result = Path('output/automation/wechat_cloud_result.json')
+          result = Path('output/automation/wechat_official_api_check.json' if os.environ.get('API_CHECK') == '1' else 'output/automation/wechat_cloud_result.json')
           payload = json.loads(result.read_text(encoding='utf-8')) if result.exists() else {'status': 'setup_failed'}
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:
               handle.write('WeChat cloud outcome: **' + str(payload.get('status', 'unknown')) + '**\n')
@@ -202,6 +233,8 @@ jobs:
           name: wechat-outcome-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             output/automation/wechat_cloud_result.json
+            output/automation/wechat_official_api_check.json
+            output/automation/wechat_official_jobs/
             output/automation/wechat_scheduled_result.json
             output/automation/wechat_login_check.json
             output/automation/wechat_review_diagnostics.json

@@ -43,6 +43,76 @@ def test_trial_only_admits_the_two_reader_value_directions(app_settings):
     assert all(not getattr(t, "_verified_source_material", False) for t in ranked)
 
 
+@pytest.mark.parametrize("content_type", ["article", "weitoutiao"])
+def test_trial_uses_captured_material_when_short_summary_omits_reader_direction(app_settings, content_type):
+    settings = enabled(app_settings)
+    # Production run 39440148680: this summary omits the consumer signal in
+    # the already captured material, excluding the candidate before retrieval.
+    candidate = topic("9700万判决之后，汇源决定“不要这个名字了”",
+                      "文 | 青眼观察，作者 | 啸清，编辑 | 封飚 有可能你很快就会发现，超市里那瓶汇源果汁，好像和以前不一样了")
+    candidate.snippet = "也要让消费者分清手中果汁是谁生产的。"
+    unrelated = topic("芯片公司市值再创新高，投资者热议")
+    unrelated.snippet = "公司披露上市安排，机构讨论估值变化。"
+
+    ranked = policy.rank_revenue_topics([candidate, unrelated], settings, {}, content_type=content_type, now=NOW)
+
+    assert ranked == [candidate]
+    assert candidate.revenue_selection["category"] == "consumer_practical"
+    assert candidate.revenue_selection["approval"] is False
+    assert not getattr(candidate, "_verified_source_material", False)
+
+
+def test_material_fallback_preserves_existing_direction_and_empty_material_is_not_admitted():
+    candidate = topic("OpenCode密钥泄露引争议", "消费者申请退款")
+    candidate.snippet = "AI软件用户关注数据安全与隐私。"
+    assert policy.trial_direction(candidate) == "consumer_practical"
+    assert policy.trial_direction(topic("芯片公司市值再创新高")) == ""
+
+
+def test_material_direction_does_not_bypass_article_quality_or_published_dedup(app_settings, logger, monkeypatch):
+    from toutiao_content_factory.models import DailyTopicsReport
+    from toutiao_content_factory.services.app_service import ContentFactoryAppService
+    from toutiao_content_factory.services.automation import TopicAutomationService
+    from toutiao_content_factory.services.content_guard_service import ContentGuardService
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(policy, "datetime", Clock)
+    monkeypatch.setattr("toutiao_content_factory.services.automation.datetime", Clock)
+    settings = enabled(app_settings)
+    candidate = topic("品牌更名后，手中果汁由谁生产", "判决明确了商标使用范围。")
+    candidate.snippet = "消费者需要区分生产主体与商标持有主体。"
+    report = DailyTopicsReport(NOW.isoformat(), 2, 24, [], 1, 1, [candidate])
+    settings.output_dir.mkdir(parents=True)
+    report_path = settings.output_dir / "daily_topics.json"
+    automation = TopicAutomationService(settings, logger)
+    app = object.__new__(ContentFactoryAppService)
+    app.settings, app.logger, app.topic_automation = settings, logger, automation
+    app.content_guard_service = ContentGuardService(settings, logger)
+
+    def candidates():
+        report_path.write_text(json.dumps(report.to_dict(), ensure_ascii=False), encoding="utf-8")
+        return app._build_daily_candidate_specs(topic_rank=None, topic_title=None, refresh_cache=True, dry_run=False)
+
+    assert len(candidates()) == 1
+    candidate.quality_flags = ["title_only"]
+    assert candidates() == []
+    candidate.quality_flags = []
+    candidate.evidence_strength = 54
+    assert candidates() == []
+    candidate.evidence_strength = 80
+    candidate.quality_score = 54
+    assert candidates() == []
+    candidate.quality_score = 80
+    (settings.output_dir / settings.publishing.history_filename).write_text(json.dumps([
+        {"published_at": NOW.isoformat(), "topic_url": candidate.url,
+         "topic_title": candidate.title}]), encoding="utf-8")
+    assert candidates() == []
+
+
 def test_trial_prefers_underrepresented_admissions_but_keeps_alternate_fallback(app_settings):
     settings = enabled(app_settings)
     path = settings.output_dir / "growth_ops/performance/wtt_content_experiments.json"

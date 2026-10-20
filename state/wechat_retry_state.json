@@ -159,14 +159,36 @@
           "draft_delivery": {}
         },
         "39405397408:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-20T10:06:08.978354+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 348.272,
+          "outcome": "draft_only",
+          "draft_delivery": {
+            "status": "saved",
+            "title": "中国车企海外竞争力提升，保时捷CEO变动引关注",
+            "draft_media_id": "",
+            "app_msg_id": "100001412",
+            "handoff": {
+              "account": "小椰科技",
+              "title": "中国车企海外竞争力提升，保时捷CEO变动引关注",
+              "body_hash": "c8d79d11a37629a5fa2078b57598c0eb9f6e9122ef036ad99273c55b93acbd7b",
+              "body_hash_basis": "rendered_delivery_payload",
+              "saved_at": "2026-10-20T10:11:59.748793+00:00"
+            }
+          }
         }
       },
       "dispatches": {},
-      "failed_inputs": []
+      "failed_inputs": [
+        {
+          "fingerprint": "218c36541b0ee1c23b958e391858fbe0ed5ec23339bb7fe9d155cad23e13839a",
+          "source_fingerprint": "1410d11238ff16701769a735d2c299814bad900f818aef63635a92adfb12bb68",
+          "requirements": [
+            "在表述中补充相对性描述，避免过于绝对的表述。"
+          ]
+        }
+      ]
     }
   }
 }

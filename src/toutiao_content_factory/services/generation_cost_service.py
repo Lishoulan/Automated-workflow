@@ -160,14 +160,27 @@ def build_cost_summary(output_dir, *, now=None, days=30, since=None, until=None,
     estimates = Counter()
     actuals = Counter()
     verified = 0
+    imported = 0
+    request_counts = Counter((row.get("account_key"), row.get("provider_request_id"))
+                             for row in rows if row.get("provider_request_id"))
+    ambiguous_requests = {key for key, count in request_counts.items() if count > 1}
     for row in rows:
+        if (row.get("account_key"), row.get("provider_request_id")) in ambiguous_requests:
+            continue
         if _number(row.get("estimated_amount")) is not None and row.get("estimated_currency"):
             estimates[row["estimated_currency"]] += row["estimated_amount"]
+        imported_source = row.get("billing_import") or {}
+        export_matched = (isinstance(imported_source, dict)
+            and row.get("billing_evidence") == "matched_provider_export"
+            and re.fullmatch(r"[a-f0-9]{64}", str(imported_source.get("source_sha256", "")))
+            and imported_source.get("provider_request_id") == row.get("provider_request_id")
+            and imported_source.get("account_key") == row.get("account_key"))
         if (row.get("billing_status") == "provider_confirmed"
-                and row.get("billing_evidence") == "matched_response_receipt"
-                and row.get("provider_request_id") and row.get("sdk_retries") == 0
+                and (row.get("billing_evidence") == "matched_response_receipt" or export_matched)
+                and row.get("provider_request_id") and type(row.get("sdk_retries")) is int and row["sdk_retries"] == 0
                 and _number(row.get("actual_amount")) is not None and row.get("actual_currency") in {"CNY", "USD"}):
             verified += 1
+            imported += int(bool(export_matched))
             actuals[row["actual_currency"]] += row["actual_amount"]
     aggregation_errors = ["estimated." + key for key, value in estimates.items() if not math.isfinite(value)]
     actual_errors = ["actual." + key for key, value in actuals.items() if not math.isfinite(value)]
@@ -189,6 +202,8 @@ def build_cost_summary(output_dir, *, now=None, days=30, since=None, until=None,
         "missing_usage_calls": sum(row.get("usage") is None for row in rows),
         "estimated_by_currency": {key: round(value, 6) for key, value in estimates.items()},
         "verified_cost_calls": verified, "unverified_cost_calls": len(rows) - verified,
+        "imported_cost_calls": imported,
+        "ambiguous_request_count": len(ambiguous_requests),
         "actual_verified_by_currency": {key: round(value, 6) for key, value in actuals.items()},
         "actual_total": round(sum(actuals.values()), 6) if complete and len(actuals) == 1 else None,
         "actual_currency": next(iter(actuals)) if complete and len(actuals) == 1 else None,

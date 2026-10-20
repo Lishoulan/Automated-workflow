@@ -64,7 +64,7 @@ def test_corrupt_admission_history_does_not_reset_trial_counts(app_settings):
     path.write_text("{broken", encoding="utf-8")
     with pytest.raises(ValueError, match="admission"):
         policy.rank_revenue_topics([topic("消费者退款")], settings, {}, content_type="weitoutiao", now=NOW)
-    assert path.read_text() == "{broken"
+    assert path.read_text(encoding="utf-8") == "{broken"
 
 
 def test_trial_defaults_do_not_restrict_other_accounts_or_wechat(app_settings):
@@ -152,7 +152,7 @@ def test_candidate_cost_context_preserves_failed_attempts_without_account_leakag
             pass
     with costs.GenerationCostAttempt(settings, logger, kind="text", model="existing", sdk_retries=0):
         pass
-    rows = [json.loads(p.read_text()) for p in (settings.output_dir / "growth_ops/generation_costs/events").glob("*.json")]
+    rows = [json.loads(p.read_text(encoding="utf-8")) for p in (settings.output_dir / "growth_ops/generation_costs/events").glob("*.json")]
     owned = [r for r in rows if r.get("content_attempt_id") == "a" * 32]
     assert len(owned) == 1 and owned[0]["status"] == "failed"
     assert owned[0]["actual_amount"] is None
@@ -213,8 +213,8 @@ def test_free_cover_trial_never_attempts_paid_api_and_keeps_candidate_ownership(
         service._generate_api_image.assert_not_called()
     else:
         service._generate_api_image.assert_called_once()  # existing routing restored at exact end
-    report = json.loads((publish / "weitoutiao_image_result.json").read_text())
+    report = json.loads((publish / "weitoutiao_image_result.json").read_text(encoding="utf-8"))
     assert report["api_attempted"] is (not active) and report["backend"] == "cloudflare_flux"
-    rows = [json.loads(p.read_text()) for p in (settings.output_dir / "growth_ops/generation_costs/events").glob("*.json")]
+    rows = [json.loads(p.read_text(encoding="utf-8")) for p in (settings.output_dir / "growth_ops/generation_costs/events").glob("*.json")]
     assert len(rows) == 1 and rows[0]["content_attempt_id"] == "b" * 32
     assert rows[0]["actual_amount"] is None

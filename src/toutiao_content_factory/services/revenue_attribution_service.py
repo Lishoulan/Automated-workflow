@@ -55,6 +55,11 @@ class CostRecord:
     labor_rate_per_hour: float = 0.0
     currency: str = "CNY"
 
+    # Old records and manual amounts are declarations, never proof of actual fees.
+    basis: str = "declared"
+    evidence_ref: str = ""
+    coverage_complete: bool = False
+
     @property
     def labor_cost(self) -> float:
         return self.labor_minutes * self.labor_rate_per_hour / 60.0
@@ -72,6 +77,9 @@ class CostRecord:
             "labor_cost": round(self.labor_cost, 4),
             "total_cost": self.total_cost,
             "currency": self.currency,
+            "basis": self.basis,
+            "evidence_ref": self.evidence_ref,
+            "coverage_complete": self.coverage_complete,
         }
 
     @classmethod
@@ -82,6 +90,9 @@ class CostRecord:
             labor_minutes=float(payload.get("labor_minutes", 0.0) or 0.0),
             labor_rate_per_hour=float(payload.get("labor_rate_per_hour", 0.0) or 0.0),
             currency=str(payload.get("currency", "CNY")),
+            basis=str(payload.get("basis", "declared")),
+            evidence_ref=str(payload.get("evidence_ref", "")),
+            coverage_complete=payload.get("coverage_complete") is True,
         )
 
 
@@ -244,8 +255,8 @@ class UnitEconomics:
     lead_revenue: float
     deal_revenue: float
     total_revenue: float
-    net_profit: float
-    rpm: float
+    net_profit: float | None
+    rpm: float | None
     lead_cost: float | None
     leads: int
     currency: str = "CNY"
@@ -254,6 +265,8 @@ class UnitEconomics:
     revenue_amount_known: bool = True
     analysis_eligible: bool = True
     revenue_analysis_eligible: bool = True
+    cost_status: str = "unknown"
+    profit_analysis_eligible: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -263,8 +276,8 @@ class UnitEconomics:
             "lead_revenue": round(self.lead_revenue, 4),
             "deal_revenue": round(self.deal_revenue, 4),
             "total_revenue": round(self.total_revenue, 4),
-            "net_profit": round(self.net_profit, 4),
-            "rpm": round(self.rpm, 4),
+            "net_profit": None if self.net_profit is None else round(self.net_profit, 4),
+            "rpm": None if self.rpm is None else round(self.rpm, 4),
             "lead_cost": None if self.lead_cost is None else round(self.lead_cost, 4),
             "leads": self.leads,
             "currency": self.currency,
@@ -273,6 +286,8 @@ class UnitEconomics:
             "revenue_amount_known": self.revenue_amount_known,
             "analysis_eligible": self.analysis_eligible,
             "revenue_analysis_eligible": self.revenue_analysis_eligible,
+            "cost_status": self.cost_status,
+            "profit_analysis_eligible": self.profit_analysis_eligible,
         }
 
 
@@ -468,10 +483,10 @@ class RevenueAttributionService:
     def get_cost(self, content_id: str) -> CostRecord:
         ledger = self._load_json(self.cost_ledger_path, default={})
         if not isinstance(ledger, dict):
-            return CostRecord()
+            return CostRecord(basis="unknown")
         payload = ledger.get(content_id, {})
-        if not isinstance(payload, dict):
-            payload = {}
+        if not isinstance(payload, dict) or not payload:
+            return CostRecord(basis="unknown")
         return CostRecord.from_dict(payload)
 
     # ── revenue ────────────────────────────────────────────────
@@ -697,8 +712,9 @@ class RevenueAttributionService:
             labor_minutes=float(labor_minutes or 0.0),
             labor_rate_per_hour=float(labor_rate_per_hour or 0.0),
             currency=currency,
+            basis="estimated" if cost_has_evidence else "unknown",
         )
-        if cost_has_evidence or cost.total_cost > 0 or existing_cost.total_cost <= 0:
+        if existing_cost.basis != "actual" and (cost_has_evidence or cost.total_cost > 0 or existing_cost.total_cost <= 0):
             self.record_cost(identity.content_id, cost)
         return identity
 
@@ -755,6 +771,7 @@ class RevenueAttributionService:
         platform_revenue: float = 0.0,
     ) -> UnitEconomics:
         cost = self.get_cost(content_id)
+        self._validate_cost(cost)
         revenue_summary = self.summarize_revenue_events(content_id)
         existing_economics = self._load_json(self.unit_economics_path, default={})
         existing_payload = existing_economics.get(content_id, {}) if isinstance(existing_economics, dict) else {}
@@ -779,9 +796,7 @@ class RevenueAttributionService:
         if platform_revenue == 0.0 and isinstance(existing_payload, dict):
             platform_revenue = float(existing_payload.get("platform_revenue", 0.0) or 0.0)
         total_revenue = platform_revenue + lead_revenue + deal_revenue
-        net_profit = total_revenue - cost.total_cost
         impressions = latest_snapshot.impression_count if latest_snapshot else 0
-        rpm = (net_profit / impressions * 1000) if impressions > 0 else 0.0
         leads = int(revenue_summary.get("lead_count", 0) or 0)
         lead_cost = (cost.total_cost / leads) if leads > 0 else None
         stored_platform_status = (
@@ -830,6 +845,19 @@ class RevenueAttributionService:
         revenue_analysis_eligible = bool(
             analysis_eligible and platform_status == "available"
         )
+        currencies = {event.currency.upper() for event in self.get_revenue_events(content_id)}
+        if latest_snapshot is not None and latest_snapshot.platform_revenue is not None:
+            currencies.add(latest_snapshot.currency.upper())
+        currency_consistent = not currencies or currencies == {cost.currency.upper()}
+        if not currency_consistent:
+            revenue_analysis_eligible = revenue_amount_known = False
+            revenue_status = "currency_mismatch"
+        profit_analysis_eligible = bool(
+            revenue_analysis_eligible and revenue_amount_known
+            and cost.basis == "actual" and cost.evidence_ref.strip() and cost.coverage_complete
+        )
+        net_profit = total_revenue - cost.total_cost if profit_analysis_eligible else None
+        rpm = net_profit / impressions * 1000 if net_profit is not None and impressions > 0 else None
         economics = UnitEconomics(
             content_id=content_id,
             total_cost=cost.total_cost,
@@ -847,6 +875,8 @@ class RevenueAttributionService:
             revenue_amount_known=revenue_amount_known,
             analysis_eligible=analysis_eligible,
             revenue_analysis_eligible=revenue_analysis_eligible,
+            cost_status=cost.basis,
+            profit_analysis_eligible=profit_analysis_eligible,
         )
         ledger = self._load_json(self.unit_economics_path, default={})
         ledger[content_id] = economics.to_dict()
@@ -859,7 +889,7 @@ class RevenueAttributionService:
         sort_by: str = "net_profit",
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Return content rows sorted by a revenue-oriented metric."""
+        """Return up to limit per currency, ordered only within each currency."""
         metric_name = str(sort_by or "net_profit").strip()
         if metric_name not in {"net_profit", "rpm", "lead_revenue", "leads", "total_revenue"}:
             metric_name = "net_profit"
@@ -881,6 +911,8 @@ class RevenueAttributionService:
             )
             revenue_status = str(economics.revenue_status or "unknown").strip()
             if metric_name in {"net_profit", "rpm", "total_revenue"} and not economics.revenue_analysis_eligible:
+                continue
+            if metric_name in {"net_profit", "rpm"} and not economics.profit_analysis_eligible:
                 continue
             if metric_name in {"lead_revenue", "leads"} and revenue_status in {"pending_t1", "unknown", "not_available"}:
                 continue
@@ -916,15 +948,14 @@ class RevenueAttributionService:
                 }
             )
 
-        rows.sort(
-            key=lambda item: (
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            groups.setdefault(row["currency"], []).append(row)
+        return [item for currency in sorted(groups) for item in sorted(groups[currency], key=lambda item: (
                 float(item.get(metric_name, 0.0) or 0.0),
                 float(item.get("net_profit", 0.0) or 0.0),
                 int(item.get("leads", 0) or 0),
-            ),
-            reverse=True,
-        )
-        return rows[: max(1, int(limit))]
+            ), reverse=True)[: max(1, int(limit))]]
 
     # ── analysis ───────────────────────────────────────────────
 
@@ -1036,6 +1067,9 @@ class RevenueAttributionService:
                         "total_cost": 0.0,
                         "net_profit": 0.0,
                         "rpm": 0.0,
+                        "profit_samples": 0,
+                        "currencies": [],
+                        "monetary_scope_error": False,
                     },
                 )
                 stats["contents"] += 1
@@ -1046,7 +1080,12 @@ class RevenueAttributionService:
                 stats["revenue"] += revenue
                 stats["revenue_amount"] += revenue
                 stats["total_cost"] += economics.total_cost
-                stats["net_profit"] += economics.net_profit
+                if economics.currency not in stats["currencies"]:
+                    stats["currencies"].append(economics.currency)
+                stats["monetary_scope_error"] |= economics.revenue_status == "currency_mismatch"
+                if economics.profit_analysis_eligible:
+                    stats["net_profit"] += economics.net_profit
+                    stats["profit_samples"] += 1
                 if snapshot and self._snapshot_is_mature(snapshot, published_at):
                     stats["matured_samples"] += 1
 
@@ -1058,11 +1097,13 @@ class RevenueAttributionService:
                 stats["weighted_read_rate"] = round(reads * 100 / impressions, 4) if impressions else 0.0
                 stats["read_rate"] = stats["weighted_read_rate"]
                 stats["lead_rate"] = round(stats["leads"] / contents, 4)
-                stats["revenue_per_content"] = round(stats["revenue"] / contents, 4)
-                stats["rpm"] = round(stats["net_profit"] / impressions * 1000, 4) if impressions else 0.0
-                stats["total_cost"] = round(stats["total_cost"], 4)
-                stats["net_profit"] = round(stats["net_profit"], 4)
-                stats["revenue"] = round(stats["revenue"], 4)
+                single_currency = len(stats["currencies"]) == 1 and not stats["monetary_scope_error"]
+                stats["revenue_per_content"] = round(stats["revenue"] / contents, 4) if single_currency else None
+                complete_profit = stats["profit_samples"] == stats["contents"] and stats["contents"] > 0 and single_currency
+                stats["rpm"] = round(stats["net_profit"] / impressions * 1000, 4) if complete_profit and impressions else None
+                stats["total_cost"] = round(stats["total_cost"], 4) if single_currency else None
+                stats["net_profit"] = round(stats["net_profit"], 4) if complete_profit else None
+                stats["revenue"] = round(stats["revenue"], 4) if single_currency else None
                 stats["revenue_amount"] = stats["revenue"]
 
         report = {
@@ -1155,7 +1196,7 @@ class RevenueAttributionService:
                 str(content_id),
                 platform_revenue=stored_platform_revenue,
             )
-            has_economic_signal = economics.revenue_analysis_eligible and (
+            has_economic_signal = economics.profit_analysis_eligible and economics.rpm is not None and (
                 economics.total_cost > 0 or economics.total_revenue > 0
             )
             if has_economic_signal and latest_snapshot and latest_snapshot.impression_count > 0:
@@ -1248,15 +1289,19 @@ class RevenueAttributionService:
             stop_weak_ratio=stop_weak_ratio,
             cooldown_penalty=cooldown_penalty,
         )
-        total_cost = sum(float(item.get("total_cost", 0.0) or 0.0) for item in economics_ledger.values())
+        recorded_costs: dict[str, float] = {}
+        known_revenue: dict[str, float] = {}
+        known_contribution: dict[str, float] = {}
         pending_revenue_count = 0
         unknown_revenue_count = 0
-        total_revenue = 0.0
-        total_profit = 0.0
         content_index = self._load_json(self.content_index_path, default={})
         for content_id, item in economics_ledger.items():
             if not isinstance(item, dict):
                 continue
+            cost = self.get_cost(content_id)
+            if cost.basis != "unknown":
+                recorded_costs[cost.currency] = recorded_costs.get(cost.currency, 0.0) + cost.total_cost
+            currency = str(item.get("currency", "CNY"))
             status = str(item.get("revenue_status", "unknown")).strip() or "unknown"
             content_record = (
                 content_index.get(content_id, {})
@@ -1276,17 +1321,25 @@ class RevenueAttributionService:
             elif status not in {"available", "partial"}:
                 unknown_revenue_count += 1
             if status in {"available", "partial"}:
-                total_revenue += float(item.get("total_revenue", 0.0) or 0.0)
-            if bool(item.get("revenue_analysis_eligible", False)):
-                total_profit += float(item.get("net_profit", 0.0) or 0.0)
+                known_revenue[currency] = known_revenue.get(currency, 0.0) + float(item.get("total_revenue", 0.0) or 0.0)
+            if bool(item.get("profit_analysis_eligible", False)):
+                known_contribution[currency] = known_contribution.get(currency, 0.0) + float(item.get("net_profit", 0.0) or 0.0)
+        complete_profit = bool(content_index) and all(
+            isinstance(economics_ledger.get(cid), dict)
+            and economics_ledger[cid].get("profit_analysis_eligible") is True
+            for cid in content_index
+        )
+        def money_groups(values):
+            return json.dumps({key: round(value, 4) for key, value in values.items()}, ensure_ascii=False) if values else "NOT_FOUND"
+        contribution = money_groups(known_contribution) if complete_profit else "NOT_FOUND（收入或完整实际成本证据不足）"
         lines = [
             "# 收益优化经营报表",
             "",
             f"- 生成时间：{datetime.now().isoformat(timespec='seconds')}",
             f"- 已归因内容数：{len(economics_ledger)}",
-            f"- 总成本：{total_cost:.2f} CNY",
-            f"- 已知口径收入：{total_revenue:.2f} CNY",
-            f"- 已知口径净利润：{total_profit:.2f} CNY",
+            f"- 记录成本（含估算及声明，非已核实实扣）：{money_groups(recorded_costs)}",
+            f"- 已知口径收入（币种分列，不合计）：{money_groups(known_revenue)}",
+            f"- 内容净贡献：{contribution}；不代表扣除全部固定开支后的经营净利润",
             f"- T+1 待结算内容：{pending_revenue_count}",
             f"- 收益未知内容：{unknown_revenue_count}",
             f"- 实验维度：{len(experiment_report.get('dimensions', {}))} 个",
@@ -1335,11 +1388,16 @@ class RevenueAttributionService:
         if not rows:
             return ["- No attributed content yet"]
         lines: list[str] = []
-        for index, row in enumerate(rows, start=1):
+        ranks: dict[str, int] = {}
+        for row in rows:
+            currency = str(row.get("currency", "NOT_FOUND"))
+            if currency not in ranks:
+                lines.append(f"#### {currency}")
+            ranks[currency] = ranks.get(currency, 0) + 1
             value = float(row.get(metric, 0.0) or 0.0)
-            unit = " CNY" if metric != "rpm" else " CNY/1k impressions"
+            unit = f" {currency}" + ("/1k impressions" if metric == "rpm" else "")
             lines.append(
-                f"{index}. {row.get('title', '')} | {row.get('content_id', '')} | "
+                f"{ranks[currency]}. {row.get('title', '')} | {row.get('content_id', '')} | "
                 f"{metric}={value:.2f}{unit} | leads={row.get('leads', 0)}"
             )
         return lines
@@ -1368,6 +1426,12 @@ class RevenueAttributionService:
             self._validate_non_negative_number(getattr(cost, field_name), field_name)
         if not str(cost.currency or "").strip():
             raise ValueError("currency is required for a cost record.")
+        if cost.basis not in {"unknown", "declared", "estimated", "actual"}:
+            raise ValueError("Unsupported cost evidence basis.")
+        if type(cost.coverage_complete) is not bool:
+            raise ValueError("Cost coverage must be explicit boolean.")
+        if cost.basis == "actual" and not cost.evidence_ref.strip():
+            raise ValueError("Actual cost requires a source evidence reference.")
 
     def _validate_revenue_event(self, event: RevenueEvent) -> None:
         if not isinstance(event, RevenueEvent):

@@ -72,8 +72,8 @@ def operating_trial(settings, *, now=None):
 
 def trial_direction(topic):
     text = f"{topic.title} {topic.summary}"
-    technology = any(w in text for w in ("手机", "芯片", "人工智能", "机器人", "电池", "新能源", "充电", "操作系统", "系统更新", "软件", "数据安全", "隐私")) or bool(re.search(r"\bAI\b", text, re.I))
-    everyday = any(w in text for w in ("用户", "消费者", "家庭", "家用", "车主", "价格", "费用", "续费", "岗位", "就业", "工资", "工作", "安全补丁", "隐私"))
+    technology = any(w in text for w in ("手机", "芯片", "人工智能", "机器人", "电池", "新能源", "充电", "操作系统", "系统更新", "软件", "数据安全", "隐私", "路由器")) or bool(re.search(r"\bAI\b", text, re.I))
+    everyday = any(w in text for w in ("用户", "消费者", "家庭", "家用", "车主", "价格", "费用", "续费", "岗位", "就业", "工资", "薪酬", "员工", "工作", "安全补丁", "隐私", "家门", "路由器"))
     if technology and everyday:
         return "technology_everyday"
     if any(w in text for w in ("消费者", "消费权益", "退款", "退费", "退货", "维修", "保修", "押金", "预付", "租房", "物业费", "停车费", "网购", "社保", "医保", "养老金")):

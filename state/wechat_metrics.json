@@ -1474,7 +1474,47 @@
       "elapsed_seconds": null,
       "runtime_status": "ok",
       "native_exit_code": null
+    },
+    {
+      "run_key": "39405397408:1",
+      "started_at": "2026-10-20T10:06:08.978354+00:00",
+      "mode": "draft",
+      "excluded": false,
+      "outcome": "draft",
+      "reason_codes": [
+        "article_too_short",
+        "quality_audit_incomplete",
+        "quality_review_required"
+      ],
+      "attempt_count": 1,
+      "enrichment_count": 5,
+      "eligible_candidate_count": 3,
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "部分表述过于绝对，建议补充相对性描述。",
+        "部分表述过于绝对，建议补充相对性描述。"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "draft_delivery": {
+        "status": "saved",
+        "title": "中国车企海外竞争力提升，保时捷CEO变动引关注",
+        "draft_media_id": "",
+        "app_msg_id": "100001412",
+        "handoff": {
+          "account": "小椰科技",
+          "title": "中国车企海外竞争力提升，保时捷CEO变动引关注",
+          "body_hash": "c8d79d11a37629a5fa2078b57598c0eb9f6e9122ef036ad99273c55b93acbd7b",
+          "body_hash_basis": "rendered_delivery_payload",
+          "saved_at": "2026-10-20T10:11:59.748793+00:00"
+        }
+      },
+      "elapsed_seconds": 346.388,
+      "runtime_status": "ok",
+      "native_exit_code": 0,
+      "submission_outcome": "draft"
     }
   ],
-  "updated_at": "2026-10-20T16:32:30.461478+08:00"
+  "updated_at": "2026-10-20T18:12:00.059221+08:00"
 }

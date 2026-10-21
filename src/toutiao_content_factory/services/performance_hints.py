@@ -101,7 +101,9 @@ def _read_records(path: Path) -> list[dict[str, Any]] | None:
     return [row for row in records if isinstance(row, dict) and str(row.get("title", "")).strip()]
 
 
-def load_records(settings: Any) -> list[dict[str, Any]]:
+def load_records(
+    settings: Any, *, content_type: str | None = None
+) -> list[dict[str, Any]]:
     """读取表现记录；primary 源不足时回退到 growth_checkpoints。
 
     2026-10-21：生产 artifact 实测 `growth_checkpoints.json` 有 31 条作品
@@ -114,12 +116,72 @@ def load_records(settings: Any) -> list[dict[str, Any]]:
       避免两份口径不同的数据混在一起导致统计漂移；
     - checkpoints 的字段名不同（`latest.reads` / `latest.impressions`），
       这里显式映射到统一的 `read_count` / `impression_count`，不直接透传。
+
+    2026-10-21 补：`content_type` 用于**按体裁过滤**。生产里 30 条样本全是
+    微头条（weitoutiao），但 `writer_hints()` / `title_hints()` 的目标是长文 ——
+    用短体裁范本指导长文写作会把后者往"短平快"拉，是 `article_too_short`
+    的一类风险来源。传入体裁时只返回同体裁记录（跨源合并后过滤）。
     """
-    records = _load_primary_records(settings)
-    if len(records) >= FALLBACK_MIN_PRIMARY_RECORDS:
+    primary = _load_primary_records(settings)
+    if len(primary) >= FALLBACK_MIN_PRIMARY_RECORDS:
+        records = primary
+    else:
+        fallback = _load_checkpoint_records(settings)
+        records = fallback if len(fallback) > len(primary) else primary
+    if content_type is None:
         return records
-    fallback = _load_checkpoint_records(settings)
-    return fallback if len(fallback) > len(records) else records
+    return [row for row in records if _matches_content_type(row, content_type)]
+
+
+#: 体裁别名归一化。生产里同一个概念可能写成 `article` / `toutiao` / 中文，
+#: 归一后才能可靠比较，否则过滤会静默返回空、闭环再次空转。
+_CONTENT_TYPE_ALIASES = {
+    "article": "article",
+    "articles": "article",
+    "toutiao": "article",
+    "图文": "article",
+    "长文": "article",
+    "weitoutiao": "weitoutiao",
+    "microblog": "weitoutiao",
+    "微头条": "weitoutiao",
+    "video": "video",
+    "视频": "video",
+}
+
+
+def _normalize_content_type(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return _CONTENT_TYPE_ALIASES.get(text, text)
+
+
+def _record_content_type(record: dict[str, Any]) -> str:
+    """推断一条记录的体裁。
+
+    依次看显式字段：`content_type` -> `type` -> `content_kind`；
+    都没有时按平台字段兜底（`platform == "toutiao"` 视为长文，
+    `platform == "toutiao_weitoutiao"` 视为微头条）。
+    """
+    for key in ("content_type", "type", "content_kind"):
+        value = record.get(key)
+        if value:
+            return _normalize_content_type(value)
+    platform = _normalize_content_type(record.get("platform"))
+    if platform == "weitoutiao":
+        return "weitoutiao"
+    if platform == "article":
+        return "article"
+    return platform
+
+
+def _matches_content_type(record: dict[str, Any], wanted: str) -> bool:
+    expected = _normalize_content_type(wanted)
+    actual = _record_content_type(record)
+    if not expected:
+        return True
+    if not actual:
+        # 体裁未知时保守放行：宁可少过滤，也不要因为缺字段把闭环清空。
+        return True
+    return actual == expected
 
 
 def _load_primary_records(settings: Any) -> list[dict[str, Any]]:
@@ -282,9 +344,13 @@ def _header(mode: str) -> str:
     )
 
 
-def title_hints(settings: Any) -> str:
-    """生成标题侧的提示片段；无可用样本时返回空字符串。"""
-    records = load_records(settings)
+def title_hints(settings: Any, *, content_type: str | None = None) -> str:
+    """生成标题侧的提示片段；无可用样本时返回空字符串。
+
+    `content_type` 用于按体裁过滤（长文目标不要拿微头条当范本），
+    不传则保持既有行为。
+    """
+    records = load_records(settings, content_type=content_type)
     examples, mode = select_examples(records)
     if not examples:
         return ""
@@ -299,9 +365,13 @@ def title_hints(settings: Any) -> str:
     return "\n".join(lines)
 
 
-def writer_hints(settings: Any) -> str:
-    """生成正文侧的提示片段；只给出可复核的结构信息，不复述结论。"""
-    records = load_records(settings)
+def writer_hints(settings: Any, *, content_type: str | None = None) -> str:
+    """生成正文侧的提示片段；只给出可复核的结构信息，不复述结论。
+
+    `content_type` 用于按体裁过滤（长文目标不要拿微头条当范本），
+    不传则保持既有行为。
+    """
+    records = load_records(settings, content_type=content_type)
     examples, mode = select_examples(records)
     if not examples:
         return ""
@@ -319,9 +389,9 @@ def writer_hints(settings: Any) -> str:
     return "\n".join(lines)
 
 
-def loop_status(settings: Any) -> dict[str, Any]:
+def loop_status(settings: Any, *, content_type: str | None = None) -> dict[str, Any]:
     """闭环当前的可运行状态，供阶段判定与报告消费。"""
-    records = load_records(settings)
+    records = load_records(settings, content_type=content_type)
     examples, mode = select_examples(records)
     return {
         "record_count": len(records),

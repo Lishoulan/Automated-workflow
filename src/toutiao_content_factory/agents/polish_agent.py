@@ -918,6 +918,20 @@ class PolishAgent(BaseAgent):
                 return clean_article_text(self._apply_evidence_boundary_edits(fallback), min_word_count=0)
         return article_text
 
+    def validate_article(
+        self,
+        article: str,
+        data_report: DataReport,
+        trend_report: TrendReport,
+    ) -> tuple[list[str], int]:
+        """对外暴露的确定性校验入口（不调用模型）。
+
+        返工改写不经过 `PolishAgent.run`，如果不重新校验，正文换了、`validation_score`
+        还是旧稿的分数 —— 自动发布门槛（validation_score ≥ 80）就会拿一个与现稿
+        无关的分数放行。所以 workflow 侧在应用重写后要调这里刷新。
+        """
+        return self._validate_article(article, data_report, trend_report)
+
     def _validate_article(
         self,
         article: str,

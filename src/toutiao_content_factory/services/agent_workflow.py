@@ -431,7 +431,7 @@ class AgentWorkflowService:
                 # 审核团的 verdict 又是发布闸门的硬否决，此时若不再找一个能
                 # 真正改稿的执行者，循环就变成"要求返工但永远不许返工"的死锁。
                 # 所以退到 WriterAgent 按返工要求重写；它带同一套证据/字数边界。
-                if self._apply_writer_revision(content, data_report, revision_focus):
+                if self._apply_writer_revision(content, data_report, revision_focus, trend_report):
                     used_writer_revision = True
                 else:
                     if self.settings.wechat_auto_publish_mode:
@@ -516,7 +516,13 @@ class AgentWorkflowService:
             )
         return report
 
-    def _apply_writer_revision(self, content, data_report, revision_focus: list[str]) -> bool:
+    def _apply_writer_revision(
+        self,
+        content,
+        data_report,
+        revision_focus: list[str],
+        trend_report=None,
+    ) -> bool:
         """用 WriterAgent 按返工要求重写正文；成功返回 True。
 
         这是 `PolishAgent` 产不出新正文时的第二条（也是最后一条）返工路径。
@@ -538,7 +544,49 @@ class AgentWorkflowService:
             return False
         content.article = revised
         content.polished_article = revised
+        # 2026-10-21：重写走的是旁路，不经过 `_apply_polish_pack`，而发布字数下限
+        # 正是在那里重新施加的（叙事 700 / 自动发布 1750）。重写允许缩到原文 80%，
+        # 850 字的稿子可能只剩 680 字——那会被发布闸门的长度门拦下，
+        # 等于把"审核团否决"换成"字数否决"，白跑一轮。这里补回同一条下限。
+        floored = self._ensure_article_min_chars(
+            revised,
+            data_report,
+            min_chars=self._revision_min_chars(),
+        )
+        floored = str(floored or "").strip() or revised
+        content.article = floored
+        content.polished_article = floored
+        # 正文换了，旧稿的 validation_score 就不再代表现稿。自动发布门槛里
+        # validation_score ≥ 80 是一条独立硬线，用旧分数放行等于绕过它。
+        if trend_report is not None:
+            try:
+                notes, score = self.polish_agent.validate_article(
+                    floored, data_report, trend_report
+                )
+            except Exception as exc:  # noqa: BLE001 - refresh must not break the run
+                self.logger.warning("Post-revision validation refresh failed: %s", exc)
+            else:
+                content.validation_notes = list(notes) or content.validation_notes
+                content.validation_score = int(score)
         return True
+
+    def _toutiao_auto_publish_mode(self) -> bool:
+        publishing = getattr(self.settings, "publishing", None)
+        return bool(
+            getattr(publishing, "enabled", False)
+            and getattr(publishing, "auto_publish", False)
+            and not getattr(publishing, "draft_only", False)
+        )
+
+    def _revision_min_chars(self) -> int:
+        """返工后必须重新满足的正文下限（与 `_apply_polish_pack` 同一套取值）。"""
+        if self._toutiao_auto_publish_mode():
+            return (
+                self.NARRATIVE_ARTICLE_MIN_CHARS
+                if self._uses_narrative_domain()
+                else self.AUTO_PUBLISH_ARTICLE_MIN_CHARS
+            )
+        return self._default_article_min_chars()
 
     @staticmethod
     def _quality_review_article(content) -> str:

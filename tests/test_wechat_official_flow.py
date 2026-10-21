@@ -15,7 +15,7 @@ def test_cloud_workflow_api_check_is_explicit_read_only_and_jobs_have_own_cache(
     workflow = yaml.load((root / '.github/workflows/wechat-daily-run.yml').read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
     assert workflow['on']['workflow_dispatch']['inputs']['api_check']['default'] == 'false'
     job = workflow['jobs']['wechat']
-    assert job['env']['WECHAT_OFFICIAL_PUBLISH_ENABLED'] == '0'
+    assert job['env']['WECHAT_OFFICIAL_PUBLISH_ENABLED'] == '1'
     probe = next(step for step in job['steps'] if 'check_wechat_official_api.py' in step.get('run', ''))
     assert probe['env']['WECHAT_APP_ID'] == '${{ secrets.WECHAT_APP_ID }}'
     assert probe['env']['WECHAT_APP_SECRET'] == '${{ secrets.WECHAT_APP_SECRET }}'

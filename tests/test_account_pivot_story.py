@@ -258,7 +258,9 @@ def test_story_account_config_is_self_consistent() -> None:
     assert set(settings.revenue_optimization.operating_trial["directions"]) == {"consumer_practical", "technology_everyday"}
     # 微头条人设
     assert settings.publishing.weitoutiao_personas == ["story_comment"]
-    assert settings.topic_collection.enabled_sources == ["baidu_hot", "toutiao_hot", "sina_social", "ithome", "36kr"]
+    assert settings.topic_collection.enabled_sources == [
+        "baidu_hot", "toutiao_hot", "sina_social", "chinanews_society", "ithome", "36kr",
+    ]
     assert settings.publishing.allow_duplicate_topics is False
 
 

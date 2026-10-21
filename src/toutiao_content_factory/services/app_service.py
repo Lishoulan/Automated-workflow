@@ -55,6 +55,27 @@ from toutiao_content_factory.services.revenue_engine_service import RevenueEngin
 from toutiao_content_factory.services.weitoutiao_generator import WeiToutiaoStandaloneGenerator
 
 
+def narrative_story_anchor_reason(topic, content_domain) -> str:
+    """叙事号的长图文只接受"素材本身有社会故事线索"的选题（用户决策 A，2026-10-21）。
+
+    实测（真实模型探针 + 生产 run）：产业选题（财报/芯片/算力）用故事笔法写成
+    长图文时，素材里没有人物与生活场景，而审核团已按故事尺子审稿、要求
+    "人物视角/具体场景"，两轮返工也不收敛。产业类选题继续由微头条短评消化，
+    长图文只做故事线索成立的题。
+
+    返回非空字符串表示"应当改走微头条"，空字符串表示可以继续做长图文。
+    """
+    if str(content_domain or "industry").strip().lower() != "narrative":
+        return ""
+    try:
+        from toutiao_content_factory.services.reader_value_service import story_reader_fit
+
+        fit = story_reader_fit(topic)
+    except Exception:  # noqa: BLE001 - classification failure must not block articles
+        return ""
+    return "" if fit.get("eligible") else "not_a_story_topic"
+
+
 class ContentFactoryAppService:
     def __init__(self, settings: AppSettings, logger: logging.Logger) -> None:
         self.settings = settings
@@ -2930,6 +2951,17 @@ class ContentFactoryAppService:
             evidence = int(getattr(topic, "evidence_strength", 0) or 0)
             quality = int(getattr(topic, "quality_score", 0) or 0)
             if self.settings.wechat_auto_publish_mode and (getattr(topic, "_wechat_original_gate_passed", True) is False or not topic.source_records):
+                continue
+            if narrative_story_anchor_reason(topic, self.settings.content_domain):
+                # 用户决策 A（2026-10-21）：叙事号的产业类选题只做微头条短评。
+                if two_stage:
+                    self._article_selection_funnel.setdefault(
+                        "narrative_story_rejections", []
+                    ).append({"title": topic.title, "reason": "not_a_story_topic"})
+                self.logger.info(
+                    "Routing non-story topic to WeiToutiao (narrative account): %s",
+                    topic.title,
+                )
                 continue
             if evidence < 55 or quality < 55 or flags.intersection(blocked_quality_flags):
                 if two_stage:

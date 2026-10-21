@@ -306,7 +306,9 @@ publishing:
     - text=审核中
     - text=已发布
 wechat:
-  draft_only: true
+  # 2026-10-21 用户决策 C1：开启正式发表（此前 draft_only + OFFICIAL_PUBLISH_ENABLED=0
+  # 使公众号 30 天 0 篇正式发表）。审核通过后才会真正群发，审核不过仍然只留草稿。
+  draft_only: false
   enabled: true
   auto_publish: false
   toutiao_sync_delay_seconds: 1800
@@ -426,7 +428,7 @@ accounts:
     publishing:
       weitoutiao_personas:
       - story_comment
-      weitoutiao_daily_target: 2
+      weitoutiao_daily_target: 3
       weitoutiao_priority_enabled: true
     topic_collection:
       max_topic_age_hours: 24
@@ -435,6 +437,7 @@ accounts:
       - baidu_hot
       - toutiao_hot
       - sina_social
+      - chinanews_society
       - ithome
       - 36kr
       focus_industries:
@@ -511,10 +514,18 @@ accounts:
           urls:
           - https://top.baidu.com/board?tab=realtime
         sina_social:
-          type: html
-          same_domain_only: true
+          # 2026-10-21：原来的 https://news.sina.com.cn/society/ 是 JS 外壳页
+          # （实测 HTTP 200 但只有 374 字节、0 个可解析条目），来源状态长期是
+          # "ok / raw_count=0"，于是这个账号**没有任何社会故事素材**，
+          # 选题池被科技源占满。改用新浪社会新闻的 RSS 源（实测 200 + <item>）。
+          type: rss
           urls:
-          - https://news.sina.com.cn/society/
+          - https://rss.sina.com.cn/news/society/focus15.xml
+        chinanews_society:
+          # 中新网社会新闻 RSS（实测 200 + <item>，描述短时由采集器回源抓正文）。
+          type: rss
+          urls:
+          - https://www.chinanews.com.cn/rss/society.xml
     enabled: true
   politics_notes:
     label: 手蓝政治笔记

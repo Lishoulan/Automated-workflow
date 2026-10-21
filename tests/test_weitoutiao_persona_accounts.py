@@ -130,7 +130,7 @@ def test_story_account_publishes_weitoutiao_before_article_pipeline(clean_person
     vertical = load_settings(Path.cwd(), account_key="default")
 
     assert story.publishing.weitoutiao_priority_enabled is True
-    assert story.publishing.weitoutiao_daily_target == 2
+    assert story.publishing.weitoutiao_daily_target == 3
     assert vertical.publishing.weitoutiao_priority_enabled is False
 
 

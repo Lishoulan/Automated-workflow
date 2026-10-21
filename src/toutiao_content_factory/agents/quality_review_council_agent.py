@@ -152,6 +152,16 @@ class QualityReviewCouncilAgent(BaseAgent):
                                               if source.get("source_role") != "background"]
             editorial_brief = requirements(data_report.article_kind)["instruction"]
         review_style = self.style_digest(style)
+        narrative_contract = (
+            self._is_narrative_domain() and not self.settings.wechat_auto_publish_mode
+        )
+        if narrative_contract:
+            # 2026-10-21：叙事号此前只有"内容关键字"豁免，模型提示词里没有任何
+            # 体裁契约，于是 850 字的社会故事稿被按产业长文标准审（实测要求补
+            # 市值原因、智慧教育/智慧医疗增长分析），verdict 恒为 needs_revision。
+            review_style = (
+                review_style + "正文目标 700～1000 字，最低 700 字；每段不超过 120 字。"
+            ).strip()
         if self.settings.wechat_auto_publish_mode:
             review_style = (f"语气：{style.tone}。" + editorial_brief
                             + "正文目标2000～2200字，最低1750字；每段不超过180字。"
@@ -173,6 +183,18 @@ class QualityReviewCouncilAgent(BaseAgent):
             local_snapshot=self.json_text(local_snapshot),
             cache_note=self.cache_note(cache_context),
         )
+        if narrative_contract:
+            prompt += (
+                "\n【本次为叙事体裁（社会故事号）审核契约】"
+                "按社会故事的标准审稿：事件经过、人物关系、已确认的结果和来源边界是否讲清楚，"
+                "当事人的处境与选择是否具体、是否有可核对的细节。"
+                "不要求补写产业链、订单、利润、市值、市场份额或公司财务分析；"
+                "素材没有披露的行业数据不得列为必改项，也不得因为缺少这些分析判为不合格。"
+                "标题规则 RULE_006 / RULE_009（必须加入具象数字、公司名或高信息密度）不适用本体裁，"
+                "标题只要说清事件主体与已确认的结果即可。正文最低 700 字。"
+                "可以要求补充的只有：事实与推测的边界、素材支持的跟踪变量、"
+                "以及表达上的重复或绝对化表述修正。"
+            )
         if self.settings.platform == "wechat":
             # Describe the wire format without supplying a pre-filled verdict
             # and score that a small model can copy instead of auditing.
@@ -473,7 +495,13 @@ class QualityReviewCouncilAgent(BaseAgent):
 
     def _local_snapshot(self, title: str, article: str, data_report: DataReport) -> dict[str, Any]:
         is_hot_topic = bool(getattr(data_report, "is_hot_topic", False))
-        narrative = self._content_mode(data_report) == "social_story"
+        # 账号配置的写作领域是权威判据；按报告内容关键字判会漏（云端实测
+        # focus_industry 不含 social_story 时返回 generic）。保留内容关键字
+        # 判定，是为了让产业号里的社会故事题也享受同一套豁免。
+        narrative = (
+            self._is_narrative_domain()
+            or self._content_mode(data_report) == "social_story"
+        )
         clean_article = re.sub(r"\s+", "", article)
         paragraphs = [item.strip() for item in article.split("\n\n") if item.strip()]
         checker = self.quality_checker.check_article(

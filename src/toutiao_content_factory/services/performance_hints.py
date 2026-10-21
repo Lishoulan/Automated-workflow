@@ -38,19 +38,58 @@ def _as_int(value: Any) -> int:
         return 0
 
 
-def load_records(settings: Any) -> list[dict[str, Any]]:
-    """读取 performance_metrics.json 里的记录；任何异常都返回空列表。"""
-    metrics_path = Path(getattr(settings, "automation_dir", "")) / "performance_metrics.json"
-    if not metrics_path.exists():
-        return []
+METRICS_FILENAME = "performance_metrics.json"
+
+
+def _candidate_paths(settings: Any) -> list[Path]:
+    """Every location this project has ever written the metrics file to.
+
+    Production evidence (scheduled Daily Run artifact, 2026-10-21) puts the file
+    in the account *output root*:
+        output/accounts/<slug>/performance_metrics.json
+    while `automation/` only carries run bookkeeping. The earlier single-path
+    lookup therefore returned zero records on real cloud runs and the loop
+    silently injected nothing. Order matters: keep the legacy automation/
+    location first so an existing file there is never shadowed, then fall back
+    to the locations actually observed in production.
+    """
+    automation_dir = getattr(settings, "automation_dir", None)
+    output_dir = getattr(settings, "output_dir", None)
+    project_root = getattr(settings, "project_root", None)
+    candidates = [
+        Path(automation_dir) / METRICS_FILENAME if automation_dir else None,
+        Path(automation_dir) / "feedback" / METRICS_FILENAME if automation_dir else None,
+        Path(output_dir) / METRICS_FILENAME if output_dir else None,
+        Path(project_root) / METRICS_FILENAME if project_root else None,
+    ]
+    return [path for path in candidates if path is not None]
+
+
+def _read_records(path: Path) -> list[dict[str, Any]] | None:
+    """Return records from one file, or None when the file is unusable."""
+    if not path.is_file():
+        return None
     try:
-        payload = json.loads(metrics_path.read_text(encoding="utf-8-sig"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
-        return []
+        return None
     records = payload.get("records") if isinstance(payload, dict) else payload
     if not isinstance(records, list):
-        return []
+        return None
     return [row for row in records if isinstance(row, dict) and str(row.get("title", "")).strip()]
+
+
+def load_records(settings: Any) -> list[dict[str, Any]]:
+    """读取 performance_metrics.json 里的记录；任何异常都返回空列表。
+
+    依次尝试历史与生产实际使用的多个位置，返回第一个含可用记录的来源。
+    某处文件损坏时继续找下一处，而不是直接判为空。
+    """
+    for path in _candidate_paths(settings):
+        records = _read_records(path)
+        if records:
+            return records
+    return []
 
 
 def _reads(record: dict[str, Any]) -> int:

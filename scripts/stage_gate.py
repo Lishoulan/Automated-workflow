@@ -208,6 +208,7 @@ def evaluate(settings) -> dict[str, Any]:
             advanced = False
 
     blocking = [row for row in results if row["status"] == "BLOCKED"]
+    pending = [row for row in results if row["status"] == "PENDING"]
     first_unmet = next((row for row in results if row["status"] != "ACHIEVED"), None)
     if first_unmet is None:
         next_action = "四阶段全部达成，可开第二个账号。"

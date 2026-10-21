@@ -75,6 +75,12 @@ def trial_direction(topic):
     # Preserve existing assignments; material classification is not fact approval.
     headline = f"{topic.title} {topic.summary}"
     material_sentences = re.split(r"[。！？；\n]+", str(getattr(topic, "snippet", "") or ""))
+    # ⚠️ 2026-10-21：实测 run 39577216468 的 17 个选题只有 3 个通过原来的分类，
+    # 14 个被直接丢弃——其中包括"黄金克价/员工离职/汽车碰撞起火"这类恰恰属于
+    # 试验意图（"对普通人的支出、工作与生活的影响"）的选题。分类过窄会把试验
+    # 样本偏置成纯产业选题，也压缩每日候选量。这里补上劳动与价格两类读者影响信号。
+    labor_change_words = ("离职", "辞职", "裁员", "欠薪", "招聘", "加班", "劳动合同", "劳动仲裁")
+    price_change_words = ("克价", "金价", "油价", "菜价", "学费", "药价", "话费", "快递费", "涨价", "降价", "调价")
     for index, text in enumerate([headline, *material_sentences]):
         technology = any(w in text for w in ("手机", "芯片", "人工智能", "机器人", "电池", "新能源", "充电", "操作系统", "系统更新", "软件", "数据安全", "隐私", "路由器")) or bool(re.search(r"\bAI\b", text, re.I))
         everyday_words = ("用户", "消费者", "家庭", "家用", "车主", "价格", "费用", "续费", "岗位", "就业", "工资", "薪酬", "员工", "安全补丁", "隐私", "家门", "路由器")
@@ -84,6 +90,12 @@ def trial_direction(topic):
         if technology and everyday:
             return "technology_everyday"
         if any(w in text for w in ("消费者", "消费权益", "退款", "退费", "退货", "维修", "保修", "押金", "预付", "租房", "物业费", "停车费", "网购", "社保", "医保", "养老金")):
+            return "consumer_practical"
+        # 价格变动 = 读者"支出"影响；劳动变动 = 读者"工作"影响。二者都属试验的
+        # 实用性方向，但原分类表里没有，导致相关选题全被丢掉。
+        if any(w in text for w in price_change_words):
+            return "consumer_practical"
+        if any(w in text for w in labor_change_words):
             return "consumer_practical"
     return ""
 

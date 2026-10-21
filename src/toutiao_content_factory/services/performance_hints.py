@@ -30,6 +30,22 @@ MIN_READS_FOR_FEWSHOT = 100
 MIN_RECORDS_FOR_RELATIVE = 5
 MAX_EXAMPLES = 3
 
+#: 相对档的点击率地板（0~1）。低于它的作品属于「平台给了曝光但读者不点」，
+#: 不能当正面范本注入生成提示词。
+#:
+#: 取值依据（2026-10-21 生产实测，30 条作品）：本账号历史点击率分布为
+#: 0.04% / 0.07% / 0.13% / 0.35% / ... / 1.29% / 2.11%。0.5% 可把
+#: 「几乎没人点」的长尾（0.04%~0.35%）挡在外面，同时保留中位水平以上的样本。
+#: 这个值只影响「相对档挑哪几条当参考」，不影响绝对档（绝对档仍按阅读 >=100）。
+MIN_CTR_FOR_RELATIVE = 0.005
+
+#: 相对档的最小展现量。点击率是比率，分母太小会失真：
+#: 生产实测出现过「展现 17 / 阅读 1 = 5.88%」这种样本，比率很高但毫无统计意义，
+#: 若只按点击率排序，它会挤掉「展现 7144 / 阅读 92」这类真正有量的作品。
+#: 因此相对档要求同时满足「展现量 >= 此值」与「点击率 >= 地板」。
+#: 取 500：约为本账号展现量中位数以下一档，能排除噪声样本又不会把候选清空。
+MIN_IMPRESSIONS_FOR_RELATIVE = 500
+
 
 def _as_int(value: Any) -> int:
     try:
@@ -196,6 +212,14 @@ def _impressions(record: dict[str, Any]) -> int:
     return _as_int(record.get("impression_count"))
 
 
+def _ctr(record: dict[str, Any]) -> float:
+    """点击率（0~1）。没有展现时返回 0，不制造虚假比例。"""
+    impressions = _impressions(record)
+    if impressions <= 0:
+        return 0.0
+    return _reads(record) / impressions
+
+
 def select_examples(
     records: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], str]:
@@ -203,6 +227,21 @@ def select_examples(
 
     模式取值：``absolute``（阅读过线）/ ``relative``（样本不足时取相对最优）/
     ``insufficient``（连相对档都不够，不注入）。
+
+    ⚠️ 2026-10-21：相对档原先是**纯展现量排序**，会把「平台愿意推但读者不看」
+    的作品当成正面范本当注入生成提示词。生产实测（30 条作品）选出的第 2 名
+    点击率仅 0.35%、第 6~8 名 0.04%~0.13% —— 这正是 2026-09-04 自污染事故的
+    同类风险（当时是 0 阅读标题被当作高点击率范本）。
+
+    现在的相对档分层：
+    1. 先要求样本有足够展现量（``MIN_IMPRESSIONS_FOR_RELATIVE``）——
+       点击率是比率，分母太小会失真（实测出现过"17 展现 / 1 阅读 = 5.88%"）；
+    2. 在够量的样本里排除点击率低于 ``MIN_CTR_FOR_RELATIVE`` 的
+       "有曝光无吸引力"作品；
+    3. 剩下的按「点击率优先、展现量次之」排序；
+    4. 若第 1~3 步没有候选（例如全账号都没阅读），退回纯展现排序并在文案里
+       保留"样本不足"警示 —— 冷启动时「有展现」是唯一可用信号，
+       完全不注入反而让闭环再次空转。
     """
     qualified = [row for row in records if _reads(row) >= MIN_READS_FOR_FEWSHOT]
     if qualified:
@@ -212,11 +251,22 @@ def select_examples(
     if len(records) < MIN_RECORDS_FOR_RELATIVE:
         return [], "insufficient"
 
-    ranked = sorted(records, key=lambda row: (_impressions(row), _reads(row)), reverse=True)
     # 相对档必须真的有展现差异，否则等于随机挑。
-    top = ranked[0]
+    top = max(records, key=_impressions)
     if _impressions(top) <= 0:
         return [], "insufficient"
+
+    # 先卡样本量，再卡点击率：只有比率高但分母极小的样本不构成证据。
+    enough_volume = [
+        row for row in records if _impressions(row) >= MIN_IMPRESSIONS_FOR_RELATIVE
+    ]
+    engaging = [row for row in enough_volume if _ctr(row) >= MIN_CTR_FOR_RELATIVE]
+    if engaging:
+        engaging.sort(key=lambda row: (_ctr(row), _impressions(row)), reverse=True)
+        return engaging[:MAX_EXAMPLES], "relative"
+
+    # 冷启动兜底：要么普遍缺展现量，要么普遍没点击，仍按展现排序但不隐藏警示。
+    ranked = sorted(records, key=lambda row: (_impressions(row), _reads(row)), reverse=True)
     return ranked[:MAX_EXAMPLES], "relative"
 
 

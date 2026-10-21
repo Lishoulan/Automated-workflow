@@ -202,6 +202,13 @@
           "likes": 0,
           "shares": 0,
           "recommends": 0
+        },
+        {
+          "observed_at": "2026-10-21T20:14:47.315541+08:00",
+          "readers": 106,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
         }
       ]
     },
@@ -401,6 +408,13 @@
         },
         {
           "observed_at": "2026-10-21T13:12:20.507352+08:00",
+          "readers": 2,
+          "likes": 0,
+          "shares": 1,
+          "recommends": 0
+        },
+        {
+          "observed_at": "2026-10-21T20:14:47.315541+08:00",
           "readers": 2,
           "likes": 0,
           "shares": 1,
@@ -608,6 +622,13 @@
           "likes": 1,
           "shares": 0,
           "recommends": 0
+        },
+        {
+          "observed_at": "2026-10-21T20:14:47.315541+08:00",
+          "readers": 76,
+          "likes": 1,
+          "shares": 0,
+          "recommends": 0
         }
       ]
     },
@@ -807,6 +828,13 @@
         },
         {
           "observed_at": "2026-10-21T13:12:20.507352+08:00",
+          "readers": 148,
+          "likes": 0,
+          "shares": 2,
+          "recommends": 0
+        },
+        {
+          "observed_at": "2026-10-21T20:14:47.315541+08:00",
           "readers": 148,
           "likes": 0,
           "shares": 2,
@@ -1014,6 +1042,13 @@
           "likes": 0,
           "shares": 0,
           "recommends": 0
+        },
+        {
+          "observed_at": "2026-10-21T20:14:47.315541+08:00",
+          "readers": 1,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
         }
       ]
     },
@@ -1206,6 +1241,13 @@
         },
         {
           "observed_at": "2026-10-21T13:12:20.507352+08:00",
+          "readers": 4,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
+        },
+        {
+          "observed_at": "2026-10-21T20:14:47.315541+08:00",
           "readers": 4,
           "likes": 0,
           "shares": 0,
@@ -1812,6 +1854,13 @@
           "likes": 0,
           "shares": 1,
           "recommends": 0
+        },
+        {
+          "observed_at": "2026-10-21T20:14:47.315541+08:00",
+          "readers": 102,
+          "likes": 0,
+          "shares": 1,
+          "recommends": 0
         }
       ]
     },
@@ -1924,6 +1973,13 @@
           "likes": 0,
           "shares": 0,
           "recommends": 0
+        },
+        {
+          "observed_at": "2026-10-21T20:14:47.315541+08:00",
+          "readers": 6,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
         }
       ]
     },
@@ -2008,6 +2064,13 @@
           "likes": 0,
           "shares": 0,
           "recommends": 0
+        },
+        {
+          "observed_at": "2026-10-21T20:14:47.315541+08:00",
+          "readers": 0,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
         }
       ]
     },
@@ -2046,6 +2109,13 @@
         },
         {
           "observed_at": "2026-10-21T13:12:20.507352+08:00",
+          "readers": 2,
+          "likes": 0,
+          "shares": 0,
+          "recommends": 0
+        },
+        {
+          "observed_at": "2026-10-21T20:14:47.315541+08:00",
           "readers": 2,
           "likes": 0,
           "shares": 0,
@@ -2166,9 +2236,13 @@
     {
       "observed_at": "2026-10-21T13:12:20.507352+08:00",
       "followers": 67
+    },
+    {
+      "observed_at": "2026-10-21T20:14:47.315541+08:00",
+      "followers": 67
     }
   ],
-  "updated_at": "2026-10-21T13:12:20.507352+08:00",
+  "updated_at": "2026-10-21T20:14:47.315541+08:00",
   "coverage": "Latest published articles visible on the account homepage; not complete history",
   "monetization_snapshots": [
     {
@@ -2587,6 +2661,24 @@
     },
     {
       "observed_at": "2026-10-21T13:12:20.507352+08:00",
+      "activation": "unverified",
+      "reason": "activation_not_explicit",
+      "source_path": "/cgi-bin/frame",
+      "navigation_labels": [],
+      "frame_sources": [
+        {
+          "host": "mp.weixin.qq.com",
+          "path": "/promotion/readtemplate"
+        }
+      ],
+      "status_evidence": [
+        "收入变现",
+        "广告收入"
+      ],
+      "income": {}
+    },
+    {
+      "observed_at": "2026-10-21T20:14:47.315541+08:00",
       "activation": "unverified",
       "reason": "activation_not_explicit",
       "source_path": "/cgi-bin/frame",

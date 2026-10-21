@@ -69,6 +69,15 @@ def test_material_fallback_preserves_existing_direction_and_empty_material_is_no
     assert policy.trial_direction(topic("芯片公司市值再创新高")) == ""
 
 
+def test_material_fallback_does_not_join_unrelated_business_and_price_paragraphs():
+    # Run 39525806166: robot/new-energy investment and supplier price talks
+    # occur in separate financial-report paragraphs, not a reader-impact claim.
+    candidate = topic("瑞鹄模具三季报增收不增利，牛散林仁平持续减仓｜看财报")
+    candidate.snippet = ("公司发行可转债募资加码汽车制造装备业务产能，并发力向机器人与智能制造新赛道演进。\n\n"
+                         "公司正在积极开拓新车型，并与主要客户协商调整销售价格。")
+    assert policy.trial_direction(candidate) == ""
+
+
 def test_material_direction_does_not_bypass_article_quality_or_published_dedup(app_settings, logger, monkeypatch):
     from toutiao_content_factory.models import DailyTopicsReport
     from toutiao_content_factory.services.app_service import ContentFactoryAppService
@@ -92,6 +101,10 @@ def test_material_direction_does_not_bypass_article_quality_or_published_dedup(a
     app = object.__new__(ContentFactoryAppService)
     app.settings, app.logger, app.topic_automation = settings, logger, automation
     app.content_guard_service = ContentGuardService(settings, logger)
+    # This unit tests the downstream quality/dedup gate. Original-material
+    # retrieval is independently exercised with real typed bodies in
+    # test_toutiao_article_material_gate; never fetch for this thin score stub.
+    monkeypatch.setattr(app, "_prepare_toutiao_article_material", lambda topics: topics)
 
     def candidates():
         report_path.write_text(json.dumps(report.to_dict(), ensure_ascii=False), encoding="utf-8")

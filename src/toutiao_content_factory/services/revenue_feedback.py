@@ -73,9 +73,14 @@ def operating_trial(settings, *, now=None):
 def trial_direction(topic):
     # Short RSS summaries can omit reader relevance present in captured material.
     # Preserve existing assignments; material classification is not fact approval.
-    for text in (f"{topic.title} {topic.summary}", str(getattr(topic, "snippet", "") or "")):
+    headline = f"{topic.title} {topic.summary}"
+    material_sentences = re.split(r"[。！？；\n]+", str(getattr(topic, "snippet", "") or ""))
+    for index, text in enumerate([headline, *material_sentences]):
         technology = any(w in text for w in ("手机", "芯片", "人工智能", "机器人", "电池", "新能源", "充电", "操作系统", "系统更新", "软件", "数据安全", "隐私", "路由器")) or bool(re.search(r"\bAI\b", text, re.I))
-        everyday = any(w in text for w in ("用户", "消费者", "家庭", "家用", "车主", "价格", "费用", "续费", "岗位", "就业", "工资", "薪酬", "员工", "工作", "安全补丁", "隐私", "家门", "路由器"))
+        everyday_words = ("用户", "消费者", "家庭", "家用", "车主", "价格", "费用", "续费", "岗位", "就业", "工资", "薪酬", "员工", "安全补丁", "隐私", "家门", "路由器")
+        # A generic 'work' in a policy or financial paragraph is not a
+        # reader-impact claim. Material must connect both cues in one sentence.
+        everyday = any(w in text for w in everyday_words + (("工作",) if index == 0 else ()))
         if technology and everyday:
             return "technology_everyday"
         if any(w in text for w in ("消费者", "消费权益", "退款", "退费", "退货", "维修", "保修", "押金", "预付", "租房", "物业费", "停车费", "网购", "社保", "医保", "养老金")):

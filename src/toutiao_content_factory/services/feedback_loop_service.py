@@ -22,6 +22,7 @@ from toutiao_content_factory.agents.evolution_agent import EvolutionAgent
 from toutiao_content_factory.config import AppSettings
 from toutiao_content_factory.database.service import DatabaseService
 from toutiao_content_factory.services.openai_service import OpenAIContentService
+from toutiao_content_factory.services import performance_hints
 from toutiao_content_factory.services.performance_service import PerformanceService
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.t1_policy import infer_availability_status
@@ -380,8 +381,11 @@ class FeedbackLoopService:
             self.logger.info("No T+1-matured performance records are eligible for evolution.")
             return None
 
-        # Save to the path EvolutionAgent looks for
-        metrics_path = self.settings.automation_dir / "performance_metrics.json"
+        # Save to the canonical path shared with EvolutionAgent / performance_hints.
+        # 2026-10-21: this used to hard-code automation_dir, which is not where
+        # production writes the file. Reuse the single resolver so the writer and
+        # every reader can never disagree again.
+        metrics_path = performance_hints.metrics_path(self.settings)
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         metrics_path.write_text(
             json.dumps(evolution_records, ensure_ascii=False, indent=2),
@@ -662,7 +666,7 @@ class FeedbackLoopService:
 
     def get_title_few_shot(self) -> str:
         """Generate the current Few-Shot injection for TitleAgent."""
-        metrics_path = self.settings.automation_dir / "performance_metrics.json"
+        metrics_path = performance_hints.metrics_path(self.settings)
         if not metrics_path.exists():
             return ""
         try:
@@ -677,7 +681,7 @@ class FeedbackLoopService:
 
     def get_writer_few_shot(self) -> str:
         """Generate the current Few-Shot injection for WriterAgent."""
-        metrics_path = self.settings.automation_dir / "performance_metrics.json"
+        metrics_path = performance_hints.metrics_path(self.settings)
         if not metrics_path.exists():
             return ""
         try:

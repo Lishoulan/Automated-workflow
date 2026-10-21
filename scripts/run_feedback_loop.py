@@ -43,7 +43,7 @@ def build_status(settings) -> dict:
         {
             "account_key": settings.account_key,
             "observed_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-            "metrics_path": str(Path(settings.automation_dir) / "performance_metrics.json"),
+            "metrics_path": str(performance_hints.metrics_path(settings)),
             "records_with_impressions": sum(
                 1 for row in records if int(row.get("impression_count") or 0) > 0
             ),

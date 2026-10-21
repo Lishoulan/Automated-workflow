@@ -33,7 +33,10 @@ def draft_app(app_settings, logger, monkeypatch):
     app.auto_run = MagicMock(side_effect=[{"archive_root": str(run)} for run in runs])
     app._load_run_score_snapshot = MagicMock(return_value={})
     app._load_content_guard_report = MagicMock(return_value={"blocked": False})
-    app._qualifies_for_auto_approval = MagicMock(return_value=False)
+    # These cases exercise title/delivery failures after the candidate review
+    # gate. Unapproved-candidate switching has its own regression below.
+    app._qualifies_for_auto_approval = MagicMock(return_value=True)
+    app.review_service.select_auto_title = MagicMock(return_value={"selected_title": "Reviewed title", "selected_title_index": 0})
     app.review_service.prepare_wechat_draft = MagicMock(side_effect=[ValueError("No candidate titles available for this run."), {}])
     app.image_generation_service.generate_for_run = MagicMock(return_value={})
     app.wechat_service.publish_run = MagicMock(return_value={})
@@ -83,3 +86,21 @@ def test_delivery_error_is_not_reinterpreted_as_rejected_title(draft_app):
         app._daily_run_impl()
     assert app.auto_run.call_count == 1
     assert app.wechat_service.publish_run.call_count == 1
+    app.approve_run.assert_not_called()
+    app._run_daily_platform_automation.assert_not_called()
+
+
+def test_unapproved_candidates_keep_review_switch_and_only_save_last_manual_draft(draft_app):
+    app, runs = draft_app
+    app._qualifies_for_auto_approval.return_value = False
+    app.review_service.prepare_wechat_draft.side_effect = None
+    app.review_service.prepare_wechat_draft.return_value = {}
+    result = app._daily_run_impl()
+    report = json.loads(Path(result["workflow_report"]).read_text(encoding="utf-8"))
+    assert [row["status"] for row in report["attempts"]] == ["review_pending_next_candidate", "draft_saved"]
+    assert all(row["qualified_for_auto_approval"] is False for row in report["attempts"])
+    app.review_service.prepare_wechat_draft.assert_called_once_with(runs[1])
+    app.wechat_service.publish_run.assert_called_once_with(runs[1], submit=False)
+    app.image_generation_service.generate_for_run.assert_called_once_with(runs[1], include_infographics=False)
+    app.approve_run.assert_not_called()
+    app._run_daily_platform_automation.assert_not_called()

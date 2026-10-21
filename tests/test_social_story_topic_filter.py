@@ -159,7 +159,10 @@ def test_story_account_declares_the_social_story_industry(collector) -> None:
     """判据只有在账号真的启用 social_story 赛道时才会被调用。"""
     settings = load_settings(__import__("pathlib").Path.cwd(), account_key="robot_notes")
 
-    assert settings.topic_collection.focus_industries == ["social_story"]
+    assert settings.topic_collection.focus_industries == ["social_story", "consumer_practical", "technology_everyday"]
+    assert settings.revenue_optimization.adaptive_topic_selection is True
+    assert set(settings.revenue_optimization.operating_trial["directions"]) == {"consumer_practical", "technology_everyday"}
+    assert "hot_topic" not in settings.topic_collection.focus_industries
 
 
 def test_story_topic_metadata_does_not_fall_back_to_technology(collector) -> None:

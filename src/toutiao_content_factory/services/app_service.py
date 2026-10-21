@@ -900,6 +900,13 @@ class ContentFactoryAppService:
                 auth_health=auth_health,
             )
 
+        started_at = time.monotonic()
+        budget_seconds = self._daily_run_budget_seconds()
+        self._daily_candidate_deadline = started_at + budget_seconds
+        self._article_material_attempted = set()
+        self._article_material_deadline = min(self._daily_candidate_deadline, started_at + 300)
+        self._article_selection_funnel = None
+        self.topic_automation._prepared_article_topics = {}
         candidate_specs = self._build_daily_candidate_specs(
             topic_rank=topic_rank,
             topic_title=topic_title,
@@ -924,8 +931,9 @@ class ContentFactoryAppService:
                     raise
 
             if not candidate_specs:
-                if self.settings.wechat_auto_publish_mode:
-                    self._write_daily_workflow_report(status="no_topics", final_attempt={}, attempts=[])
+                selection_exports = {}
+                if self.settings.wechat_auto_publish_mode or getattr(self, "_article_selection_funnel", None):
+                    selection_exports = self._write_daily_workflow_report(status="no_topics", final_attempt={}, attempts=[])
                 self.notification_service._broadcast(
                     "【定时任务】今日无可用选题",
                     f"账号: {self.settings.account_label}\n"
@@ -937,6 +945,7 @@ class ContentFactoryAppService:
                     "status": "no_topics",
                     "message": "No eligible topics available. Will retry at next scheduled time.",
                     **priority_weitoutiao_exports,
+                    **selection_exports,
                 }
 
         losing_attempts: list[dict[str, object]] = []
@@ -949,8 +958,6 @@ class ContentFactoryAppService:
         # 定时任务一旦被超时杀掉，等于当天白跑 —— 用户要的是"每天都能发出去"，
         # 所以必须在接近上限时**主动收敛**：停止换题，用手上最好的候选走发布，
         # 而不是让整个 run 被外部杀掉。
-        started_at = time.monotonic()
-        budget_seconds = self._daily_run_budget_seconds()
         attempt_limit = min(5, max(1, int(self.settings.automation.max_daily_topic_attempts))) if self.settings.wechat_auto_publish_mode and not topic_title and topic_rank is None else len(candidate_specs)
         for attempt_index in range(1, attempt_limit + 1):
             elapsed = time.monotonic() - started_at
@@ -2831,10 +2838,20 @@ class ContentFactoryAppService:
         dry_run: bool,
     ) -> list[dict[str, object]]:
         report = self.topic_automation._load_daily_topics()
-        available_topics = self.topic_automation._available_topics(
-            report.topics,
-            allow_generated_duplicates=refresh_cache or dry_run,
-        )
+        from toutiao_content_factory.services.revenue_feedback import operating_trial
+        two_stage = (not dry_run and not topic_title and topic_rank is None
+                     and bool(operating_trial(self.settings, now=datetime.now().astimezone())))
+        exclusions = {}
+        options = {"defer_direction": True, "exclusions": exclusions} if two_stage else {}
+        available_topics = self.topic_automation._available_topics(report.topics,
+            allow_generated_duplicates=refresh_cache or dry_run, **options)
+        if two_stage:
+            self._article_selection_funnel = {"raw_inputs": report.total_raw_items,
+                "collection_rejections": dict(report.filtered_out), "exported_candidates": len(report.topics),
+                "account_and_dedup_rejections": exclusions, "after_account_and_dedup": len(available_topics),
+                "content_guard_rejections": [], "after_content_guard": 0,
+                "material_attempts": [], "after_material_and_direction": 0,
+                "quality_rejections": [], "eligible_for_writing": 0, "review_approved": False}
         if not available_topics:
             return []
 
@@ -2873,6 +2890,10 @@ class ContentFactoryAppService:
                 " ".join(part for part in (topic.title, topic.url) if str(part).strip())
             )
             if bad_word_result.get("blocked"):
+                if two_stage:
+                    self._article_selection_funnel["content_guard_rejections"].append({
+                        "title": topic.title, "reason": "blocked_content",
+                        "matched_words": list(bad_word_result.get("matched_words", []))})
                 self.logger.info(
                     "Daily candidate skipped before material search: %s | matched bad words: %s",
                     topic.title,
@@ -2881,6 +2902,8 @@ class ContentFactoryAppService:
                 continue
             safe_topics.append(topic)
         available_topics = safe_topics
+        if two_stage:
+            self._article_selection_funnel["after_content_guard"] = len(safe_topics)
         if not available_topics:
             return []
 
@@ -2889,6 +2912,9 @@ class ContentFactoryAppService:
             available_topics = [topic for topic in available_topics if topic.title not in attempted]
             available_topics = sorted(available_topics, key=self._wechat_candidate_sort_key)
             self._enrich_wechat_candidates(available_topics)
+        elif two_stage:
+            available_topics = self._prepare_toutiao_article_material(available_topics)
+            self._article_selection_funnel["after_material_and_direction"] = len(available_topics)
 
         # Scheduled long articles need enough source material to support a
         # grounded narrative. Thin/title-only topics remain in the daily topic
@@ -2906,6 +2932,11 @@ class ContentFactoryAppService:
             if self.settings.wechat_auto_publish_mode and (getattr(topic, "_wechat_original_gate_passed", True) is False or not topic.source_records):
                 continue
             if evidence < 55 or quality < 55 or flags.intersection(blocked_quality_flags):
+                if two_stage:
+                    self._article_selection_funnel["quality_rejections"].append({
+                        "title": topic.title, "evidence_below_55": evidence < 55,
+                        "quality_below_55": quality < 55,
+                        "blocked_flags": sorted(flags.intersection(blocked_quality_flags))})
                 self.logger.info(
                     "Routing thin topic to WeiToutiao instead of scheduled article: %s "
                     "(evidence=%s quality=%s flags=%s)",
@@ -2917,6 +2948,11 @@ class ContentFactoryAppService:
                 continue
             article_topics.append(topic)
         available_topics = article_topics
+        if two_stage:
+            self._article_selection_funnel["eligible_for_writing"] = len(article_topics)
+            for row in self._article_selection_funnel["material_attempts"]:
+                if row["status"] in {"material_verified_pending_quality_gate", "verified_material_reused"}:
+                    row["status"] = "eligible_for_writing" if any(t.title == row["title"] for t in article_topics) else "quality_rejected"
         if not available_topics:
             return []
 
@@ -2994,6 +3030,63 @@ class ContentFactoryAppService:
             }
             for available_rank, topic in enumerate(ordered[:max_attempts], start=1)
         ]
+
+    def _prepare_toutiao_article_material(self, topics):
+        """Retrieve bounded leads, then apply the unchanged direction and fact gates."""
+        from collections import defaultdict
+        from toutiao_content_factory.services.revenue_feedback import trial_direction
+        from toutiao_content_factory.services.topic_selection_evidence import selection_evidence
+        from toutiao_content_factory.services.material_search_service import _looks_like_multi_topic_digest
+        prepared = getattr(self.topic_automation, "_prepared_article_topics", {})
+        attempted = getattr(self, "_article_material_attempted", set())
+        self._article_material_attempted = attempted
+        limit = max(1, int(self.settings.automation.max_daily_topic_attempts))
+        deadline = getattr(self, "_article_material_deadline", min(
+            getattr(self, "_daily_candidate_deadline", time.monotonic() + self._daily_run_budget_seconds()),
+            time.monotonic() + 300))
+        self._article_material_deadline = deadline
+        collector = TopicCollectionService(self.settings, self.logger)
+        ready = []
+        ordered = sorted(topics, key=lambda topic: (not bool(trial_direction(topic)),
+                         selection_evidence(topic)["priority"], -int(topic.quality_score or 0)))
+        for topic in ordered:
+            key = (topic.title, topic.url, topic.published_at)
+            row = {"title": topic.title, "status": "pending"}
+            self._article_selection_funnel["material_attempts"].append(row)
+            if _looks_like_multi_topic_digest(topic.title):
+                row["status"] = "multi_topic_digest_not_story"
+                continue
+            if not collector._filter_by_freshness([topic], defaultdict(int)):
+                row["status"] = "stale_or_undated"
+                continue
+            if key in prepared:
+                topic = prepared[key]
+                row.update(status="verified_material_reused", assessment=topic._material_evidence_assessment)
+                ready.append(topic)
+                continue
+            if key in attempted:
+                row["status"] = "previous_material_rejection"
+                continue
+            if len(attempted) >= limit or time.monotonic() >= deadline:
+                row["status"] = "existing_attempt_or_time_budget_exhausted"
+                continue
+            attempted.add(key)
+            if not self.topic_automation._hydrate_topic_material(topic, deadline=min(deadline, time.monotonic() + 60)):
+                row.update(status="material_evidence_rejected",
+                           assessment=getattr(topic, "_material_evidence_assessment", {}))
+                continue
+            collector._enrich_topic(topic)
+            row.update(assessment=topic._material_evidence_assessment, direction=trial_direction(topic),
+                       evidence_strength=topic.evidence_strength, quality_score=topic.quality_score,
+                       quality_flags=list(topic.quality_flags))
+            if not trial_direction(topic):
+                row["status"] = "direction_rejected_after_material"
+                continue
+            row["status"] = "material_verified_pending_quality_gate"
+            prepared[key] = topic
+            ready.append(topic)
+        self.topic_automation._prepared_article_topics = prepared
+        return self.topic_automation._apply_revenue_policy(ready)
 
     @staticmethod
     def _wechat_candidate_sort_key(topic: TopicCandidate) -> tuple[int, ...]:
@@ -4525,6 +4618,8 @@ class ContentFactoryAppService:
         if self.settings.wechat_auto_publish_mode:
             report_payload["enrichment_count"] = getattr(self, "_wechat_enrichment_count", 0)
             report_payload["eligible_candidate_count"] = getattr(self, "_wechat_eligible_candidate_count", 0)
+        if getattr(self, "_article_selection_funnel", None):
+            report_payload["selection_funnel"] = self._article_selection_funnel
         if supporting_exports:
             report_payload["supporting_exports"] = dict(supporting_exports)
         report_path = self.settings.automation_dir / "last_daily_workflow_report.json"

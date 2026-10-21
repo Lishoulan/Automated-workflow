@@ -689,6 +689,9 @@ class TopicAutomationService:
             payload = json.loads(report_path.read_text(encoding="utf-8"))
             report = SchemaGuardService.validate_daily_topics_report(payload)
             if report.topics:
+                prepared = getattr(self, "_prepared_article_topics", {})
+                report.topics = [prepared.get((topic.title, topic.url, topic.published_at), topic)
+                                 for topic in report.topics]
                 return report
 
         fallback_report = self.topic_pool_service.build_fallback_report()
@@ -1696,6 +1699,9 @@ class TopicAutomationService:
         self,
         topics: list[TopicCandidate],
         allow_generated_duplicates: bool = False,
+        *,
+        defer_direction: bool = False,
+        exclusions: dict[str, int] | None = None,
     ) -> list[TopicCandidate]:
         if self.settings.publishing.allow_duplicate_topics:
             return self._apply_revenue_policy(
@@ -1715,30 +1721,44 @@ class TopicAutomationService:
             else self._load_cross_account_generated_keys_for_today()
         )
         available: list[TopicCandidate] = []
+        def reject(reason):
+            if exclusions is not None:
+                exclusions[reason] = exclusions.get(reason, 0) + 1
+
         for topic in topics:
             if not self._topic_matches_account_boundary(topic):
+                reject("account_boundary")
                 continue
             if topic.url and topic.url in published_keys["urls"]:
+                reject("published_url")
                 continue
             if topic.url and topic.url in generated_keys["urls"]:
+                reject("generated_url")
                 continue
             if topic.url and topic.url in cross_account_published_keys["urls"]:
+                reject("cross_account_published_url")
                 continue
             if topic.url and topic.url in cross_account_generated_keys["urls"]:
+                reject("cross_account_generated_url")
                 continue
             normalized_title = self._normalize_text(topic.title)
             if normalized_title and normalized_title in published_keys["titles"]:
+                reject("published_title")
                 continue
             if normalized_title and normalized_title in generated_keys["titles"]:
+                reject("generated_title")
                 continue
             if normalized_title and normalized_title in cross_account_published_keys["titles"]:
+                reject("cross_account_published_title")
                 continue
             if normalized_title and normalized_title in cross_account_generated_keys["titles"]:
+                reject("cross_account_generated_title")
                 continue
             if self._is_similar_to_generated(normalized_title, generated_keys["titles"], cross_account_generated_keys["titles"]):
+                reject("similar_generated_title")
                 continue
             available.append(self._enrich_topic_revenue_metadata(topic))
-        return self._apply_revenue_policy(available)
+        return available if defer_direction else self._apply_revenue_policy(available)
 
     def _available_topics_soft(
         self,

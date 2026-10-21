@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -50,8 +51,11 @@ def _clean_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def _service(account_key: str) -> ContentFactoryAppService:
+def _service(account_key: str, *, strict_story=False) -> ContentFactoryAppService:
     settings = load_settings(Path.cwd(), account_key=account_key)
+    if strict_story:
+        settings.revenue_optimization = replace(settings.revenue_optimization, adaptive_topic_selection=False)
+        settings.topic_collection = settings.topic_collection.model_copy(update={"focus_industries": ["social_story"]})
     return ContentFactoryAppService(settings, logging.getLogger("test_benchmark_track"))
 
 
@@ -62,7 +66,7 @@ def _service(account_key: str) -> ContentFactoryAppService:
 
 def test_social_story_account_gets_no_benchmark_track() -> None:
     """社会故事类没有对标账号，必须解析为 None（而不是借用科技商业）。"""
-    assert _service("robot_notes")._resolve_benchmark_track_for_account() is None
+    assert _service("robot_notes", strict_story=True)._resolve_benchmark_track_for_account() is None
 
 
 @pytest.mark.parametrize(
@@ -145,7 +149,7 @@ def test_collect_topics_skips_benchmark_entirely_without_a_track(monkeypatch) ->
     Agent 会把 None 当成「不限制赛道」，采集全部对标号 —— 这正是科技热点
     漏进社会故事选题池的直接原因。
     """
-    service = _service("robot_notes")
+    service = _service("robot_notes", strict_story=True)
     called: list[dict] = []
     monkeypatch.setattr(
         service, "collect_benchmark_hot_topics", lambda **kw: called.append(kw) or {}

@@ -11,10 +11,12 @@ import logging
 import math
 import os
 import sys
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
+from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -415,6 +417,48 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
     temporary.replace(path)
 
 
+def _cookie_summary(cookies: list[dict]) -> str:
+    """Describe the cookie jar so a failure can be told apart from an outage.
+
+    2026-10-21：采集槽失败时日志只有 ``RuntimeError``，既不知道是接口拒绝
+    （cookie 过期/未登录）还是网络/风控，也无从判断该重试还是该换 cookie。
+    """
+    now = int(time.time())
+    total = len(cookies)
+    expired = sum(
+        1
+        for cookie in cookies
+        if isinstance(cookie.get("expires"), (int, float))
+        and 0 < float(cookie["expires"]) < now
+    )
+    return f"cookies={total} expired={expired}"
+
+
+def _fetch_page(request: Request) -> dict:
+    """One request, one retry for transient transport failures.
+
+    Creator-center list calls are read-only, so a single retry after a TLS/socket
+    error is safe. API-level rejections (``code != 0``) are not retried: they mean
+    the session is not accepted and repeating the call only wastes the slot.
+    """
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            with urlopen(request, timeout=30) as response:
+                return json.load(response)
+        except (URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(1.5)
+                continue
+            raise
+    raise last_error if last_error else RuntimeError("Creator center request failed")
+
+
+def _describe_failure(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {str(exc).strip()[:300] or '(empty message)'}"
+
+
 def fetch_published(cookie_path: Path, *, max_pages: int, cutoff: datetime) -> list[dict]:
     payload = json.loads(cookie_path.read_text(encoding="utf-8"))
     cookies = payload["platforms"]["toutiao"]["cookies"]
@@ -424,6 +468,7 @@ def fetch_published(cookie_path: Path, *, max_pages: int, cutoff: datetime) -> l
     )
     if not cookie_header:
         raise ValueError("Toutiao cookie file has no usable cookies")
+    cookie_state = _cookie_summary([cookie for cookie in cookies if cookie.get("name")])
     contents: list[dict] = []
     cursor = ""
     for page_index in range(max_pages):
@@ -441,10 +486,13 @@ def fetch_published(cookie_path: Path, *, max_pages: int, cutoff: datetime) -> l
                 "User-Agent": "Mozilla/5.0",
             },
         )
-        with urlopen(request, timeout=30) as response:
-            page = json.load(response)
+        page = _fetch_page(request)
         if page.get("code") not in (0, None) or not isinstance(page.get("contents"), list):
-            raise RuntimeError("Creator center did not return a published-work list")
+            raise RuntimeError(
+                "Creator center did not return a published-work list: "
+                f"code={page.get('code')!r} message={str(page.get('message') or '')[:120]!r} "
+                f"{cookie_state}"
+            )
         batch = page["contents"]
         contents.extend(batch)
         if not page.get("has_more") or not batch:
@@ -493,7 +541,7 @@ def main() -> int:
         attach_article_experiments(snapshot, _load_json(output_dir / "publish_history.json", expected_type=list))
         attach_content_income(snapshot, _load_json(output_dir / "growth_ops" / "performance" / "content_income_collection.json"), observed_at)
     except (OSError, ValueError, KeyError, RuntimeError) as exc:
-        print(f"Toutiao growth snapshot unavailable: {type(exc).__name__}", file=sys.stderr)
+        print(f"Toutiao growth snapshot unavailable: {_describe_failure(exc)}", file=sys.stderr)
         return 2
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / "growth_checkpoints.json"

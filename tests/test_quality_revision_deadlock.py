@@ -164,6 +164,35 @@ def _writer(app_settings, mock_openai_service) -> WriterAgent:
     )
 
 
+def test_writer_revision_keeps_preexisting_numbers_and_companies(
+    app_settings, mock_openai_service
+) -> None:
+    """重写保留原稿已有的数字/公司不算"编造"。
+
+    2026-10-21 实测：原稿里的"市值从1150亿跌到878亿"和"英伟达"并不在
+    data_report 的 growth_numbers/companies 里，整篇校验会把**任何**重写稿判成
+    unsupported → 返工永远返回空串。只应校验重写新增的内容。
+    """
+    agent = _writer(app_settings, mock_openai_service)
+    original = (
+        "科大讯飞的市值从1150亿跌到878亿，市场开始重新审视AI预期。"
+        "同期英伟达的算力叙事仍在延续，但两家公司面对的兑现条件并不相同。"
+        + _long_text("原稿段落", repeat=20)
+    )
+    revised = (
+        "市值从1150亿跌到878亿之后，科大讯飞面对的追问变了：市场要看到兑现。"
+        "英伟达的算力叙事仍在延续，可两家公司面对的兑现条件并不相同。"
+        + _long_text("修订段落", repeat=20)
+    )
+    mock_openai_service.create_json_completion.return_value = {"article": revised}
+
+    result = agent.revise_article_via_llm(original, _data_report(), ["修改开头，先交代结果"])
+
+    assert result, "保留原稿已有数字与公司的重写必须被接受"
+    assert "1150亿" in result and "878亿" in result
+    assert "英伟达" in result
+
+
 def test_writer_revision_rejects_unsupported_numbers(app_settings, mock_openai_service) -> None:
     agent = _writer(app_settings, mock_openai_service)
     original = _long_text("原稿段落")

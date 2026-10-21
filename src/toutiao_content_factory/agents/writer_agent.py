@@ -148,6 +148,17 @@ class WriterAgent(BaseAgent):
         "公司主体",
         "硬科技",
         "服务机器人",
+        # 2026-10-21：公司名提取是按"后缀前 2–4 字"截取的，会把
+        # "但两家公司" / "可两家公司" 之类数量词短语当成公司名。实测这会让
+        # 返工重写稿被判 "introduced unknown companies" 而整篇丢弃。
+        "一家公司",
+        "两家公司",
+        "多家公司",
+        "几家公司",
+        "上述公司",
+        "这些公司",
+        "那些公司",
+        "同行公司",
     )
 
     def __init__(
@@ -2979,23 +2990,68 @@ class WriterAgent(BaseAgent):
             return ""
         original_chars = len(current.replace("\n", "").replace(" ", ""))
         revised_chars = len(revised.replace("\n", "").replace(" ", ""))
-        if revised_chars < int(original_chars * 0.8):
+        # 2026-10-21：这里的 80% 下限是"防截断"用的，但实测 glm-4-flash 的重写
+        # 稳定缩水（850 → 524 字，62%），于是返工稿被丢弃、循环空转。
+        # 真正必须满足的是发布字数下限（叙事 700），由 workflow 侧
+        # `_ensure_article_min_chars` 负责补足；这里只挡住"返回一个残段"。
+        if revised_chars < int(original_chars * 0.5):
             self.logger.warning(
                 "Writer revision shrank the article from %d to %d chars; keeping the audited article.",
                 original_chars,
                 revised_chars,
             )
             return ""
-        unsupported = self._unsupported_numeric_tokens(revised, data_report)
-        if unsupported:
+        # 2026-10-21：这里原来对**整篇**重写稿做数字/公司校验，等于要求重写稿比
+        # 原稿更"干净"——而原稿里的市值数字、行业公司名往往本来就不在 data_report
+        # 的 growth_numbers/companies 里（实测：1150亿/878亿 未进 growth_numbers，
+        # 重写稿只是保留它们就被判 unsupported，重写一律返回 ""，返工等于没做）。
+        # 只校验**重写新增**的数字/公司：保留原稿已有内容不算编造。
+        original_unsupported = set(self._unsupported_numeric_tokens(current, data_report))
+        new_unsupported = [
+            token
+            for token in self._unsupported_numeric_tokens(revised, data_report)
+            if token not in original_unsupported
+        ]
+        if new_unsupported:
             self.logger.warning(
                 "Writer revision introduced unsupported numbers %s; keeping the audited article.",
-                unsupported[:5],
+                new_unsupported[:5],
             )
             return ""
-        if self._has_unknown_company_mention(revised, data_report):
-            self.logger.warning("Writer revision introduced unknown companies; keeping the audited article.")
+        original_mentions = {
+            mention.casefold() for mention in self._extract_company_mentions(current)
+        }
+        new_mentions = [
+            mention
+            for mention in self._extract_company_mentions(revised)
+            if mention.casefold() not in original_mentions
+        ]
+        # 2026-10-21：公司名提取对"后缀前 2–4 字"做截取，噪声很大（实测把
+        # "市场对国产芯片技术""研发投入对技术" 之类短语当成新公司名，导致重写稿
+        # 被整篇丢弃）。返工稿后面**一定会再过一次审核团**，事实一致性由那一关负责；
+        # 所以这里只对**收录词典里的真实公司名**做强拒绝，其余只记日志。
+        from toutiao_content_factory.services.company_entities import (
+            extract_known_company_names,
+        )
+
+        curated_new = [
+            mention
+            for mention in extract_known_company_names(revised)
+            if mention.casefold() not in original_mentions
+        ]
+        if curated_new and self._has_unknown_company_mention(
+            " ".join(curated_new), data_report
+        ):
+            self.logger.warning(
+                "Writer revision introduced unknown companies %s; keeping the audited article.",
+                curated_new[:5],
+            )
             return ""
+        if new_mentions:
+            self.logger.info(
+                "Writer revision added company-like spans %s; the council re-audit verifies facts.",
+                new_mentions[:5],
+            )
         if revised == current:
             return ""
         self.logger.info(

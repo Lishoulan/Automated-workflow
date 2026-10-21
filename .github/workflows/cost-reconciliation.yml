@@ -1,0 +1,139 @@
+name: Cost Reconciliation
+
+# 2026-10-21：把供应商账单导入成本回执链。
+# 背景：generation_cost_service 已经能区分 estimated / provider_confirmed，
+# scripts/reconcile_generation_costs.py 也有测试覆盖，但此前没有任何工作流调度它，
+# 所以 actual_cost 长期停在 UNKNOWN（实扣凭据 0/72）。
+#
+# 安全设计（与脚本自身的"默认不落盘"一致）：
+#   · 定时运行 = 只读预览，绝不 --apply，只产出报告 artifact，不写任何状态。
+#   · --apply 只能由人工 workflow_dispatch 显式开启，且要求把回执写回共享缓存。
+#   · 并发组串行执行，避免与内容 run 同时写同一份缓存。
+#   · 权限只有 contents: read / actions: read，不申请写权限。
+
+on:
+  schedule:
+    # 每周一 03:23 UTC（北京时间 11:23）：避开内容生产时段。
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      account:
+        description: 'Account key to reconcile (must match receipt account_key)'
+        type: string
+        default: 'robot_notes'
+      csv_path:
+        description: 'Provider billing export CSV path inside the repo'
+        type: string
+        default: 'billing_exports/robot_notes.csv'
+      apply:
+        description: 'Write verified amounts back into the cached receipts (manual only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: cost-reconciliation-${{ inputs.account || 'robot_notes' }}
+      cancel-in-progress: false
+    env:
+      PYTHONUTF8: '1'
+      TZ: Asia/Shanghai
+      RECONCILE_ACCOUNT: ${{ inputs.account || 'robot_notes' }}
+      RECONCILE_CSV: ${{ inputs.csv_path || 'billing_exports/robot_notes.csv' }}
+      RECONCILE_APPLY: ${{ inputs.apply == true && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Restore generation cost receipts
+        uses: actions/cache/restore@v4
+        with:
+          # 与 Daily Run 共用同一路径集合与前缀，保证对账结果能被后续内容 run 读到。
+          path: |
+            output/accounts/*/growth_ops/generation_costs/
+            output/growth_ops/generation_costs/
+          key: cost-reconciliation-${{ github.ref_name }}-${{ env.RECONCILE_ACCOUNT }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            daily-publish-history-${{ github.ref_name }}-${{ env.RECONCILE_ACCOUNT }}-
+
+      - name: Locate receipts and billing export
+        id: guard
+        run: |
+          if [ ! -f "$RECONCILE_CSV" ]; then
+            echo "ready=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::No billing export at $RECONCILE_CSV. Preview-only workflow; nothing to reconcile."
+            exit 0
+          fi
+          # 脚本要的是「账号输出目录」（其下 growth_ops/generation_costs/events），不是 output 根。
+          ACCOUNT_DIR="output/accounts/$RECONCILE_ACCOUNT"
+          if [ ! -d "$ACCOUNT_DIR/growth_ops/generation_costs/events" ]; then
+            EVENTS_DIR="$(find output -type d -path '*generation_costs/events' | head -1)"
+            ACCOUNT_DIR="${EVENTS_DIR%/growth_ops/generation_costs/events}"
+          fi
+          if [ -z "$ACCOUNT_DIR" ] || [ ! -d "$ACCOUNT_DIR/growth_ops/generation_costs/events" ]; then
+            echo "ready=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::No cached receipts found yet; run reconciliation after a content run."
+            exit 0
+          fi
+          echo "ready=1" >> "$GITHUB_OUTPUT"
+          echo "account_dir=$ACCOUNT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Receipts found: $(find "$ACCOUNT_DIR/growth_ops/generation_costs/events" -name '*.json' | wc -l)"
+
+      - name: Build a quiescent snapshot copy
+        if: steps.guard.outputs.ready == '1'
+        run: |
+          rm -rf reconcile_snapshot
+          mkdir -p reconcile_snapshot
+          cp -a "${{ steps.guard.outputs.account_dir }}/." reconcile_snapshot/
+
+      - name: Reconcile (preview by default, apply only when manually requested)
+        if: steps.guard.outputs.ready == '1'
+        run: |
+          set -o pipefail
+          FLAGS=""
+          if [ "$RECONCILE_APPLY" = '1' ]; then
+            FLAGS="--apply"
+            echo "::warning::APPLY mode: verified amounts will be written back to the cached receipts."
+          fi
+          python scripts/reconcile_generation_costs.py \
+            --snapshot-dir reconcile_snapshot \
+            --csv "$RECONCILE_CSV" \
+            --account "$RECONCILE_ACCOUNT" \
+            $FLAGS | tee reconcile_report.json
+
+      - name: Upload reconciliation report
+        if: steps.guard.outputs.ready == '1' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cost-reconciliation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reconcile_report.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Copy applied receipts back and persist to the shared cache
+        # 只有显式 --apply 才写回；定时预览不触碰任何状态。
+        if: steps.guard.outputs.ready == '1' && env.RECONCILE_APPLY == '1' && success()
+        run: |
+          mkdir -p "${{ steps.guard.outputs.account_dir }}/growth_ops/generation_costs/events"
+          cp -a reconcile_snapshot/growth_ops/generation_costs/events/. \
+                "${{ steps.guard.outputs.account_dir }}/growth_ops/generation_costs/events/"
+
+      - name: Save receipts cache
+        if: steps.guard.outputs.ready == '1' && env.RECONCILE_APPLY == '1' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            output/accounts/*/growth_ops/generation_costs/
+            output/growth_ops/generation_costs/
+          key: daily-publish-history-${{ github.ref_name }}-${{ env.RECONCILE_ACCOUNT }}-${{ github.run_id }}-${{ github.run_attempt }}

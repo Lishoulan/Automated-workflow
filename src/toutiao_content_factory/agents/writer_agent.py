@@ -301,7 +301,11 @@ class WriterAgent(BaseAgent):
         )
         # 闭环注入：本账号真实表现数据里相对高表现作品的结构参考。
         # 数据不足时返回空串（见 performance_hints 的两道防污染闸）。
-        performance_note = performance_hints.writer_hints(self.settings)
+        # 体裁过滤：正文注入只取长文样本。微头条没有 1750 字长文的正文结构，
+        # 拿它当正文范本会把长文往"短平快"拉（article_too_short 的一类风险）。
+        performance_note = performance_hints.writer_hints(
+            self.settings, content_type="article"
+        )
         if performance_note:
             prompt = f"{prompt}{performance_note}"
         system_prompt = f"{self._writer_system_prompt(style)}{self._dynamic_rules_for(data_report)}"
@@ -406,7 +410,11 @@ class WriterAgent(BaseAgent):
         )
         # 闭环注入：本账号真实表现数据里相对高表现作品的结构参考。
         # 数据不足时返回空串（见 performance_hints 的两道防污染闸）。
-        performance_note = performance_hints.writer_hints(self.settings)
+        # 体裁过滤：正文注入只取长文样本。微头条没有 1750 字长文的正文结构，
+        # 拿它当正文范本会把长文往"短平快"拉（article_too_short 的一类风险）。
+        performance_note = performance_hints.writer_hints(
+            self.settings, content_type="article"
+        )
         if performance_note:
             prompt = f"{prompt}{performance_note}"
         system_prompt = f"{self._writer_system_prompt(style)}{self._dynamic_rules_for(data_report)}"

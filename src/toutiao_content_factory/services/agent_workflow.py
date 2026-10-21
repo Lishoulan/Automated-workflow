@@ -399,7 +399,6 @@ class AgentWorkflowService:
             and getattr(quality_settings, "auto_revise", True)
             and allow_auto_revise
             and max_revisions > 0
-            and not fast_mode
             and self.openai_service.available
         )
         revision_count = 0
@@ -411,6 +410,8 @@ class AgentWorkflowService:
             if self.settings.wechat_auto_publish_mode:
                 revision_focus = [f"{issue['issue_id']}：{issue['requirement']}；原段落：{issue['paragraph'] or '未能定位，勿猜测'}；证据：{','.join(issue['evidence_ids']) or '未知'}"
                                   for issue in report.issues]
+            revised_pack: dict[str, object] = {}
+            used_writer_revision = False
             try:
                 revised_pack = self.polish_agent.run(
                     content,
@@ -422,46 +423,59 @@ class AgentWorkflowService:
                 )
             except Exception as exc:
                 self.logger.warning("Quality review revision pass failed; retaining the audited article: %s", exc)
-                break
+                revised_pack = {}
             revised_article = str(revised_pack.get("polished_article", "")).strip()
             if not revised_article or revised_article == content.article:
-                if self.settings.wechat_auto_publish_mode:
-                    from toutiao_content_factory.services.wechat_revision import begin_revision
-                    content.revision_trace.append(begin_revision(report, audited_state[0], audited_state[0], revision_count + 1))
-                self.logger.info("Quality review council requested revision, but the polish pass produced no new article.")
-                break
+                # 2026-10-21：叙事体裁和 fast_mode 下，PolishAgent 产不出新正文
+                # （叙事稿跳过整篇改写，fast_mode 原先直接跳过整个循环）。
+                # 审核团的 verdict 又是发布闸门的硬否决，此时若不再找一个能
+                # 真正改稿的执行者，循环就变成"要求返工但永远不许返工"的死锁。
+                # 所以退到 WriterAgent 按返工要求重写；它带同一套证据/字数边界。
+                if self._apply_writer_revision(content, data_report, revision_focus):
+                    used_writer_revision = True
+                else:
+                    if self.settings.wechat_auto_publish_mode:
+                        from toutiao_content_factory.services.wechat_revision import begin_revision
+                        content.revision_trace.append(begin_revision(report, audited_state[0], audited_state[0], revision_count + 1))
+                    self.logger.info(
+                        "Quality review council requested revision, but neither the polish pass nor the "
+                        "writer rewrite produced a new article."
+                    )
+                    break
 
             revision_count += 1
             self.logger.info(
-                "Quality review council triggered automatic revision pass %d/%d.",
+                "Quality review council triggered automatic revision pass %d/%d (source=%s).",
                 revision_count,
                 max_revisions,
+                "writer" if used_writer_revision else "polish",
             )
-            self._apply_polish_pack(content, revised_pack, data_report)
-            if self.settings.platform == "wechat":
-                import re
-                if re.sub(r"\s+", "", self._quality_review_article(content)) == re.sub(r"\s+", "", audited_state[0]):
+            if not used_writer_revision:
+                self._apply_polish_pack(content, revised_pack, data_report)
+                if self.settings.platform == "wechat":
+                    import re
+                    if re.sub(r"\s+", "", self._quality_review_article(content)) == re.sub(r"\s+", "", audited_state[0]):
+                        if self.settings.wechat_auto_publish_mode:
+                            from toutiao_content_factory.services.wechat_revision import begin_revision
+                            content.revision_trace.append(begin_revision(report, audited_state[0], audited_state[0], revision_count))
+                        self.logger.info("Revision produced no effective body change; retaining the audit.")
+                        break
+                    self._refresh_titles(content, trend_report, data_report, style, cache_context)
                     if self.settings.wechat_auto_publish_mode:
-                        from toutiao_content_factory.services.wechat_revision import begin_revision
-                        content.revision_trace.append(begin_revision(report, audited_state[0], audited_state[0], revision_count))
-                    self.logger.info("Revision produced no effective body change; retaining the audit.")
-                    break
-                self._refresh_titles(content, trend_report, data_report, style, cache_context)
-                if self.settings.wechat_auto_publish_mode:
-                    package = self._quality_review_state(content, data_report)
-                    if re.sub(r"\s+", "", package[0]) == re.sub(r"\s+", "", audited_state[0]):
-                        self.logger.info("Cleanup removed the proposed revision; retaining the existing audit.")
-                        content.article, content.polished_article = audited_state[0], audited_state[0]
-                        # Restore the already audited title as well.
-                        for field, value in audited_titles.items():
-                            setattr(content, field, value)
-                        from toutiao_content_factory.services.wechat_revision import begin_revision
-                        content.revision_trace.append(begin_revision(report, audited_state[0], audited_state[0], revision_count))
-                        break
-                    if package in audited_packages:
-                        report = audited_packages[package]
-                        self.logger.info("This full manuscript has already been audited; stopping revisions.")
-                        break
+                        package = self._quality_review_state(content, data_report)
+                        if re.sub(r"\s+", "", package[0]) == re.sub(r"\s+", "", audited_state[0]):
+                            self.logger.info("Cleanup removed the proposed revision; retaining the existing audit.")
+                            content.article, content.polished_article = audited_state[0], audited_state[0]
+                            # Restore the already audited title as well.
+                            for field, value in audited_titles.items():
+                                setattr(content, field, value)
+                            from toutiao_content_factory.services.wechat_revision import begin_revision
+                            content.revision_trace.append(begin_revision(report, audited_state[0], audited_state[0], revision_count))
+                            break
+                        if package in audited_packages:
+                            report = audited_packages[package]
+                            self.logger.info("This full manuscript has already been audited; stopping revisions.")
+                            break
             trace = None
             if self.settings.wechat_auto_publish_mode:
                 from toutiao_content_factory.services.wechat_revision import begin_revision, bind_patch_locations
@@ -491,7 +505,9 @@ class AgentWorkflowService:
                 break
 
         if report.needs_revision:
-            mode = "audit-only" if fast_mode or revision_count == 0 else "after-revision"
+            # fast_mode 不再意味着"只审不改"：审核团的 verdict 就是发布闸门的
+            # 硬否决，所以返工必须允许执行（叙事稿走 writer 重写）。
+            mode = "audit-only" if revision_count == 0 else "after-revision"
             self.logger.warning(
                 "Quality review council verdict=%s score=%d (%s); auto publish will be blocked.",
                 report.verdict,
@@ -499,6 +515,30 @@ class AgentWorkflowService:
                 mode,
             )
         return report
+
+    def _apply_writer_revision(self, content, data_report, revision_focus: list[str]) -> bool:
+        """用 WriterAgent 按返工要求重写正文；成功返回 True。
+
+        这是 `PolishAgent` 产不出新正文时的第二条（也是最后一条）返工路径。
+        WeChat 有自己的证据一致性契约，必须走 `wechat_revision`，这里一律不碰。
+        """
+        if self.settings.wechat_auto_publish_mode or str(getattr(self.settings, "platform", "")) == "wechat":
+            return False
+        try:
+            revised = self.writer_agent.revise_article_via_llm(
+                self._quality_review_article(content),
+                data_report,
+                revision_focus,
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed revision must not break the run
+            self.logger.warning("WriterAgent revision failed; retaining the audited article: %s", exc)
+            return False
+        revised = str(revised or "").strip()
+        if not revised or revised == self._quality_review_article(content):
+            return False
+        content.article = revised
+        content.polished_article = revised
+        return True
 
     @staticmethod
     def _quality_review_article(content) -> str:

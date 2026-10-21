@@ -2893,6 +2893,118 @@ class WriterAgent(BaseAgent):
             )
         return result
 
+    def revise_article_via_llm(
+        self,
+        article: str,
+        data_report: "DataReport",
+        revision_focus: list[str] | None = None,
+    ) -> str:
+        """按质量审核团的要求重写正文，返回 "" 表示没有可用产出。
+
+        ⚠️ 2026-10-21：这条路径补的是一个**结构性死锁**。
+        质量审核团给出 `needs_revision` 时，发布闸门会把它变成
+        `manual_review`，即"必须返工才可能发布"；但返工的唯一入口
+        `PolishAgent.run(..., revision_focus=...)` 在叙事体裁下**整段跳过**
+        （见 polish_agent.py 里 2026-09-19 的说明：免费模型整篇改写只会压缩），
+        于是修订永远产不出新正文 → 循环 `break` → 每一天都是 manual_review。
+        实测云端连续多日 0 篇图文发布，根因就在这。
+
+        所以：润色改不动的时候，让 writer 按"编辑要求"重写一遍。
+        安全边界与扩写一致——不得引入素材之外的公司/数字，字数不得明显缩水。
+
+        Returns:
+            修订后的正文；模型不可用、调用失败、候选违规或与原文相同时返回 ""。
+        """
+        if self.settings.wechat_auto_publish_mode or str(getattr(self.settings, "platform", "")) == "wechat":
+            # 公众号有自己的证据/一致性契约，不能从这条旁路绕过。
+            return ""
+        if not self.openai_service.available:
+            return ""
+        focus = [str(item).strip() for item in (revision_focus or []) if str(item).strip()][:8]
+        current = clean_article_text(str(article or ""), min_word_count=0).strip()
+        if not focus or not current:
+            return ""
+
+        evidence_parts: list[str] = []
+        if getattr(data_report, "source_facts", None):
+            evidence_parts.append(
+                "素材事实：" + " / ".join(str(fact) for fact in data_report.source_facts[:10])
+            )
+        if getattr(data_report, "growth_numbers", None):
+            evidence_parts.append(
+                "可引用数字：" + " / ".join(str(item) for item in data_report.growth_numbers[:8])
+            )
+        if getattr(data_report, "key_points", None):
+            evidence_parts.append(
+                "关键判断：" + " / ".join(str(item) for item in data_report.key_points[:6])
+            )
+        if getattr(data_report, "risk_flags", None):
+            evidence_parts.append(
+                "风险因素：" + " / ".join(str(item) for item in data_report.risk_flags[:4])
+            )
+        evidence = "\n".join(evidence_parts) if evidence_parts else "无可额外引用的素材事实。"
+        requirements = "\n".join(f"{index}. {item}" for index, item in enumerate(focus, 1))
+
+        system_prompt = (
+            "你是文章修订助手。按编辑给出的返工要求修改现有正文，只做必要的增删改。"
+            "不得改变已经出现在正文里的数字口径，不得新增公司、订单、收入、比例、时间或案例；"
+            "证据不足的地方只能补因果分析与风险边界，不许编造事实。"
+            "保留原文的段落节奏与读者价值，不要写成提纲，也不要输出解释。"
+            '只输出严格 JSON：{"article": "修订后的完整正文"}。'
+        )
+        user_prompt = (
+            f"编辑返工要求：\n{requirements}\n\n"
+            f"可引用的素材事实：\n{evidence}\n\n"
+            f"现有正文（{len(current.replace(chr(10), '').replace(' ', ''))} 字）：\n{current}\n\n"
+            "请输出修订后的完整正文，长度不得少于现有正文的八成，"
+            "并逐条落实上面的返工要求。"
+        )
+
+        try:
+            payload = self.openai_service.create_json_completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed revision must not break the run
+            self.logger.warning("Writer revision failed: %s", exc)
+            return ""
+        candidate = payload.get("article") if isinstance(payload, dict) else ""
+        if not isinstance(candidate, str) or not candidate.strip():
+            return ""
+        revised = clean_article_text(candidate, min_word_count=0).strip()
+        if not revised:
+            return ""
+        if any(marker in revised.lower() for marker in self.INTERNAL_ARTICLE_MARKERS):
+            self.logger.warning("Writer revision leaked internal markers; keeping the audited article.")
+            return ""
+        original_chars = len(current.replace("\n", "").replace(" ", ""))
+        revised_chars = len(revised.replace("\n", "").replace(" ", ""))
+        if revised_chars < int(original_chars * 0.8):
+            self.logger.warning(
+                "Writer revision shrank the article from %d to %d chars; keeping the audited article.",
+                original_chars,
+                revised_chars,
+            )
+            return ""
+        unsupported = self._unsupported_numeric_tokens(revised, data_report)
+        if unsupported:
+            self.logger.warning(
+                "Writer revision introduced unsupported numbers %s; keeping the audited article.",
+                unsupported[:5],
+            )
+            return ""
+        if self._has_unknown_company_mention(revised, data_report):
+            self.logger.warning("Writer revision introduced unknown companies; keeping the audited article.")
+            return ""
+        if revised == current:
+            return ""
+        self.logger.info(
+            "Writer revision produced a new manuscript: %d -> %d chars.",
+            original_chars,
+            revised_chars,
+        )
+        return revised
+
     def _expand_article_via_llm(self, paragraphs: list[str], data_report: "DataReport", min_chars: int = 1200) -> list[str]:
         if not self.settings.wechat_auto_publish_mode and self._content_mode(data_report) == "hot_topic" and not self._has_sufficient_hot_topic_facts(data_report):
             return paragraphs

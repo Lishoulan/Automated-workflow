@@ -459,6 +459,86 @@ def _describe_failure(exc: Exception) -> str:
     return f"{type(exc).__name__}: {str(exc).strip()[:300] or '(empty message)'}"
 
 
+def _refresh_toutiao_cookies(account: str, *, timeout_seconds: int = 180) -> Path | None:
+    """Export fresh Toutiao cookies from the persistent browser profile.
+
+    Only called after the creator-center API rejected the cached cookie file.
+    The exported file is written to a temporary location and validated before
+    use, so a failed export can never clobber the cached account asset.
+    """
+    import subprocess
+    import tempfile
+
+    scripts_dir = Path(__file__).resolve().parent
+    target = Path(tempfile.mkdtemp(prefix="growth-cookie-refresh-")) / "exported_cookies.json"
+    command = [
+        sys.executable,
+        str(scripts_dir / "export_cookies.py"),
+        "--platforms", "toutiao",
+        "--output", str(target),
+        "--headless",
+        "--account", account,
+    ]
+    environment = dict(os.environ)
+    environment.setdefault("PYTHONPATH", str(scripts_dir.parent / "src"))
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            timeout=timeout_seconds,
+            capture_output=True,
+            env=environment,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(
+            f"Toutiao cookie refresh could not run: {type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return None
+    if result.returncode != 0:
+        print(
+            f"Toutiao cookie refresh exited with {result.returncode}",
+            file=sys.stderr,
+        )
+        return None
+    payload = _load_json(target, expected_type=dict)
+    cookies = ((payload.get("platforms") or {}).get("toutiao") or {}).get("cookies") or []
+    if not cookies:
+        print("Toutiao cookie refresh produced no usable cookies", file=sys.stderr)
+        return None
+    return target
+
+
+def fetch_with_cookie_retry(
+    cookie_path: Path,
+    *,
+    max_pages: int,
+    cutoff: datetime,
+    account: str,
+) -> list[dict]:
+    """Fetch the published-work list, refreshing cookies once if rejected.
+
+    2026-10-21：采集槽 growth 快照因创作者中心拒绝 cookie 而失败，当天 24h/72h
+    检查点直接丢失。缓存的 ``exported_cookies.json`` 是会过期的账号资产，而浏览器
+    profile 里的会话通常还活着。所以只在这个明确失败点做一次"从浏览器导出新
+    cookie 再试"，失败则保留原始原因，不掩盖问题。
+    """
+    try:
+        return fetch_published(cookie_path, max_pages=max_pages, cutoff=cutoff)
+    except (RuntimeError, ValueError) as exc:
+        print(
+            "Toutiao creator-center rejected the cached cookies: "
+            f"{_describe_failure(exc)}; refreshing from the browser profile.",
+            file=sys.stderr,
+        )
+        refreshed = _refresh_toutiao_cookies(account)
+        if refreshed is None:
+            raise
+        contents = fetch_published(refreshed, max_pages=max_pages, cutoff=cutoff)
+        print("Toutiao cookie refresh recovered the growth snapshot.", file=sys.stderr)
+        return contents
+
+
 def fetch_published(cookie_path: Path, *, max_pages: int, cutoff: datetime) -> list[dict]:
     payload = json.loads(cookie_path.read_text(encoding="utf-8"))
     cookies = payload["platforms"]["toutiao"]["cookies"]
@@ -525,10 +605,11 @@ def main() -> int:
         return 2
     observed_at = datetime.now(BEIJING)
     try:
-        contents = fetch_published(
+        contents = fetch_with_cookie_retry(
             cookie_path,
             max_pages=args.max_pages,
             cutoff=observed_at - timedelta(days=args.days),
+            account=args.account,
         )
         snapshot = build_snapshot(contents, observed_at, args.days)
         snapshot["account"] = args.account

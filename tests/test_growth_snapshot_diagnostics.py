@@ -115,3 +115,85 @@ def test_runner_message_keeps_the_reason() -> None:
     described = collector._describe_failure(RuntimeError("Creator center rejected: code=1001"))
     assert "RuntimeError" in described
     assert "code=1001" in described
+
+
+def test_cookie_rejection_is_retried_after_refresh(tmp_path, monkeypatch) -> None:
+    cached = tmp_path / "cached.json"
+    fresh = tmp_path / "fresh.json"
+    attempts: list[Path] = []
+
+    def fake_fetch(path, *, max_pages, cutoff):
+        attempts.append(path)
+        if path == cached:
+            raise RuntimeError(
+                "Creator center did not return a published-work list: code=1001 message='not login'"
+            )
+        return [{"recovered": True}]
+
+    monkeypatch.setattr(collector, "fetch_published", fake_fetch)
+    monkeypatch.setattr(collector, "_refresh_toutiao_cookies", lambda account, **kw: fresh)
+
+    contents = collector.fetch_with_cookie_retry(
+        cached,
+        max_pages=2,
+        cutoff=collector.datetime.now(collector.BEIJING),
+        account="robot_notes",
+    )
+
+    assert contents == [{"recovered": True}]
+    assert attempts == [cached, fresh]
+
+
+def test_no_refresh_available_reraises_original_error(tmp_path, monkeypatch) -> None:
+    cached = tmp_path / "cached.json"
+
+    def fake_fetch(path, *, max_pages, cutoff):
+        raise RuntimeError("Creator center did not return a published-work list: code=1001")
+
+    monkeypatch.setattr(collector, "fetch_published", fake_fetch)
+    monkeypatch.setattr(collector, "_refresh_toutiao_cookies", lambda account, **kw: None)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        collector.fetch_with_cookie_retry(
+            cached,
+            max_pages=2,
+            cutoff=collector.datetime.now(collector.BEIJING),
+            account="robot_notes",
+        )
+    assert "code=1001" in str(excinfo.value)
+
+
+def test_cookie_refresh_returns_validated_path(tmp_path, monkeypatch) -> None:
+    def fake_run(command, check, timeout, capture_output, env):
+        output = Path(command[command.index("--output") + 1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps({"platforms": {"toutiao": {"cookies": [{"name": "s", "value": "v"}]}}}),
+            encoding="utf-8",
+        )
+        return type("_Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    refreshed = collector._refresh_toutiao_cookies("robot_notes")
+
+    assert refreshed is not None and refreshed.exists()
+
+
+def test_cookie_refresh_without_cookies_returns_none(tmp_path, monkeypatch) -> None:
+    def fake_run(command, check, timeout, capture_output, env):
+        return type("_Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert collector._refresh_toutiao_cookies("robot_notes") is None
+
+
+def test_cookie_refresh_nonzero_exit_returns_none(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda command, check, timeout, capture_output, env: type("_Result", (), {"returncode": 3})(),
+    )
+
+    assert collector._refresh_toutiao_cookies("robot_notes") is None
+

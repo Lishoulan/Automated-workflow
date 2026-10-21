@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -38,6 +40,7 @@ from toutiao_content_factory.models import TopicCandidate
 from toutiao_content_factory.services.app_service import ContentFactoryAppService
 from toutiao_content_factory.services.automation import TopicAutomationService
 from toutiao_content_factory.services.topic_collection import TopicCollectionService
+from toutiao_content_factory.services.material_search_service import MaterialBundle, MaterialSource
 
 #: 换赛道后做社会故事的账号（它登录的头条号是「手蓝数据笔记」）
 STORY_ACCOUNT = "robot_notes"
@@ -61,6 +64,14 @@ def _clean_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _settings(account_key: str):
     return load_settings(Path.cwd(), account_key=account_key)
+
+
+def _strict_story_settings():
+    """Exercise the supported strict-story mode, separate from the active trial."""
+    settings = _settings(STORY_ACCOUNT)
+    settings.revenue_optimization = replace(settings.revenue_optimization, adaptive_topic_selection=False)
+    settings.topic_collection = settings.topic_collection.model_copy(update={"focus_industries": ["social_story"]})
+    return settings
 
 
 def _collector(account_key: str) -> TopicCollectionService:
@@ -181,7 +192,7 @@ def test_story_topic_does_not_inherit_industry_writing_metadata() -> None:
     ],
 )
 def test_story_account_rejects_off_topic_hot_topics(title: str) -> None:
-    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    automation = TopicAutomationService(_strict_story_settings(), logging.getLogger("test_pivot"))
 
     assert automation._topic_matches_account_boundary(_hot_topic(title)) is False
 
@@ -215,7 +226,7 @@ def test_story_boundary_does_not_depend_on_the_account_key(monkeypatch) -> None:
 
 
 def test_story_account_has_no_benchmark_track() -> None:
-    service = ContentFactoryAppService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    service = ContentFactoryAppService(_strict_story_settings(), logging.getLogger("test_pivot"))
 
     assert service._resolve_benchmark_track_for_account() is None
 
@@ -240,13 +251,49 @@ def test_story_account_config_is_self_consistent() -> None:
 
     # 内容领域
     assert style.content_domain == "narrative"
-    # 赛道：social_story 且**不含** hot_topic（否则判据不执行）
-    assert settings.topic_collection.focus_industries == ["social_story"]
+    # Current approved production trial adds reader-oriented directions;
+    # strict-story mode is tested independently above, not imposed on production.
+    assert settings.topic_collection.focus_industries == ["social_story", "consumer_practical", "technology_everyday"]
+    assert settings.revenue_optimization.adaptive_topic_selection is True
+    assert set(settings.revenue_optimization.operating_trial["directions"]) == {"consumer_practical", "technology_everyday"}
     # 微头条人设
     assert settings.publishing.weitoutiao_personas == ["story_comment"]
-    # 来源里不应再有科技源
-    for tech_source in ("36kr", "qbitai", "jiqizhixin", "leiphone", "zhidx", "ofweek"):
-        assert tech_source not in settings.topic_collection.enabled_sources
+    assert settings.topic_collection.enabled_sources == ["baidu_hot", "toutiao_hot", "sina_social", "ithome", "36kr"]
+    assert settings.publishing.allow_duplicate_topics is False
+
+
+@pytest.mark.parametrize("title,allowed", [
+    ("中国男篮大比分不敌日本", False),
+    ("菲船加速冲撞中国海警船", False),
+    ("机器人公司股价突破新高", False),
+    ("消费者申请退款，商家提供预付服务记录", True),
+    ("海尔发布全自主家用 AI 烹饪机器人CR3", True),
+])
+@pytest.mark.parametrize("selection", ["strict", "soft", "retry"])
+def test_production_trial_keeps_reader_boundaries_in_all_selection_paths(tmp_path, monkeypatch, title, allowed, selection):
+    from toutiao_content_factory.services import revenue_feedback as policy
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            now = datetime(2026, 10, 21, 8, tzinfo=timezone(timedelta(hours=8)))
+            return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(policy, "datetime", Clock)
+    settings = _settings(STORY_ACCOUNT)
+    settings.output_dir, settings.project_root = tmp_path / "output", tmp_path
+    automation = TopicAutomationService(settings, logging.getLogger("test_pivot"))
+    topic = _hot_topic(title)
+    if selection == "retry":
+        result = automation._material_retry_candidates(_daily_report([topic]))
+    else:
+        select = automation._available_topics if selection == "strict" else automation._available_topics_soft
+        result = select([topic], allow_generated_duplicates=True)
+    assert bool(result) is allowed
+    if allowed:
+        assert result[0].revenue_selection["category"] in {"consumer_practical", "technology_everyday"}
+        assert result[0].revenue_selection["approval"] is False
+        assert getattr(result[0], "_verified_source_material", False) is False
 
 
 def test_story_account_keyword_map_matches_its_track() -> None:
@@ -373,12 +420,21 @@ def test_search_results_drop_different_stories_with_generic_word_overlap() -> No
 # ---------------------------------------------------------------------------
 
 
-class _StubBundle:
-    def __init__(self, usable: bool, text: str = "") -> None:
-        self.usable = ["s"] if usable else []
-        self.combined_text = text
-        self.total_chars = len(text)
-        self.sources = ["s"] if usable else []
+def _material_bundle(usable: bool, text: str = "", *, evidence_type="article") -> MaterialBundle:
+    # Real collector contract: typed, attributed sources. A string stub used
+    # the legacy length-only compatibility path instead of the actual fact gate.
+    return MaterialBundle("test", [MaterialSource("公开报道", "https://report.example/article", text,
+                                                ok=usable, evidence_type=evidence_type)] if usable else [])
+
+
+def _detailed_body(lead="据报道，相关当事人提供了本案经过和完整的处理记录。"):
+    # Synthetic source fixture only; distinct anchored records exercise the
+    # actual evidence assessor rather than bypassing it with repeated filler.
+    return lead + "\n" + "\n".join(
+        f"据第{number}份现场记录，当事人在2026年9月{number}日提交了对应时间的办理材料。"
+        "记录列明申请事项、经办主体、签收时间及当时的具体处理结果，公开报道同时区分了当事人主张和有关部门已经确认的范围。"
+        "后续材料仅用于补充办理过程，并未改变记录原有的时间顺序和适用条件。"
+        for number in range(1, 9))
 
 
 def test_no_material_switches_to_the_next_topic(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -394,8 +450,8 @@ def test_no_material_switches_to_the_next_topic(monkeypatch: pytest.MonkeyPatch)
     def fake_collect(title, **_kwargs):
         calls.append(title)
         if title == first.title:
-            return _StubBundle(usable=False)
-        return _StubBundle(usable=True, text="据报道，" + "详细经过。" * 80)
+            return _material_bundle(usable=False)
+        return _material_bundle(usable=True, text=_detailed_body())
 
     monkeypatch.setattr(mss, "collect_material", fake_collect)
 
@@ -427,7 +483,7 @@ def test_thin_search_snippets_do_not_count_as_publishable_material(
     monkeypatch.setattr(
         mss,
         "collect_material",
-        lambda *args, **kwargs: _StubBundle(True, thin_material),
+        lambda *args, **kwargs: _material_bundle(True, thin_material),
     )
 
     assert len(thin_material) < automation.MATERIAL_MIN_BODY_CHARS
@@ -446,7 +502,7 @@ def test_long_hot_search_digest_still_requires_article_material(monkeypatch: pyt
 
     def fake_collect(title, **_kwargs):
         calls.append(title)
-        return _StubBundle(usable=False)
+        return _material_bundle(usable=False)
 
     monkeypatch.setattr(mss, "collect_material", fake_collect)
 
@@ -461,8 +517,8 @@ def test_fetched_hot_article_body_reaches_the_writing_evidence(monkeypatch: pyte
     topic = _hot_topic("老人拍照半分钟被弹窗近20次")
     topic.source_type = "baidu_hot"
     topic.snippet = "【来源：搜索摘要】老人拍照半分钟被弹窗近20次。" * 35
-    source_body = "【来源：公开报道】\n黄山老人想拍鱼灯表演，打开相机时弹窗连续跳出。" + "已核实经过。" * 120
-    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _StubBundle(True, source_body))
+    source_body = _detailed_body("黄山老人想拍鱼灯表演，打开相机时弹窗连续跳出。")
+    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _material_bundle(True, source_body))
 
     raw_summary, _ = automation._build_prompt_evidence(topic)
     assert len(raw_summary) <= 160
@@ -472,6 +528,24 @@ def test_fetched_hot_article_body_reaches_the_writing_evidence(monkeypatch: pyte
     assert summary.startswith("黄山老人想拍鱼灯表演")
     assert len(summary) > 600
     assert extra == ""
+    assessment = topic._material_evidence_assessment
+    assert assessment["full_article_count"] == assessment["independent_source_count"] == 1
+    assert assessment["factual_anchor_count"] >= 5
+
+
+@pytest.mark.parametrize("evidence_type,body", [
+    ("search_digest", _detailed_body()),
+    ("article", "只有笼统看法，没有可定位的具体事实。" * 100),
+])
+def test_typed_material_cannot_pass_by_length_without_sources_and_facts(monkeypatch, evidence_type, body):
+    import toutiao_content_factory.services.material_search_service as mss
+    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    topic = _hot_topic("老人拍照半分钟被弹窗近20次")
+    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _material_bundle(True, body, evidence_type=evidence_type))
+    assert len(body) > 900
+    assert automation._hydrate_topic_material(topic) is False
+    assert getattr(topic, "_verified_source_material", False) is False
+    assert topic._material_evidence_assessment["reasons"]
 
 
 def test_verified_hot_material_without_url_is_saved_for_copy_check(tmp_path: Path) -> None:
@@ -498,7 +572,7 @@ def test_all_topics_without_material_yield_no_selection(
     first = _hot_topic("男子高空作业绳子被2楼老人剪断")
     second = _hot_topic("女子离婚后发现丈夫隐瞒债务")
 
-    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _StubBundle(usable=False))
+    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _material_bundle(usable=False))
     monkeypatch.setattr(
         automation, "_material_retry_candidates", lambda report: [first, second]
     )
@@ -543,8 +617,8 @@ def test_auto_selection_retries_the_next_topic_when_material_is_missing(
     good = _hot_topic("男子高空作业绳子被2楼老人剪断")
     def fake_collect(title, **_kwargs):
         if title == good.title:
-            return _StubBundle(usable=True, text="据报道，" + "详细经过。" * 200)
-        return _StubBundle(usable=False)
+            return _material_bundle(usable=True, text=_detailed_body())
+        return _material_bundle(usable=False)
 
     monkeypatch.setattr(mss, "collect_material", fake_collect)
     monkeypatch.setattr(automation, "_select_topic", lambda *a, **k: blocked)
@@ -571,7 +645,7 @@ def test_explicit_topic_title_is_never_silently_swapped(
     blocked = _hot_topic("张雪回应打车被认出忽悠司机")
     other = _hot_topic("男子高空作业绳子被2楼老人剪断")
 
-    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _StubBundle(usable=False))
+    monkeypatch.setattr(mss, "collect_material", lambda *a, **k: _material_bundle(usable=False))
     monkeypatch.setattr(
         automation, "_material_retry_candidates", lambda report: [blocked, other]
     )
@@ -624,8 +698,8 @@ def test_material_retry_flag_reaches_prepare_auto_run(
     good = _hot_topic("男子高空作业绳子被2楼老人剪断")
     def fake_collect(title, **_kwargs):
         if title == good.title:
-            return _StubBundle(usable=True, text="据报道，" + "详细经过。" * 200)
-        return _StubBundle(usable=False)
+            return _material_bundle(usable=True, text=_detailed_body())
+        return _material_bundle(usable=False)
 
     monkeypatch.setattr(mss, "collect_material", fake_collect)
     monkeypatch.setattr(
@@ -656,7 +730,7 @@ def test_retry_candidates_stay_inside_the_account_track() -> None:
     `_available_topics(...)`，漏了账号边界过滤，于是"换题重试"把一条**机器人**选题
     塞进了社会故事号（抓来 2066 字具身智能材料）。
     """
-    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    automation = TopicAutomationService(_strict_story_settings(), logging.getLogger("test_pivot"))
     story = _hot_topic("男子高空作业绳子被2楼老人剪断")
     robot = _hot_topic("机器人首秀网球场，银河通用突破具身智能AstraTennis时刻")
 
@@ -677,7 +751,7 @@ def test_soft_fallback_does_not_cross_the_account_boundary() -> None:
     于是把「海尔发布全自主家用 AI 烹饪机器人…」（matched_industries=
     ['humanoid_robot','ai_hardware']）选成了社会故事的选题，并真的抓素材写成稿发了出去。
     """
-    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    automation = TopicAutomationService(_strict_story_settings(), logging.getLogger("test_pivot"))
     robot = _hot_topic("海尔发布全自主家用 AI 烹饪机器人CR3")
     robot.matched_industries = ["humanoid_robot", "ai_hardware"]
     robot.matched_keywords = ["机器人", "大模型"]
@@ -694,7 +768,7 @@ def test_soft_fallback_does_not_cross_the_account_boundary() -> None:
 
 def test_soft_fallback_still_serves_in_scope_topics() -> None:
     """正面：赛道内的选题仍然能被软兜底救回来。"""
-    automation = TopicAutomationService(_settings(STORY_ACCOUNT), logging.getLogger("test_pivot"))
+    automation = TopicAutomationService(_strict_story_settings(), logging.getLogger("test_pivot"))
     story = _hot_topic("男子高空作业绳子被2楼老人剪断")
 
     class _Report:

@@ -74,10 +74,16 @@ def _works(settings) -> list[dict[str, Any]]:
     2026-10-21：原先把路径硬拼成 `automation_dir / performance_metrics.json`，
     但生产写在账号输出根目录，于是这里恒为 0 条，阶段判定一直在按"没有作品数据"
     下结论。统一改用 `performance_hints.metrics_path()` 解析。
+
+    2026-10-21 补：仅换路径还不够 —— 生产 `performance_metrics.json` 只有 1 条，
+    而 `growth_checkpoints.json` 有 31 条作品。阶段二需要 10 篇有效展现样本，
+    只看 primary 会永远判 `BLOCKED（样本 1 篇，不足 10 篇）`，把"样本足"误判成
+    "样本不足"。这里直接复用闭环的 `load_records()`，让两处看到同一数据范围
+    （primary 充足时不混源、不足时才回退的约定也一并沿用）。
     """
     from toutiao_content_factory.services import performance_hints
 
-    return _records(_read_json(performance_hints.metrics_path(settings)))
+    return performance_hints.load_records(settings)
 
 
 def _impressions(row: dict[str, Any]) -> int:

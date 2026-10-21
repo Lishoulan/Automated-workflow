@@ -72,12 +72,20 @@ def _council_report(verdict: str = "needs_revision", score: int = 58) -> Quality
     )
 
 
-def test_quality_revision_loop_runs_in_fast_mode(app_settings, mock_openai_service, logger) -> None:
+def test_quality_revision_loop_runs_in_fast_mode(
+    app_settings, mock_openai_service, logger, monkeypatch
+) -> None:
     """Fast mode must not disable the revision the publish gate demands."""
     service = AgentWorkflowService(app_settings, MagicMock(), mock_openai_service, logger)
     service.openai_service.available = True
     original = _long_text("原稿段落")
     revised = _long_text("修订段落")
+    # Keep this test about the loop; the length floor has its own test below.
+    monkeypatch.setattr(
+        service,
+        "_ensure_article_min_chars",
+        lambda article, data_report, min_chars=None: article,
+    )
 
     first = _council_report("needs_revision", 58)
     final = _council_report("approved", 92)
@@ -102,7 +110,8 @@ def test_quality_revision_loop_runs_in_fast_mode(app_settings, mock_openai_servi
     assert report is final, "the loop must re-audit the revised manuscript"
     service.writer_agent.revise_article_via_llm.assert_called_once()
     assert service.quality_review_council_agent.run.call_count == 2
-    assert service._quality_review_article(content) == revised
+    # The length floor re-cleans/re-paragraphs the text, so compare content.
+    assert "".join(service._quality_review_article(content).split()) == "".join(revised.split())
 
 
 def test_polish_revision_is_preferred_over_writer_rewrite(
@@ -222,6 +231,64 @@ def test_writer_revision_survives_model_failure(app_settings, mock_openai_servic
     mock_openai_service.create_json_completion.side_effect = RuntimeError("timeout")
 
     assert agent.revise_article_via_llm(original, _data_report(), ["补充数据"]) == ""
+
+
+def test_writer_revision_reapplies_publish_length_floor(
+    app_settings, mock_openai_service, logger, monkeypatch
+) -> None:
+    """返工不能把"质量否决"换成"长度否决"。
+
+    写手重写走的是旁路，不经过 `_apply_polish_pack`，而发布下限正是在那里
+    重新施加的（叙事 700 / 自动发布 1750）。重写允许缩到原文 80%，850 字的
+    稿件重排后可能只剩 680 字 —— 那会被 `_qualifies_for_auto_approval` 的
+    长度门拦下，等于从"审核团的错"换成"字数的错"，白跑一轮。
+    """
+    service = AgentWorkflowService(app_settings, MagicMock(), mock_openai_service, logger)
+    service.openai_service.available = True
+    original = _long_text("原稿段落")
+    shrunk = "重写后明显变短的正文。"
+    service.writer_agent.revise_article_via_llm = MagicMock(return_value=shrunk)
+    content = GeneratedContent(article=original, polished_article=original)
+    floor = MagicMock(return_value=_long_text("补足长度后的正文"))
+    monkeypatch.setattr(service, "_ensure_article_min_chars", floor)
+
+    assert service._apply_writer_revision(content, _data_report(), ["删除重复段落"]) is True
+
+    floor.assert_called_once()
+    assert floor.call_args.kwargs.get("min_chars", 0) >= 700
+    assert service._quality_review_article(content) == _long_text("补足长度后的正文")
+
+
+def test_writer_revision_refreshes_validation_score(
+    app_settings, mock_openai_service, logger, monkeypatch
+) -> None:
+    """返工后必须重算 validation_score，否则自动发布拿旧稿分数放行。"""
+    service = AgentWorkflowService(app_settings, MagicMock(), mock_openai_service, logger)
+    service.openai_service.available = True
+    original = _long_text("原稿段落")
+    revised = _long_text("修订段落")
+    service.writer_agent.revise_article_via_llm = MagicMock(return_value=revised)
+    monkeypatch.setattr(
+        service,
+        "_ensure_article_min_chars",
+        lambda article, data_report, min_chars=None: article,
+    )
+    service.polish_agent.validate_article = MagicMock(return_value=(["修订后校验备注"], 72))
+    content = GeneratedContent(
+        article=original, polished_article=original, validation_score=100
+    )
+
+    assert (
+        service._apply_writer_revision(
+            content,
+            _data_report(),
+            ["删除重复段落"],
+            TrendReport(recommended_angle="观察兑现"),
+        )
+        is True
+    )
+    assert content.validation_score == 72
+    assert content.validation_notes == ["修订后校验备注"]
 
 
 def test_approved_revision_reaches_the_auto_publish_path(app_settings, mock_openai_service, logger) -> None:

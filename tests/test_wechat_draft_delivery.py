@@ -299,11 +299,14 @@ def test_draft_success_retains_delivery_id_and_excludes_publication_metrics(app_
     assert report["metrics"]["7"]["actual_publish_runs"] == 1  # Only the retained legacy run.
 
 
-def test_workflow_routes_schedules_and_legacy_publish_requests_to_drafts():
+def test_workflow_routes_scheduled_runs_to_formal_publication():
+    # 2026-10-21 用户决策 C1：定时运行改为正式发表（此前 draft-only）。
+    # 审核通过才会群发；审核不过仍只留草稿；workflow_dispatch 仍可用 inputs.mode 覆盖。
     workflow = yaml.load((ROOT / ".github/workflows/wechat-daily-run.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     assert workflow["concurrency"]["group"] == "wechat-default"
-    assert workflow["jobs"]["wechat"]["env"]["WECHAT_DELIVERY_MODE"] == "draft"
-    assert workflow["jobs"]["wechat"]["env"]["RUN_MODE"] == "${{ inputs.mode || 'draft' }}"
+    assert workflow["jobs"]["wechat"]["env"]["WECHAT_DELIVERY_MODE"] == "publish"
+    assert workflow["jobs"]["wechat"]["env"]["RUN_MODE"] == "${{ inputs.mode || 'publish' }}"
+    assert workflow["jobs"]["wechat"]["env"]["WECHAT_OFFICIAL_PUBLISH_ENABLED"] == "1"
 
 
 def test_browser_draft_id_is_preserved_in_workflow_snapshot(app_settings, logger):

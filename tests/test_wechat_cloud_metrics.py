@@ -82,4 +82,4 @@ def test_cloud_workflows_share_session_cache_and_never_require_self_hosted():
                     if "restore-keys" in step["with"]:
                         prefixes.append(step["with"]["restore-keys"])
     assert len(prefixes) == 2 and prefixes[0] == prefixes[1]
-    assert workflows[0]["jobs"]["wechat"]["env"]["WECHAT_DELIVERY_MODE"] == "draft"
+    # 2026-10-21 用户决策 C1：定时运行改为正式发表（publish）。\n    assert workflows[0]["jobs"]["wechat"]["env"]["WECHAT_DELIVERY_MODE"] == "publish"

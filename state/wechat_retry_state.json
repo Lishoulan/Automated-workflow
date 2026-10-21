@@ -171,14 +171,55 @@
     "2026-10-21": {
       "runs": {
         "39528039618:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-21T01:34:43.727540+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 573.862,
+          "outcome": "draft_only",
+          "draft_delivery": {
+            "status": "saved",
+            "title": "SpaceX与特斯拉Terafab项目2028量产目标",
+            "draft_media_id": "",
+            "app_msg_id": "100001415",
+            "handoff": {
+              "account": "小椰科技",
+              "title": "SpaceX与特斯拉Terafab项目2028量产目标",
+              "body_hash": "b772545d2d9acb2fa53beee4eacd1735b4d9a7d14dec0f3a2408eda5c54fb220",
+              "body_hash_basis": "rendered_delivery_payload",
+              "saved_at": "2026-10-21T01:44:27.696878+00:00"
+            }
+          }
         }
       },
       "dispatches": {},
-      "failed_inputs": []
+      "failed_inputs": [
+        {
+          "fingerprint": "65698d3a4ff3e98b20840f55e4f74777a239ef042bc612f25ec35f4d74b4d86a",
+          "source_fingerprint": "ba76fcf8b463f115acbc42d548b40db85647ac7562343556154f3fe466d1a158",
+          "requirements": [
+            "在句子中'简言之，房车这个品类正在被拽入 乘用车 智能化的浪潮里'中，删除'首次'，改为'正在被'。"
+          ]
+        },
+        {
+          "fingerprint": "a5e6fa59eca4c53d341203dcbddf76cc48256d9136b964f44ee1acfac00a9486",
+          "source_fingerprint": "fa51e8e4941663d2bf5c01078b40acfa412f7859b01a0a73bce3d6db87293740",
+          "requirements": [
+            "存在绝对化表述：'完全'",
+            "存在绝对化表述：'独家'",
+            "将标题中的绝对化表述改为限定性表述，如将“完全”改为“大部分”，“独家”改为“部分”。\n  ],",
+            "optional_improvements",
+            "[]",
+            "{'verdict': 'needs_revision', 'chief_editor_conclusion': '稿件内容基本符合要求，但存在一些合规性问题，需要作者进行修改。', 'role_reviews': [{'role': 'quality-fact-checker', 'score': 94}, {'role': 'quality-logic-auditor', 'score': 88}, {'role': 'quality-structure-editor', 'score': 94}, {'role': 'quality-originality-auditor', 'score': 94}, {'role': 'quality-compliance-editor', 'score': 50}], 'issues': [{'requirement': '将标题中的绝对化表述改为限定性表述，如将“完全”改为“大部分”，“独家”改为“部分”。', 'paragraph': '稿件标题为“总台曝光二手平台“破解版 AI”：几块钱就能享受高阶会员，豆包、Kimi 回应”，其中包含绝对化表述“完全”和“独家”。\\n      \"category\": \"compliance', 'target': 'title', 'verification': '标题中使用了绝对化表述，不符合合规要求。', 'evidence_ids': ['fact_1a02d2dd2c7b766b6e8f']}], 'issue_evaluations': []}"
+          ]
+        },
+        {
+          "fingerprint": "76c76cd021cf0999710afbc1dfd583c9566bbe39ef0d2e5dddda2f9809b81d12",
+          "source_fingerprint": "9bacc9d7f9dcc7f478a4c42e5b0c2cd91d31d6d4a5473a8e1c5569108fd49d2f",
+          "requirements": [
+            "在提到马斯克过往设定的时间表未能如期兑现时，应更谨慎地表述，避免绝对化"
+          ]
+        }
+      ]
     }
   }
 }

@@ -591,6 +591,37 @@ class WeiToutiaoStandaloneGenerator:
             content = content + "\n\n" + self._build_tags(topic, persona)
         return content if feed_layout else content[:MAX_WTT_CHARS]
 
+    #: 只与「排版」有关的守卫：正文内容没问题，只是首段/段落不符合信息流版式。
+    #: 这类问题可以靠确定性重排修好，不该整条丢弃（2026-10-21 实测：3/3 条候选
+    #: 都因为首段超过 90 字被判 story_opening_length_guard，随后回落到本地模板，
+    #: 而叙事体裁的本地模板**故意返回空串**，于是三条全部 content_too_short）。
+    LAYOUT_ONLY_GUARDS = frozenset(
+        {
+            "story_opening_length_guard",
+            "story_paragraph_length_guard",
+            "story_feed_lead_guard",
+        }
+    )
+
+    def _recover_layout_only_guard(self, topic: TopicCandidate, persona: str, content: str) -> str:
+        """若只是版式不合规，用确定性重排救回模型原稿；返回 "" 表示救不回来。
+
+        与 `_reflow_verified_feed` 的关系：同一个重排函数本来只在事实复核之后调用，
+        这里把它前移到「决定是否弃稿」之前。重排只改段落边界，不增删句子；
+        重排后仍不过守卫时返回 ""，调用方保持原有的回落/跳过行为。
+        """
+        if not content:
+            return ""
+        reason = self._model_story_fallback_reason(topic, persona, content)
+        if reason not in self.LAYOUT_ONLY_GUARDS:
+            return ""
+        reflowed = self._reflow_verified_feed(content)
+        if not reflowed or reflowed == content:
+            return ""
+        if self._model_story_fallback_reason(topic, persona, reflowed):
+            return ""
+        return reflowed
+
     @staticmethod
     def _reflow_verified_feed(content: str) -> str:
         """Restore paragraph breaks without rewriting or dropping reviewed text.
@@ -599,7 +630,7 @@ class WeiToutiaoStandaloneGenerator:
         number, length and opening guards still decide whether to deliver it.
         """
         if WeiToutiaoStandaloneGenerator._feed_opening_reason(content) not in {
-            'story_opening_length_guard', 'story_paragraph_length_guard',
+            'story_opening_length_guard', 'story_paragraph_length_guard', 'story_feed_lead_guard',
         }:
             return content
         lines = content.strip().splitlines()
@@ -999,9 +1030,19 @@ class WeiToutiaoStandaloneGenerator:
             content = self.build_local_fallback_content(topic, persona=persona)
         story_fallback_reason = self._model_story_fallback_reason(topic, persona, content)
         if generation_mode == "model" and story_fallback_reason:
-            generation_mode = "local_fallback"
-            fallback_reason = story_fallback_reason
-            content = self.build_local_fallback_content(topic, persona=persona)
+            recovered = self._recover_layout_only_guard(topic, persona, content)
+            if recovered:
+                self.logger.info(
+                    "WeiToutiao layout reflow kept the model draft (guard=%s) for topic=%s",
+                    story_fallback_reason,
+                    topic.title,
+                )
+                content = recovered
+                story_fallback_reason = ""
+            else:
+                generation_mode = "local_fallback"
+                fallback_reason = story_fallback_reason
+                content = self.build_local_fallback_content(topic, persona=persona)
         if self._content_char_count(content) < MIN_WTT_CHARS:
             generation_mode = "local_fallback"
             fallback_reason = fallback_reason or "model_output_too_short"
@@ -1142,9 +1183,19 @@ class WeiToutiaoStandaloneGenerator:
             model_content_char_count = self._content_char_count(content) if generation_mode == 'model' else None
             story_fallback_reason = self._model_story_fallback_reason(topic, persona, content)
             if generation_mode == "model" and story_fallback_reason:
-                generation_mode = "local_fallback"
-                fallback_reason = story_fallback_reason
-                content = self.build_local_fallback_content(topic, persona=persona)
+                recovered = self._recover_layout_only_guard(topic, persona, content)
+                if recovered:
+                    self.logger.info(
+                        "WeiToutiao layout reflow kept the model draft (guard=%s) for topic=%s",
+                        story_fallback_reason,
+                        topic.title,
+                    )
+                    content = recovered
+                    story_fallback_reason = ""
+                else:
+                    generation_mode = "local_fallback"
+                    fallback_reason = story_fallback_reason
+                    content = self.build_local_fallback_content(topic, persona=persona)
 
             if looks_like_html_document(content):
                 error = "WeiToutiao generated content was an HTML document, so publishing was blocked."

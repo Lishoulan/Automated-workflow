@@ -1981,8 +1981,7 @@ class TopicCollectionService:
     def _is_title_only_topic(self, topic: TopicCandidate) -> bool:
         snippet = self._clean_text(topic.snippet)
         verified_original = False
-        if (self.settings.wechat_auto_publish_mode
-                and getattr(topic, "_verified_source_material", False) is True
+        if (getattr(topic, "_verified_source_material", False) is True
                 and topic.source_records):
             from toutiao_content_factory.services.material_search_service import (
                 MaterialBundle, MaterialSource, assess_material_evidence,

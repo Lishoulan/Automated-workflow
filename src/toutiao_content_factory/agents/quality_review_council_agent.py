@@ -156,13 +156,17 @@ class QualityReviewCouncilAgent(BaseAgent):
             review_style = (f"语气：{style.tone}。" + editorial_brief
                             + "正文目标2000～2200字，最低1750字；每段不超过180字。"
                             "结构围绕已披露事实、解释及证据边界，不强行讨论订单、利润或竞争优势。")
+        article_input = article
+        if self.settings.wechat_auto_publish_mode:
+            from toutiao_content_factory.services.wechat_revision import manuscript_locations
+            article_input = self.json_text(manuscript_locations(article, title))
         prompt = self.render_prompt(
             "quality_review_council_prompt.md",
             platform=self.settings.platform,
             topic_title=data_report.topic_title,
             role_context=role_context,
             style_digest=review_style,
-            article=article,
+            article=article_input,
             title=title,
             data_json=self.json_text(fact_payload),
             editorial_brief=editorial_brief,
@@ -189,6 +193,7 @@ class QualityReviewCouncilAgent(BaseAgent):
             properties["role_reviews"] = {"type": "array", "items": {"type": "object"}}
             properties["issues"] = {"type": "array", "items": {"type": "object", "properties": {
                 "requirement": {"type": "string"}, "paragraph": {"type": "string"}, "category": {"type": "string"},
+                "location_id": {"type": "string"},
                 "target": {"enum": ["body", "title"]}, "verification": {"type": "string"},
                 "evidence_ids": {"type": "array", "items": {"type": "string"}}}}}
             properties["issue_evaluations"] = {"type": "array", "items": {"type": "object", "properties": {
@@ -213,6 +218,7 @@ class QualityReviewCouncilAgent(BaseAgent):
                            "issue_evaluations每项必须含issue_id、status、after_quote、verification、evidence_ids。"
                            "无问题或无待复核项则返回相应空数组。现稿已表达的判断方向不得再引用历史旧段落要求补写。"
                            "verdict与chief_editor_conclusion必须和各项核验及必改意见一致。")
+                prompt += "\n正文输入为当前版本的location_id/target/text列表。优先返回对应location_id；paragraph若返回必须逐字引用该位置原文。禁止用旧稿定位或自行改写引用。没有核验理由不能报告为已核实。"
         system_prompt = (
             "你是成稿质量审核总编，负责协调五名独立审校专家。"
             "审核对象是已经润色后的文章，不负责替作者补写事实。"
@@ -256,9 +262,22 @@ class QualityReviewCouncilAgent(BaseAgent):
 
     def _complete_audit(self, report, primary, content, data_report, article, title, pending, local_snapshot):
         from toutiao_content_factory.services.wechat_revision import (
-            audit_fact_material, bind_issues, manuscript_fingerprint, integrity_reasons, apply_supplement)
+            ISSUE_FIELDS, invalid_finding_fields, audit_fact_material, bind_issues, manuscript_fingerprint, integrity_reasons, apply_supplement)
         facts = data_report.fact_evidence
-        bind_issues(report, article, facts)
+        malformed = invalid_finding_fields(primary)
+        for field in malformed:
+            # Keep the raw response in provenance, never stringify nested JSON
+            # as a manuscript edit or let a metadata supplement erase it.
+            value = primary[field]
+            if field in ISSUE_FIELDS:
+                setattr(report, field, [item.strip() for item in value if isinstance(item, str) and item.strip()]
+                        if isinstance(value, list) else [])
+            else:
+                report.issues = [row for row in value if isinstance(row, dict) and isinstance(row.get("requirement"), str)] \
+                    if isinstance(value, list) else []
+        if malformed:
+            report.verdict, report.needs_revision = "blocked", True
+        bind_issues(report, article, facts, title=title)
         reasons = integrity_reasons(report, article, title, facts, pending, primary)
         diagnostic = {"status": "incomplete" if reasons else "complete", "reasons": reasons,
                       "initial_reasons": list(reasons),
@@ -268,16 +287,19 @@ class QualityReviewCouncilAgent(BaseAgent):
         deadline = os.getenv("WECHAT_RUN_DEADLINE_EPOCH", "")
         from toutiao_content_factory.services.wechat_execution import generation_remaining
         remaining = generation_remaining()
-        if reasons and content.audit_supplement_count < 1 and remaining >= 60 and self.openai_service.available:
+        if malformed:
+            diagnostic["supplement_skipped"] = "invalid_primary_schema_requires_full_review"
+        elif reasons and content.audit_supplement_count < 1 and remaining >= 60 and self.openai_service.available:
             content.audit_supplement_count += 1
             diagnostic["supplement_count"] = content.audit_supplement_count
-            repair_input = {"article": article, "title": title, "fact_evidence": facts,
+            from toutiao_content_factory.services.wechat_revision import manuscript_locations
+            repair_input = {"manuscript_locations": manuscript_locations(article, title), "title": title, "fact_evidence": facts,
                 "incomplete_reasons": reasons, "pending_verifications": pending,
                 "findings": [{key: issue.get(key) for key in ("issue_id", "category", "requirement", "paragraph", "target")}
                              for issue in report.issues]}
             prompt = ("仅补齐审核定位、核验及结论矛盾，不能重评打分、提取新事实或改写正文。历史示例数字不可变成必须写入的事实。"
                 "每项findings返回finding_evaluations：issue_id,status(confirmed/not_applicable/unverifiable),target(body/title),"
-                "current_quote(现稿或标题原句),evidence_ids,verification(具体理由)。每项pending_verifications返回"
+                "location_id(当前稿件位置编号),current_quote(现稿或标题原句),evidence_ids,verification(具体理由)。每项pending_verifications返回"
                 "issue_evaluations：issue_id,status(resolved/still_present/unverifiable),after_quote,evidence_ids,verification。"
                 "事实问题及硬阻断必须匹配事实编号；结构表达逻辑编号可空，但要解释真实前后差异。未修改或仅换措辞不能解决逻辑结构问题。"
                 "unverifiable不得放行。返回verdict(approved/needs_revision/blocked)及chief_editor_conclusion。只输出JSON。\n"
@@ -285,7 +307,7 @@ class QualityReviewCouncilAgent(BaseAgent):
                 "禁止输出findings或pending_verifications作为容器；禁止数组项内再套finding_evaluations或issue_evaluations。"
                 "没有待核项时相应数组为空。各status与verdict、conclusion必须一致。输出形状（尖括号内容须替换为真实核验结果）：\n"
                 '{"finding_evaluations":[{"issue_id":"<输入编号>","status":"<confirmed/not_applicable/unverifiable>",'
-                '"target":"<body/title>","current_quote":"<现稿原句>","evidence_ids":[],"verification":"<核验理由>"}],'
+                '"target":"<body/title>","location_id":"<当前稿件位置编号>","current_quote":"<现稿原句>","evidence_ids":[],"verification":"<核验理由>"}],'
                 '"issue_evaluations":[{"issue_id":"<输入编号>","status":"<resolved/still_present/unverifiable>",'
                 '"after_quote":"<现稿原句>","evidence_ids":[],"verification":"<前后差异核验理由>"}],'
                 '"verdict":"<approved/needs_revision/blocked>","chief_editor_conclusion":"<与逐项证据一致的结论>"}\n输入：\n'

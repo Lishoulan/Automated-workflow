@@ -16,6 +16,7 @@ from toutiao_content_factory.agents.base import BaseAgent
 from toutiao_content_factory.config import AppSettings, IterationOverrides, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, InsightReport, TrendReport
 from toutiao_content_factory.services.article_sanitizer import clean_article_text, strip_internal_source_labels
+from toutiao_content_factory.services import performance_hints
 from toutiao_content_factory.services.company_entities import COMPANY_SUFFIXES
 from toutiao_content_factory.services.prompt_repository import PromptRepository
 from toutiao_content_factory.services.openai_service import OpenAIContentService
@@ -298,6 +299,11 @@ class WriterAgent(BaseAgent):
             domain_thinking_rules=self._dynamic_rules_for(data_report) if self.settings.wechat_auto_publish_mode else self._domain_thinking_rules(style),
             auto_publish_directive=self._auto_publish_directive(),
         )
+        # 闭环注入：本账号真实表现数据里相对高表现作品的结构参考。
+        # 数据不足时返回空串（见 performance_hints 的两道防污染闸）。
+        performance_note = performance_hints.writer_hints(self.settings)
+        if performance_note:
+            prompt = f"{prompt}{performance_note}"
         system_prompt = f"{self._writer_system_prompt(style)}{self._dynamic_rules_for(data_report)}"
         payload = self.request_json(system_prompt, prompt)
         if payload:
@@ -398,6 +404,11 @@ class WriterAgent(BaseAgent):
             domain_thinking_rules=self._dynamic_rules_for(data_report) if self.settings.wechat_auto_publish_mode else self._domain_thinking_rules(style),
             auto_publish_directive=self._auto_publish_directive(),
         )
+        # 闭环注入：本账号真实表现数据里相对高表现作品的结构参考。
+        # 数据不足时返回空串（见 performance_hints 的两道防污染闸）。
+        performance_note = performance_hints.writer_hints(self.settings)
+        if performance_note:
+            prompt = f"{prompt}{performance_note}"
         system_prompt = f"{self._writer_system_prompt(style)}{self._dynamic_rules_for(data_report)}"
         # 模块 C 合并新增：从 best_practices_rule.txt 加载并注入活跃规则
         active_rules = self._load_active_rules()

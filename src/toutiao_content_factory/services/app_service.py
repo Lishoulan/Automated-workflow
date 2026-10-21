@@ -3426,6 +3426,33 @@ class ContentFactoryAppService:
         避免重复读盘、也避免两处口径不一致。
         """
         publishing = self.settings.publishing
+        limits = getattr(self.settings, "content_limits", None)
+
+        def _limit(name: str, fallback: int) -> int:
+            try:
+                parsed = int(getattr(limits, name, fallback))
+            except (TypeError, ValueError):
+                return fallback
+            return parsed if parsed > 0 else fallback
+
+        # ⚠️ 2026-10-21：**只出草稿时不再沿用自动发布的长度线。**
+        #
+        # 起因：`scripts/scheduled_wechat_publish.py:694` 为了让生成流程走「自动发布候选」
+        # 那条高质量路径，在 `--save-draft` 时把 `WECHAT_AUTO_PUBLISH` 也设成了 1。
+        # 于是 `wechat_auto_publish_mode` 判定为真，这里返回 1750；而 deepseek-v4-flash
+        # 实际只产出 848 字 → 每次运行都判 `article_too_short` →
+        # 30 天 25 次运行、确认发布 0 篇。
+        #
+        # 语义上 `WECHAT_AUTO_PUBLISH=1` 同时承担了「走高质量候选流程」和「真的要发布」
+        # 两个含义，这是死锁的根。草稿最终由人看，长度不构成发布风险，
+        # 所以草稿模式单独取一个能达成的下限。
+        draft_only_delivery = (
+            self.settings.platform == "wechat"
+            and bool(getattr(self.settings.wechat, "draft_only", False))
+        ) or bool(getattr(publishing, "draft_only", False))
+        if draft_only_delivery:
+            return _limit("draft_mode_min_chars", 800)
+
         auto_publish_mode = bool(
             getattr(publishing, "enabled", False)
             and getattr(publishing, "auto_publish", False)
@@ -3446,7 +3473,7 @@ class ContentFactoryAppService:
             # 两条路径对同一体裁必须用同一个下限，否则本地验证无法代表云端。
             if self._run_uses_narrative_domain(snapshot):
                 return self.NARRATIVE_ARTICLE_MIN_CHARS
-            return 850 if is_hot_topic else 800
+            return _limit("hot_topic_min_chars", 850) if is_hot_topic else _limit("manual_review_min_chars", 800)
         if self._run_uses_narrative_domain(snapshot):
             # 故事体裁：叙事写法不需要产业稿那么长。
             #
@@ -3462,7 +3489,7 @@ class ContentFactoryAppService:
             # ⚠️ 想继续往下调，请先看云端最近几条候选的实际字数分布，
             # 不要把这条线当成可以随手拧的旋钮。
             return self.NARRATIVE_ARTICLE_MIN_CHARS
-        return 1750
+        return _limit("article_min_chars", 1750)
 
     def _run_uses_narrative_domain(self, snapshot: dict[str, object]) -> bool:
         """这次运行是否用了叙事类写作领域（content_domain == narrative）。

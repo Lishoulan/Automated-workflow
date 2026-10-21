@@ -193,6 +193,13 @@ review:
   hot_topic_max_auto_publish_ai_risk: 50
   hot_topic_min_auto_publish_readiness_score: 50
   publish_dirname: publish
+content_limits:
+  article_min_chars: 1750
+  article_target_chars: 2000
+  narrative_min_chars: 700
+  hot_topic_min_chars: 850
+  manual_review_min_chars: 800
+  draft_mode_min_chars: 800
 compliance:
   aigc_declaration_enabled: true
   max_daily_posts: 1

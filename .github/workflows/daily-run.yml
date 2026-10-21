@@ -1015,6 +1015,27 @@ jobs:
           fi
         continue-on-error: true
 
+      - name: Run content feedback loop
+        id: feedback-loop
+        if: always()
+        shell: bash
+        continue-on-error: true
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          ACCOUNT="${RUN_ACCOUNT:-robot_notes}"
+          echo "=== 闭环：真实表现数据 -> 生成信号 ==="
+          python scripts/run_feedback_loop.py --account "$ACCOUNT" || true
+          echo "=== 阶段判定 ==="
+          python scripts/stage_gate.py --account "$ACCOUNT" --write || true
+          {
+            echo ""
+            echo "## 内容闭环 / 阶段判定"
+            echo '```'
+            python scripts/stage_gate.py --account "$ACCOUNT" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publish precheck report
         if: always()
         shell: bash

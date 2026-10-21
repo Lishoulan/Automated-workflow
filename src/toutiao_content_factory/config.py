@@ -288,6 +288,51 @@ class AutomationSettings:
 
 
 @dataclass(frozen=True)
+class ContentLimitsSettings:
+    """正文长度门槛的唯一来源。
+
+    ⚠️ 2026-10-21：`1750` 此前硬编码在 7 个文件里
+    （app_service._minimum_article_chars、writer_agent、polish_agent、review_agent、
+    publish_review_agent、quality_review_council_agent），而 config.yaml 的
+    writing.article_word_target 写的是 1500 —— 配置和代码互相矛盾。
+
+    实测后果：公众号被提示词要求写 1750 字，而 flash 级模型实际只产出 848 字，
+    于是每次运行都判 article_too_short，30 天 25 次运行确认发布 0 篇。
+
+    这里改成按「发布模式 × 体裁」分档：只出草稿给人审时，长度不是发布风险，
+    不该直接沿用自动发布的下限去把稿子判死。
+    """
+
+    article_min_chars: int = 1750
+    article_target_chars: int = 2000
+    narrative_min_chars: int = 700
+    hot_topic_min_chars: int = 850
+    manual_review_min_chars: int = 800
+    draft_mode_min_chars: int = 800
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> "ContentLimitsSettings":
+        data = payload if isinstance(payload, dict) else {}
+        default = cls()
+
+        def _int(key: str, fallback: int) -> int:
+            try:
+                value = int(data.get(key, fallback))
+            except (TypeError, ValueError):
+                return fallback
+            return value if value > 0 else fallback
+
+        return cls(
+            article_min_chars=_int("article_min_chars", default.article_min_chars),
+            article_target_chars=_int("article_target_chars", default.article_target_chars),
+            narrative_min_chars=_int("narrative_min_chars", default.narrative_min_chars),
+            hot_topic_min_chars=_int("hot_topic_min_chars", default.hot_topic_min_chars),
+            manual_review_min_chars=_int("manual_review_min_chars", default.manual_review_min_chars),
+            draft_mode_min_chars=_int("draft_mode_min_chars", default.draft_mode_min_chars),
+        )
+
+
+@dataclass(frozen=True)
 class ReviewSettings:
     auto_prepare: bool
     min_overall_score: int
@@ -843,6 +888,7 @@ class AppSettings:
     raw_account_profiles: dict[str, dict[str, Any]]
     available_account_keys: list[str]
     quality_review: QualityReviewSettings = field(default_factory=QualityReviewSettings)
+    content_limits: ContentLimitsSettings = field(default_factory=ContentLimitsSettings)
     fast_mode: bool = False
     skip_image_generation: bool = False
     skip_review_agent: bool = False
@@ -1071,6 +1117,7 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
     writing_overrides = _load_writing_config(merged_payload, account_profile.key)
     automation_final = _load_automation_config(merged_payload, automation_config)
     review_final = _load_review_config(merged_payload, review_config)
+    content_limits_final = ContentLimitsSettings.from_dict(merged_payload.get("content_limits"))
     publishing_final = _load_publishing_config_final(merged_payload, account_profile, is_default_account, automation_config, publishing_config, paths)
     wechat_final = _load_wechat_config_final(merged_payload, account_profile, wechat_config)
     image_final = _load_image_config(merged_payload, image_config)
@@ -1130,6 +1177,7 @@ def load_settings(project_root: Path, account_key: str | None = None) -> AppSett
         image_generation=image_final,
         automation=automation_final,
         review=review_final,
+        content_limits=content_limits_final,
         publishing=publishing_final,
         wechat=wechat_final,
         account_profiles=raw_account_profiles,

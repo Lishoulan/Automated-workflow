@@ -11,6 +11,7 @@ from toutiao_content_factory.agents.base import BaseAgent
 from toutiao_content_factory.config import AppSettings, IterationOverrides, StyleProfile
 from toutiao_content_factory.models import CacheContext, DataReport, GeneratedContent, TrendReport
 from toutiao_content_factory.services.article_quality_checker import ArticleQualityChecker
+from toutiao_content_factory.services import performance_hints
 from toutiao_content_factory.services.subject_entities import (
     extract_known_organization_names,
 )
@@ -653,6 +654,12 @@ class TitleAgent(BaseAgent):
                 + self.json_text({"article_kind": data_report.article_kind, "article": body,
                                   "concrete_anchors": anchors, "avoid_titles": cache_context.avoid_titles[:8]})
             )
+        # 闭环注入：把本账号真实表现数据里的相对高表现标题作为参考。
+        # 2026-10-21 之前这一步是缺的 —— `FeedbackLoopService.get_title_few_shot()` 全仓零调用，
+        # 数据算出来了但没有回到生成侧。性能数据不足时此函数返回空串，不会污染提示词。
+        performance_note = performance_hints.title_hints(self.settings)
+        if performance_note:
+            prompt = f"{prompt}{performance_note}"
         payload = self.request_json(system_prompt, prompt)
         raw_model_titles = payload.get("titles") if isinstance(payload, dict) else None
         model_raw_count = len(raw_model_titles) if isinstance(raw_model_titles, list) else 0

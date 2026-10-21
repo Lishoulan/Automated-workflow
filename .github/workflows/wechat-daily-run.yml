@@ -226,6 +226,21 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:
               handle.write('\n生成调用记录：' + str(report['recorded_calls']) + ' 次；估算费用（非实际扣费）：' + json.dumps(report['estimated_by_currency'], ensure_ascii=False) + '。实际成本与净收益尚未核验。\n')
           PY
+      - name: Run content feedback loop
+        if: always()
+        run: |
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          echo "=== 闭环：真实表现数据 -> 生成信号 ==="
+          python scripts/run_feedback_loop.py || true
+          echo "=== 阶段判定 ==="
+          python scripts/stage_gate.py --write || true
+          {
+            echo ""
+            echo "## 内容闭环 / 阶段判定"
+            echo '```'
+            python scripts/stage_gate.py || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Save outcome reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -244,5 +259,7 @@ jobs:
             output/growth_ops/generation_costs/
             output/automation/wechat_publish_phase.json
             output/automation/wechat_cover_check/
+            output/automation/feedback_loop_status.json
+            output/automation/stage_status.json
           if-no-files-found: ignore
           retention-days: 14

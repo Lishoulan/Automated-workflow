@@ -205,7 +205,19 @@ class PublishReviewAgent(BaseAgent):
             )
 
         if data_report.risk_flags:
-            publish_risk_flags.extend(data_report.risk_flags[:2])
+            # 2026-10-21：这里原来把这些"风险边界"直接塞进 publish_risk_flags。
+            # 但 DataReport.risk_flags 是**正文应该交代的内容风险**
+            # （例如"国产芯片技术成熟度可能影响兑现速度"），不是**发布风险**；
+            # 模型路径也只是把 risk_flags_json 当上下文交给模型判断。
+            # 兜底路径这么复制，会命中下面"任一 flag → manual_review"，
+            # 于是只要选题带风险边界，自动发布就永久被锁死
+            # （实测 run 39577216468：readiness 足够，仅因这两条变成 manual_review）。
+            # 发布与否应继续由分数门槛（TOUTIAO_AUTO_PUBLISH_MIN_*）判断，
+            # 风险边界改放 publish_notes，供人工/下游阅读，不构成阻断。
+            publish_notes.extend(
+                f"内容风险边界（正文已交代，不构成发布阻断）：{item}"
+                for item in data_report.risk_flags[:2]
+            )
 
         if article_length < 700:
             publish_risk_flags.append("正文偏短，可能影响头条停留时长。")

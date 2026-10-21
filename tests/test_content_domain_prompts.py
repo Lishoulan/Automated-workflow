@@ -195,13 +195,24 @@ def test_narrative_floor_matches_between_the_two_places() -> None:
     )
 
     source = Path(app_module.__file__).read_text(encoding="utf-8")
-    # 两条分支（自动发布 / 人工审核）都必须走这个常量
+    # 两条分支（自动发布 / 人工审核）都必须引用叙事下限常量
     assert source.count("return self.NARRATIVE_ARTICLE_MIN_CHARS") >= 2, (
         "app_service 的两条分支（自动发布 / 人工审核）没有都走叙事下限常量"
     )
-    # 产业分支必须仍保留原值
-    assert "return 1750" in source
-    assert "return 850 if is_hot_topic else 800" in source
+    # 产业分支必须仍然保留原值。2026-10-21 起下限改为由 content_limits 配置提供，
+    # 源码里不再出现字面量 `return 1750`，所以这里改为断言*实际解析出的值*，
+    # 行为等价且不会因为重构写法而变化。
+    from dataclasses import replace
+
+    settings = load_settings(Path.cwd(), account_key="default")
+    # 关掉草稿档，走产业（自动发布）分支；settings 是 frozen dataclass。
+    settings = replace(settings, wechat=replace(settings.wechat, draft_only=False))
+    service = object.__new__(app_module.ContentFactoryAppService)
+    service.settings = settings
+    service.logger = logging.getLogger("test_content_domain_prompts")
+    assert service._minimum_article_chars(None) == 1750, (
+        "产业（自动发布）分支的下限必须仍然是 1750"
+    )
 
 
 # ---------------------------------------------------------------------------

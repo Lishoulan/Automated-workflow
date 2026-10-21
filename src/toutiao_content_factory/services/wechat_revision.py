@@ -13,6 +13,45 @@ from toutiao_content_factory.services.wechat_evidence import stable_id, supporti
 ISSUE_FIELDS = ("hard_blockers", "fact_issues", "logic_issues", "structure_issues", "originality_issues", "compliance_issues", "required_revisions")
 
 
+def invalid_finding_fields(raw: dict) -> list[str]:
+    invalid = [field for field in ISSUE_FIELDS if not isinstance(raw.get(field, []), list)
+               or any(not isinstance(item, str) for item in raw.get(field, []))]
+    supplied = raw.get("issues", [])
+    if not isinstance(supplied, list) or any(
+        not isinstance(row, dict) or not isinstance(row.get("requirement"), str) or not row["requirement"].strip()
+        or any(key in row and not isinstance(row[key], str) for key in
+               ("paragraph", "category", "location_id", "verification", "target"))
+        or "target" in row and row["target"] not in {"body", "title"}
+        or "evidence_ids" in row and (not isinstance(row["evidence_ids"], list)
+            or any(not isinstance(value, str) for value in row["evidence_ids"]))
+        for row in supplied):
+        invalid.append("issues")
+    return invalid
+
+
+def manuscript_locations(article: str, title: str) -> list[dict]:
+    """Literal locations are bound to this exact body/title version, never a score."""
+    version = stable_id("draft_", article, title)
+    body = article.split("参考来源：", 1)[0]
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+    return [{"location_id": stable_id("loc_", version, target, str(index), text),
+             "target": target, "text": text}
+            for target, texts in (("title", [title]), ("body", paragraphs))
+            for index, text in enumerate(texts) if text]
+
+
+def _referenced_quote(row, article, title, quote_key):
+    reference = row.get("location_id")
+    quote = str(row.get(quote_key, "")).strip()
+    if not reference:
+        return quote
+    location = next((item for item in manuscript_locations(article, title)
+                     if item["location_id"] == reference and item["target"] == row.get("target", "body")), None)
+    if not location or quote and re.sub(r"\s+", "", quote) not in re.sub(r"\s+", "", location["text"]):
+        return ""
+    return location["text"]
+
+
 def verified_patch_locator(requirement: str, paragraph: str, quote: str) -> bool:
     """A shared literal anchors an unlocated request; it proves no correction."""
     if not isinstance(quote, str):
@@ -39,9 +78,18 @@ def bind_patch_locations(report, locations: list[dict], article: str, facts: lis
             for fact in supporting_facts(sentence, facts)))
 
 
-def bind_issues(report, article: str, facts: list[dict]) -> None:
+def bind_issues(report, article: str, facts: list[dict], *, title: str = "") -> None:
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", article.split("参考来源：", 1)[0]) if p.strip()]
     supplied = report.issues
+    # Structured findings are independent model assertions, not disposable
+    # annotations on a legacy string array. Preserve them as blocking findings.
+    for provided in supplied:
+        requirement = provided.get("requirement")
+        category = provided.get("category", "required_revisions")
+        if isinstance(requirement, str) and requirement.strip():
+            field = category if category in ISSUE_FIELDS else "required_revisions"
+            if requirement not in getattr(report, field):
+                getattr(report, field).append(requirement)
     issues, seen = [], set()
     for category in ISSUE_FIELDS:
         for requirement in getattr(report, category):
@@ -49,12 +97,13 @@ def bind_issues(report, article: str, facts: list[dict]) -> None:
                 continue
             seen.add(requirement)
             provided = next((i for i in supplied if i.get("requirement") == requirement), {})
-            quote = str(provided.get("paragraph", "")).strip()
-            if not quote:
+            quote = _referenced_quote(provided, article, title, "paragraph")
+            if not quote and not provided.get("location_id"):
                 excerpts = re.findall(r"[“\"‘']([^”\"’']{8,})[”\"’']", requirement)
                 quote = next((excerpt for excerpt in excerpts if re.sub(r"\s+", "", excerpt) in re.sub(r"\s+", "", article)), "")
             # A model-supplied quote is a locator only when it is in this body.
-            paragraph = next((p for p in paragraphs if quote and re.sub(r"\s+", "", quote) in re.sub(r"\s+", "", p)), "")
+            matches = [p for p in paragraphs if quote and re.sub(r"\s+", "", quote) in re.sub(r"\s+", "", p)]
+            paragraph = matches[0] if len(matches) == 1 else ""
             issue_id = stable_id("issue_", category, re.sub(r"\s+", "", requirement))
             evidence = [fact for sentence in re.split(r"(?<=[。！？；])", paragraph)
                         for fact in supporting_facts(sentence, facts)] if paragraph else []
@@ -62,7 +111,8 @@ def bind_issues(report, article: str, facts: list[dict]) -> None:
                            "paragraph": quote if provided.get("target") == "title" else paragraph,
                            "evidence_ids": provided.get("evidence_ids", list(dict.fromkeys(f["fact_id"] for f in evidence))),
                            "verification": provided.get("verification", ""),
-                           "location_verified": bool(paragraph), "target": provided.get("target", "body")})
+                           "location_verified": bool(paragraph), "target": provided.get("target", "body"),
+                           "location_id": provided.get("location_id", "")})
     report.issues = issues
 
 
@@ -158,6 +208,8 @@ def integrity_reasons(report, article: str, title: str, facts: list[dict], pendi
     if raw is not None and (raw.get("verdict") not in {"approved", "needs_revision", "blocked"}
                             or not str(raw.get("chief_editor_conclusion", "")).strip()):
         reasons.append("missing_model_conclusion")
+    if raw is not None:
+        reasons.extend("invalid_finding_shape:" + field for field in invalid_finding_fields(raw))
     findings = report.issues
     if report.verdict == "approved" and any(getattr(report, field) for field in ISSUE_FIELDS):
         reasons.append("approval_with_unresolved_findings")
@@ -226,7 +278,7 @@ def apply_supplement(report, payload: dict, article: str, title: str, facts: lis
         if len(matches) != 1:
             raise ValueError("Missing or duplicate finding evaluation")
         row = matches[0]
-        quote = str(row.get("current_quote", "")).strip()
+        quote = _referenced_quote(row, article, title, "current_quote")
         target = row.get("target", "body")
         text = title if target == "title" else article.split("参考来源：", 1)[0]
         if (target not in {"title", "body"} or not quote or quote not in text
@@ -238,7 +290,8 @@ def apply_supplement(report, payload: dict, article: str, title: str, facts: lis
             removals.append(issue)
         elif row.get("status") == "confirmed":
             issue.update(paragraph=quote, location_verified=True, target=target,
-                         verification=row["verification"], evidence_ids=row.get("evidence_ids", []))
+                         verification=row["verification"], evidence_ids=row.get("evidence_ids", []),
+                         location_id=row.get("location_id", ""))
         else:
             raise ValueError("Finding remains unverifiable")
     verdict = payload.get("verdict")

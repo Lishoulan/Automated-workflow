@@ -87,6 +87,16 @@ def review_diagnostics(settings: Any, native: dict[str, Any], started: int) -> d
                     if key in integrity and isinstance(integrity[key], (str, int))}
                 summary["audit_integrity"]["reasons"] = [safe_text(item) for item in integrity.get("reasons", [])
                                                           if isinstance(item, str)]
+                # Preserve the boundary failure and exact finding identity in
+                # the existing receipt; never infer a successful supplement.
+                summary["audit_integrity"]["supplement_validation_reason"] = safe_text(
+                    integrity.get("supplement_validation_reason", ""))
+                summary["audit_findings"] = [{key: safe_text(issue.get(key, "")) for key in
+                    ("issue_id", "category", "requirement", "paragraph", "target", "location_id", "verification")}
+                    | {"location_verified": issue.get("location_verified") is True,
+                       "evidence_ids": [safe_text(value) for value in issue["evidence_ids"]]
+                           if isinstance(issue.get("evidence_ids"), list) else []}
+                    for issue in council.get("issues", []) if isinstance(issue, dict)]
                 if status == "model_unavailable":
                     result["reason_codes"].append("quality_model_unavailable")
                 elif status != "complete":

@@ -18,8 +18,6 @@ from toutiao_content_factory.services.browser_launch_guard import prepare_browse
 from toutiao_content_factory.services.browser_launch_guard import ensure_browser_session_ready
 from toutiao_content_factory.services.wechat_service import WechatPublishService
 
-# A fresh cloud checkout may have no restored output cache yet.
-(Path(__file__).resolve().parent.parent / "output").mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(name)s | %(message)s",

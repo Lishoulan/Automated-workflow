@@ -1635,7 +1635,40 @@
       "runtime_status": "ok",
       "native_exit_code": null,
       "submission_outcome": "draft"
+    },
+    {
+      "run_key": "39582435235:1",
+      "started_at": "2026-10-21T10:09:56.856579+00:00",
+      "mode": "draft",
+      "excluded": true,
+      "outcome": "draft",
+      "reason_codes": [],
+      "attempt_count": 0,
+      "enrichment_count": 0,
+      "eligible_candidate_count": 0,
+      "audited_candidate_count": 0,
+      "review_pass_count": 0,
+      "rejection_reasons": [],
+      "publication": {},
+      "expected_publication": {},
+      "draft_delivery": {
+        "status": "saved",
+        "title": "SpaceX与特斯拉Terafab项目2028量产目标",
+        "draft_media_id": "",
+        "app_msg_id": "100001415",
+        "handoff": {
+          "account": "小椰科技",
+          "title": "SpaceX与特斯拉Terafab项目2028量产目标",
+          "body_hash": "b772545d2d9acb2fa53beee4eacd1735b4d9a7d14dec0f3a2408eda5c54fb220",
+          "body_hash_basis": "rendered_delivery_payload",
+          "saved_at": "2026-10-21T01:44:27.696878+00:00"
+        }
+      },
+      "elapsed_seconds": null,
+      "runtime_status": "ok",
+      "native_exit_code": null,
+      "submission_outcome": "draft"
     }
   ],
-  "updated_at": "2026-10-21T14:41:01.782024+08:00"
+  "updated_at": "2026-10-21T18:10:07.043686+08:00"
 }

@@ -1055,12 +1055,17 @@ class PerformanceService:
 
         实测（2026-09-18）：访问微头条列表页可抓到行，其中包含当天发布的微头条条目。
 
+        2026-10-21 修复：这里原先在 `goto(WEITOUTIAO_LIST_URL)` 之后又调用
+        `_enter_content_manage(page)`。该函数会点击「作品管理」，找不到时还会兜底
+        `goto(.../manage/content/all)` —— 两者都会把页面从微头条列表导航回图文页，
+        于是每次补采都在错误的页面上找微头条行，恒为 0 行。生产日志实测：
+        `Weitoutiao list page exposed 0 rows.`，15 条已发布微头条只采到 1 条。
+        微头条列表页是独立 URL，直接访问即可，不需要再点「作品管理」。
+
         全程 non-fatal：任何异常都返回空列表，图文采集不受影响。
         """
         try:
             page.goto(self.WEITOUTIAO_LIST_URL, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(6000)
-            self._enter_content_manage(page)
             page.wait_for_timeout(6000)
             rows = self._extract_metric_rows_from_frames(page, row_selectors)
             self.logger.info("Weitoutiao list page exposed %s rows.", len(rows) if rows else 0)

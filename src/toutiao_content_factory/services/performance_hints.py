@@ -39,6 +39,12 @@ def _as_int(value: Any) -> int:
 
 
 METRICS_FILENAME = "performance_metrics.json"
+CHECKPOINTS_FILENAME = "growth_checkpoints.json"
+
+#: primary 源少于这个数时才回退到 growth_checkpoints。
+#: 复用相对档下限，避免另立一套数字（两个阈值一旦分叉就会产生"够用但不回退"
+#: 或"不足却不回退"的边界bug）。
+FALLBACK_MIN_PRIMARY_RECORDS = MIN_RECORDS_FOR_RELATIVE
 
 
 def _candidate_paths(settings: Any) -> list[Path]:
@@ -80,13 +86,84 @@ def _read_records(path: Path) -> list[dict[str, Any]] | None:
 
 
 def load_records(settings: Any) -> list[dict[str, Any]]:
-    """读取 performance_metrics.json 里的记录；任何异常都返回空列表。
+    """读取表现记录；primary 源不足时回退到 growth_checkpoints。
 
-    依次尝试历史与生产实际使用的多个位置，返回第一个含可用记录的来源。
-    某处文件损坏时继续找下一处，而不是直接判为空。
+    2026-10-21：生产 artifact 实测 `growth_checkpoints.json` 有 31 条作品
+    （19 条有真实阅读、含 24h/72h 观测），而 `performance_metrics.json` 只有 1 条。
+    闭环只读后者，于是永远 `record_count: 1 / insufficient`、从不注入任何样本 ——
+    尽管同一目录里数据一直都有。
+
+    回退规则（保守）：
+    - 只在 primary **少于相对档下限**时回退；primary 够用就不混入第二个源，
+      避免两份口径不同的数据混在一起导致统计漂移；
+    - checkpoints 的字段名不同（`latest.reads` / `latest.impressions`），
+      这里显式映射到统一的 `read_count` / `impression_count`，不直接透传。
     """
+    records = _load_primary_records(settings)
+    if len(records) >= FALLBACK_MIN_PRIMARY_RECORDS:
+        return records
+    fallback = _load_checkpoint_records(settings)
+    return fallback if len(fallback) > len(records) else records
+
+
+def _load_primary_records(settings: Any) -> list[dict[str, Any]]:
     for path in _candidate_paths(settings):
         records = _read_records(path)
+        if records:
+            return records
+    return []
+
+
+def _checkpoint_paths(settings: Any) -> list[Path]:
+    output_dir = getattr(settings, "output_dir", None)
+    project_root = getattr(settings, "project_root", None)
+    candidates = [
+        Path(output_dir) / CHECKPOINTS_FILENAME if output_dir else None,
+        Path(project_root) / "output" / CHECKPOINTS_FILENAME if project_root else None,
+    ]
+    return [path for path in candidates if path is not None]
+
+
+def _load_checkpoint_records(settings: Any) -> list[dict[str, Any]]:
+    """把 growth_checkpoints 的 works 映射成统一的记录形状。
+
+    只取有标题、且至少有一个非零指标的作品：没有任何展现/阅读的作品当不了
+    参考范本，混进来只会稀释样本。
+    """
+    for path in _checkpoint_paths(settings):
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        works = payload.get("works") if isinstance(payload, dict) else None
+        if not isinstance(works, dict):
+            continue
+        records: list[dict[str, Any]] = []
+        for gid, sample in works.items():
+            if not isinstance(sample, dict):
+                continue
+            title = str(sample.get("title", "")).strip()
+            if not title:
+                continue
+            latest = sample.get("latest") if isinstance(sample.get("latest"), dict) else {}
+            impressions = _as_int(latest.get("impressions"))
+            reads = _as_int(latest.get("reads"))
+            if impressions <= 0 and reads <= 0:
+                continue
+            records.append(
+                {
+                    "title": title,
+                    "impression_count": impressions,
+                    "read_count": reads,
+                    "comment_count": _as_int(latest.get("comments")),
+                    "platform_item_id": str(gid),
+                    "content_type": sample.get("type"),
+                    "published_at": sample.get("created_at"),
+                    "source": "growth_checkpoints",
+                }
+            )
         if records:
             return records
     return []

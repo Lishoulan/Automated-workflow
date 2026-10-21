@@ -69,8 +69,15 @@ def _submit_dates(settings) -> list[str]:
 
 
 def _works(settings) -> list[dict[str, Any]]:
-    """平台侧作品记录（体现/展现来自创作者中心，不是我们自己写的状态）。"""
-    return _records(_read_json(Path(settings.automation_dir) / "performance_metrics.json"))
+    """平台侧作品记录（体现/展现来自创作者中心，不是我们自己写的状态）。
+
+    2026-10-21：原先把路径硬拼成 `automation_dir / performance_metrics.json`，
+    但生产写在账号输出根目录，于是这里恒为 0 条，阶段判定一直在按"没有作品数据"
+    下结论。统一改用 `performance_hints.metrics_path()` 解析。
+    """
+    from toutiao_content_factory.services import performance_hints
+
+    return _records(_read_json(performance_hints.metrics_path(settings)))
 
 
 def _impressions(row: dict[str, Any]) -> int:

@@ -92,6 +92,25 @@ def load_records(settings: Any) -> list[dict[str, Any]]:
     return []
 
 
+def metrics_path(settings: Any) -> Path:
+    """表现数据文件的**权威路径**，供所有消费方复用。
+
+    2026-10-21：`run_feedback_loop.py`、`stage_gate.py` 与
+    `feedback_loop_service` 原先各自拼 `automation_dir / performance_metrics.json`，
+    但生产把文件写在账号输出根目录，于是它们全部读到空数据
+    （实测 `stage_gate._works()` 看到 0 条，实际有记录）。
+
+    这里统一成一处解析，避免同一个路径散落多份、再出现不一致：
+    返回第一个真实存在的候选；都不存在时返回历史位置（automation/），
+    以便调用方写报告时有一个稳定的路径可展示。
+    """
+    candidates = _candidate_paths(settings)
+    for path in candidates:
+        if path.is_file():
+            return path
+    return candidates[0] if candidates else Path(METRICS_FILENAME)
+
+
 def _reads(record: dict[str, Any]) -> int:
     return _as_int(record.get("read_count")) or _as_int(record.get("views"))
 

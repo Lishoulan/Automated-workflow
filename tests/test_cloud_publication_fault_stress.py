@@ -46,6 +46,17 @@ def test_model_fault_bursts_have_one_attempt_and_cancel(app_settings, logger, mo
         status = {"unauthorized": 401, "balance": 402, "rate_limit": 429, "server_error": 503}[fault]
         return httpx.Response(status, json={"error": {"message": "isolated provider fault", "type": "error"}})
     original = openai.AsyncOpenAI
+    # Fault injection starts at the transport boundary. Lazy SDK imports on a
+    # cold Windows host can consume the two-second allowance before transport
+    # starts (first receipt CancelledError, then seven AuthenticationErrors).
+    # Resolve only local resources here; no request or timeout is relaxed.
+    warm = original(api_key="isolated", max_retries=0,
+                    http_client=httpx.AsyncClient(transport=httpx.MockTransport(transport)))
+    try:
+        warm.chat.completions
+    finally:
+        asyncio.run(warm.close())
+    assert not calls
     def client(**kwargs):
         assert kwargs["max_retries"] == 0
         return original(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(transport)))
@@ -61,6 +72,32 @@ def test_model_fault_bursts_have_one_attempt_and_cancel(app_settings, logger, mo
     record_property("injected_model_fault", fault)
     record_property("mock_provider_calls", len(calls))
     record_property("cancelled_inflight_calls", len(cancellations))
+
+
+def test_model_timeout_before_transport_is_cancelled_without_retry(app_settings, logger, monkeypatch):
+    cancellations, clients = [], []
+    class StartingClient:
+        async def __aenter__(self):
+            try:
+                await asyncio.sleep(10)
+            finally:
+                cancellations.append(True)
+        async def __aexit__(self, *args):
+            raise AssertionError("A client that never entered cannot exit")
+        @property
+        def chat(self):
+            raise AssertionError("No request may escape a cancelled startup")
+    def client(**kwargs):
+        assert kwargs["max_retries"] == 0
+        clients.append(True)
+        return StartingClient()
+    monkeypatch.setattr(model_module, "AsyncOpenAI", client)
+    model = model_module.OpenAIContentService(app_settings, logger, force_mock=True)
+    model.client = SimpleNamespace(api_key="isolated", base_url="https://model.test/v1")
+    with pytest.raises(AIRequestError) as error:
+        model.create_json_completion("audit", "facts", single_attempt=True, timeout_seconds=.05)
+    assert isinstance(error.value.__cause__, asyncio.TimeoutError)
+    assert clients == cancellations == [True]
 
 
 @pytest.mark.parametrize("fault", [401, 402, 429, 503, "timeout", "malformed", "blank"])

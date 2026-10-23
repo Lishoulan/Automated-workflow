@@ -468,16 +468,19 @@ class TopicAutomationService:
         if wechat and deadline is None:
             import time
             deadline = time.monotonic() + 60
-        if wechat and topic.source_records and not regenerate:
+        if topic.source_records and not regenerate:
             from toutiao_content_factory.services.material_search_service import MaterialBundle, MaterialSource, assess_material_evidence
             restored = MaterialBundle(title, [MaterialSource(
                 title=source["title"], url=source["url"], body=source["original_text"], ok=True,
                 publisher=source.get("publisher", ""), published_at=source.get("published_at", ""),
                 date_verified=source.get("date_verified", False),
             ) for source in topic.source_records])
-            restored = self._scope_wechat_material(topic, restored)
-            if assess_material_evidence(restored).passed:
+            if wechat:
+                restored = self._scope_wechat_material(topic, restored)
+            restored_assessment = assess_material_evidence(restored)
+            if restored_assessment.passed and (wechat or restored.combined_text.strip() == existing):
                 topic._verified_source_material = True
+                topic._material_evidence_assessment = asdict(restored_assessment)
                 topic.snippet = restored.combined_text.strip()
                 return True
         try:
@@ -509,12 +512,13 @@ class TopicAutomationService:
                 )
                 existing_assessment = assess_material_evidence(existing_bundle)
                 if existing_assessment.passed:
+                    from toutiao_content_factory.services.wechat_evidence import source_records
+
                     topic._verified_source_material = True
                     topic._material_evidence_assessment = asdict(existing_assessment)
                     topic._retrieved_source_urls = [str(topic.url or "")]
-                    if wechat:
-                        from toutiao_content_factory.services.wechat_evidence import source_records
-                        topic.source_records = source_records(existing_bundle.usable)
+                    topic.source_records = source_records(existing_bundle.usable)
+                    topic.snippet = existing_bundle.combined_text.strip()
                     return True
 
             bundle = collect_material(
@@ -574,6 +578,10 @@ class TopicAutomationService:
         if topic.source_type == "court_case" and primary:
             body = f"【原文发布日期：{stamp.year}年{stamp.month}月{stamp.day}日】\n{body}"
         topic.snippet = body
+        if not wechat:
+            from toutiao_content_factory.services.wechat_evidence import source_records
+
+            topic.source_records = source_records(bundle.usable)
         # Keep this run-local marker separate from persisted search digests.
         topic._verified_source_material = True
         # 摘要直接取自素材正文的首段（`_summarize_topic` 属于 TopicCollectionService，
@@ -1355,6 +1363,7 @@ class TopicAutomationService:
             )
         return TopicCandidate(
             title=topic.title,
+            source_records=[dict(record) for record in topic.source_records],
             revenue_selection=dict(topic.revenue_selection),
             url=topic.url,
             source=topic.source,

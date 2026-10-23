@@ -751,7 +751,8 @@ def test_today_article_not_stale_after_time_preservation(app_settings, logger, m
 
 @pytest.mark.parametrize("verified,matching,platform,expected", [
     (True, True, "wechat", False), (False, True, "wechat", True),
-    (True, False, "wechat", True), (True, True, "toutiao", True),
+    (True, False, "wechat", True), (True, True, "toutiao", False),
+    (False, True, "toutiao", True), (True, False, "toutiao", True),
 ])
 def test_full_original_body_rescored_without_preview_length_heuristics(app_settings, logger, verified, matching, platform, expected):
     from toutiao_content_factory.services.topic_collection import TopicCandidate, TopicCollectionService
@@ -771,10 +772,12 @@ def test_full_original_body_rescored_without_preview_length_heuristics(app_setti
     assert ("title_only" in topic.quality_flags) is expected
 
 
-def test_original_body_does_not_bypass_page_safety_or_material_gate(app_settings, logger):
+@pytest.mark.parametrize("platform", ["wechat", "toutiao"])
+def test_original_body_does_not_bypass_page_safety_or_material_gate(app_settings, logger, platform):
     from toutiao_content_factory.services.topic_collection import TopicCandidate, TopicCollectionService
     from toutiao_content_factory.services.material_search_service import MaterialBundle
     enable(app_settings)
+    object.__setattr__(app_settings, "platform", platform)
     collector = TopicCollectionService(app_settings, logger)
     for body in ["芯片发布完成10台测试。", "copyright 当前位置 " + "芯片公司披露20台测试，条件尚未核对。" * 80]:
         bundle = MaterialBundle("芯片进展", [MaterialSource("处理器报道", "https://a.test/report", body, True)])

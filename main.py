@@ -497,6 +497,7 @@ def main() -> int:
         print(f"Performance data collected: {len(result.get('records', []))} records")
         if result.get("errors"):
             print(f"Errors: {result['errors']}")
+            return 2 if any(error.get("code") == "login_required" for error in result["errors"]) else 1
         # 采集后自动运行反馈闭环：数据 → EvolutionAgent 规则 → prompt 优化
         if args.feedback_loop:
             from toutiao_content_factory.services.feedback_loop_service import FeedbackLoopService

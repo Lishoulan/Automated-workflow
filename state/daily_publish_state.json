@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-10-08T02:44:18.690700+00:00",
+  "updated_at": "2026-10-24T23:04:06.491200+00:00",
   "entries": {
     "2026-10-06::default": {
       "wechat": {
@@ -26,10 +26,40 @@
     "2026-10-08::default": {
       "wechat": {
         "channel": "cloud",
-        "status": "publish_uncertain",
+        "status": "not_submitted_verified",
         "title": "",
         "publish_url": "",
-        "recorded_at": "2026-10-08T02:44:18.690684+00:00"
+        "recorded_at": "2026-10-08T02:44:18.690684+00:00",
+        "previous_status": "publish_uncertain",
+        "no_submission_evidence": {
+          "run_key": "37719117765:1",
+          "checked_at": "2026-10-24T23:04:06.491200+00:00",
+          "account": "小椰科技",
+          "stage": "writing_timeout_then_incomplete_council_manual_review_hold",
+          "candidate_attempt_count": 0,
+          "pending_count": 0,
+          "native_exit_code": null,
+          "backend_checked_at": "2026-10-24T22:57:46.904734+00:00",
+          "backend_record_dates": [
+            "",
+            "10月16日",
+            "10月15日",
+            "10月12日",
+            "10月09日",
+            "07月25日",
+            "07月23日",
+            "07月22日",
+            "07月21日",
+            "07月20日"
+          ],
+          "candidate_title_matched": false,
+          "target_date": "2026-10-08",
+          "target_date_record_found": false,
+          "basis": "Completed job logs show review hold before submission; authenticated backend records bracket October 8 with no matching work or pending submission.",
+          "source_run": "https://github.com/Lishoulan/Automated-workflow/actions/runs/37719117765",
+          "backend_check_run": "https://github.com/Lishoulan/Automated-workflow/actions/runs/40140673600",
+          "job_log_sha256": "ffa4cb2cb437bcdeaba5110b8c70b7e15fedfe3dde98b1dd16d6c4a9e30d7072"
+        }
       }
     }
   }

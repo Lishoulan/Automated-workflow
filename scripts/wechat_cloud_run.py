@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from toutiao_content_factory.config import load_settings
+from toutiao_content_factory.exceptions import PlatformAuthError, SessionExpiredException
 from toutiao_content_factory.services import cross_channel_state as xstate
 from wechat_cloud_session import restore_session, save_session
 from wechat_run_report import cloud_exit_code, fresh_json
@@ -294,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     reconciliation_error = None
     retry_state = None
     reserved_started = None
+    phase = "setup"
     def finish(report, code, *, excluded=False):
         if reconciliation_error:
             report['publication_reconciliation_error'] = reconciliation_error
@@ -334,21 +336,26 @@ def main(argv: list[str] | None = None) -> int:
         restore_options = {"prefer_seed": True} if refresh_session else {}
         if fixed_device and refresh_session:
             raise ValueError("Fixed device login cannot be overwritten by a cloud seed")
+        phase = "session_restore"
         if not fixed_device:
             restore_session(settings, encrypted, key, os.environ.get("WECHAT_SESSION_SEED", ""), **restore_options)
         # 先读持久化去重状态，网络异常时停止，不把未知当作“今天没发”。
         # Fail closed if the durable publication guard cannot be read.
+        phase = "publication_guard"
         state = xstate.read_remote_state(ROOT, branch=xstate.WECHAT_STATE_BRANCH, strict=True)
         if run_key:
+            phase = "metrics_load"
             metrics_state = metrics.validate_metrics(xstate.read_remote_state(
                 ROOT, branch=xstate.WECHAT_STATE_BRANCH, path=metrics.METRICS_PATH, strict=True))
-            try:
-                confirmations, manual_confirmations = reconcile_publications(settings, metrics_state)
-            except Exception as exc:
-                if args.mode != 'draft':
-                    raise
-                reconciliation_error = type(exc).__name__
-                logger.warning('Public read-back unavailable; draft receipts stay unconfirmed: %s', reconciliation_error)
+            if args.mode != "check":
+                phase = "publication_reconciliation"
+                try:
+                    confirmations, manual_confirmations = reconcile_publications(settings, metrics_state)
+                except Exception as exc:
+                    if args.mode != 'draft':
+                        raise
+                    reconciliation_error = type(exc).__name__
+                    logger.warning('Public read-back unavailable; draft receipts stay unconfirmed: %s', reconciliation_error)
             unresolved = [row for row in metrics_state["runs"] if (row.get("outcome") in metrics.PENDING or row.get("submission_outcome") in metrics.PENDING)
                           and row.get("outcome") != "published_confirmed"
                           and not row.get("excluded")]
@@ -379,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
         if context_path.exists():
             context_path.unlink()  # An old local context cannot authorize a relay.
         if run_key and args.mode != "check":
+            phase = "reservation"
             retry_state = seed_retry_day(retry_state if retry_state is not None else xstate.read_remote_state(
                 ROOT, branch=xstate.WECHAT_STATE_BRANCH, path=retry.STATE_PATH, strict=True), metrics_state, today)
             retry_state, reservation = retry.reserve(retry_state, today, run_key, started_at,
@@ -404,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
             os.environ["WECHAT_GENERATION_DEADLINE_EPOCH"] = str(time.time() + remaining - SUBMISSION_MIN_SECONDS)
             os.environ["TOUTIAO_DAILY_RUN_BUDGET_SECONDS"] = str(min(1980, max(1, remaining - SUBMISSION_MIN_SECONDS)))
         command = [sys.executable, str(ROOT / "scripts" / "scheduled_wechat_publish.py"), "--account", args.account]
+        phase = "login_check"
         checked = subprocess.run(command + ["--check-login"], cwd=ROOT, timeout=120)
         if checked.returncode:
             return finish({"status": "publish_login_required", "exit_code": checked.returncode,
@@ -415,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
             storage = settings.account_runtime_dir / "automation" / "browser_state" / "WeChat_storage_state.json"
             if storage.exists():
                 from toutiao_content_factory.services.wechat_publication_verifier import inspect_backend
+                phase = "backend_inspection"
                 report["backend_snapshot"] = inspect_backend(settings)
             return finish(report, 0)
         started = time.time_ns()
@@ -424,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["WECHAT_EXECUTION_ID"] = run_key or uuid.uuid4().hex
         write_phase(settings, "preparing")
         publication_started = True
+        phase = "content_delivery"
         deadline = float(os.environ.get("WECHAT_RUN_DEADLINE_EPOCH", time.time() + 2700))
         result = run_process_tree(command + (["--save-draft"] if args.mode == "draft" else ["--enable-auto-publish"]), cwd=ROOT, timeout=max(1, min(2700, deadline - time.time())))
         workflow_completed = True
@@ -454,6 +465,7 @@ def main(argv: list[str] | None = None) -> int:
             expected = record.get("expected_publication", {})
             if expected and run_key:
                 report["expected_publication"] = expected
+                phase = "publication_verification"
                 confirmation = verify_pending(settings, [{**expected, "run_key": run_key}])
                 if run_key in confirmation:
                     report["publication"] = confirmation[run_key]
@@ -461,11 +473,22 @@ def main(argv: list[str] | None = None) -> int:
             record_publication(settings, {"status": "publish_uncertain"}, today)
         return finish(report, cloud_exit_code(report, result.returncode))
     except Exception as exc:
-        logger.error("WeChat cloud run stopped: %s", type(exc).__name__)
+        from wechat_run_report import safe_text
+        login_required = isinstance(exc, (PlatformAuthError, SessionExpiredException)) and not publication_started
+        error_report = {
+            "status": "publish_login_required" if login_required else "error",
+            "error_type": type(exc).__name__, "failed_phase": phase,
+            "error_message": safe_text(exc),
+        }
+        if not publication_started:
+            error_report["publication_attempted"] = False
+        if login_required:
+            error_report["reason_codes"] = ["session_expired"]
+        logger.error("WeChat cloud run stopped at %s: %s: %s", phase, type(exc).__name__, error_report["error_message"])
         if args.mode == "draft":
             from toutiao_content_factory.services.wechat_execution import draft_delivery_state
-            return finish({"status": "error", "error_type": type(exc).__name__,
-                "draft_delivery": {"status": draft_delivery_state(settings, workflow_started)}}, 1)
+            error_report["draft_delivery"] = {"status": draft_delivery_state(settings, workflow_started)}
+            return finish(error_report, 2 if login_required else 1)
         from toutiao_content_factory.services.wechat_execution import phase_attempted
         not_submitted = (publication_started and workflow_started is not None
                          and (workflow_completed or isinstance(exc, subprocess.TimeoutExpired))
@@ -475,7 +498,6 @@ def main(argv: list[str] | None = None) -> int:
                 record_publication(settings, {"status": "publish_uncertain"}, today)
             except Exception as guard_exc:
                 logger.error("Cannot persist uncertain publication guard: %s", type(guard_exc).__name__)
-        error_report = {"status": "error", "error_type": type(exc).__name__}
         if record:
             error_report.update(wechat_status=record["status"], publication_attempted=True,
                                 expected_publication=record.get("expected_publication", {}),
@@ -484,7 +506,7 @@ def main(argv: list[str] | None = None) -> int:
             error_report.update(publication_attempted=False, reason_codes=["generation_failed_before_submission"])
         elif publication_started:
             error_report.update(wechat_status="publish_uncertain", publication_attempted=True)
-        return finish(error_report, 1)
+        return finish(error_report, 2 if login_required else 1)
 
 
 if __name__ == "__main__":

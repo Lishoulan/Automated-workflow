@@ -236,6 +236,8 @@ def test_backend_inspection_checks_identity_and_closes_browser(app_settings, mon
     manager = MagicMock()
     browser = manager.__enter__.return_value.chromium.launch.return_value
     page = browser.new_context.return_value.new_page.return_value
+    page.url = "https://mp.weixin.qq.com/cgi-bin/home?token=test"
+    page.locator.return_value.first.is_visible.return_value = False
     page.evaluate.side_effect = [{"account": actual_account, "records": []}, 0]
     if expired:
         page.locator.return_value.first.wait_for.side_effect = RuntimeError("login expired")

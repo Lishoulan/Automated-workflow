@@ -8,8 +8,10 @@ import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from toutiao_content_factory.config import AppSettings
+from toutiao_content_factory.exceptions import PlatformAuthError
 from toutiao_content_factory.models import ArticlePerformance, PublishRecord, WorkflowResult
 from toutiao_content_factory.services import creator_account_service
 from toutiao_content_factory.services.content_income_service import ContentIncomeCollector
@@ -109,7 +111,10 @@ class PerformanceService:
                 raw_platforms[platform] = collector(headless=headless)
             except Exception as exc:  # pragma: no cover - browser/runtime dependent
                 self.logger.exception("Performance collection failed for %s", platform)
-                errors.append({"platform": platform, "message": str(exc)})
+                error = {"platform": platform, "message": str(exc)}
+                if isinstance(exc, PlatformAuthError):
+                    error["code"] = "login_required"
+                errors.append(error)
 
         matched_records: list[dict[str, Any]] = []
         matched_records.extend(self._match_metrics_to_local_records("toutiao", raw_platforms["toutiao"]))
@@ -347,7 +352,9 @@ class PerformanceService:
         api_payload: dict[str, Any] = {}
         try:
             page.goto(account_service.TOUTIAO_INDEX_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+            self._raise_if_login_required(page, platform="toutiao")
             self._wait_for_dashboard_render(page, timeout_ms=timeout_ms)
+            self._raise_if_login_required(page, platform="toutiao")
             board = account_service.extract_board_snapshot(page)
             if not board:
                 errors.append("account_board_empty")
@@ -355,6 +362,8 @@ class PerformanceService:
                     "Account board did not expose any [class*='data-board-item'] node; "
                     "收益金额可能取不到（页面改版或登录态失效）。"
                 )
+        except PlatformAuthError:
+            raise
         except Exception as exc:  # pragma: no cover - browser/runtime dependent
             errors.append(f"board:{exc}")
             self.logger.warning("Account board collection failed (non-fatal): %s", exc)
@@ -408,6 +417,21 @@ class PerformanceService:
                 benefits.get("status_code_active"),
             )
 
+    def _raise_if_login_required(self, page: Any, *, platform: str) -> None:
+        if platform == "toutiao":
+            url = urlsplit(str(page.url or ""))
+            login_required = url.hostname == "sso.toutiao.com" or any(
+                marker in url.path.lower() for marker in ("/auth/", "/login", "/passport")
+            )
+        else:
+            from toutiao_content_factory.services.wechat_service import WechatPublishService
+            login_required = WechatPublishService(self.settings, self.logger)._is_login_page(page)
+        if login_required:
+            raise PlatformAuthError(
+                f"{platform} performance collection requires a refreshed login session.",
+                blocking_platforms=[platform],
+            )
+
     def _open_target_with_retry(
         self,
         *,
@@ -419,8 +443,10 @@ class PerformanceService:
         for attempt in range(1, 3):
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                self._raise_if_login_required(page, platform=platform)
                 # 必须等内容真正渲染完再判断元素是否存在 —— 详见方法注释。
                 self._wait_for_dashboard_render(page, timeout_ms=timeout_ms)
+                self._raise_if_login_required(page, platform=platform)
                 if self._page_has_metric_signal(page):
                     return True
                 self.logger.warning(
@@ -430,6 +456,8 @@ class PerformanceService:
                     attempt,
                     url,
                 )
+            except PlatformAuthError:
+                raise
             except Exception as exc:
                 self.logger.warning(
                     "%s performance navigation attempt %s failed for %s: %s",

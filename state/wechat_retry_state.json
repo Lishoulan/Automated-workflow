@@ -190,10 +190,11 @@
     "2026-10-25": {
       "runs": {
         "40141321782:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-24T23:07:05.155812+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 221.303,
+          "outcome": "no_topics"
         }
       },
       "dispatches": {},

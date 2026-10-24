@@ -54,7 +54,7 @@ def main(argv=None) -> int:
         report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return payload
 
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import Error, sync_playwright
     try:
         with sync_playwright() as playwright:
             # A busy profile fails at launch; never terminate another run to obtain it.
@@ -66,7 +66,17 @@ def main(argv=None) -> int:
                 deadline = time.monotonic() + (args.wait_seconds if args.login else 0)
                 qr_shown = False
                 while True:
-                    snapshot = page.evaluate(BACKEND_RECORDS_JS)
+                    try:
+                        snapshot = page.evaluate(BACKEND_RECORDS_JS)
+                    except Error as exc:
+                        # Confirming a scan navigates away from the QR page.
+                        if "Execution context was destroyed" not in str(exc):
+                            raise
+                        if not args.login or time.monotonic() >= deadline:
+                            report("login_required" if not args.login else "scan_window_expired")
+                            return 2
+                        page.wait_for_timeout(250)
+                        continue
                     if confirmed_identity(snapshot, settings.wechat.account_name):
                         backup = backup_browser_storage_state(context, platform="WeChat", profile_dir=profile,
                             account_runtime_dir=settings.account_runtime_dir, logger=logging.getLogger(__name__))

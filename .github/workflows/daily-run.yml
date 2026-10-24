@@ -721,7 +721,20 @@ jobs:
           restore-keys: |
             daily-notification-log-${{ github.ref_name }}-
 
+      - name: Restore private account session
+        id: private-session
+        env:
+          TOUTIAO_COOKIE_SEED: ${{ secrets[format('TOUTIAO_COOKIE_SEED_{0}', env.RUN_ACCOUNT)] }}
+        run: |
+          if [ -n "$TOUTIAO_COOKIE_SEED" ]; then
+            COOKIES_FILE="$RUNNER_TEMP/toutiao_cookie_seed.json"
+            python scripts/toutiao_cloud_session.py --account "$RUN_ACCOUNT" --output "$COOKIES_FILE"
+            echo "cookie_file=$COOKIES_FILE" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Restore browser profile cache
+        # Secret-backed sessions stay on the ephemeral runner, outside public caches.
+        if: steps.private-session.outputs.cookie_file == ''
         uses: actions/cache@v4
         with:
           path: .runtime/
@@ -730,6 +743,7 @@ jobs:
             browser-profile-${{ github.ref_name }}-${{ steps.resolve-account-paths.outputs.ACCOUNT_SLUG }}-
 
       - name: Seed browser profiles from release
+        if: steps.private-session.outputs.cookie_file == ''
         run: |
           NEED_SEED=false
           # 根据账号动态确定 toutiao profile 路径
@@ -788,7 +802,8 @@ jobs:
           # 单账号没问题，但多账号时两个账号会共享同一个 cookie 文件 —— 等于把 A 账号的
           # 登录态注进 B 账号。现在按账号找专属资产，找不到才回退 legacy 名字
           # （robot_notes 目前依赖 legacy，不能直接删）。
-          COOKIES_FILE=""
+          COOKIES_FILE="$PRIVATE_COOKIES_FILE"
+          if [ -z "$COOKIES_FILE" ]; then
           ASSET_NAMES=$(python scripts/resolve_cookie_asset.py --account "$RUN_ACCOUNT")
           echo "Candidate cookie assets:"
           echo "$ASSET_NAMES" | sed 's/^/  - /'
@@ -814,6 +829,7 @@ jobs:
             fi
             echo "  $ASSET_NAME: downloaded but empty, trying next."
           done
+          fi
           # API 下载失败时,回退到本地缓存
           if [ -z "$COOKIES_FILE" ] && [ -f ".runtime/automation/exported_cookies.json" ]; then
             COOKIES_FILE=".runtime/automation/exported_cookies.json"
@@ -848,6 +864,7 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRIVATE_COOKIES_FILE: ${{ steps.private-session.outputs.cookie_file }}
 
       - name: Debug cookie file status
         run: |

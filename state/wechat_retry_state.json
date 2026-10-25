@@ -197,14 +197,27 @@
           "outcome": "no_topics"
         },
         "40149468449:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-25T01:09:36.285584+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 523.595,
+          "outcome": "review_required"
         }
       },
       "dispatches": {},
-      "failed_inputs": []
+      "failed_inputs": [
+        {
+          "fingerprint": "5af2cb551f77b5033f32a8f3ac681ab611cff265284552664f9c155f892041bd",
+          "source_fingerprint": "531bd1b6294eb07a43b09f01d017a73bd48a3ec03d87bea9bf2d6b832ee7d56c",
+          "requirements": [
+            "核实'29万家'和'40亿千瓦时'的具体数据来源和统计周期，并在文章中进行标注。",
+            "将'95%以上'的新能源发电利用率改为'截至2026年10月24日，区域新能源发电利用率保持在95%以上'。",
+            "避免将局部事件外推成行业趋势，例如将南方区域电力市场的运行与全国统一电力市场体系的完全建成进行区分。",
+            "修改文章中的绝对化表述，例如将'完全建成'改为'取得重要进展'。",
+            "避免重复句式和段落，例如将多次提到的'南方区域电力市场的正式运行对电力市场机制和交易规则进行了重要的探索和验证'进行合并或改写。"
+          ]
+        }
+      ]
     }
   }
 }

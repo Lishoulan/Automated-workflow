@@ -46,7 +46,8 @@ def test_collection_does_not_stop_on_historical_background(monkeypatch, wechat):
     fetch = MagicMock(side_effect=lambda url, **kwargs: (documents[url], url, "http"))
     monkeypatch.setattr(material, "fetch_text_smart", fetch)
     monkeypatch.setattr(material, "search_web", lambda *args, **kwargs: [
-        {"title": "旧设备报道", "url": old_url}, {"title": "同期测试报道", "url": supplement_url}])
+        {"title": "机器人新设备历史测试报道", "url": old_url},
+        {"title": "机器人新设备预告：同期测试报道", "url": supplement_url}])
     bundle = material.collect_material("机器人新设备预告", source_url=primary_url, preserve_sources=wechat,
                                        min_body_chars=400, max_sources=3, deadline=time.monotonic() + 60)
     assert fetch.call_count == (3 if wechat else 2)

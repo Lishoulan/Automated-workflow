@@ -68,7 +68,7 @@ def test_transport_failure_disables_backend_but_valid_empty_page_does_not(monkey
 
 
 def test_snippets_do_not_exhaust_budget_before_full_report(monkeypatch):
-    hits = [{"title": "社区现场活动", "url": f"https://publisher.example/{i}",
+    hits = [{"title": "社区志愿者为老人提供服务：现场活动", "url": f"https://publisher.example/{i}",
              "snippet": "据报道，社区活动在10月3日开始，工作人员协助了居民完成登记。" * 2}
             for i in range(4)]
     monkeypatch.setattr(material, "search_web", lambda *_, **__: hits)
@@ -85,8 +85,8 @@ def test_snippets_do_not_exhaust_budget_before_full_report(monkeypatch):
 
 def test_thin_search_hits_continue_to_next_phrase_without_refetching(monkeypatch):
     title = "社区志愿者为老人提供服务，哪些安排已经落实"
-    weak = {"title": "社区服务报道", "url": "https://publisher.example/thin", "snippet": ""}
-    full = {"title": "社区现场安排", "url": "https://publisher.example/full", "snippet": ""}
+    weak = {"title": "社区志愿者为老人提供服务：初步报道", "url": "https://publisher.example/thin", "snippet": ""}
+    full = {"title": "社区志愿者为老人提供服务：现场安排", "url": "https://publisher.example/full", "snippet": ""}
     search = MagicMock(side_effect=[[weak], [weak, full]])
     monkeypatch.setattr(material, "search_web", search)
     fetch = MagicMock(side_effect=[("<p>只有标题，没有事实正文。</p>", weak["url"], "http"),
@@ -102,7 +102,7 @@ def test_thin_search_hits_continue_to_next_phrase_without_refetching(monkeypatch
 
 
 def test_insufficient_sources_do_not_start_another_search_after_deadline(monkeypatch):
-    search = MagicMock(return_value=[{"title": "社区报道", "url": "https://publisher.example/thin"}])
+    search = MagicMock(return_value=[{"title": "社区志愿者为老人提供服务", "url": "https://publisher.example/thin"}])
     monkeypatch.setattr(material, "search_web", search)
     monkeypatch.setattr(material, "fetch_text_smart", lambda url, **_: ("<p>短页</p>", url, "http"))
     monkeypatch.setattr(material.time, "monotonic", MagicMock(side_effect=[0, 0, 121]))
@@ -187,7 +187,7 @@ def test_failed_original_report_can_recover_from_search(monkeypatch):
     fetch = MagicMock(side_effect=[OSError("temporarily unavailable"),
                                   (f"<p>{_full_body()}</p>", "https://publisher.example/report", "http")])
     monkeypatch.setattr(material, "fetch_text_smart", fetch)
-    bundle = material.collect_material("社区报道", source_url="https://www.court.gov.cn/case.html")
+    bundle = material.collect_material("社区志愿者为老人提供服务", source_url="https://www.court.gov.cn/case.html")
     assert material.assess_material_evidence(bundle).passed
     assert fetch.call_count == 2
     search.assert_called_once()

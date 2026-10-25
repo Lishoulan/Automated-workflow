@@ -548,6 +548,9 @@ def _load_cached_material(cache_dir: Path, title: str) -> MaterialBundle | None:
                 parsed_url = urllib.parse.urlparse(source.url)
                 if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
                     return None
+        sources = [source for source in sources if _filter_relevant_hits(
+            "cache", title, [{"title": source.title, "snippet": source.body}],
+        )]
         bundle = MaterialBundle(query=title, sources=sources)
         return bundle if assess_material_evidence(bundle).passed else None
     except (OSError, ValueError, TypeError, KeyError):
@@ -981,6 +984,8 @@ def collect_material(
             except MaterialBudgetExceeded:
                 budget_exhausted = True
                 return
+            # A shortened search phrase is retrieval help, not the topic contract.
+            found = _filter_relevant_hits("material", title, found)
             if found:
                 hits.extend(found)
                 for hit in found:

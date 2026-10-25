@@ -272,10 +272,10 @@ def test_court_verification_requires_exact_original_with_valid_header_date(app_s
 def test_court_material_cache_replay_keeps_required_original_date(app_settings, logger, monkeypatch):
     from toutiao_content_factory.services.automation import TopicAutomationService
     from toutiao_content_factory.services import material_search_service as material
-    body = "".join(f"<p>2020年公司安排员工完成第{i}项工作，当事人提供了{i}份考勤记录。法院核对2019年和2020年工作记录，未将其他案件的材料混入。</p>" for i in range(1, 21))
+    body = "".join(f"<p>2020年婚介服务合同约定第{i}项服务，当事人提供了{i}份付款记录。法院核对2019年和2020年的服务及退款记录，未将其他案件的材料混入。</p>" for i in range(1, 21))
     url = "https://www.hncourt.gov.cn/public/detail.php?id=1"
     def candidate():
-        item = topic("物业服务合同纠纷案", url)
+        item = topic("婚介服务退款争议", url)
         item.source_type = "court_case"
         return item
     fetch = MagicMock(return_value=(court_page(body, date="2021-10-20 19:02:01"), url, "mock"))

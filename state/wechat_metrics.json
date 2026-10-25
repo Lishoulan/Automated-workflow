@@ -1900,7 +1900,33 @@
       "elapsed_seconds": 521.781,
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "40150126165:1",
+      "started_at": "2026-10-25T01:19:31.572448+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "quality_audit_incomplete",
+        "quality_review_required"
+      ],
+      "attempt_count": 1,
+      "enrichment_count": 8,
+      "eligible_candidate_count": 1,
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "存在从局部事件直接推导行业结论的情况，例如在多个段落中提到南方区域电力市场的运行对全国统一电力市场体系建设具有重要影响，但缺乏足够的证据支持这一结论。",
+        "部分段落存在并列堆砌的情况，例如关于市场运行机制和技术环节的描述在多个段落中重复，建议合并或拆分相关段落以提高可读性。",
+        "存在绝对化表述：'第一'"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 374.947,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-25T09:18:30.778064+08:00"
+  "updated_at": "2026-10-25T09:25:58.808161+08:00"
 }

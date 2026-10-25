@@ -8,7 +8,9 @@ import pytest
 from toutiao_content_factory.config import RevenueOptimizationSettings
 from toutiao_content_factory.models import DailyTopicsReport, TopicCandidate
 from toutiao_content_factory.services.app_service import ContentFactoryAppService
-from toutiao_content_factory.services.material_search_service import MaterialBundle, MaterialSource
+from toutiao_content_factory.services.material_search_service import MaterialBundle, MaterialSource, assess_material_evidence
+from toutiao_content_factory.services.topic_collection import TopicCollectionService
+from toutiao_content_factory.services.wechat_evidence import source_records
 
 NOW = datetime(2026, 10, 21, 9, tzinfo=timezone(timedelta(hours=8)))
 
@@ -136,3 +138,63 @@ def test_run_local_prepared_material_still_expires(article_app, monkeypatch):
     monkeypatch.setattr("toutiao_content_factory.services.topic_collection.datetime", LaterClock)
     assert specs(article_app) == []
     assert collect.call_count == 1
+
+
+def spaced_original_body():
+    # A complete original can contain spaces and lists, just like the reporting
+    # rejected as title_only in production run 39577216468.
+    return "\n".join(
+        f"2026年10月{n}日，华为团队在第{n}栋楼开展机器人配送测试。"
+        "现场记录区分 道路行驶 楼内通行 电梯交接 三个环节，住户可以在约定位置领取物品。"
+        "工作人员说明已完成测试的楼栋和仍待核对的通行条件，不能把道路测试当作所有住户已经能够使用。"
+        "报道保留测试范围和参与人员的说明，未公布的覆盖情况应等待后续公开材料，不作推断。"
+        for n in range(1, 11)
+    )
+
+
+@pytest.mark.parametrize("material_path", ["existing_original", "fetched_original"])
+def test_verified_original_reaches_article_quality_gate_without_preview_misclassification(
+    article_app, monkeypatch, material_path,
+):
+    article_app.settings.topic_collection = article_app.settings.topic_collection.model_copy(
+        update={"keyword_map": {"robotics": ["机器人", "配送", "交接"]}},
+    )
+    topic = lead("华为配送机器人进入小区，用户在家门口如何收件？")
+    body = spaced_original_body()
+    bundle = MaterialBundle(topic.title, [MaterialSource(topic.title, topic.url, body, True)])
+    assert assess_material_evidence(bundle).passed
+    if material_path == "existing_original":
+        topic.snippet = body
+    write_topics(article_app, [topic])
+    monkeypatch.setattr(
+        "toutiao_content_factory.services.material_search_service.collect_material",
+        MagicMock(return_value=bundle),
+    )
+
+    assert len(specs(article_app)) == 1, article_app._article_selection_funnel
+    selection = article_app.topic_automation.prepare_auto_run(title_query=topic.title)
+    assert selection is not None
+    assert selection.topic.source_records[0]["url"] == topic.url
+    assert selection.topic.source_records[0]["original_text"] == body
+    assert "title_only" not in selection.topic.quality_flags
+    assert article_app._article_selection_funnel["review_approved"] is False
+
+
+@pytest.mark.parametrize("evidence_state", ["unverified_preview", "changed_body", "weak_original"])
+def test_preview_rules_remain_closed_without_current_verified_original(
+    article_app, evidence_state,
+):
+    body = spaced_original_body()
+    if evidence_state == "weak_original":
+        body = "社区 机器人 楼栋 配送 电梯 交接 仍需核对，尚无具体测试数据。" * 8
+    topic = lead("华为配送机器人进入小区，用户在家门口如何收件？")
+    bundle = MaterialBundle(topic.title, [MaterialSource(topic.title, topic.url, body, True)])
+    topic.snippet = bundle.combined_text.strip()
+    topic.source_records = source_records(bundle.usable)
+    if evidence_state != "unverified_preview":
+        topic._verified_source_material = True
+    if evidence_state == "changed_body":
+        topic.snippet += "\n新追加的 范围 结果 尚未 核实 也未 包含 在原文中。"
+
+    collector = TopicCollectionService(article_app.settings, article_app.logger)
+    assert collector._is_title_only_topic(topic) is True

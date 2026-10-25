@@ -61,7 +61,7 @@ def test_aggregation_rejection_continues_retrieval_only_in_wechat(monkeypatch, w
     fetch = MagicMock(side_effect=lambda url, **kwargs: ('<p>' + body + '</p>', url, "http"))
     monkeypatch.setattr(material, "fetch_text_smart", fetch)
     monkeypatch.setattr(material, "search_web", lambda *args, **kwargs: [
-        {"title": "专题目录", "url": directory}, {"title": "机器人测试", "url": article}])
+        {"title": "机器人测试专题目录", "url": directory}, {"title": "机器人测试", "url": article}])
     bundle = material.collect_material("机器人测试", preserve_sources=wechat, deadline=time.monotonic() + 60)
     assert fetch.call_count == (2 if wechat else 1)
     if wechat:

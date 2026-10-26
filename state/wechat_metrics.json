@@ -1994,7 +1994,41 @@
       "elapsed_seconds": 635.946,
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "40314204383:1",
+      "started_at": "2026-10-26T11:20:26.911945+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "quality_audit_incomplete",
+        "quality_review_required"
+      ],
+      "attempt_count": 2,
+      "enrichment_count": 7,
+      "eligible_candidate_count": 2,
+      "audited_candidate_count": 2,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "存在绝对化表述：'完全'",
+        "存在从局部事件直接推导行业结论的情况",
+        "发现2处重复或高度相似段落，需合并去重。",
+        "存在绝对化表述：'完全'",
+        "检查段落是否有递进、转折或因果推进，指出并列堆砌和论证跳跃。",
+        "检查文章是否回答了发生了什么、为什么发生、谁受影响以及什么条件下会失效。",
+        "识别把局部事件外推成行业趋势、把相关性写成因果、把预测写成确定结论的问题。",
+        "检查开头是否迅速给出判断，中段是否用证据和机制展开，结尾是否保留风险边界和跟踪变量。",
+        "检查段落长度、段落粘连、重复段落、句子过长和手机阅读节奏。",
+        "检查绝对化、夸大性、未经证明的排名或唯一性、标题党、误导性因果和内部流程标签泄露。",
+        "重点识别来源标记、素材占位符、账号运营指令是否进入公开正文。"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 613.711,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-26T19:19:21.082530+08:00"
+  "updated_at": "2026-10-26T19:30:56.631499+08:00"
 }

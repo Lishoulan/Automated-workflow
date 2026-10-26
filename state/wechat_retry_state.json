@@ -240,7 +240,12 @@
           "outcome": "review_required"
         }
       },
-      "dispatches": {},
+      "dispatches": {
+        "40312709305:1": {
+          "status": "intent",
+          "child": ""
+        }
+      },
       "failed_inputs": [
         {
           "fingerprint": "c6b2c650c26610373d152bbb704db783fe18349156708d99ca0c096e13913c66",

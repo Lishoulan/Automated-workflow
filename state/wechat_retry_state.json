@@ -226,10 +226,11 @@
     "2026-10-26": {
       "runs": {
         "40252714184:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-26T01:13:27.631836+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 212.995,
+          "outcome": "no_topics"
         }
       },
       "dispatches": {},

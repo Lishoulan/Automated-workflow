@@ -289,10 +289,11 @@
           "outcome": "review_required"
         },
         "40437808960:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-27T02:21:33.286336+00:00",
           "parent": "40436259630:1",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 577.11,
+          "outcome": "review_required"
         }
       },
       "dispatches": {
@@ -322,6 +323,16 @@
             "请合并或重写重复的长段表述。",
             "建议补充具体公司/数字/对立观点/互动话术以提升互动吸引力。",
             "修正标题，确保标题主体与数据报告确认主体一致。"
+          ]
+        },
+        {
+          "fingerprint": "73e4802a7a64be424a313736782dfb6dd4d76cb546c44357c6f7227ea5151548",
+          "source_fingerprint": "9e3d2f39c8fdf14ff0da3389deb1ebf70e6432dd856fe99665e3e9a243fc4353",
+          "requirements": [
+            "在 `loc_25caf1e55e617cfbf285` 中，补充说明是否已披露相关数据，或明确指出哪些数据未披露。",
+            "在 `loc_b5ccdd0276a83f04bf7b` 中，删除重复段落。",
+            "补充说明是否已披露相关数据，或明确指出哪些数据未披露",
+            "删除重复段落"
           ]
         }
       ]

@@ -2063,7 +2063,34 @@
       "elapsed_seconds": 881.103,
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "40437808960:1",
+      "started_at": "2026-10-27T02:21:33.286336+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "article_too_short",
+        "quality_audit_incomplete",
+        "quality_review_required"
+      ],
+      "attempt_count": 1,
+      "enrichment_count": 10,
+      "eligible_candidate_count": 1,
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "在 `loc_25caf1e55e617cfbf285` 中，提到特斯拉未公布机器人业务的详细运营数据，这限制了投资者和分析师的理解。建议补充说明是否已披露相关数据，或明确指出哪些数据未披露。",
+        "在 `loc_b5ccdd0276a83f04bf7b` 中，重复了 `loc_46bd22cafd3ca5e6a287` 的内容，建议删除重复段落。",
+        "在 `loc_25caf1e55e617cfbf285` 中，提到特斯拉未公布机器人业务的详细运营数据，建议补充说明是否已披露相关数据，或明确指出哪些数据未披露，以避免误导读者。"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 574.113,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-27T10:19:54.957924+08:00"
+  "updated_at": "2026-10-27T10:31:24.976050+08:00"
 }

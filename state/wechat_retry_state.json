@@ -282,14 +282,38 @@
     "2026-10-27": {
       "runs": {
         "40436259630:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-27T02:04:57.541459+00:00",
           "parent": "",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 883.223,
+          "outcome": "review_required"
         }
       },
       "dispatches": {},
-      "failed_inputs": []
+      "failed_inputs": [
+        {
+          "fingerprint": "9f42a126659b3f52696e2c200a84259723b7f8a19439f870d2cd5860dd75a9c4",
+          "source_fingerprint": "9e3d2f39c8fdf14ff0da3389deb1ebf70e6432dd856fe99665e3e9a243fc4353",
+          "requirements": [
+            "将特斯拉Optimus人形机器人V3版本的量产计划与行业趋势的关联进行更严谨的分析，增加对行业其他企业的对比和分析，避免逻辑跳跃。",
+            "将特斯拉Optimus人形机器人项目进展与江苏老牌轴承头部供应商的机器人业务营收数据分开叙述，避免段落粘连，提高文章的可读性。",
+            "避免使用绝对化表述",
+            "避免把局部事件外推成行业趋势",
+            "避免段落粘连"
+          ]
+        },
+        {
+          "fingerprint": "7bbb0917c5d148731f6b8f9a393373145f4df291c22e51bf026e95b7ee1c70fa",
+          "source_fingerprint": "71841ab1f540326a1428c44882b79ce35837c2b68c5534fa8dc9cfca085b2c23",
+          "requirements": [
+            "标题主体（人工智能）与数据报告确认主体（训练智能）不一致。",
+            "正文存在重复的长段表述，请合并或重写后再发布。",
+            "请合并或重写重复的长段表述。",
+            "建议补充具体公司/数字/对立观点/互动话术以提升互动吸引力。",
+            "修正标题，确保标题主体与数据报告确认主体一致。"
+          ]
+        }
+      ]
     }
   }
 }

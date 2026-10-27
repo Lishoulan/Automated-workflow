@@ -296,10 +296,11 @@
           "outcome": "review_required"
         },
         "40438931871:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-27T02:32:38.652440+00:00",
           "parent": "40437808960:1",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 692.484,
+          "outcome": "review_required"
         }
       },
       "dispatches": {
@@ -343,6 +344,22 @@
             "在 `loc_b5ccdd0276a83f04bf7b` 中，删除重复段落。",
             "补充说明是否已披露相关数据，或明确指出哪些数据未披露",
             "删除重复段落"
+          ]
+        },
+        {
+          "fingerprint": "6f8ab9a4880c08610c48c0f0d25fd3173820a5c975e8e60286c9daa99a8a188c",
+          "source_fingerprint": "9e3d2f39c8fdf14ff0da3389deb1ebf70e6432dd856fe99665e3e9a243fc4353",
+          "requirements": [
+            "将所有绝对化表述修改为不确定性表述，例如将'首次'改为'首次被正式文件记录'。",
+            "将所有绝对化表述修改为不确定性表述"
+          ]
+        },
+        {
+          "fingerprint": "d25f6d622fd5db637f78a40b48dd2e41192f0b85d267004d0be63c35c8ca0f2d",
+          "source_fingerprint": "71841ab1f540326a1428c44882b79ce35837c2b68c5534fa8dc9cfca085b2c23",
+          "requirements": [
+            "正文存在重复的长段表述，请合并或重写后再发布。",
+            "检查文章中重复出现的段落，进行合并或重写，以提高原创性和阅读体验。"
           ]
         }
       ]

@@ -2028,7 +2028,42 @@
       "elapsed_seconds": 613.711,
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "40436259630:1",
+      "started_at": "2026-10-27T02:04:57.541459+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "quality_audit_incomplete",
+        "quality_review_required"
+      ],
+      "attempt_count": 3,
+      "enrichment_count": 10,
+      "eligible_candidate_count": 3,
+      "audited_candidate_count": 3,
+      "review_pass_count": 1,
+      "rejection_reasons": [
+        "存在把局部事件外推成行业趋势的问题，例如将特斯拉Optimus人形机器人V3版本的量产计划直接关联到整个机器人行业的未来趋势，缺乏对行业其他企业的对比和分析，导致逻辑跳跃。",
+        "文章开头部分存在段落粘连问题，例如在介绍特斯拉Optimus人形机器人项目进展时，与江苏老牌轴承头部供应商的机器人业务营收数据混在一起，导致信息不够清晰。",
+        "存在绝对化表述：'完全'",
+        "存在绝对化表述：'必然'",
+        "正文存在重复的长段表述，请合并或重写后再发布。",
+        "互动吸引力不足，建议补充具体公司/数字/对立观点/互动话术",
+        "标题主体（人工智能）与数据报告确认主体（训练智能）不一致。",
+        "正文存在重复的长段表述，请合并或重写后再发布。",
+        "互动吸引力不足，建议补充具体公司/数字/对立观点/互动话术",
+        "标题主体（人工智能）与数据报告确认主体（训练智能）不一致。",
+        "标题主体（人工智能）与数据报告确认主体（训练智能）不一致。",
+        "正文存在重复的长段表述，请合并或重写后再发布。"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 881.103,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-26T19:30:56.631499+08:00"
+  "updated_at": "2026-10-27T10:19:54.957924+08:00"
 }

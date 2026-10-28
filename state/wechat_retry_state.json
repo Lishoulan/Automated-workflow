@@ -357,6 +357,12 @@
           "parent": "40619709839:1",
           "elapsed_seconds": 626.978,
           "outcome": "review_required"
+        },
+        "40621727504:1": {
+          "status": "running",
+          "started_at": "2026-10-28T02:35:40.449261+00:00",
+          "parent": "40620548688:1",
+          "elapsed_seconds": 0
         }
       },
       "dispatches": {
@@ -365,8 +371,8 @@
           "child": "40620548688:1"
         },
         "40620548688:1": {
-          "status": "dispatched",
-          "child": ""
+          "status": "claimed",
+          "child": "40621727504:1"
         }
       },
       "failed_inputs": [

@@ -2191,7 +2191,37 @@
       "elapsed_seconds": 625.402,
       "runtime_status": "ok",
       "native_exit_code": 0
+    },
+    {
+      "run_key": "40621727504:1",
+      "started_at": "2026-10-28T02:35:40.449261+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "quality_audit_incomplete",
+        "quality_review_required"
+      ],
+      "attempt_count": 2,
+      "enrichment_count": 10,
+      "eligible_candidate_count": 2,
+      "audited_candidate_count": 2,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "发现1处重复或高度相似段落，需合并去重。",
+        "存在绝对化表述：'完全'",
+        "存在绝对化表述：'首次'",
+        "存在绝对化表述：'完全'",
+        "存在绝对化表述：'一定'",
+        "存在绝对化表述：'完全'",
+        "存在绝对化表述：'一定'"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 620.529,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-28T10:34:20.124292+08:00"
+  "updated_at": "2026-10-28T10:46:15.117574+08:00"
 }

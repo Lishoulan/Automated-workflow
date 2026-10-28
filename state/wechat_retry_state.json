@@ -363,6 +363,10 @@
         "40619709839:1": {
           "status": "claimed",
           "child": "40620548688:1"
+        },
+        "40620548688:1": {
+          "status": "intent",
+          "child": ""
         }
       },
       "failed_inputs": [

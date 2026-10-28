@@ -359,10 +359,11 @@
           "outcome": "review_required"
         },
         "40621727504:1": {
-          "status": "running",
+          "status": "completed",
           "started_at": "2026-10-28T02:35:40.449261+00:00",
           "parent": "40620548688:1",
-          "elapsed_seconds": 0
+          "elapsed_seconds": 622.66,
+          "outcome": "review_required"
         }
       },
       "dispatches": {
@@ -403,6 +404,26 @@
             "修改绝对化表述",
             "合并重复段落",
             "优化段落长度和段落粘连"
+          ]
+        },
+        {
+          "fingerprint": "922199806fcb1bb95ae0b5feb90163bb022b332279e9a89df22008e42cd13455",
+          "source_fingerprint": "33571c20ef497fbe73d26bbf76f7861e93a68a8e2d186ffa50afe4b6fb797f2b",
+          "requirements": [
+            "将重复段落合并去重，确保文章原创性和阅读节奏。",
+            "修改绝对化表述，使用限定词如'可能'、'预计'等，避免误导读者。",
+            "合并去重段落",
+            "修改绝对化表述"
+          ]
+        },
+        {
+          "fingerprint": "7f3a0c2676a36fadd0ee15e6d8555b0305b7012d4abf87d468b8d2c45f79a0ee",
+          "source_fingerprint": "24008d49092e32aadc0f6510cbcfb24f14262713823f473d43ba6315f78cf380",
+          "requirements": [
+            "在段落中删除或修改绝对化表述，如“完全”、“一定”等，以减少绝对化风险。",
+            "核实文章中提到的具体公司名称和产品型号，确保其准确无误。",
+            "删除或修改绝对化表述",
+            "核实公司名称和产品型号"
           ]
         }
       ]

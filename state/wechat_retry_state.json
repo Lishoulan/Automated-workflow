@@ -1,28 +1,6 @@
 {
   "schema_version": 1,
   "days": {
-    "2026-10-18": {
-      "runs": {
-        "39084908859:1": {
-          "status": "completed",
-          "started_at": "2026-10-18T01:01:55.332783+00:00",
-          "parent": "",
-          "elapsed_seconds": 9.06,
-          "outcome": "publish_login_required",
-          "draft_delivery": {}
-        },
-        "39116119316:1": {
-          "status": "completed",
-          "started_at": "2026-10-18T09:39:10.261658+00:00",
-          "parent": "",
-          "elapsed_seconds": 10.084,
-          "outcome": "publish_login_required",
-          "draft_delivery": {}
-        }
-      },
-      "dispatches": {},
-      "failed_inputs": []
-    },
     "2026-10-19": {
       "runs": {
         "39184455164:1": {
@@ -363,6 +341,18 @@
           ]
         }
       ]
+    },
+    "2026-10-28": {
+      "runs": {
+        "40619709839:1": {
+          "status": "running",
+          "started_at": "2026-10-28T02:14:50.342394+00:00",
+          "parent": "",
+          "elapsed_seconds": 0
+        }
+      },
+      "dispatches": {},
+      "failed_inputs": []
     }
   }
 }

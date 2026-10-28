@@ -352,7 +352,12 @@
           "outcome": "review_required"
         }
       },
-      "dispatches": {},
+      "dispatches": {
+        "40619709839:1": {
+          "status": "intent",
+          "child": ""
+        }
+      },
       "failed_inputs": [
         {
           "fingerprint": "e989a1c09aac1575662c09b822ba202c08ad8f93c548dabd076dad4282e923e4",

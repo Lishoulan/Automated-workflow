@@ -2137,7 +2137,32 @@
       "elapsed_seconds": null,
       "runtime_status": "ok",
       "native_exit_code": null
+    },
+    {
+      "run_key": "40619709839:1",
+      "started_at": "2026-10-28T02:14:50.342394+00:00",
+      "mode": "publish",
+      "excluded": false,
+      "outcome": "not_published",
+      "reason_codes": [
+        "quality_audit_incomplete",
+        "quality_review_required"
+      ],
+      "attempt_count": 1,
+      "enrichment_count": 9,
+      "eligible_candidate_count": 1,
+      "audited_candidate_count": 1,
+      "review_pass_count": 0,
+      "rejection_reasons": [
+        "存在绝对化表述：'完全'",
+        "存在绝对化表述：'首次'"
+      ],
+      "publication": {},
+      "expected_publication": {},
+      "elapsed_seconds": 443.633,
+      "runtime_status": "ok",
+      "native_exit_code": 0
     }
   ],
-  "updated_at": "2026-10-27T18:36:08.665359+08:00"
+  "updated_at": "2026-10-28T10:22:26.845980+08:00"
 }

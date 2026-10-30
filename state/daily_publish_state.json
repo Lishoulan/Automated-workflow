@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-10-30T19:05:04",
+  "updated_at": "2026-10-31T00:27:51",
   "entries": {
     "2026-09-16": {
       "toutiao": {
@@ -416,6 +416,17 @@
         "publish_url": "",
         "daily_count": 3,
         "recorded_at": "2026-10-30T19:05:04"
+      }
+    },
+    "2026-10-31::robot-notes": {
+      "toutiao_weitoutiao": {
+        "channel": "cloud",
+        "status": "submitted_for_review",
+        "pgc_id": "",
+        "title": "智元机器人赴港上市节奏放缓，部分具身智能公司老股5折出售却无",
+        "publish_url": "",
+        "daily_count": 1,
+        "recorded_at": "2026-10-31T00:27:51"
       }
     }
   }
